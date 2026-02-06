@@ -1,19 +1,24 @@
 //! `water clean` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::Result;
+use dialoguer::{Confirm, theme::ColorfulTheme};
+use futures_lite::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::shell;
-use crate::{header, success};
+use crate::{header, note, success, warn};
 use waterui_cli::{
-    android::platform::clean_android, apple::platform::clean_apple, gtk4::platform::clean_gtk4,
-    project::Project,
+    android::platform::clean_android,
+    apple::platform::clean_apple,
+    gtk4::platform::clean_gtk4,
+    project::{Manifest, Project},
 };
 
 /// Target backend for cleaning.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum TargetBackend {
     /// Apple backend (iOS/macOS).
     Apple,
@@ -35,12 +40,31 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Recursively find all valid WaterUI projects under `--path` and clean each project's `.water` and `target` directories.
+    #[arg(short = 'r', long)]
+    recursive: bool,
+
+    /// Skip confirmation prompt in recursive mode.
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 /// Run the clean command.
 pub async fn run(args: Args) -> Result<()> {
-    let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path).await?;
+    let root_path = crate::project_path::canonicalize(&args.path)?;
+
+    if args.recursive {
+        if args.backend != TargetBackend::All {
+            warn!(
+                "Ignoring `--backend {:?}` in recursive mode; cleaning `.water` and `target` only",
+                args.backend
+            );
+        }
+        return clean_recursive(&root_path, args.yes).await;
+    }
+
+    let project = Project::open(&root_path).await?;
 
     header!("Cleaning build artifacts...");
 
@@ -80,4 +104,191 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
+    header!("Recursively cleaning `.water` and `target` directories...");
+
+    let spinner = shell::spinner("Scanning for WaterUI projects...");
+    let project_roots = discover_projects(root).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
+    if project_roots.is_empty() {
+        warn!("No valid WaterUI projects found under {}", root.display());
+        return Ok(());
+    }
+
+    let mut total_dirs_to_remove = 0usize;
+    for project_root in &project_roots {
+        total_dirs_to_remove += removable_cache_dir_count(project_root);
+    }
+
+    if total_dirs_to_remove == 0 {
+        note!("Found projects, but no `.water` or `target` directories needed cleaning");
+        return Ok(());
+    }
+
+    if !yes {
+        let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Delete {total_dirs_to_remove} cache directories across {} project(s) under {}?",
+                project_roots.len(),
+                root.display()
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            warn!("Cancelled recursive clean");
+            return Ok(());
+        }
+    }
+
+    let progress = make_progress_bar(total_dirs_to_remove as u64);
+
+    let mut cleaned_projects = 0usize;
+    let mut removed_dirs = 0usize;
+
+    for project_root in project_roots {
+        let removed = clean_project_caches(&project_root, progress.as_ref()).await?;
+        if removed > 0 {
+            cleaned_projects += 1;
+            removed_dirs += removed;
+            success!(
+                "Cleaned {} ({})",
+                project_root.display(),
+                if removed == 2 {
+                    ".water + target"
+                } else {
+                    "partial cache"
+                }
+            );
+        }
+    }
+
+    if let Some(pb) = progress {
+        pb.finish_and_clear();
+    }
+
+    success!(
+        "Recursive clean complete: cleaned {} project(s), removed {} directory(s)",
+        cleaned_projects,
+        removed_dirs
+    );
+
+    Ok(())
+}
+
+async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut project_roots = Vec::new();
+
+    while let Some(dir) = stack.pop() {
+        let manifest_path = dir.join("Water.toml");
+        if manifest_path.exists() && Manifest::open(&manifest_path).await.is_ok() {
+            project_roots.push(dir.clone());
+        }
+
+        let mut entries = match smol::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        while let Some(entry) = entries.next().await {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if should_skip_dir(&name) {
+                continue;
+            }
+
+            stack.push(path);
+        }
+    }
+
+    project_roots.sort();
+    project_roots.dedup();
+    Ok(project_roots)
+}
+
+fn removable_cache_dir_count(project_root: &Path) -> usize {
+    [".water", "target"]
+        .iter()
+        .filter(|dir_name| project_root.join(dir_name).exists())
+        .count()
+}
+
+async fn clean_project_caches(
+    project_root: &Path,
+    progress: Option<&ProgressBar>,
+) -> Result<usize> {
+    let mut removed = 0usize;
+
+    for dir_name in [".water", "target"] {
+        let dir = project_root.join(dir_name);
+        if dir.exists() {
+            if let Some(pb) = progress {
+                pb.set_message(format!("Removing {}", dir.display()));
+            }
+            smol::fs::remove_dir_all(&dir).await?;
+            removed += 1;
+            if let Some(pb) = progress {
+                pb.inc(1);
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn make_progress_bar(total: u64) -> Option<ProgressBar> {
+    if !shell::is_interactive() {
+        return None;
+    }
+
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
+            .expect("valid template")
+            .progress_chars("=>-"),
+    );
+    Some(pb)
+}
+
+fn should_skip_dir(name: &str) -> bool {
+    matches!(name, ".git" | "node_modules" | ".water" | "target")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{removable_cache_dir_count, should_skip_dir};
+
+    #[test]
+    fn skip_dir_filters_heavy_dirs() {
+        assert!(should_skip_dir(".git"));
+        assert!(should_skip_dir("node_modules"));
+        assert!(should_skip_dir(".water"));
+        assert!(should_skip_dir("target"));
+        assert!(!should_skip_dir("src"));
+    }
+
+    #[test]
+    fn removable_cache_count_is_zero_when_missing() {
+        let missing = Path::new("/definitely/not/exist/waterui-clean-test");
+        assert_eq!(removable_cache_dir_count(missing), 0);
+    }
 }
