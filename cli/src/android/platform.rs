@@ -197,6 +197,28 @@ fn ndk_cxx_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
     ndk_clang_path(ndk_path, abi, true)
 }
 
+/// Get the path to `libc++_shared.so` in the NDK.
+///
+/// NDK r23+ ships it under `sysroot/usr/lib/<triple>/`, while older NDKs
+/// used `sources/cxx-stl/llvm-libc++/libs/<abi>/`.
+fn ndk_libcxx_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
+    let new_path = ndk_path
+        .join("toolchains/llvm/prebuilt")
+        .join(ndk_host_tag(ndk_path))
+        .join("sysroot/usr/lib")
+        .join(abi.ndk_libcxx_triple())
+        .join("libc++_shared.so");
+
+    if new_path.exists() {
+        return new_path;
+    }
+
+    ndk_path
+        .join("sources/cxx-stl/llvm-libc++/libs")
+        .join(abi.as_str())
+        .join("libc++_shared.so")
+}
+
 /// Represents an Android platform for a specific architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AndroidAbi {
@@ -252,6 +274,17 @@ impl AndroidAbi {
             Self::Arm64V8a => "aarch64-linux-android",
             Self::X86_64 => "x86_64-linux-android",
             Self::ArmeabiV7a => "armv7a-linux-androideabi",
+            Self::X86 => "i686-linux-android",
+        }
+    }
+
+    #[must_use]
+    /// Target triple used by NDK sysroot libc++ paths.
+    pub const fn ndk_libcxx_triple(self) -> &'static str {
+        match self {
+            Self::Arm64V8a => "aarch64-linux-android",
+            Self::X86_64 => "x86_64-linux-android",
+            Self::ArmeabiV7a => "arm-linux-androideabi",
             Self::X86 => "i686-linux-android",
         }
     }
@@ -467,6 +500,14 @@ impl AndroidPlatform {
         // Copy with standardized name
         let dest_lib = output_dir.join("libwaterui_app.so");
         copy_file(&source_lib, &dest_lib).await?;
+
+        // Some dependencies (e.g., C++-backed crates) dynamically link against
+        // `libc++_shared.so`. Bundle it so apps don't fail at dlopen time.
+        let libcxx_path = ndk_libcxx_path(&ndk_path, abi);
+        if libcxx_path.exists() {
+            let dest_libcxx = output_dir.join("libc++_shared.so");
+            copy_file(&libcxx_path, &dest_libcxx).await?;
+        }
 
         Ok(lib_dir)
     }
