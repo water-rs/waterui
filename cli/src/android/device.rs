@@ -381,6 +381,38 @@ async fn try_find_running_emulator_for_avd(
     Ok(None)
 }
 
+async fn adb_emulator_states(adb: &Path) -> eyre::Result<String> {
+    let output = run_command_os(adb, ["devices", "-l"]).await?;
+    let states: Vec<String> = output
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| line.starts_with("emulator-"))
+        .map(ToOwned::to_owned)
+        .collect();
+
+    if states.is_empty() {
+        return Ok(String::new());
+    }
+
+    Ok(states.join("; "))
+}
+
+async fn adb_emulator_boot_completed(adb: &Path, emulator_id: &str) -> bool {
+    run_command_os(
+        adb,
+        ["-s", emulator_id, "shell", "getprop", "sys.boot_completed"],
+    )
+    .await
+    .is_ok_and(|value| value.trim() == "1")
+}
+
+async fn adb_package_manager_ready(adb: &Path, emulator_id: &str) -> bool {
+    run_command_os(adb, ["-s", emulator_id, "shell", "pm", "path", "android"])
+        .await
+        .is_ok_and(|output| output.lines().any(|line| line.trim().starts_with("package:")))
+}
+
 /// Monitor an Android process and send events when it crashes or exits.
 async fn monitor_android_process(
     adb: PathBuf,
@@ -797,26 +829,56 @@ impl Device for AndroidEmulator {
         let emulator_path =
             AndroidSdk::emulator_path().ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
 
-        // Start the emulator process (don't wait for it here, we'll poll for readiness)
-        Command::new(&emulator_path)
+        // Start the emulator process (don't wait for it here, we'll poll for readiness).
+        // Use std::process::Command so we can isolate process-group behavior.
+        let mut emulator_cmd = std::process::Command::new(&emulator_path);
+        emulator_cmd
             .arg("-avd")
             .arg(&self.avd_name)
             .arg("-no-snapshot-load")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
+            .stderr(std::process::Stdio::null());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // Move emulator into its own process group so Ctrl+C in `water run`
+            // only stops the CLI/app and doesn't terminate the emulator process.
+            emulator_cmd.process_group(0);
+        }
+
+        let mut emulator_process = emulator_cmd.spawn()?;
 
         // Wait for the emulator to boot (and match the requested AVD).
         let adb_path = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
 
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(120);
+        let timeout = std::time::Duration::from_secs(300);
+        let mut last_emulator_states = String::new();
 
         loop {
-            if start.elapsed() > timeout {
-                eyre::bail!("Emulator launch timed out after 120 seconds");
+            if let Some(status) = emulator_process.try_wait()? {
+                eyre::bail!(
+                    "Emulator process exited before becoming ready (status: {status}). Check AVD configuration and run `emulator -avd {}` manually for details.",
+                    self.avd_name
+                );
             }
+
+            if start.elapsed() > timeout {
+                let states = if last_emulator_states.is_empty() {
+                    "no emulator device reported by adb".to_string()
+                } else {
+                    last_emulator_states.clone()
+                };
+
+                eyre::bail!(
+                    "Emulator launch timed out after 300 seconds (ADB state: {}).",
+                    states
+                );
+            }
+
+            last_emulator_states = adb_emulator_states(&adb_path).await.unwrap_or_default();
 
             if let Some(device) =
                 try_find_running_emulator_for_avd(&adb_path, &self.avd_name).await?
@@ -829,6 +891,22 @@ impl Device for AndroidEmulator {
                         device.abi().as_str()
                     );
                 }
+
+                let emulator_id = device.identifier().to_string();
+                let boot_completed = adb_emulator_boot_completed(&adb_path, &emulator_id).await;
+                let package_ready = adb_package_manager_ready(&adb_path, &emulator_id).await;
+
+                if !boot_completed || !package_ready {
+                    debug!(
+                        "Emulator {} detected but not fully ready yet (boot_completed={}, package_ready={})",
+                        emulator_id,
+                        boot_completed,
+                        package_ready
+                    );
+                    smol::Timer::after(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+
                 self.device
                     .set(device)
                     .map_err(|_| eyre::eyre!("Emulator device already initialized"))?;
