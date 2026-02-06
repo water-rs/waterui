@@ -244,26 +244,53 @@ fn get_cache_path() -> Option<PathBuf> {
 fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     tracing::info!("[SharedGpuContext] Initializing shared GPU context");
 
-    // Create instance with all backends on desktop, specific backends on mobile
-    let backends = if cfg!(target_os = "android") {
-        // Try Vulkan first on Android, then GL
-        wgpu::Backends::VULKAN | wgpu::Backends::GL
+    let (instance, adapter) = if cfg!(target_os = "android") {
+        let vk_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+
+        match pollster::block_on(vk_instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })) {
+            Ok(adapter) => {
+                tracing::info!("[SharedGpuContext] Using Vulkan-only adapter selection on Android");
+                (vk_instance, adapter)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "[SharedGpuContext] Vulkan adapter unavailable; falling back to Vulkan+GL selection"
+                );
+                let fallback_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+                    ..Default::default()
+                });
+                let adapter = pollster::block_on(
+                    fallback_instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                    }),
+                )
+                .map_err(|_| SharedContextError::NoAdapter)?;
+                (fallback_instance, adapter)
+            }
+        }
     } else {
-        wgpu::Backends::all()
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .map_err(|_| SharedContextError::NoAdapter)?;
+        (instance, adapter)
     };
-
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends,
-        ..Default::default()
-    });
-
-    // Request headless adapter (compatible with any surface)
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None, // Headless mode
-        force_fallback_adapter: false,
-    }))
-    .map_err(|_| SharedContextError::NoAdapter)?;
 
     let adapter_info = adapter.get_info();
     tracing::info!(
