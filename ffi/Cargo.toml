@@ -1,5 +1,6 @@
 [package]
 name = "waterui-ffi"
+build = "build.rs"
 version = "0.2.1"
 edition.workspace = true
 authors.workspace = true
