@@ -9,7 +9,7 @@ use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
 use crate::{error, header, success, warn};
-use waterui_cli::preview::protocol::function_path_to_symbol;
+use waterui_cli::preview::protocol::{AppError, function_path_symbol_candidates};
 use waterui_cli::preview::{PreviewPlatform, launch_preview_session};
 use waterui_cli::toolchain::sccache::Sccache;
 
@@ -78,8 +78,8 @@ pub async fn run(args: Args) -> Result<()> {
         .and_then(|n| n.as_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
 
-    let symbol = function_path_to_symbol(crate_name, &args.function_path);
-    header!("Preview: {}", symbol);
+    let symbols = function_path_symbol_candidates(crate_name, &args.function_path);
+    header!("Preview: {}", symbols.join(" | "));
 
     // Detect sccache for compilation caching
     let sccache = Sccache;
@@ -95,7 +95,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
-    let mut session = launch_preview_session(args.platform.into(), sccache_path).await?;
+    let mut session = launch_preview_session(args.platform.into(), sccache_path.clone()).await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
@@ -108,9 +108,71 @@ pub async fn run(args: Args) -> Result<()> {
             s.finish_and_clear();
         }
 
-        // Render preview
+        // Render preview (retry once if preview app connection drops)
         let spinner = shell::spinner("Rendering view...");
-        let png_data = session.render(&dylib, &symbol, width, height).await?;
+        let mut last_err: Option<AppError> = None;
+        let mut png_data: Option<Vec<u8>> = None;
+
+        for symbol in &symbols {
+            match session
+                .client
+                .render_with_dylib_source(dylib.id, &dylib.bytes, symbol, width, height)
+                .await
+            {
+                Ok(data) => {
+                    png_data = Some(data);
+                    break;
+                }
+                Err(AppError::SymbolNotFound(_)) => {
+                    last_err = Some(AppError::SymbolNotFound(symbol.clone()));
+                    continue;
+                }
+                Err(err) => {
+                    if should_retry_render_error(&err) {
+                        warn!("Preview app connection dropped, relaunching and retrying once...");
+                        let _ = session.shutdown().await;
+                        session =
+                            launch_preview_session(args.platform.into(), sccache_path.clone())
+                                .await?;
+                        match session
+                            .client
+                            .render_with_dylib_source(dylib.id, &dylib.bytes, symbol, width, height)
+                            .await
+                        {
+                            Ok(data) => {
+                                png_data = Some(data);
+                                break;
+                            }
+                            Err(AppError::SymbolNotFound(_)) => {
+                                last_err = Some(AppError::SymbolNotFound(symbol.clone()));
+                                continue;
+                            }
+                            Err(retry_err) => {
+                                return Err(color_eyre::eyre::eyre!(
+                                    "Preview app error: {retry_err}"
+                                ));
+                            }
+                        }
+                    } else {
+                        return Err(color_eyre::eyre::eyre!("Preview app error: {err}"));
+                    }
+                }
+            }
+        }
+
+        let png_data = match png_data {
+            Some(data) => data,
+            None => {
+                if matches!(last_err, Some(AppError::SymbolNotFound(_))) {
+                    bail!(
+                        "{}",
+                        missing_preview_symbol_message(&args.function_path, &symbols)
+                    );
+                }
+                bail!("Preview app error: no symbol candidates resolved")
+            }
+        };
+
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
@@ -127,10 +189,18 @@ pub async fn run(args: Args) -> Result<()> {
     }
     .await;
 
-    // Keep preview app running for reuse by future preview commands.
-    session.detach();
-
-    result
+    match result {
+        Ok(()) => {
+            // Keep preview app running for reuse by future preview commands.
+            session.detach();
+            Ok(())
+        }
+        Err(err) => {
+            // On failure, terminate the preview app to avoid reusing a broken process.
+            let _ = session.shutdown().await;
+            Err(err)
+        }
+    }
 }
 
 /// Parse frame size from "WIDTHxHEIGHT" string.
@@ -148,4 +218,64 @@ fn parse_frame(s: &str) -> Result<(f32, f32)> {
         .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
 
     Ok((width, height))
+}
+
+fn should_retry_render_error(err: &AppError) -> bool {
+    match err {
+        AppError::RenderFailed(msg) => {
+            msg.contains("Failed to receive response")
+                || msg.contains("unexpected end of file")
+                || msg.contains("Broken pipe")
+                || msg.contains("request timed out")
+                || msg.contains("transport error")
+        }
+        _ => false,
+    }
+}
+
+fn missing_preview_symbol_message(function_path: &str, symbols: &[String]) -> String {
+    let expected = symbols
+        .iter()
+        .map(|s| format!("`{s}`"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+
+    format!(
+        "Preview component not found: `{function_path}`\nExpected export symbol: {expected}\n\
+The preview function is likely missing `#[preview]` (or the name is wrong).\n\
+Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
+        function_path.rsplit("::").next().unwrap_or(function_path)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_retryable_render_errors() {
+        assert!(should_retry_render_error(&AppError::RenderFailed(
+            "transport error: Failed to receive response".to_string()
+        )));
+        assert!(should_retry_render_error(&AppError::RenderFailed(
+            "request timed out".to_string()
+        )));
+        assert!(!should_retry_render_error(&AppError::SymbolNotFound(
+            "foo".to_string()
+        )));
+    }
+
+    #[test]
+    fn formats_missing_preview_symbol_message() {
+        let symbols = vec![
+            "waterui_preview_app_dashboard_admin_card_preview".to_string(),
+            "waterui_preview_app_card_preview".to_string(),
+        ];
+        let message = missing_preview_symbol_message("dashboard::admin::card_preview", &symbols);
+        assert!(message.contains("dashboard::admin::card_preview"));
+        assert!(message.contains("waterui_preview_app_dashboard_admin_card_preview"));
+        assert!(message.contains("waterui_preview_app_card_preview"));
+        assert!(message.contains("#[preview]"));
+        assert!(message.contains("fn card_preview()"));
+    }
 }
