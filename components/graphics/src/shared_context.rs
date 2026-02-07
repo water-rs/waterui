@@ -240,56 +240,131 @@ fn get_cache_path() -> Option<PathBuf> {
     })
 }
 
+fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, SharedContextError> {
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .map_err(|_| SharedContextError::NoAdapter)
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AndroidBackendOverride {
+    Auto,
+    Vulkan,
+    Gl,
+}
+
+#[cfg(target_os = "android")]
+fn android_backend_override() -> AndroidBackendOverride {
+    let value = std::env::var("WATERUI_ANDROID_GPU_BACKEND")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "vulkan" | "vk" => AndroidBackendOverride::Vulkan,
+        "gl" | "gles" | "opengl" => AndroidBackendOverride::Gl,
+        _ => AndroidBackendOverride::Auto,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn is_problematic_android_vulkan_adapter(info: &wgpu::AdapterInfo) -> bool {
+    if info.backend != wgpu::Backend::Vulkan {
+        return false;
+    }
+
+    if info.device_type == wgpu::DeviceType::Cpu {
+        return true;
+    }
+
+    let name = info.name.to_ascii_lowercase();
+    name.contains("swiftshader")
+        || name.contains("llvmpipe")
+        || name.contains("lavapipe")
+        || name.contains("gfxstream")
+}
+
+#[cfg(target_os = "android")]
+fn request_android_adapter_with_backends(
+    backends: wgpu::Backends,
+) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
+    let adapter = request_adapter(&instance)?;
+    Ok((instance, adapter))
+}
+
+#[cfg(target_os = "android")]
+fn create_android_instance_and_adapter()
+-> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    match android_backend_override() {
+        AndroidBackendOverride::Vulkan => {
+            tracing::info!(
+                "[SharedGpuContext] Android backend override: forcing Vulkan (WATERUI_ANDROID_GPU_BACKEND=vulkan)"
+            );
+            return request_android_adapter_with_backends(wgpu::Backends::VULKAN);
+        }
+        AndroidBackendOverride::Gl => {
+            tracing::info!(
+                "[SharedGpuContext] Android backend override: forcing OpenGL (WATERUI_ANDROID_GPU_BACKEND=gl)"
+            );
+            return request_android_adapter_with_backends(wgpu::Backends::GL);
+        }
+        AndroidBackendOverride::Auto => {}
+    }
+
+    let (vk_instance, vk_adapter) = request_android_adapter_with_backends(wgpu::Backends::VULKAN)?;
+    let vk_info = vk_adapter.get_info();
+
+    if is_problematic_android_vulkan_adapter(&vk_info) {
+        tracing::warn!(
+            "[SharedGpuContext] Vulkan adapter '{}' appears to be CPU/SwiftShader on Android; trying OpenGL to avoid emulator vkCreateGraphicsPipelines stalls",
+            vk_info.name
+        );
+
+        if let Ok((gl_instance, gl_adapter)) =
+            request_android_adapter_with_backends(wgpu::Backends::GL)
+        {
+            let gl_info = gl_adapter.get_info();
+            tracing::info!(
+                "[SharedGpuContext] Using OpenGL adapter '{}' on Android",
+                gl_info.name
+            );
+            return Ok((gl_instance, gl_adapter));
+        }
+
+        tracing::warn!(
+            "[SharedGpuContext] OpenGL fallback unavailable; continuing with Vulkan adapter '{}'",
+            vk_info.name
+        );
+    }
+
+    Ok((vk_instance, vk_adapter))
+}
+
 /// Create a new shared context (internal).
 fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     tracing::info!("[SharedGpuContext] Initializing shared GPU context");
 
-    let (instance, adapter) = if cfg!(target_os = "android") {
-        let vk_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..Default::default()
-        });
-
-        match pollster::block_on(vk_instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })) {
-            Ok(adapter) => {
-                tracing::info!("[SharedGpuContext] Using Vulkan-only adapter selection on Android");
-                (vk_instance, adapter)
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "[SharedGpuContext] Vulkan adapter unavailable; falling back to Vulkan+GL selection"
-                );
-                let fallback_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                    backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
-                    ..Default::default()
-                });
-                let adapter = pollster::block_on(
-                    fallback_instance.request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
-                        compatible_surface: None,
-                        force_fallback_adapter: false,
-                    }),
-                )
-                .map_err(|_| SharedContextError::NoAdapter)?;
-                (fallback_instance, adapter)
-            }
+    let (instance, adapter) = {
+        #[cfg(target_os = "android")]
+        {
+            create_android_instance_and_adapter()?
         }
-    } else {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .map_err(|_| SharedContextError::NoAdapter)?;
-        (instance, adapter)
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            });
+            let adapter = request_adapter(&instance)?;
+            (instance, adapter)
+        }
     };
 
     let adapter_info = adapter.get_info();
@@ -318,7 +393,11 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     // Determine features to request (pipeline cache if available)
     let adapter_features = adapter.features();
     let mut required_features = wgpu::Features::empty();
-    if adapter_features.contains(wgpu::Features::PIPELINE_CACHE) {
+    if cfg!(target_os = "android") {
+        tracing::info!(
+            "[SharedGpuContext] PIPELINE_CACHE disabled on Android to avoid driver stalls"
+        );
+    } else if adapter_features.contains(wgpu::Features::PIPELINE_CACHE) {
         required_features |= wgpu::Features::PIPELINE_CACHE;
         tracing::info!("[SharedGpuContext] PIPELINE_CACHE feature available and requested");
     } else {
