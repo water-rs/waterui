@@ -261,7 +261,7 @@ unsafe extern "C" fn webview_run_javascript(
     let call_ptr = callback.call as usize as jlong;
     crate::jni::with_jni_env(|env| {
         let jscript = java_string(env, &script);
-        let _ = env.call_method(
+        let result = env.call_method(
             &handle.wrapper,
             "runJavaScript",
             "(Ljava/lang/String;JJ)V",
@@ -271,6 +271,11 @@ unsafe extern "C" fn webview_run_javascript(
                 JValue::Long(call_ptr),
             ],
         );
+
+        if let Err(err) = result {
+            let message = waterui::Str::from(err.to_string()).into_ffi();
+            unsafe { (callback.call)(callback.data, false, message) };
+        }
     });
 }
 
