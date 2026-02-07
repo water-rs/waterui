@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::Result;
 use dialoguer::{Confirm, theme::ColorfulTheme};
-use futures_lite::StreamExt;
+use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::shell;
@@ -122,7 +122,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
 
     let mut total_dirs_to_remove = 0usize;
     for project_root in &project_roots {
-        total_dirs_to_remove += removable_cache_dir_count(project_root);
+        total_dirs_to_remove += removable_cache_dir_count(project_root).await;
     }
 
     if total_dirs_to_remove == 0 {
@@ -150,8 +150,17 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
     let mut cleaned_projects = 0usize;
     let mut removed_dirs = 0usize;
 
-    for project_root in project_roots {
-        let removed = clean_project_caches(&project_root, progress.as_ref()).await?;
+    let mut clean_results = stream::iter(project_roots.into_iter().map(|project_root| {
+        let progress = progress.clone();
+        async move {
+            let removed = clean_project_caches(&project_root, progress).await?;
+            Ok::<_, color_eyre::Report>((project_root, removed))
+        }
+    }))
+    .buffer_unordered(clean_parallelism());
+
+    while let Some(result) = clean_results.next().await {
+        let (project_root, removed) = result?;
         if removed > 0 {
             cleaned_projects += 1;
             removed_dirs += removed;
@@ -166,6 +175,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
             );
         }
     }
+    drop(clean_results);
 
     if let Some(pb) = progress {
         pb.finish_and_clear();
@@ -186,7 +196,7 @@ async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
 
     while let Some(dir) = stack.pop() {
         let manifest_path = dir.join("Water.toml");
-        if manifest_path.exists() && Manifest::open(&manifest_path).await.is_ok() {
+        if path_exists(&manifest_path).await && Manifest::open(&manifest_path).await.is_ok() {
             project_roots.push(dir.clone());
         }
 
@@ -223,28 +233,30 @@ async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(project_roots)
 }
 
-fn removable_cache_dir_count(project_root: &Path) -> usize {
-    [".water", "target"]
-        .iter()
-        .filter(|dir_name| project_root.join(dir_name).exists())
-        .count()
+async fn removable_cache_dir_count(project_root: &Path) -> usize {
+    let mut count = 0usize;
+
+    for dir_name in [".water", "target"] {
+        if path_exists(&project_root.join(dir_name)).await {
+            count += 1;
+        }
+    }
+
+    count
 }
 
-async fn clean_project_caches(
-    project_root: &Path,
-    progress: Option<&ProgressBar>,
-) -> Result<usize> {
+async fn clean_project_caches(project_root: &Path, progress: Option<ProgressBar>) -> Result<usize> {
     let mut removed = 0usize;
 
     for dir_name in [".water", "target"] {
         let dir = project_root.join(dir_name);
-        if dir.exists() {
-            if let Some(pb) = progress {
+        if path_exists(&dir).await {
+            if let Some(pb) = progress.as_ref() {
                 pb.set_message(format!("Removing {}", dir.display()));
             }
             smol::fs::remove_dir_all(&dir).await?;
             removed += 1;
-            if let Some(pb) = progress {
+            if let Some(pb) = progress.as_ref() {
                 pb.inc(1);
             }
         }
@@ -267,6 +279,17 @@ fn make_progress_bar(total: u64) -> Option<ProgressBar> {
     Some(pb)
 }
 
+fn clean_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(4)
+        .clamp(2, 16)
+}
+
+async fn path_exists(path: &Path) -> bool {
+    smol::fs::metadata(path).await.is_ok()
+}
+
 fn should_skip_dir(name: &str) -> bool {
     matches!(name, ".git" | "node_modules" | ".water" | "target")
 }
@@ -274,6 +297,8 @@ fn should_skip_dir(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    use smol::block_on;
 
     use super::{removable_cache_dir_count, should_skip_dir};
 
@@ -289,6 +314,6 @@ mod tests {
     #[test]
     fn removable_cache_count_is_zero_when_missing() {
         let missing = Path::new("/definitely/not/exist/waterui-clean-test");
-        assert_eq!(removable_cache_dir_count(missing), 0);
+        assert_eq!(block_on(removable_cache_dir_count(missing)), 0);
     }
 }
