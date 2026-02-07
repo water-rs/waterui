@@ -20,12 +20,14 @@ waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-url.workspace = true
 waterui-graphics.workspace = true
+waterkit-dialog = { path = "../../kit/dialog", optional = true }
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
 regex = "1.12.2"
 
 [features]
-default = []
+default = ["std"]
+std = ["dep:waterkit-dialog"]
 
 
 [lints]
