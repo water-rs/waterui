@@ -1,13 +1,22 @@
 //! File picker component configuration.
 
-use core::pin::Pin;
-
-use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 use nami::Binding;
 use waterui_controls::Button;
-use waterui_core::{View, impl_debug, impl_extractor};
+use waterui_core::View;
 use waterui_text::Text;
 use waterui_url::Url;
+
+#[cfg(feature = "std")]
+use {
+    alloc::{borrow::Cow, format},
+    std::{
+        ffi::OsStr,
+        io,
+        path::{Path, PathBuf},
+    },
+    waterkit_dialog::FileDialog,
+};
 
 /// Configuration for a file picker component.
 #[derive(Debug, Clone)]
@@ -56,67 +65,91 @@ impl FilePicker<Text> {
     }
 }
 
-/// A custom file picker controller.
-pub trait CustomFilePickerController {
-    /// Present the file picker UI, allowing the user to select up to `max_num` files.
-    fn present(&self, import: bool, max_num: usize) -> impl Future<Output = Vec<Url>>;
-}
-
-trait CustomFilePickerControllerImpl {
-    fn present<'a>(
-        &'a self,
-        import: bool,
-        max_num: usize,
-    ) -> Pin<Box<dyn 'a + Future<Output = Vec<Url>>>>;
-}
-
-impl<T: CustomFilePickerController> CustomFilePickerControllerImpl for T {
-    fn present<'a>(
-        &'a self,
-        import: bool,
-        max_num: usize,
-    ) -> Pin<Box<dyn 'a + Future<Output = Vec<Url>>>> {
-        Box::pin(self.present(import, max_num))
-    }
-}
-
-/// A file picker controller that uses a custom implementation.
-#[derive(Clone)]
-pub struct FilePickerController {
-    inner: Rc<dyn CustomFilePickerControllerImpl>,
-}
-
-impl_debug!(FilePickerController);
-
 impl<Label: View> View for FilePicker<Label> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Button::new(self.label)
-            .extract::<Option<FilePickerController>>()
-            .action_async(move |controller| {
-                let value = self.value.clone();
-                async move {
-                    let Some(controller) = controller else {
-                        return;
-                    };
-                    let urls = controller.present(self.import, self.num).await;
+        Button::new(self.label).action_async(move || {
+            let value = self.value.clone();
+            async move {
+                #[cfg(feature = "std")]
+                {
+                    let max_num = self.num.max(1);
+                    let mut urls = Vec::with_capacity(max_num);
+
+                    for _ in 0..max_num {
+                        let path = FileDialog::new()
+                            .show_open_single_file()
+                            .await
+                            .unwrap_or_else(|error| {
+                                panic!("FilePicker failed to present file dialog: {error}")
+                            });
+
+                        let Some(path) = path else {
+                            break;
+                        };
+
+                        let selected_path = if self.import {
+                            import_to_sandbox(&path).unwrap_or_else(|error| {
+                                panic!("FilePicker failed to import selected file: {error}")
+                            })
+                        } else {
+                            path
+                        };
+
+                        urls.push(Url::from_file_path_str(
+                            selected_path.to_string_lossy().to_string(),
+                        ));
+                    }
+
                     value.set(urls);
                 }
-            })
+
+                #[cfg(not(feature = "std"))]
+                {
+                    panic!("FilePicker requires the `std` feature to open native file dialogs");
+                }
+            }
+        })
     }
 }
 
-impl_extractor!(FilePickerController);
+#[cfg(feature = "std")]
+fn import_to_sandbox(path: &Path) -> io::Result<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected path has no file name",
+        )
+    })?;
 
-impl FilePickerController {
-    /// Create a new file picker controller from a custom implementation.
-    pub fn new<T: CustomFilePickerController + 'static>(controller: T) -> Self {
-        Self {
-            inner: Rc::new(controller),
+    let base_dir = std::env::temp_dir()
+        .join("waterui")
+        .join("file-picker-imports");
+    std::fs::create_dir_all(&base_dir)?;
+
+    let mut destination = base_dir.join(file_name);
+    if destination.exists() {
+        let stem = path.file_stem().map_or_else(
+            || Cow::Borrowed("file"),
+            |s: &OsStr| s.to_string_lossy(),
+        );
+        let extension = path
+            .extension()
+            .map(|e: &OsStr| e.to_string_lossy().to_string());
+
+        let mut index = 1usize;
+        loop {
+            let candidate = extension.as_ref().map_or_else(
+                || base_dir.join(format!("{stem}-{index}")),
+                |ext| base_dir.join(format!("{stem}-{index}.{ext}")),
+            );
+            if !candidate.exists() {
+                destination = candidate;
+                break;
+            }
+            index += 1;
         }
     }
 
-    /// Present the file picker UI.
-    pub async fn present(&self, import: bool, max_num: usize) -> Vec<Url> {
-        self.inner.present(import, max_num).await
-    }
+    std::fs::copy(path, &destination)?;
+    Ok(destination)
 }
