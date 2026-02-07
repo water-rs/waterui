@@ -10,38 +10,37 @@ pub use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSi
 /// Extension trait for `RenderResult` to add PNG encoding.
 pub trait RenderResultExt {
     /// Encode the RGBA data as PNG, consuming the render result.
-    fn into_png(self) -> Vec<u8>;
+    fn into_png(self) -> Result<Vec<u8>, String>;
 
     /// Encode the RGBA data as PNG.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the buffer size doesn't match width * height * 4.
-    fn to_png(&self) -> Vec<u8>;
+    fn to_png(&self) -> Result<Vec<u8>, String>;
 }
 
 impl RenderResultExt for RenderResult {
-    fn into_png(self) -> Vec<u8> {
+    fn into_png(self) -> Result<Vec<u8>, String> {
         encode_png(self.width, self.height, self.rgba_data)
     }
 
-    fn to_png(&self) -> Vec<u8> {
+    fn to_png(&self) -> Result<Vec<u8>, String> {
         encode_png(self.width, self.height, self.rgba_data.clone())
     }
 }
 
-fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Vec<u8> {
+fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Result<Vec<u8>, String> {
     use image::{ImageBuffer, Rgba};
 
     if rgba_data.is_empty() || width == 0 || height == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    let img: ImageBuffer<Rgba<u8>, _> =
-        ImageBuffer::from_raw(width, height, rgba_data).expect("invalid RGBA buffer size");
+    let Some(img): Option<ImageBuffer<Rgba<u8>, _>> =
+        ImageBuffer::from_raw(width, height, rgba_data)
+    else {
+        return Err("invalid RGBA buffer size".to_string());
+    };
 
     let mut png_bytes = Vec::new();
     img.write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-        .expect("PNG encoding failed");
-    png_bytes
+        .map_err(|e| format!("PNG encoding failed: {e}"))?;
+    Ok(png_bytes)
 }
