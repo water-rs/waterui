@@ -11,7 +11,9 @@ use futures::{FutureExt as _, pin_mut, select};
 use smol::Timer;
 use smol::net::TcpStream;
 
-use super::protocol::{AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size};
+use super::protocol::{
+    AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size,
+};
 
 use waterui_preview_protocol::transport::{read_json_frame, write_json_frame};
 
@@ -74,10 +76,27 @@ impl PreviewAppClient {
         width: f32,
         height: f32,
     ) -> Result<Vec<u8>> {
+        self.render_with_dylib_source(dylib_id, dylib_bytes, symbol, width, height)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
+    }
+
+    /// Render a view symbol, returning structured app errors for fallback logic.
+    pub async fn render_with_dylib_source(
+        &mut self,
+        dylib_id: DylibId,
+        dylib_bytes: &[u8],
+        symbol: &str,
+        width: f32,
+        height: f32,
+    ) -> Result<Vec<u8>, AppError> {
         let dylib = if self.present_dylibs.contains(&dylib_id) {
             DylibSource::Cached { id: dylib_id }
         } else {
-            let present = self.has_dylib(dylib_id).await?;
+            let present = self
+                .has_dylib(dylib_id)
+                .await
+                .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
             if present {
                 self.present_dylibs.insert(dylib_id);
                 DylibSource::Cached { id: dylib_id }
@@ -96,14 +115,18 @@ impl PreviewAppClient {
             frame: Size::new(width, height),
         };
 
-        let response = self.request(request).await?;
+        let response = self
+            .request(request)
+            .await
+            .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
 
         match response {
-            waterui_preview_protocol::PreviewResponse::Render { result } => match result {
-                Ok(output) => Ok(output.png_data),
-                Err(e) => bail!("Preview app error: {e}"),
-            },
-            other => bail!("Protocol error: unexpected response to Render: {other:?}"),
+            waterui_preview_protocol::PreviewResponse::Render { result } => {
+                result.map(|output| output.png_data)
+            }
+            other => Err(AppError::RenderFailed(format!(
+                "protocol error: unexpected response to Render: {other:?}"
+            ))),
         }
     }
 
@@ -125,7 +148,8 @@ impl PreviewAppClient {
     }
 
     async fn request(&mut self, request: AppRequest) -> Result<AppResponse> {
-        self.request_with_timeout(request, request_timeout()).await
+        let timeout = request_timeout_for(&request);
+        self.request_with_timeout(request, timeout).await
     }
 
     async fn request_with_timeout(
@@ -139,9 +163,15 @@ impl PreviewAppClient {
             .wrap_err("Failed to send request")?;
 
         let recv = async {
-            read_json_frame::<_, AppResponse>(&mut self.stream)
-                .await
-                .wrap_err("Failed to receive response")
+            match read_json_frame::<_, AppResponse>(&mut self.stream).await {
+                Ok(response) => Ok(response),
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                    bail!(
+                        "Preview app connection closed unexpectedly (the preview process likely crashed). Check crash logs in ~/Library/Logs/DiagnosticReports/WaterUIApp-*.ips"
+                    );
+                }
+                Err(err) => Err(err).wrap_err("Failed to receive response"),
+            }
         }
         .fuse();
         let timeout_fut = Timer::after(timeout).fuse();
@@ -183,6 +213,22 @@ fn request_timeout() -> Duration {
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn render_request_timeout() -> Duration {
+    const DEFAULT_MS: u64 = 120_000;
+    std::env::var("WATERUI_PREVIEW_RENDER_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn request_timeout_for(request: &AppRequest) -> Duration {
+    match request {
+        AppRequest::Render { .. } => render_request_timeout(),
+        _ => request_timeout(),
+    }
 }
 
 fn request_kind(request: &AppRequest) -> &'static str {
