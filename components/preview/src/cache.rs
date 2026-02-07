@@ -16,4 +16,3 @@ pub fn preview_dylib_cache_dir() -> PathBuf {
 pub fn preview_dylib_cache_path(id: DylibId) -> PathBuf {
     preview_dylib_cache_dir().join(format!("{}.dylib", id))
 }
-

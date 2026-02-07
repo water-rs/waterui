@@ -119,7 +119,9 @@ async fn ensure_cached_file(path: &Path, bytes: &[u8]) -> Result<(), LoadError> 
     let parent = path
         .parent()
         .expect("cache path must have a parent directory");
-    async_fs::create_dir_all(parent).await.map_err(LoadError::Io)?;
+    async_fs::create_dir_all(parent)
+        .await
+        .map_err(LoadError::Io)?;
 
     match async_fs::metadata(path).await {
         Ok(_) => return Ok(()),
@@ -127,16 +129,36 @@ async fn ensure_cached_file(path: &Path, bytes: &[u8]) -> Result<(), LoadError> 
         Err(e) => return Err(LoadError::Io(e)),
     }
 
-    let temp = path.with_extension("dylib.tmp");
+    let unique = format!(
+        "{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("preview"),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let temp = parent.join(unique);
+
     async_fs::write(&temp, bytes).await.map_err(LoadError::Io)?;
     match async_fs::rename(&temp, path).await {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Another process won the race; discard our temp file.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            // Another process likely won the race; destination already exists.
             let _ = async_fs::remove_file(&temp).await;
             Ok(())
         }
-        Err(e) => Err(LoadError::Io(e)),
+        Err(e) => {
+            let _ = async_fs::remove_file(&temp).await;
+            Err(LoadError::Io(e))
+        }
     }
 }
 
