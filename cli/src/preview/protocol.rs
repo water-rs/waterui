@@ -93,7 +93,7 @@ pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
 // Utility functions
 // ============================================================================
 
-/// Convert a function path to a symbol name.
+/// Convert a function path to the legacy preview symbol name.
 ///
 /// Example: `test_preview` with crate `together-app` -> `waterui_preview_together_app_test_preview`
 #[must_use]
@@ -102,6 +102,24 @@ pub fn function_path_to_symbol(crate_name: &str, function_path: &str) -> String 
     // Replace dashes with underscores (Cargo uses dashes, Rust uses underscores)
     let crate_name = crate_name.replace('-', "_");
     format!("waterui_preview_{crate_name}_{fn_name}")
+}
+
+/// Convert a function path to candidate preview export symbols.
+///
+/// The first candidate keeps the full path to avoid collisions across modules,
+/// while the second candidate preserves legacy compatibility.
+#[must_use]
+pub fn function_path_symbol_candidates(crate_name: &str, function_path: &str) -> Vec<String> {
+    let crate_name = crate_name.replace('-', "_");
+    let full_path = function_path.replace("::", "_");
+    let full = format!("waterui_preview_{crate_name}_{full_path}");
+    let legacy = function_path_to_symbol(crate_name.as_str(), function_path);
+
+    if full == legacy {
+        vec![legacy]
+    } else {
+        vec![full, legacy]
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +135,22 @@ mod tests {
         assert_eq!(
             function_path_to_symbol("together-app", "test_preview"),
             "waterui_preview_together_app_test_preview"
+        );
+    }
+
+    #[test]
+    fn test_function_path_symbol_candidates() {
+        assert_eq!(
+            function_path_symbol_candidates("my_crate", "sidebar"),
+            vec!["waterui_preview_my_crate_sidebar".to_string()]
+        );
+
+        assert_eq!(
+            function_path_symbol_candidates("my-crate", "dashboard::admin::card_preview"),
+            vec![
+                "waterui_preview_my_crate_dashboard_admin_card_preview".to_string(),
+                "waterui_preview_my_crate_card_preview".to_string()
+            ]
         );
     }
 }

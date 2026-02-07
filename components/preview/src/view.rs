@@ -256,7 +256,10 @@ async fn load_disk_dylibs() -> io::Result<HashSet<DylibId>> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid preview dylib cache entry (non-utf8 filename): {}", path.display()),
+                format!(
+                    "invalid preview dylib cache entry (non-utf8 filename): {}",
+                    path.display()
+                ),
             ));
         };
 
@@ -362,7 +365,7 @@ async fn handle_render(
     let render_size = RenderSize::new(frame.width, frame.height);
 
     let result = renderer.render(view, render_size).await;
-    let png_data = result.into_png();
+    let png_data = result.into_png().map_err(PreviewError::RenderFailed)?;
 
     Ok(PreviewOutput { png_data })
 }
