@@ -25,7 +25,25 @@ impl IntoFFI for ListItem {
     }
 }
 
-ffi_view!(ListItem, WuiListItem, list_item);
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> WuiListItem {
+    unsafe {
+        let any: waterui::AnyView = crate::IntoRust::into_rust(view);
+        if any.is::<ListItem>() {
+            return any.downcast_unchecked::<ListItem>().into_ffi();
+        }
+
+        let native = any.downcast_unchecked::<waterui_core::Native<ListItem>>();
+        native.into_inner().into_ffi()
+    }
+}
+
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_list_item_id() -> crate::WuiTypeId {
+    crate::WuiTypeId::of::<ListItem>()
+}
 
 /// FFI representation of a list.
 #[repr(C)]

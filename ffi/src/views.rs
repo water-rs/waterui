@@ -11,7 +11,7 @@ use alloc::{boxed::Box, vec::Vec};
 use nami::watcher::WatcherGuard;
 use waterui_core::id::SelfId;
 
-opaque!(WuiAnyViews, AnyViews<AnyView>, any_views);
+opaque!(WuiAnyViews, AnyViews<AnyView>, anyviews);
 
 /// Gets the ID of a view at the specified index.
 ///
