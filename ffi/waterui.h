@@ -29,21 +29,6 @@ typedef struct WuiArray {
 
 
 /**
- * Image media type.
- */
-#define IMAGE 0
-
-/**
- * Video media type.
- */
-#define VIDEO 1
-
-/**
- * Live Photo / Motion Photo media type.
- */
-#define LIVE_PHOTO 2
-
-/**
  * FFI representation of StretchAxis enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
@@ -222,29 +207,6 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_Buffering = 3,
   WuiVideoEventType_BufferingEnded = 4,
 } WuiVideoEventType;
-
-/**
- * FFI representation of a simple media filter type.
- * Complex nested filters (All, Not, Any) are not supported via FFI.
- */
-typedef enum WuiMediaFilterType {
-  /**
-   * Filter for live photos only.
-   */
-  WuiMediaFilterType_LivePhoto = 0,
-  /**
-   * Filter for videos only.
-   */
-  WuiMediaFilterType_Video = 1,
-  /**
-   * Filter for images only.
-   */
-  WuiMediaFilterType_Image = 2,
-  /**
-   * Filter for all media types.
-   */
-  WuiMediaFilterType_All = 3,
-} WuiMediaFilterType;
 
 typedef enum WuiProgressStyle {
   WuiProgressStyle_Linear,
@@ -633,6 +595,14 @@ typedef struct Binding_Secure Binding_Secure;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Str Binding_Str;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_StyledStr Binding_StyledStr;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -1030,8 +1000,8 @@ typedef struct WuiWebView WuiWebView;
 /**
  * Type ID as a 128-bit value for O(1) comparison.
  *
- * - Normal build: Uses `std::any::TypeId` (guaranteed unique by Rust)
- * - Hot reload: Uses 128-bit FNV-1a hash of `type_name()` (stable across dylib reloads)
+ * Uses 128-bit FNV-1a hash of `type_name()` for stability across dylib boundaries,
+ * which is required for the preview system that loads user code as a dylib.
  */
 typedef struct WuiTypeId {
   uint64_t low;
@@ -1122,6 +1092,14 @@ typedef enum WuiGesture_Tag {
    * A sequential composition of two gestures.
    */
   WuiGesture_Then,
+  /**
+   * A parallel composition of two gestures.
+   */
+  WuiGesture_Simultaneous,
+  /**
+   * An exclusive composition where first has priority over second.
+   */
+  WuiGesture_Exclusive,
 } WuiGesture_Tag;
 
 typedef struct WuiGesture_Tap_Body {
@@ -1155,6 +1133,28 @@ typedef struct WuiGesture_Then_Body {
   struct WuiGesture *then;
 } WuiGesture_Then_Body;
 
+typedef struct WuiGesture_Simultaneous_Body {
+  /**
+   * The first gesture in the composition.
+   */
+  struct WuiGesture *first;
+  /**
+   * The second gesture in the composition.
+   */
+  struct WuiGesture *second;
+} WuiGesture_Simultaneous_Body;
+
+typedef struct WuiGesture_Exclusive_Body {
+  /**
+   * The primary gesture.
+   */
+  struct WuiGesture *first;
+  /**
+   * The fallback gesture.
+   */
+  struct WuiGesture *second;
+} WuiGesture_Exclusive_Body;
+
 typedef struct WuiGesture {
   WuiGesture_Tag tag;
   union {
@@ -1164,6 +1164,8 @@ typedef struct WuiGesture {
     WuiGesture_Magnification_Body magnification;
     WuiGesture_Rotation_Body rotation;
     WuiGesture_Then_Body then;
+    WuiGesture_Simultaneous_Body simultaneous;
+    WuiGesture_Exclusive_Body exclusive;
   };
 } WuiGesture;
 
@@ -1942,68 +1944,20 @@ typedef enum WuiAnimation_Tag {
    */
   WuiAnimation_None,
   /**
-   * Default animation (0.25s ease-in-out)
-   */
-  WuiAnimation_Default,
-  /**
-   * Linear animation with constant velocity
-   */
-  WuiAnimation_Linear,
-  /**
-   * Ease-in animation that starts slow and accelerates
-   */
-  WuiAnimation_EaseIn,
-  /**
-   * Ease-out animation that starts fast and decelerates
-   */
-  WuiAnimation_EaseOut,
-  /**
-   * Ease-in-out animation that starts and ends slowly
-   */
-  WuiAnimation_EaseInOut,
-  /**
-   * Custom cubic bezier animation with control points
+   * Timed cubic bezier animation with control points
    *
    * Native backends can use these control points with:
    * - Apple: `CAMediaTimingFunction(controlPoints:)`
    * - Android: `PathInterpolator(x1, y1, x2, y2)`
    */
-  WuiAnimation_CubicBezier,
+  WuiAnimation_Bezier,
   /**
    * Spring animation with physics-based movement
    */
   WuiAnimation_Spring,
 } WuiAnimation_Tag;
 
-typedef struct WuiAnimation_Linear_Body {
-  /**
-   * Duration in milliseconds
-   */
-  uint64_t duration_ms;
-} WuiAnimation_Linear_Body;
-
-typedef struct WuiAnimation_EaseIn_Body {
-  /**
-   * Duration in milliseconds
-   */
-  uint64_t duration_ms;
-} WuiAnimation_EaseIn_Body;
-
-typedef struct WuiAnimation_EaseOut_Body {
-  /**
-   * Duration in milliseconds
-   */
-  uint64_t duration_ms;
-} WuiAnimation_EaseOut_Body;
-
-typedef struct WuiAnimation_EaseInOut_Body {
-  /**
-   * Duration in milliseconds
-   */
-  uint64_t duration_ms;
-} WuiAnimation_EaseInOut_Body;
-
-typedef struct WuiAnimation_CubicBezier_Body {
+typedef struct WuiAnimation_Bezier_Body {
   /**
    * Duration in milliseconds
    */
@@ -2024,7 +1978,7 @@ typedef struct WuiAnimation_CubicBezier_Body {
    * Second control point Y
    */
   float y2;
-} WuiAnimation_CubicBezier_Body;
+} WuiAnimation_Bezier_Body;
 
 typedef struct WuiAnimation_Spring_Body {
   /**
@@ -2040,11 +1994,7 @@ typedef struct WuiAnimation_Spring_Body {
 typedef struct WuiAnimation {
   WuiAnimation_Tag tag;
   union {
-    WuiAnimation_Linear_Body linear;
-    WuiAnimation_EaseIn_Body ease_in;
-    WuiAnimation_EaseOut_Body ease_out;
-    WuiAnimation_EaseInOut_Body ease_in_out;
-    WuiAnimation_CubicBezier_Body cubic_bezier;
+    WuiAnimation_Bezier_Body bezier;
     WuiAnimation_Spring_Body spring;
   };
 } WuiAnimation;
@@ -2310,11 +2260,11 @@ typedef struct WuiResolvedFont {
 
 typedef struct Computed_ResolvedFont WuiComputed_ResolvedFont;
 
-typedef struct Binding_Str WuiBinding_Str;
+typedef struct Binding_StyledStr WuiBinding_StyledStr;
 
 typedef struct WuiTextField {
   struct WuiAnyView *label;
-  WuiBinding_Str *value;
+  WuiBinding_StyledStr *value;
   struct WuiText prompt;
   enum WuiKeyboardType keyboard;
 } WuiTextField;
@@ -2539,6 +2489,12 @@ typedef struct WuiNavigationController {
   void (*drop)(void*);
 } WuiNavigationController;
 
+typedef struct Computed_LivePhotoSource WuiComputed_LivePhotoSource;
+
+typedef struct WuiLivePhoto {
+  WuiComputed_LivePhotoSource *source;
+} WuiLivePhoto;
+
 typedef struct Computed_Str WuiComputed_Str;
 
 typedef struct Binding_Volume WuiBinding_Volume;
@@ -2617,15 +2573,8 @@ typedef struct WuiVideoPlayer {
   struct WuiFn_WuiVideoEvent on_event;
 } WuiVideoPlayer;
 
-typedef struct Computed_LivePhotoSource WuiComputed_LivePhotoSource;
-
-typedef struct WuiLivePhoto {
-  WuiComputed_LivePhotoSource *source;
-} WuiLivePhoto;
-
 /**
  * FFI representation of a Video source for Computed signals.
- * This is used by Android to observe video source changes reactively.
  */
 typedef struct WuiComputedVideo {
   /**
@@ -2635,82 +2584,6 @@ typedef struct WuiComputedVideo {
 } WuiComputedVideo;
 
 typedef struct Computed_Video WuiComputed_Video;
-
-/**
- * Unique identifier for selected media items.
- */
-typedef uint32_t SelectedId;
-
-/**
- * A callback for receiving selected media ID when user picks media.
- *
- * This is a C-compatible closure that native code calls when picker completes.
- */
-typedef struct MediaPickerPresentCallback {
-  /**
-   * Opaque pointer to the callback data.
-   */
-  void *data;
-  /**
-   * Function to call with the selected media. This consumes the callback.
-   */
-  void (*call)(void*, SelectedId);
-} MediaPickerPresentCallback;
-
-/**
- * Type alias for the native media picker present function.
- */
-typedef void (*MediaPickerPresentFn)(enum WuiMediaFilterType, struct MediaPickerPresentCallback);
-
-/**
- * FFI representation of the result from loading media.
- *
- * For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
- * are populated. For regular images/videos, only `url_ptr` is used.
- */
-typedef struct MediaLoadResult {
-  /**
-   * Pointer to UTF-8 encoded URL string (image URL for Live Photos).
-   */
-  const uint8_t *url_ptr;
-  /**
-   * Length of the URL string in bytes.
-   */
-  uintptr_t url_len;
-  /**
-   * Pointer to UTF-8 encoded video URL (only for Live Photos).
-   */
-  const uint8_t *video_url_ptr;
-  /**
-   * Length of the video URL string in bytes.
-   */
-  uintptr_t video_url_len;
-  /**
-   * Media type: 0 = Image, 1 = Video, 2 = LivePhoto.
-   */
-  uint8_t media_type;
-} MediaLoadResult;
-
-/**
- * A callback for receiving loaded media from native code.
- *
- * This is a C-compatible closure that native code calls with the result.
- */
-typedef struct MediaLoadCallback {
-  /**
-   * Opaque pointer to the callback data.
-   */
-  void *data;
-  /**
-   * Function to call with the result. This consumes the callback.
-   */
-  void (*call)(void*, struct MediaLoadResult);
-} MediaLoadCallback;
-
-/**
- * Type alias for the native media load function.
- */
-typedef void (*MediaLoadFn)(uint32_t, struct MediaLoadCallback);
 
 /**
  * FFI representation of a list item.
@@ -2749,7 +2622,13 @@ typedef struct WuiList {
 } WuiList;
 
 typedef struct WuiTableColumn {
+  /**
+   * The column label as styled text.
+   */
   struct WuiText label;
+  /**
+   * The row views for this column.
+   */
   struct WuiAnyViews *rows;
 } WuiTableColumn;
 
@@ -2804,7 +2683,7 @@ typedef struct WuiGpuSurface {
    */
   void *surface;
   /**
-   * Render mode for the surface (0=Continuous, 1=OnDemand).
+   * Render mode for the surface (see `GpuSurfaceRenderMode`).
    */
   uint32_t render_mode;
 } WuiGpuSurface;
@@ -2887,6 +2766,23 @@ typedef struct WuiGestureState {
    */
   bool double_tap;
 } WuiGestureState;
+
+/**
+ * FFI-safe combined input state for a GpuSurface.
+ *
+ * This keeps the native bridge minimal by forwarding pointer and gesture
+ * snapshots in one call.
+ */
+typedef struct WuiGpuSurfaceInput {
+  /**
+   * Current pointer snapshot.
+   */
+  struct WuiPointerState pointer;
+  /**
+   * Current gesture snapshot.
+   */
+  struct WuiGestureState gesture;
+} WuiGpuSurfaceInput;
 
 /**
  * FFI representation of the SystemIcon component.
@@ -3337,10 +3233,15 @@ typedef struct WuiDragData {
 } WuiDragData;
 
 typedef struct WuiId {
+  /**
+   * The inner integer value of the ID.
+   */
   int32_t inner;
 } WuiId;
 
 typedef struct Computed_Id WuiComputed_Id;
+
+typedef struct Binding_Str WuiBinding_Str;
 
 typedef struct Binding_AnyView WuiBinding_AnyView;
 
@@ -3626,8 +3527,7 @@ struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env
 /**
  * Gets the id of a view as a 128-bit value for O(1) comparison.
  *
- * - Normal build: Returns the view's `TypeId` (guaranteed unique)
- * - Hot reload: Returns 128-bit hash of `type_name()` (stable across dylibs)
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
  *
  * # Safety
  * The caller must ensure that `view` is a valid pointer to a properly
@@ -3654,7 +3554,7 @@ struct WuiAnyView *waterui_empty_anyview(void);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_env_id(void);
 
@@ -3669,7 +3569,7 @@ WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_secure_id(void);
 
@@ -3684,7 +3584,7 @@ WuiMetadataSecure waterui_force_as_metadata_secure(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_standard_dynamic_range_id(void);
 
@@ -3699,7 +3599,7 @@ WuiMetadataStandardDynamicRange waterui_force_as_metadata_standard_dynamic_range
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_high_dynamic_range_id(void);
 
@@ -3714,7 +3614,7 @@ WuiMetadataHighDynamicRange waterui_force_as_metadata_high_dynamic_range(struct 
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_gesture_id(void);
 
@@ -3729,7 +3629,7 @@ WuiMetadataGesture waterui_force_as_metadata_gesture(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_lifecycle_hook_id(void);
 
@@ -3744,7 +3644,7 @@ WuiMetadataLifeCycleHook waterui_force_as_metadata_lifecycle_hook(struct WuiAnyV
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_on_event_id(void);
 
@@ -3759,7 +3659,7 @@ WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_cursor_id(void);
 
@@ -3774,7 +3674,7 @@ WuiMetadataCursor waterui_force_as_metadata_cursor(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_shadow_id(void);
 
@@ -3789,7 +3689,7 @@ WuiMetadataShadow waterui_force_as_metadata_shadow(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_border_id(void);
 
@@ -3804,7 +3704,7 @@ WuiMetadataBorder waterui_force_as_metadata_border(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_scale_id(void);
 
@@ -3819,7 +3719,7 @@ WuiMetadataScale waterui_force_as_metadata_scale(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_rotation_id(void);
 
@@ -3834,7 +3734,7 @@ WuiMetadataRotation waterui_force_as_metadata_rotation(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_offset_id(void);
 
@@ -3849,7 +3749,7 @@ WuiMetadataOffset waterui_force_as_metadata_offset(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_blur_id(void);
 
@@ -3864,7 +3764,7 @@ WuiMetadataBlur waterui_force_as_metadata_blur(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_brightness_id(void);
 
@@ -3879,7 +3779,7 @@ WuiMetadataBrightness waterui_force_as_metadata_brightness(struct WuiAnyView *vi
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_saturation_id(void);
 
@@ -3894,7 +3794,7 @@ WuiMetadataSaturation waterui_force_as_metadata_saturation(struct WuiAnyView *vi
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_contrast_id(void);
 
@@ -3909,7 +3809,7 @@ WuiMetadataContrast waterui_force_as_metadata_contrast(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_hue_rotation_id(void);
 
@@ -3924,7 +3824,7 @@ WuiMetadataHueRotation waterui_force_as_metadata_hue_rotation(struct WuiAnyView 
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_grayscale_id(void);
 
@@ -3939,7 +3839,7 @@ WuiMetadataGrayscale waterui_force_as_metadata_grayscale(struct WuiAnyView *view
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_opacity_id(void);
 
@@ -3954,7 +3854,7 @@ WuiMetadataOpacity waterui_force_as_metadata_opacity(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_focused_id(void);
 
@@ -3969,7 +3869,7 @@ WuiMetadataFocused waterui_force_as_metadata_focused(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_ignore_safe_area_id(void);
 
@@ -3984,7 +3884,7 @@ WuiMetadataIgnoreSafeArea waterui_force_as_metadata_ignore_safe_area(struct WuiA
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_retain_id(void);
 
@@ -4008,7 +3908,7 @@ void waterui_drop_retain(struct WuiRetain retain);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_clip_shape_id(void);
 
@@ -4038,7 +3938,7 @@ void waterui_call_shared_action(const struct WuiSharedAction *action, const stru
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_context_menu_id(void);
 
@@ -4092,22 +3992,13 @@ struct WuiWatcher_MenuItems *waterui_new_watcher_menu_items(void *data,
                                                                          struct WuiWatcherMetadata*),
                                                             void (*drop)(void*));
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiMenu waterui_force_as_menu(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_menu_id(void);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_draggable_id(void);
 
@@ -4122,7 +4013,7 @@ WuiMetadataDraggable waterui_force_as_metadata_draggable(struct WuiAnyView *view
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_drop_destination_id(void);
 
@@ -4137,7 +4028,7 @@ WuiMetadataDropDestination waterui_force_as_metadata_drop_destination(struct Wui
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_ignorable_metadata_material_background_id(void);
 
@@ -4152,7 +4043,7 @@ struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadat
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_hittable_id(void);
 
@@ -4392,17 +4283,8 @@ struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, fl
 WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_plain_id(void);
 
 /**
@@ -4422,30 +4304,12 @@ void waterui_drop_layout(struct WuiLayout *value);
  */
 struct WuiTypeId waterui_spacer_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_fixed_container_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_layout_container_id(void);
 
 /**
@@ -4481,30 +4345,12 @@ struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
                                              struct WuiRect bounds,
                                              struct WuiArray_WuiSubView children);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_scroll_view_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_button_id(void);
 
 /**
@@ -4625,17 +4471,8 @@ struct WuiWatcher_Font *waterui_new_watcher_font(void *data,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_text_id(void);
 
 /**
@@ -4698,137 +4535,65 @@ WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
  */
 struct WuiResolvedFont waterui_resolved_font_new(float size, enum WuiFontWeight weight);
 
+/**
+ * Creates a concrete `Font` from resolved font properties.
+ *
+ * `family` can be an empty string to indicate system font.
+ *
+ * # Safety
+ * `family` must contain valid UTF-8 bytes.
+ */
+struct WuiFont *waterui_font_from_resolved(float size,
+                                           enum WuiFontWeight weight,
+                                           struct WuiStr family);
+
+/**
+ * Resolves a font in the given environment.
+ *
+ * # Safety
+ * Both `font` and `env` must be valid, non-null pointers.
+ */
 WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                const struct WuiEnv *env);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_text_field_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_toggle_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_slider_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_stepper_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_color_picker_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_picker_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiSecureField waterui_force_as_secure_field(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_secure_field_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiDatePicker waterui_force_as_date_picker(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_date_picker_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_navigation_view_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_navigation_stack_id(void);
 
 /**
@@ -4849,17 +4614,8 @@ void waterui_drop_tab_content(struct WuiTabContent *value);
  */
 struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_tabs_id(void);
 
 /**
@@ -4932,44 +4688,17 @@ bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
  */
 void waterui_navigation_pop(const struct WuiEnv *env);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_video_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_video_player_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_live_photo_id(void);
+
+struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_video_id(void);
+
+struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_video_player_id(void);
 
 /**
  * Reads the current value from a computed
@@ -5013,39 +4742,13 @@ struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
                                                    void (*drop)(void*));
 
 /**
- * Installs a MediaPickerManager into the environment from native function pointers.
- *
- * Native backends call this during initialization to register their media picker
- * implementation. This unified manager handles both presenting the picker and loading media.
- *
- * # Safety
- *
- * The caller must ensure that:
- * - `env` is a valid pointer to a `WuiEnv`
- * - `present_fn` is a valid function pointer to the native media picker presentation
- * - `load_fn` is a valid function pointer to the native media loader implementation
- */
-void waterui_env_install_media_picker_manager(struct WuiEnv *env,
-                                              MediaPickerPresentFn present_fn,
-                                              MediaLoadFn load_fn);
-
-/**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_dynamic(struct WuiDynamic *value);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_dynamic_id(void);
 
 /**
@@ -5056,30 +4759,12 @@ struct WuiTypeId waterui_dynamic_id(void);
  */
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyView *watcher);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_list_item_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_list_id(void);
 
 /**
@@ -5123,56 +4808,20 @@ struct WuiWatcher_Vec_TableColumn *waterui_new_watcher_table_cols(void *data,
                                                                                struct WuiWatcherMetadata*),
                                                                   void (*drop)(void*));
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_table_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_table_column_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_progress_id(void);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_gpu_surface_id(void);
 
 /**
@@ -5301,54 +4950,24 @@ void waterui_gpu_surface_await_ready(struct WuiGpuSurfaceState *state,
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
 
 /**
- * Update the pointer/cursor state for a GpuSurface.
+ * Update both pointer and gesture state for a GpuSurface.
  *
- * Native backends should call this before each render to update pointer state.
- * This enables GPU renderers to implement hover effects, hit detection, and
- * interactive feedback.
+ * Native backends should prefer this API to minimize bridge calls.
  *
  * # Arguments
  *
  * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
- * * `pointer` - Current pointer state
+ * * `input` - Combined pointer + gesture snapshot
  *
  * # Safety
  *
  * `state` must be a valid pointer from `waterui_gpu_surface_init`.
  */
-void waterui_gpu_surface_set_pointer(struct WuiGpuSurfaceState *state,
-                                     struct WuiPointerState pointer);
+void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
+                                   struct WuiGpuSurfaceInput input);
 
-/**
- * Update the gesture state for a GpuSurface.
- *
- * Native backends should call this when pinch/pan/double-tap gestures are
- * detected. This enables GPU renderers (like charts) to implement zoom/pan
- * interactions.
- *
- * # Arguments
- *
- * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
- * * `gesture` - Current gesture state
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_gpu_surface_init`.
- */
-void waterui_gpu_surface_set_gesture(struct WuiGpuSurfaceState *state,
-                                     struct WuiGestureState gesture);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_system_icon_id(void);
 
 /**
@@ -5357,17 +4976,8 @@ struct WuiTypeId waterui_system_icon_id(void);
  */
 void waterui_drop_web_view(struct WuiWebView *value);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiWebView *waterui_force_as_webview(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_webview_id(void);
 
 /**
@@ -5400,17 +5010,8 @@ void *waterui_webview_native_handle(struct WuiWebView *webview);
  */
 void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiMap waterui_force_as_map(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_map_id(void);
 
 /**
@@ -5495,17 +5096,8 @@ struct WuiWatcher_Vec_Annotation *waterui_new_watcher_annotations(void *data,
                                                                                struct WuiWatcherMetadata*),
                                                                   void (*drop)(void*));
 
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiViewEffect waterui_force_as_view_effect(struct WuiAnyView *view);
 
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
 struct WuiTypeId waterui_view_effect_id(void);
 
 /**
@@ -5654,7 +5246,7 @@ bool waterui_view_effect_set_input_ahardwarebuffer(struct WuiViewEffectState *st
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ * Returns the view's TypeId (guaranteed unique within a single binary).
  */
 struct WuiTypeId waterui_metadata_applied_filter_id(void);
 
@@ -5995,7 +5587,7 @@ void waterui_call_on_event(struct WuiOnEventHandler *handler, const struct WuiEn
 void waterui_drop_on_event(struct WuiOnEventHandler *handler);
 
 /**
- * Drops a WuiGesture, recursively freeing any Then variants.
+ * Drops a WuiGesture, recursively freeing any composite variants.
  *
  * # Safety
  *
@@ -6077,6 +5669,10 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
 /**
  * Installs a locale into the environment using a predefined locale enum.
  *
+ * This installs both:
+ * - `Locale` (snapshot value)
+ * - `Computed<Locale>` (reactive signal for dynamic locale updates)
+ *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
  */
@@ -6089,6 +5685,10 @@ void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
  * any valid BCP 47 locale identifier (e.g., "en-US", "zh-Hans-CN", "ja-JP").
  *
  * If the locale string is invalid, falls back to English ("en").
+ *
+ * This installs both:
+ * - `Locale` (snapshot value)
+ * - `Computed<Locale>` (reactive signal for dynamic locale updates)
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -6195,6 +5795,47 @@ struct WuiWatcher_Str *waterui_new_watcher_str(void *data,
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
+struct WuiStyledStr waterui_read_binding_styled_str(const WuiBinding_StyledStr *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_styled_str(WuiBinding_StyledStr *binding, struct WuiStyledStr value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_styled_str(const WuiBinding_StyledStr *binding,
+                                                         struct WuiWatcher_StyledStr *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_styled_str(WuiBinding_StyledStr *binding);
+
+/**
+ * Sets a `Binding<StyledStr>` using plain text.
+ *
+ * This helper is intended for native text input controls that only emit plain
+ * text updates while the reactive binding type remains `StyledStr`.
+ *
+ * # Safety
+ * `binding` must be a valid pointer to `WuiBinding<StyledStr>`.
+ */
+void waterui_set_binding_styled_str_plain(WuiBinding_StyledStr *binding, struct WuiStr value);
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
 struct WuiAnyView *waterui_read_binding_any_view(const WuiBinding_AnyView *binding);
 
 /**
@@ -6266,14 +5907,14 @@ struct WuiWatcher_AnyView *waterui_new_watcher_any_view(void *data,
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-int32_t waterui_read_binding_i32(const WuiBinding_i32 *binding);
+int32_t waterui_read_binding_int(const WuiBinding_i32 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-void waterui_set_binding_i32(WuiBinding_i32 *binding, int32_t value);
+void waterui_set_binding_int(WuiBinding_i32 *binding, int32_t value);
 
 /**
  * Watches for changes in a binding
@@ -6281,7 +5922,7 @@ void waterui_set_binding_i32(WuiBinding_i32 *binding, int32_t value);
  * The binding pointer must be valid and point to a properly initialized binding object.
  * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
-struct WuiWatcherGuard *waterui_watch_binding_i32(const WuiBinding_i32 *binding,
+struct WuiWatcherGuard *waterui_watch_binding_int(const WuiBinding_i32 *binding,
                                                   struct WuiWatcher_i32 *watcher);
 
 /**
@@ -6289,7 +5930,7 @@ struct WuiWatcherGuard *waterui_watch_binding_i32(const WuiBinding_i32 *binding,
  * # Safety
  * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
-void waterui_drop_binding_i32(WuiBinding_i32 *binding);
+void waterui_drop_binding_int(WuiBinding_i32 *binding);
 
 /**
  * Reads the current value from a computed
@@ -6408,14 +6049,14 @@ struct WuiWatcher_bool *waterui_new_watcher_bool(void *data,
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-float waterui_read_binding_f32(const WuiBinding_f32 *binding);
+float waterui_read_binding_float(const WuiBinding_f32 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-void waterui_set_binding_f32(WuiBinding_f32 *binding, float value);
+void waterui_set_binding_float(WuiBinding_f32 *binding, float value);
 
 /**
  * Watches for changes in a binding
@@ -6423,15 +6064,15 @@ void waterui_set_binding_f32(WuiBinding_f32 *binding, float value);
  * The binding pointer must be valid and point to a properly initialized binding object.
  * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
-struct WuiWatcherGuard *waterui_watch_binding_f32(const WuiBinding_f32 *binding,
-                                                  struct WuiWatcher_f32 *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_float(const WuiBinding_f32 *binding,
+                                                    struct WuiWatcher_f32 *watcher);
 
 /**
  * Drops a binding
  * # Safety
  * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
-void waterui_drop_binding_f32(WuiBinding_f32 *binding);
+void waterui_drop_binding_float(WuiBinding_f32 *binding);
 
 /**
  * Reads the current value from a computed
@@ -6477,14 +6118,14 @@ struct WuiWatcher_f32 *waterui_new_watcher_f32(void *data,
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-double waterui_read_binding_f64(const WuiBinding_f64 *binding);
+double waterui_read_binding_double(const WuiBinding_f64 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-void waterui_set_binding_f64(WuiBinding_f64 *binding, double value);
+void waterui_set_binding_double(WuiBinding_f64 *binding, double value);
 
 /**
  * Watches for changes in a binding
@@ -6492,15 +6133,15 @@ void waterui_set_binding_f64(WuiBinding_f64 *binding, double value);
  * The binding pointer must be valid and point to a properly initialized binding object.
  * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
-struct WuiWatcherGuard *waterui_watch_binding_f64(const WuiBinding_f64 *binding,
-                                                  struct WuiWatcher_f64 *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_double(const WuiBinding_f64 *binding,
+                                                     struct WuiWatcher_f64 *watcher);
 
 /**
  * Drops a binding
  * # Safety
  * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
-void waterui_drop_binding_f64(WuiBinding_f64 *binding);
+void waterui_drop_binding_double(WuiBinding_f64 *binding);
 
 /**
  * Reads the current value from a computed
@@ -6542,6 +6183,96 @@ struct WuiWatcher_f64 *waterui_new_watcher_f64(void *data,
                                                             double,
                                                             struct WuiWatcherMetadata*),
                                                void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+int32_t waterui_read_binding_i32(const WuiBinding_i32 *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_i32(WuiBinding_i32 *binding, int32_t value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_i32(const WuiBinding_i32 *binding,
+                                                  struct WuiWatcher_i32 *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_i32(WuiBinding_i32 *binding);
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+float waterui_read_binding_f32(const WuiBinding_f32 *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_f32(WuiBinding_f32 *binding, float value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_f32(const WuiBinding_f32 *binding,
+                                                  struct WuiWatcher_f32 *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_f32(WuiBinding_f32 *binding);
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+double waterui_read_binding_f64(const WuiBinding_f64 *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_f64(WuiBinding_f64 *binding, double value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_f64(const WuiBinding_f64 *binding,
+                                                  struct WuiWatcher_f64 *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_f64(WuiBinding_f64 *binding);
 
 /**
  * Reads the current value from a binding

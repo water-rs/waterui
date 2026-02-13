@@ -285,7 +285,10 @@ impl GpuRenderer for AreaRenderer {
         let uniforms = AreaUniforms::default();
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Area Chart Uniforms", &uniforms));
 
-        let initial_segments = self.to_gpu_segments();
+        let mut initial_segments = self.to_gpu_segments();
+        if initial_segments.len() < 16384 {
+            initial_segments.resize(16384, GpuAreaSegment::default());
+        }
         self.segment_buffer = Some(create_storage_buffer(
             ctx,
             "Area Chart Segments",
@@ -297,7 +300,10 @@ impl GpuRenderer for AreaRenderer {
             &initial_segments,
         ));
 
-        let colors = self.get_colors();
+        let mut colors = self.get_colors();
+        if colors.len() < 256 {
+            colors.resize(256, glam::Vec4::ZERO);
+        }
         self.color_buffer = Some(create_storage_buffer(ctx, "Area Chart Colors", &colors));
 
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
@@ -478,7 +484,7 @@ impl ChartRenderer for AreaRenderer {
     type Data = AreaData;
     type DataValue = AreaSeries;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.segment_buffer, &mut self.prev_segment_buffer);
 

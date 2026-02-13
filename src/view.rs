@@ -11,22 +11,22 @@
 
 use alloc::vec::Vec;
 use executor_core::spawn_local;
-use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
-use waterui_core::IntoSignalF32;
+use nami::{signal::IntoComputed, Binding, Signal, SignalExt as _};
 pub use waterui_core::view::*;
+use waterui_core::IntoSignalF32;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Retain,
-    env::{With, use_env},
+    env::{use_env, With},
     metadata::MetadataKey,
     plugin::Plugin,
+    AnyView, Environment, IgnorableMetadata, Retain,
 };
-use waterui_graphics::{FilterViewExt, color::Color};
+use waterui_graphics::{color::Color, FilterViewExt};
 
 use waterui_layout::{
-    EdgeSet, IgnoreSafeArea, Overlay,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
+    EdgeSet, IgnoreSafeArea, Overlay,
 };
 use waterui_navigation::NavigationView;
 use waterui_str::Str;
@@ -36,7 +36,7 @@ use crate::{
     background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
-    gesture::{Gesture, GestureObserver, TapGesture},
+    gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
     metadata::{context_menu::ContextMenu, secure::Secure},
     theme,
@@ -50,9 +50,9 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
+use waterui_core::Metadata;
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
     /// Attaches metadata to a view.
@@ -149,7 +149,7 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Material blur background (Apple platforms)
+    /// // Material background (platform backend best-effort)
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background
@@ -480,6 +480,55 @@ pub trait ViewExt: View + Sized {
         self.gesture(TapGesture::new(), action)
     }
 
+    /// Adds a tap gesture recognizer to this view (SwiftUI naming style).
+    ///
+    /// Equivalent to [`ViewExt::on_tap`].
+    fn on_tap_gesture(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
+        self.on_tap(action)
+    }
+
+    /// Adds a tap gesture recognizer requiring an exact tap count.
+    fn on_tap_gesture_count(
+        self,
+        count: u32,
+        action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(TapGesture::repeat(count.max(1)), action)
+    }
+
+    /// Adds a long-press gesture recognizer to this view.
+    ///
+    /// `minimum_duration_ms` is expressed in milliseconds.
+    fn on_long_press_gesture(
+        self,
+        minimum_duration_ms: u32,
+        action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(LongPressGesture::new(minimum_duration_ms), action)
+    }
+
+    /// Adds a gesture intended to recognize alongside existing gestures.
+    ///
+    /// This follows SwiftUI naming and currently maps to `gesture(...)`.
+    fn simultaneous_gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(gesture, action)
+    }
+
+    /// Adds a gesture intended to have higher recognition precedence.
+    ///
+    /// This follows SwiftUI naming and currently maps to `gesture(...)`.
+    fn high_priority_gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(gesture, action)
+    }
+
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
     #[must_use]
@@ -729,6 +778,34 @@ pub trait ViewExt: View + Sized {
         items: impl IntoComputed<Vec<crate::metadata::context_menu::MenuItem>>,
     ) -> Metadata<ContextMenu> {
         Metadata::new(self, ContextMenu::new(items))
+    }
+
+    /// Attaches a selection menu to this view.
+    ///
+    /// This API is intended for text-selection workflows and currently maps to
+    /// the same backend behavior as [`ViewExt::context_menu`]. Keeping it separate
+    /// allows backend text-selection menu integration without changing call sites.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::metadata::selection_menu::MenuItem;
+    ///
+    /// TextField::new(&value)
+    ///     .selection_menu(vec![
+    ///         MenuItem::new("Uppercase").action(|| println!("uppercase")),
+    ///         MenuItem::new("Lowercase").action(|| println!("lowercase")),
+    ///     ]);
+    /// ```
+    fn selection_menu(
+        self,
+        items: impl IntoComputed<Vec<crate::metadata::selection_menu::MenuItem>>,
+    ) -> Metadata<crate::metadata::selection_menu::SelectionMenu> {
+        Metadata::new(
+            self,
+            crate::metadata::selection_menu::SelectionMenu::new(items),
+        )
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
@@ -1092,6 +1169,53 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
         }
     }
 
+    /// Adds a tap gesture recognizer that receives the accumulated state (SwiftUI naming style).
+    #[must_use]
+    pub fn on_tap_gesture(
+        self,
+        action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        self.on_tap(action)
+    }
+
+    /// Adds a tap gesture recognizer requiring an exact tap count.
+    #[must_use]
+    pub fn on_tap_gesture_count(
+        self,
+        count: u32,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(TapGesture::repeat(count.max(1)))
+                    .action(move || action(state_for_handler.clone())),
+            ),
+            state,
+        }
+    }
+
+    /// Adds a long-press gesture recognizer that receives the accumulated state.
+    #[must_use]
+    pub fn on_long_press_gesture(
+        self,
+        minimum_duration_ms: u32,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(LongPressGesture::new(minimum_duration_ms))
+                    .action(move || action(state_for_handler.clone())),
+            ),
+            state,
+        }
+    }
+
     /// Observes a gesture with the accumulated state.
     #[must_use]
     pub fn gesture(
@@ -1108,6 +1232,26 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
             ),
             state,
         }
+    }
+
+    /// Adds a gesture intended to recognize alongside existing gestures.
+    #[must_use]
+    pub fn simultaneous_gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        self.gesture(gesture, action)
+    }
+
+    /// Adds a gesture intended to have higher recognition precedence.
+    #[must_use]
+    pub fn high_priority_gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        self.gesture(gesture, action)
     }
 
     /// Makes this view a drop destination with the accumulated state.

@@ -680,9 +680,8 @@ pub const fn is_android_platform(platform: TargetPlatform) -> bool {
 async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
     let assets_dir = backend_path.join("app/src/main/assets");
 
-    // Copy project assets
-    let project_assets_dest = assets_dir.clone();
-    assets::copy_project_assets(project, &project_assets_dest).await?;
+    // Stage project assets using platform-native conventions.
+    assets::stage_project_assets_for_android(project, backend_path).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

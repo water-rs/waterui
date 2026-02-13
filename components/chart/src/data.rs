@@ -3,8 +3,30 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::num::NonZeroU32;
 use nami::impl_constant;
 use waterui_graphics::color::Srgb;
+
+/// Error returned when chart data violates structural constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartDataError {
+    /// A dimension that must be greater than zero was zero.
+    ZeroDimension,
+    /// Input matrix rows have different lengths.
+    RaggedMatrix,
+    /// Number of provided values does not match rows * cols.
+    ValueCountMismatch {
+        /// Expected number of values.
+        expected: usize,
+        /// Actual number of values.
+        actual: usize,
+    },
+    /// Radar charts require at least 3 axes.
+    AxisCountTooSmall {
+        /// Provided axis count.
+        axis_count: u32,
+    },
+}
 
 /// A single 2D data point.
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -193,15 +215,43 @@ pub struct HeatmapData {
 }
 
 impl HeatmapData {
+    fn validate_grid(
+        rows: u32,
+        cols: u32,
+        value_len: usize,
+    ) -> Result<(NonZeroU32, NonZeroU32), ChartDataError> {
+        let rows = NonZeroU32::new(rows).ok_or(ChartDataError::ZeroDimension)?;
+        let cols = NonZeroU32::new(cols).ok_or(ChartDataError::ZeroDimension)?;
+        let expected = rows.get() as usize * cols.get() as usize;
+        if expected != value_len {
+            return Err(ChartDataError::ValueCountMismatch {
+                expected,
+                actual: value_len,
+            });
+        }
+        Ok((rows, cols))
+    }
+
     /// Creates a new heatmap from a 2D matrix.
     #[must_use]
     pub fn from_matrix(matrix: &[&[f32]]) -> Self {
+        Self::try_from_matrix(matrix).expect("Invalid heatmap matrix")
+    }
+
+    /// Creates a new heatmap from a 2D matrix with validation.
+    pub fn try_from_matrix(matrix: &[&[f32]]) -> Result<Self, ChartDataError> {
         if matrix.is_empty() || matrix[0].is_empty() {
-            return Self::default();
+            return Err(ChartDataError::ZeroDimension);
         }
 
         let rows = matrix.len() as u32;
         let cols = matrix[0].len() as u32;
+        for row in matrix {
+            if row.len() != cols as usize {
+                return Err(ChartDataError::RaggedMatrix);
+            }
+        }
+
         let mut values = Vec::with_capacity((rows * cols) as usize);
         let mut min_value = f32::MAX;
         let mut max_value = f32::MIN;
@@ -214,28 +264,35 @@ impl HeatmapData {
             }
         }
 
-        Self {
-            rows,
-            cols,
+        let (rows, cols) = Self::validate_grid(rows, cols, values.len())?;
+        Ok(Self {
+            rows: rows.get(),
+            cols: cols.get(),
             values,
             min_value,
             max_value,
-        }
+        })
     }
 
     /// Creates a new heatmap from row-major values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>) -> Self {
+        Self::try_new(rows, cols, values).expect("Invalid heatmap dimensions or value count")
+    }
+
+    /// Creates a new heatmap from row-major values with validation.
+    pub fn try_new(rows: u32, cols: u32, values: Vec<f32>) -> Result<Self, ChartDataError> {
+        let (rows, cols) = Self::validate_grid(rows, cols, values.len())?;
         let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
             (min.min(v), max.max(v))
         });
-        Self {
-            rows,
-            cols,
+        Ok(Self {
+            rows: rows.get(),
+            cols: cols.get(),
             values,
             min_value,
             max_value,
-        }
+        })
     }
 
     /// Returns the value at (row, col).
@@ -276,11 +333,40 @@ pub struct ContourData {
 }
 
 impl ContourData {
+    fn validate_grid(
+        rows: u32,
+        cols: u32,
+        value_len: usize,
+    ) -> Result<(NonZeroU32, NonZeroU32), ChartDataError> {
+        let rows = NonZeroU32::new(rows).ok_or(ChartDataError::ZeroDimension)?;
+        let cols = NonZeroU32::new(cols).ok_or(ChartDataError::ZeroDimension)?;
+        let expected = rows.get() as usize * cols.get() as usize;
+        if expected != value_len {
+            return Err(ChartDataError::ValueCountMismatch {
+                expected,
+                actual: value_len,
+            });
+        }
+        Ok((rows, cols))
+    }
+
     /// Creates contour data from a grid with auto-computed levels.
     ///
     /// Generates evenly-spaced contour levels between min and max values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>, num_levels: usize) -> Self {
+        Self::try_new(rows, cols, values, num_levels)
+            .expect("Invalid contour dimensions or value count")
+    }
+
+    /// Creates contour data from a grid with validation.
+    pub fn try_new(
+        rows: u32,
+        cols: u32,
+        values: Vec<f32>,
+        num_levels: usize,
+    ) -> Result<Self, ChartDataError> {
+        let (rows, cols) = Self::validate_grid(rows, cols, values.len())?;
         let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
             (min.min(v), max.max(v))
         });
@@ -295,30 +381,42 @@ impl ContourData {
             Vec::new()
         };
 
-        Self {
-            rows,
-            cols,
+        Ok(Self {
+            rows: rows.get(),
+            cols: cols.get(),
             values,
             levels,
             min_value,
             max_value,
-        }
+        })
     }
 
     /// Creates contour data with explicit contour levels.
     #[must_use]
     pub fn with_levels(rows: u32, cols: u32, values: Vec<f32>, levels: Vec<f32>) -> Self {
+        Self::try_with_levels(rows, cols, values, levels)
+            .expect("Invalid contour dimensions or value count")
+    }
+
+    /// Creates contour data with explicit contour levels and validation.
+    pub fn try_with_levels(
+        rows: u32,
+        cols: u32,
+        values: Vec<f32>,
+        levels: Vec<f32>,
+    ) -> Result<Self, ChartDataError> {
+        let (rows, cols) = Self::validate_grid(rows, cols, values.len())?;
         let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
             (min.min(v), max.max(v))
         });
-        Self {
-            rows,
-            cols,
+        Ok(Self {
+            rows: rows.get(),
+            cols: cols.get(),
             values,
             levels,
             min_value,
             max_value,
-        }
+        })
     }
 
     /// Returns the value at (row, col).
@@ -465,12 +563,27 @@ impl RadarData {
     /// Creates radar data with the specified number of axes.
     #[must_use]
     pub fn new(axis_count: u32) -> Self {
-        Self {
+        Self::try_new(axis_count).expect("Radar charts require axis_count >= 3")
+    }
+
+    /// Creates radar data with validation.
+    pub fn try_new(axis_count: u32) -> Result<Self, ChartDataError> {
+        if axis_count < 3 {
+            return Err(ChartDataError::AxisCountTooSmall { axis_count });
+        }
+
+        Ok(Self {
             axis_count,
             labels: Vec::new(),
             series: Vec::new(),
             max_value: 1.0,
-        }
+        })
+    }
+
+    /// Creates radar data from a compile-time validated non-zero axis count.
+    #[must_use]
+    pub fn from_non_zero_axis_count(axis_count: NonZeroU32) -> Self {
+        Self::try_new(axis_count.get()).expect("Radar charts require axis_count >= 3")
     }
 
     /// Sets axis labels.
@@ -1102,6 +1215,10 @@ impl GaugeData {
     /// Creates a new gauge with value and range.
     #[must_use]
     pub fn new(value: f32, min: f32, max: f32) -> Self {
+        assert!(
+            value.is_finite() && min.is_finite() && max.is_finite() && max > min,
+            "GaugeData::new(value, min, max) requires finite max > min"
+        );
         Self {
             value,
             min_value: min,
@@ -1374,3 +1491,52 @@ impl_constant!(PieData);
 impl_constant!(ScatterData);
 impl_constant!(CandlestickData);
 impl_constant!(BubbleData);
+
+#[cfg(test)]
+mod tests {
+    use super::{ChartDataError, ContourData, HeatmapData, RadarData};
+
+    #[test]
+    fn heatmap_try_new_rejects_zero_dimension() {
+        let err = HeatmapData::try_new(0, 2, vec![]).expect_err("zero rows must fail");
+        assert_eq!(err, ChartDataError::ZeroDimension);
+    }
+
+    #[test]
+    fn heatmap_try_new_rejects_value_count_mismatch() {
+        let err = HeatmapData::try_new(2, 2, vec![1.0, 2.0]).expect_err("mismatched len must fail");
+        assert_eq!(
+            err,
+            ChartDataError::ValueCountMismatch {
+                expected: 4,
+                actual: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn heatmap_try_from_matrix_rejects_ragged_input() {
+        let rows = [&[1.0, 2.0][..], &[3.0][..]];
+        let err = HeatmapData::try_from_matrix(&rows).expect_err("ragged matrix must fail");
+        assert_eq!(err, ChartDataError::RaggedMatrix);
+    }
+
+    #[test]
+    fn contour_try_new_rejects_value_count_mismatch() {
+        let err =
+            ContourData::try_new(3, 3, vec![0.0; 4], 5).expect_err("mismatched len must fail");
+        assert_eq!(
+            err,
+            ChartDataError::ValueCountMismatch {
+                expected: 9,
+                actual: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn radar_try_new_rejects_axis_count_too_small() {
+        let err = RadarData::try_new(2).expect_err("axis count < 3 must fail");
+        assert_eq!(err, ChartDataError::AxisCountTooSmall { axis_count: 2 });
+    }
+}

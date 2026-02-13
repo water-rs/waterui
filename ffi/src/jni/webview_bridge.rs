@@ -471,7 +471,9 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
         },
     };
 
-    handler.call(msg);
+    let _ = crate::ffi_boundary("webview.native_on_message", || {
+        handler.call(msg);
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -525,5 +527,7 @@ pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCal
         can_go_forward: can_go_forward != 0,
     };
 
-    cb.call(event);
+    let _ = crate::ffi_boundary("webview.native_on_event", || {
+        cb.call(event);
+    });
 }

@@ -53,7 +53,7 @@ pub use view_effect::{
 
 pub use filter_view::{
     AppliedFilter, FilterAdapter, FilterContext, FilterInput, FilterOutput, FilterViewExt,
-    FilteredView, GpuFilter,
+    FilteredView, GpuFilter, HdrPolicy,
 };
 
 // Re-export dependencies used by macros

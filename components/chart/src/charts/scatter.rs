@@ -62,6 +62,10 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
     /// Sets the point radius in pixels.
     #[must_use]
     pub fn radius(mut self, radius: f32) -> Self {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "ScatterChart::radius(radius) requires radius > 0"
+        );
         self.radius = radius;
         self
     }

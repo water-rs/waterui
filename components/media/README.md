@@ -1,12 +1,12 @@
 # waterui-media
 
-Media components for WaterUI providing reactive photo, video, and Live Photo display with native platform rendering.
+Media components for WaterUI providing reactive photo, video, and Live Photo display.
 
 ## Overview
 
-`waterui-media` delivers a comprehensive media handling system for the WaterUI framework. It bridges Rust's type safety with platform-native media rendering (AVFoundation on Apple platforms, ExoPlayer on Android) while maintaining WaterUI's reactive programming model. The crate supports static images, video playback with controls, Apple Live Photos, and platform-native media picking.
+`waterui-media` delivers a comprehensive media handling system for the WaterUI framework. It maintains WaterUI's reactive programming model while providing static images, Apple Live Photos, platform-native media picking, and video APIs re-exported from `waterui-video`.
 
-Key features include reactive volume control with mute state preservation, configurable aspect ratios, event-driven loading states, and seamless integration with WaterUI's environment system. Media components automatically render to native widgets: AVPlayerViewController on iOS, AVPlayerLayer for raw video views, and ExoPlayer with PlayerView on Android.
+Key features include reactive volume control with mute state preservation, configurable aspect ratios, event-driven loading states, and seamless integration with WaterUI's environment system.
 
 ## Installation
 
@@ -203,9 +203,23 @@ let video = Media::Video(Url::new("https://example.com/clip.mp4"));
 
 ### Image Processing (image module)
 
-The `Image` type provides async image manipulation:
+The `Photo` component decodes remote images on a background thread and feeds them
+to the GPU `Image` view (`Image::new(pixels, width, height)`).
 
-- `Image::new(mime, data)` - Decode image from raw data on background thread
+When platform decoders output HDR image data (for example 10-bit AVIF/HEIF on supported
+Apple/Android devices), `Photo` uploads `RGBA16F` pixels and renders through the HDR surface path.
+SDR assets (JPEG/PNG/GIF/WebP/BMP/ICO/TIFF) remain on `RGBA8` decoding.
+
+Supported decode formats include:
+
+- PNG / JPEG / GIF / WebP / BMP / ICO
+- AVIF
+- TIFF
+- HEIF (AV1 payloads via AVIF-compatible fallback path)
+- HEIF/HEIC (H265/HEVC) via platform decoder only (Apple/Android)
+
+The `Image` processing API provides async manipulation helpers:
+
 - `resize()`, `resize_to_fit()`, `resize_to_fill()`, `resize_exact()` - Resize operations
 - `rotate()`, `rotate_90()`, `rotate_180()`, `rotate_270()` - Rotation
 - `flip_horizontal()`, `flip_vertical()` - Flipping

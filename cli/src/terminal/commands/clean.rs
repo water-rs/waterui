@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -130,6 +130,8 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
         return Ok(());
     }
 
+    ensure_recursive_confirmation_mode(yes, shell::is_interactive())?;
+
     if !yes {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
@@ -187,6 +189,13 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
         removed_dirs
     );
 
+    Ok(())
+}
+
+fn ensure_recursive_confirmation_mode(yes: bool, interactive: bool) -> Result<()> {
+    if !yes && !interactive {
+        bail!("`water clean --recursive` requires --yes in non-interactive environments");
+    }
     Ok(())
 }
 
@@ -300,7 +309,7 @@ mod tests {
 
     use smol::block_on;
 
-    use super::{removable_cache_dir_count, should_skip_dir};
+    use super::{ensure_recursive_confirmation_mode, removable_cache_dir_count, should_skip_dir};
 
     #[test]
     fn skip_dir_filters_heavy_dirs() {
@@ -315,5 +324,12 @@ mod tests {
     fn removable_cache_count_is_zero_when_missing() {
         let missing = Path::new("/definitely/not/exist/waterui-clean-test");
         assert_eq!(block_on(removable_cache_dir_count(missing)), 0);
+    }
+
+    #[test]
+    fn recursive_requires_yes_when_non_interactive() {
+        assert!(ensure_recursive_confirmation_mode(false, false).is_err());
+        assert!(ensure_recursive_confirmation_mode(true, false).is_ok());
+        assert!(ensure_recursive_confirmation_mode(false, true).is_ok());
     }
 }

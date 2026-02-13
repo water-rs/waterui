@@ -49,7 +49,7 @@ impl EasingType {
 }
 
 /// Animation state passed to GPU shaders.
-#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct ChartAnimation {
     /// Current time since animation start (seconds).
@@ -60,6 +60,12 @@ pub struct ChartAnimation {
     pub easing: u32,
     /// Whether entry animation is active (1 = yes, 0 = no).
     pub entry_active: u32,
+}
+
+impl Default for ChartAnimation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChartAnimation {
@@ -117,6 +123,20 @@ impl ChartAnimator {
 
     /// Starts a new animation.
     pub fn start(&mut self, now: Duration, duration: Duration, easing: EasingType, is_entry: bool) {
+        if duration.is_zero() {
+            self.start_time = None;
+            self.duration = duration;
+            self.easing = easing;
+            self.is_entry = is_entry;
+            self.current = ChartAnimation {
+                time: 0.0,
+                progress: 1.0,
+                easing: easing as u32,
+                entry_active: 0,
+            };
+            return;
+        }
+
         self.start_time = Some(now);
         self.duration = duration;
         self.easing = easing;
@@ -147,6 +167,16 @@ impl ChartAnimator {
         };
 
         let elapsed = now.saturating_sub(start);
+        if self.duration.is_zero() {
+            self.start_time = None;
+            self.current = ChartAnimation {
+                time: elapsed.as_secs_f32(),
+                progress: 1.0,
+                easing: self.easing as u32,
+                entry_active: 0,
+            };
+            return self.current;
+        }
         let raw_progress = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         let progress = raw_progress.clamp(0.0, 1.0);
 
@@ -250,5 +280,20 @@ impl AnimationConfig {
             duration,
             easing: EasingType::Spring,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_duration_transition_completes_immediately() {
+        let mut animator = ChartAnimator::new();
+        let now = Duration::from_millis(100);
+        animator.start_transition(now, Duration::ZERO, EasingType::EaseInOut);
+        let state = animator.update(now);
+        assert_eq!(state.progress, 1.0);
+        assert!(!animator.is_animating());
     }
 }

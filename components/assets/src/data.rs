@@ -9,6 +9,8 @@ use core::ops::Deref;
 use std::path::Path;
 
 use crate::AssetError;
+#[cfg(feature = "std")]
+use crate::url::ensure_http_allowed;
 
 /// Small binary data, fully loaded into memory.
 ///
@@ -80,18 +82,15 @@ impl Data {
 
     /// Create `Data` from a remote URL (async).
     ///
-    /// Downloads the content and caches it.
+    /// Downloads the content into memory.
     ///
     /// # Errors
     ///
     /// Returns `AssetError::Network` for network errors.
-    /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-localhost.
+    /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
     #[cfg(feature = "std")]
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
-        // Check for HTTP (not allowed except localhost)
-        if url.starts_with("http://") && !url.starts_with("http://localhost") {
-            return Err(AssetError::http_not_allowed(url));
-        }
+        ensure_http_allowed(url)?;
 
         use zenwave::{Client, Method, redirect::FollowRedirect};
 

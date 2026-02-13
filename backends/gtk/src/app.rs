@@ -9,8 +9,9 @@ use waterui::app::App;
 use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
+use crate::util::store_watcher_guards;
 use crate::webview::ensure_webview_controller;
-use crate::window::create_window;
+use crate::window::{apply_window_background, create_window};
 
 /// GTK4 application wrapper for WaterUI.
 #[derive(Debug)]
@@ -58,7 +59,8 @@ impl GtkApp {
     /// and renders it using GTK.
     pub fn run_app(self, mut waterui_app: App) -> i32 {
         let main_window = waterui_app.main_window_mut();
-        let title: String = main_window.title.get().as_str().to_owned();
+        let title = main_window.title.clone();
+        let background = main_window.background.clone();
         // Use RefCell to allow taking the content once (AnyView is not Clone)
         // Take ownership of the content using mem::take
         let content = RefCell::new(Some(std::mem::take(&mut main_window.content)));
@@ -69,7 +71,21 @@ impl GtkApp {
             // Take the content or use default if already taken (re-activation)
             let content = content.borrow_mut().take().unwrap_or_default();
 
-            let window = create_window(app, &title, 800, 600);
+            let initial_title: String = title.get().as_str().to_owned();
+            let window = create_window(app, &initial_title, 800, 600);
+            apply_window_background(&window, &background, &env);
+
+            let title_guard = title.watch({
+                let window = window.clone();
+                move |ctx| {
+                    let title_text = ctx.into_value().as_str().to_owned();
+                    let window = window.clone();
+                    glib::idle_add_local_once(move || {
+                        window.set_title(Some(&title_text));
+                    });
+                }
+            });
+            store_watcher_guards(&window, vec![title_guard]);
 
             let mut renderer = GtkRenderer::new();
             let widget = renderer.render_any(content, &env);

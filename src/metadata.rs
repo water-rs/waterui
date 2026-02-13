@@ -49,6 +49,31 @@ pub mod context_menu {
     }
 }
 
+/// Selection menu metadata aliases.
+///
+/// This namespace provides a future-proof API surface for text-selection menus.
+/// Today it reuses `context_menu` types; backend-specific text-selection integration
+/// can be upgraded without changing call sites.
+pub mod selection_menu {
+    pub use super::context_menu::{ContextMenu as SelectionMenu, MenuItem};
+}
+
+#[cfg(test)]
+mod tests {
+    use core::any::TypeId;
+
+    use super::{context_menu::ContextMenu, selection_menu::SelectionMenu};
+
+    #[test]
+    fn selection_menu_aliases_context_menu_type() {
+        assert_eq!(
+            TypeId::of::<SelectionMenu>(),
+            TypeId::of::<ContextMenu>(),
+            "SelectionMenu should remain a type alias of ContextMenu for backend compatibility"
+        );
+    }
+}
+
 /// Secure metadata module.
 pub mod secure {
     use waterui_core::metadata::MetadataKey;

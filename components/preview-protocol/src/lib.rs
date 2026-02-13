@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod transport {
-    //! Framed JSON transport helpers.
+    //! Framed binary transport helpers.
     //!
     //! The preview protocol uses length-prefixed frames:
-    //! `u32::to_be_bytes(len)` followed by `len` bytes of UTF-8 JSON.
+    //! `u32::to_be_bytes(len)` followed by `len` bytes of binary payload.
 
     use std::io;
 
@@ -28,8 +28,8 @@ pub mod transport {
             .unwrap_or(DEFAULT)
     }
 
-    /// Read a single length-prefixed JSON frame.
-    pub async fn read_json_frame<R, T>(reader: &mut R) -> io::Result<T>
+    /// Read a single length-prefixed binary frame.
+    pub async fn read_frame<R, T>(reader: &mut R) -> io::Result<T>
     where
         R: AsyncRead + Unpin,
         T: DeserializeOwned,
@@ -48,17 +48,27 @@ pub mod transport {
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
 
-        serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let config = bincode::config::standard();
+        let (value, bytes_read): (T, usize) = bincode::serde::decode_from_slice(&buf, config)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if bytes_read != buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing bytes after preview frame payload",
+            ));
+        }
+        Ok(value)
     }
 
-    /// Write a single length-prefixed JSON frame.
-    pub async fn write_json_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
+    /// Write a single length-prefixed binary frame.
+    pub async fn write_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
         T: Serialize,
     {
-        let data =
-            serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let config = bincode::config::standard();
+        let data = bincode::serde::encode_to_vec(value, config)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len: u32 = data.len().try_into().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -70,6 +80,24 @@ pub mod transport {
         writer.write_all(&data).await?;
         writer.flush().await?;
         Ok(())
+    }
+
+    /// Backward-compatible alias for older call sites.
+    pub async fn read_json_frame<R, T>(reader: &mut R) -> io::Result<T>
+    where
+        R: AsyncRead + Unpin,
+        T: DeserializeOwned,
+    {
+        read_frame(reader).await
+    }
+
+    /// Backward-compatible alias for older call sites.
+    pub async fn write_json_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+        T: Serialize,
+    {
+        write_frame(writer, value).await
     }
 }
 

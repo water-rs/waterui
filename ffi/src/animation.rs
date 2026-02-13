@@ -14,34 +14,12 @@ use super::IntoFFI;
 pub enum WuiAnimation {
     /// No animation - changes apply immediately
     None,
-    /// Default animation (0.25s ease-in-out)
-    Default,
-    /// Linear animation with constant velocity
-    Linear {
-        /// Duration in milliseconds
-        duration_ms: u64,
-    },
-    /// Ease-in animation that starts slow and accelerates
-    EaseIn {
-        /// Duration in milliseconds
-        duration_ms: u64,
-    },
-    /// Ease-out animation that starts fast and decelerates
-    EaseOut {
-        /// Duration in milliseconds
-        duration_ms: u64,
-    },
-    /// Ease-in-out animation that starts and ends slowly
-    EaseInOut {
-        /// Duration in milliseconds
-        duration_ms: u64,
-    },
-    /// Custom cubic bezier animation with control points
+    /// Timed cubic bezier animation with control points
     ///
     /// Native backends can use these control points with:
     /// - Apple: `CAMediaTimingFunction(controlPoints:)`
     /// - Android: `PathInterpolator(x1, y1, x2, y2)`
-    CubicBezier {
+    Bezier {
         /// Duration in milliseconds
         duration_ms: u64,
         /// First control point X (0.0 to 1.0)
@@ -67,26 +45,20 @@ impl IntoFFI for Animation {
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Animation::Default => WuiAnimation::Default,
-            Animation::Linear(d) => WuiAnimation::Linear {
-                duration_ms: d.as_millis() as u64,
+            Animation::Default => WuiAnimation::Bezier {
+                duration_ms: 250,
+                x1: 0.42,
+                y1: 0.0,
+                x2: 0.58,
+                y2: 1.0,
             },
-            Animation::EaseIn(d) => WuiAnimation::EaseIn {
-                duration_ms: d.as_millis() as u64,
-            },
-            Animation::EaseOut(d) => WuiAnimation::EaseOut {
-                duration_ms: d.as_millis() as u64,
-            },
-            Animation::EaseInOut(d) => WuiAnimation::EaseInOut {
-                duration_ms: d.as_millis() as u64,
-            },
-            Animation::CubicBezier {
+            Animation::Bezier {
                 duration,
                 x1,
                 y1,
                 x2,
                 y2,
-            } => WuiAnimation::CubicBezier {
+            } => WuiAnimation::Bezier {
                 duration_ms: duration.as_millis() as u64,
                 x1,
                 y1,

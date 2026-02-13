@@ -233,7 +233,7 @@ impl GpuRenderer for CandlestickRenderer {
         self.color_buffer = Some(create_uniform_buffer(ctx, "Candlestick Colors", &colors));
 
         // Create data buffers with initial capacity
-        let initial_capacity = self.data.len().max(64);
+        let initial_capacity = self.data.len().max(16384);
         let initial_data: Vec<GpuCandle> = self
             .data
             .iter()
@@ -372,13 +372,13 @@ impl GpuRenderer for CandlestickRenderer {
                         } else {
                             0.0
                         },
-                        0.0,
+                        self.data.len() as f32,
                     )
                 } else {
-                    glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                    glam::Vec4::new(-1.0, -1.0, 0.0, self.data.len() as f32)
                 }
             } else {
-                glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                glam::Vec4::new(-1.0, -1.0, 0.0, self.data.len() as f32)
             },
         };
         write_uniform_buffer(
@@ -440,7 +440,7 @@ impl ChartRenderer for CandlestickRenderer {
     type Data = Vec<Candle>;
     type DataValue = Candle;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 
@@ -486,31 +486,48 @@ impl ChartRenderer for CandlestickRenderer {
             return None;
         }
 
-        // Find which candle was hit
-        let candle_count = self.data.len();
-        let candle_width = 0.8 / candle_count as f32;
-        let gap = 0.2 / (candle_count + 1) as f32;
+        let x_range = visible_bounds.max_x - visible_bounds.min_x;
+        if x_range <= 0.0 {
+            return None;
+        }
+        let y_range = visible_bounds.max_y - visible_bounds.min_y;
+        if y_range <= 0.0 {
+            return None;
+        }
+
+        // Width is based on timestamp spacing so irregular time-series render correctly.
+        let mut min_delta = f32::INFINITY;
+        for window in self.data.windows(2) {
+            let delta = (window[1].timestamp - window[0].timestamp).abs();
+            if delta > 0.0 {
+                min_delta = min_delta.min(delta);
+            }
+        }
+        let fallback_delta = x_range / self.data.len().max(1) as f32;
+        let step = if min_delta.is_finite() {
+            min_delta
+        } else {
+            fallback_delta
+        };
+        let half_width = ((step / x_range) * 0.8 * 0.5).clamp(0.001, 0.25);
 
         for (i, candle) in self.data.iter().enumerate() {
-            let candle_center = gap + (candle_width + gap) * i as f32 + candle_width * 0.5;
-            let candle_left = candle_center - candle_width * 0.5;
-            let candle_right = candle_center + candle_width * 0.5;
+            let candle_center = (candle.timestamp - visible_bounds.min_x) / x_range;
+            let candle_left = candle_center - half_width;
+            let candle_right = candle_center + half_width;
 
             if chart_x >= candle_left && chart_x <= candle_right {
                 // Check Y (candle range: low to high)
-                let y_range = visible_bounds.max_y - visible_bounds.min_y;
-                if y_range > 0.0 {
-                    let normalized_low = (candle.low - visible_bounds.min_y) / y_range;
-                    let normalized_high = (candle.high - visible_bounds.min_y) / y_range;
+                let normalized_low = (candle.low - visible_bounds.min_y) / y_range;
+                let normalized_high = (candle.high - visible_bounds.min_y) / y_range;
 
-                    if chart_y >= normalized_low && chart_y <= normalized_high {
-                        return Some(HitResult {
-                            series: 0,
-                            index: i,
-                            value: *candle,
-                            screen_position: point,
-                        });
-                    }
+                if chart_y >= normalized_low && chart_y <= normalized_high {
+                    return Some(HitResult {
+                        series: 0,
+                        index: i,
+                        value: *candle,
+                        screen_position: point,
+                    });
                 }
             }
         }

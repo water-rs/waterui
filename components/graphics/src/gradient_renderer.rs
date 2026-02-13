@@ -258,7 +258,7 @@ impl GradientRenderer {
     /// Creates a GpuSurface wrapping this renderer.
     #[must_use]
     pub fn into_surface(self) -> GpuSurface {
-        GpuSurface::new(self)
+        GpuSurface::new(self).on_demand()
     }
 
     fn prepare_uniforms(&self) -> GradientUniforms {

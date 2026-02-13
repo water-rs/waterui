@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use futures::future::{self, Either};
 
-use commands::{build, clean, create, device, devices, doctor, package, preview, run};
+use commands::{assets, build, clean, create, device, devices, doctor, package, preview, run};
 
 /// `WaterUI` command line interface.
 #[derive(Parser, Debug)]
@@ -38,6 +38,9 @@ enum Commands {
 
     /// Build the project for a platform.
     Build(build::Args),
+
+    /// Validate or migrate assets layout.
+    Assets(assets::Args),
 
     /// Package for distribution.
     Package(package::Args),
@@ -97,6 +100,7 @@ fn main() -> Result<()> {
                     Commands::Create(args) => create::run(args).await,
                     Commands::Run(args) => run::run(args).await,
                     Commands::Build(args) => build::run(args).await,
+                    Commands::Assets(args) => assets::run(args).await,
                     Commands::Package(args) => package::run(args).await,
                     Commands::Clean(args) => clean::run(args).await,
                     Commands::Doctor(args) => doctor::run(args).await,

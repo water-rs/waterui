@@ -6,8 +6,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use icu_locid::Locale;
-use icu_locid_transform::fallback::LocaleFallbacker;
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -47,104 +45,127 @@ enum TranslationValue {
 struct TranslationBundle {
     /// Map of locale code -> (key -> value)
     locales: BTreeMap<String, BTreeMap<String, TranslationValue>>,
+    /// Translation files loaded from disk (used for build invalidation tracking).
+    tracked_files: Vec<PathBuf>,
 }
 
 impl TranslationBundle {
-    fn load_from_manifest_dir() -> Self {
+    fn load_from_manifest_dir() -> std::result::Result<Self, String> {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
         let i18n_path = PathBuf::from(&manifest_dir).join("i18n");
 
         let mut bundle = Self::default();
 
         if !i18n_path.exists() {
-            return bundle;
+            return Ok(bundle);
         }
 
         // Load all .toml files in i18n/
-        if let Ok(entries) = std::fs::read_dir(&i18n_path) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "toml") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(translations) = Self::parse_toml(&content) {
-                                bundle.locales.insert(stem.to_string(), translations);
-                            }
-                        }
-                    }
-                }
-            }
+        let entries = std::fs::read_dir(&i18n_path).map_err(|err| {
+            format!(
+                "Failed to read i18n directory '{}': {err}",
+                i18n_path.display()
+            )
+        })?;
+        let mut locale_files: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+            .collect();
+        locale_files.sort();
+
+        for path in locale_files {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("Invalid locale filename '{}'", path.display()))?;
+            let content = std::fs::read_to_string(&path)
+                .map_err(|err| format!("Failed to read '{}': {err}", path.display()))?;
+            let translations = Self::parse_toml(&content, &path)?;
+
+            bundle.locales.insert(stem.to_string(), translations);
+            bundle.tracked_files.push(path);
         }
 
-        bundle
+        Ok(bundle)
+    }
+
+    fn parse_plural_field(
+        table: &toml::value::Table,
+        key: &str,
+        source: &PathBuf,
+        translation_key: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        match table.get(key) {
+            None => Ok(None),
+            Some(toml::Value::String(value)) => Ok(Some(value.clone())),
+            Some(_) => Err(format!(
+                "Plural field '{key}' for key '{translation_key}' in '{}' must be a string",
+                source.display()
+            )),
+        }
     }
 
     fn parse_toml(
         content: &str,
-    ) -> std::result::Result<BTreeMap<String, TranslationValue>, toml::de::Error> {
-        let table: toml::Table = toml::from_str(content)?;
+        source: &PathBuf,
+    ) -> std::result::Result<BTreeMap<String, TranslationValue>, String> {
+        let table: toml::Table = toml::from_str(content)
+            .map_err(|err| format!("Failed to parse '{}': {err}", source.display()))?;
         let mut translations = BTreeMap::new();
+
+        const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
 
         for (key, value) in table {
             let tv = match value {
                 toml::Value::String(s) => TranslationValue::Simple(s),
                 toml::Value::Table(t) => {
-                    // Plural forms
-                    let get_str = |k: &str| t.get(k).and_then(|v| v.as_str()).map(String::from);
+                    for field in t.keys() {
+                        if !VALID_PLURAL_FIELDS.contains(&field.as_str()) {
+                            return Err(format!(
+                                "Unknown plural field '{}' for key '{}' in '{}'",
+                                field,
+                                key,
+                                source.display()
+                            ));
+                        }
+                    }
+
+                    let zero = Self::parse_plural_field(&t, "zero", source, &key)?;
+                    let one = Self::parse_plural_field(&t, "one", source, &key)?;
+                    let two = Self::parse_plural_field(&t, "two", source, &key)?;
+                    let few = Self::parse_plural_field(&t, "few", source, &key)?;
+                    let many = Self::parse_plural_field(&t, "many", source, &key)?;
+                    let other = Self::parse_plural_field(&t, "other", source, &key)?
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or_else(|| {
+                            format!(
+                                "Plural key '{}' in '{}' must define non-empty 'other'",
+                                key,
+                                source.display()
+                            )
+                        })?;
+
                     TranslationValue::Plural {
-                        zero: get_str("zero"),
-                        one: get_str("one"),
-                        two: get_str("two"),
-                        few: get_str("few"),
-                        many: get_str("many"),
-                        other: get_str("other").unwrap_or_default(),
+                        zero,
+                        one,
+                        two,
+                        few,
+                        many,
+                        other,
                     }
                 }
-                _ => continue,
+                _ => {
+                    return Err(format!(
+                        "Invalid translation value type for key '{}' in '{}'",
+                        key,
+                        source.display()
+                    ));
+                }
             };
             translations.insert(key, tv);
         }
 
         Ok(translations)
-    }
-
-    /// Get translation for a key and locale with proper CLDR fallback chain
-    fn get(&self, locale_str: &str, key: &str) -> Option<&TranslationValue> {
-        // Parse locale string into ICU Locale
-        let locale: Locale = locale_str.parse().unwrap_or_else(|_| "en".parse().unwrap());
-
-        // Use ICU4X LocaleFallbacker for proper CLDR fallback chain
-        let fallbacker = LocaleFallbacker::new();
-        let mut fallback_iter = fallbacker
-            .for_config(Default::default())
-            .fallback_for(locale.into());
-
-        loop {
-            let current = fallback_iter.get();
-            let locale_key = current.to_string();
-
-            // Try this locale in the fallback chain
-            if let Some(translations) = self.locales.get(&locale_key) {
-                if let Some(value) = translations.get(key) {
-                    return Some(value);
-                }
-            }
-
-            // Check if we've reached the end of the fallback chain
-            if current.is_und() {
-                break;
-            }
-            fallback_iter.step();
-        }
-
-        // Final fallback to English if not already tried
-        if locale_str != "en" {
-            if let Some(translations) = self.locales.get("en") {
-                return translations.get(key);
-            }
-        }
-
-        None
     }
 }
 
@@ -404,7 +425,13 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     let placeholders = parse_placeholders(&key);
 
     // Load translations at compile time
-    let bundle = TranslationBundle::load_from_manifest_dir();
+    let bundle = match TranslationBundle::load_from_manifest_dir() {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            let message = LitStr::new(&err, Span::call_site());
+            return quote! { compile_error!(#message); };
+        }
+    };
 
     // Collect all placeholder names
     let mut plural_names: Vec<&str> = Vec::new();
@@ -461,17 +488,22 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
         .map(|name| Ident::new(name, Span::call_site()))
         .collect();
 
-    // Generate match arms for each locale using fallback resolution
+    // Generate match arms for each locale.
     let mut locale_arms = Vec::new();
-
-    for locale_code in bundle.locales.keys() {
-        // Use bundle.get() to resolve with fallback chain (e.g., zh-TW → zh-Hant → zh → en)
-        if let Some(value) = bundle.get(locale_code, &translation_key) {
+    for (locale_code, translations) in &bundle.locales {
+        if let Some(value) = translations.get(&translation_key) {
             let arm =
                 generate_translation_arm(&waterui, locale_code, value, &all_idents, &plural_names);
             locale_arms.push(arm);
         }
     }
+
+    let tracked_file_lits: Vec<LitStr> = bundle
+        .tracked_files
+        .iter()
+        .filter_map(|path| path.to_str())
+        .map(|path| LitStr::new(path, Span::call_site()))
+        .collect();
 
     // Default fallback - use the key itself
     let default_format = key.replace("{#", "{");
@@ -487,28 +519,36 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
 
     // Generate the LocalizedText
     quote! {
-        #waterui::locale::LocalizedText::new({
-            #(#captures)*
+        {
+            // Track translation file changes to invalidate macro expansion.
+            #(let _ = include_bytes!(#tracked_file_lits);)*
 
-            move |locale: &#waterui::locale::Locale| {
-                let lang = locale.language.as_str();
-                let region = locale.region.as_ref().map(|r| r.as_str());
-                let locale_key = match region {
-                    Some(r) => #waterui::reactive::__alloc::format!("{}-{}", lang, r),
-                    None => #waterui::reactive::__alloc::format!("{}", lang),
-                };
+            #waterui::locale::LocalizedText::new({
+                #(#captures)*
 
-                match locale_key.as_str() {
-                    #(#locale_arms)*
-                    _ => match lang {
-                        #(#locale_arms)*
-                        _ => {
-                            #default_body
+                move |locale: &#waterui::locale::Locale| {
+                    let resolve = |locale_key: &str| -> Option<#waterui::text::Text> {
+                        match locale_key {
+                            #(#locale_arms)*
+                            _ => None,
+                        }
+                    };
+
+                    for fallback_locale in #waterui::locale::locale::get_fallback_chain(locale) {
+                        let locale_key = fallback_locale.to_string();
+                        if let Some(text) = resolve(locale_key.as_str()) {
+                            return text;
                         }
                     }
+
+                    if let Some(text) = resolve("en") {
+                        return text;
+                    }
+
+                    #default_body
                 }
-            }
-        })
+            })
+        }
     }
 }
 
@@ -530,14 +570,18 @@ fn generate_translation_arm(
             if all_idents.is_empty() {
                 quote! {
                     #locale_pattern => {
-                        #waterui::text::Text::new(#format_lit)
+                        Some(
+                            #waterui::text::Text::new(#format_lit)
+                        )
                     }
                 }
             } else {
                 let content = build_format_signal(waterui, &format_lit, all_idents);
                 quote! {
                     #locale_pattern => {
-                        #waterui::text::Text::new(#content)
+                        Some(
+                            #waterui::text::Text::new(#content)
+                        )
                     }
                 }
             }
@@ -618,9 +662,40 @@ fn generate_translation_arm(
             quote! {
                 #locale_pattern => {
                     let #locale_ident = locale.clone();
-                    #waterui::text::Text::new(#content)
+                    Some(
+                        #waterui::text::Text::new(#content)
+                    )
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::TranslationBundle;
+
+    #[test]
+    fn parse_toml_requires_plural_other() {
+        let content = r#"
+"I have {#count} apple" = { one = "I have {count} apple" }
+"#;
+        let source = PathBuf::from("i18n/en.toml");
+        let err = TranslationBundle::parse_toml(content, &source)
+            .expect_err("missing 'other' should fail");
+        assert!(err.contains("must define non-empty 'other'"));
+    }
+
+    #[test]
+    fn parse_toml_rejects_unknown_plural_fields() {
+        let content = r#"
+"I have {#count} apple" = { one = "I have {count} apple", manyy = "oops", other = "I have {count} apples" }
+"#;
+        let source = PathBuf::from("i18n/en.toml");
+        let err = TranslationBundle::parse_toml(content, &source)
+            .expect_err("unknown plural field should fail");
+        assert!(err.contains("Unknown plural field"));
     }
 }

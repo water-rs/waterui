@@ -36,6 +36,6 @@ impl View for Barcode {
         // Create renderer
         let renderer = BarcodeRenderer::new(source);
         // Create surface
-        GpuSurface::new(renderer)
+        GpuSurface::new(renderer).on_demand()
     }
 }

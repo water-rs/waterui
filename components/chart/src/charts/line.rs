@@ -66,6 +66,10 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
     /// Sets the line width in pixels.
     #[must_use]
     pub fn line_width(mut self, width: f32) -> Self {
+        assert!(
+            width.is_finite() && width > 0.0,
+            "LineChart::line_width(width) requires width > 0"
+        );
         self.line_width = width;
         self
     }
@@ -73,6 +77,10 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
     /// Enables area fill below the line.
     #[must_use]
     pub fn fill(mut self, opacity: f32) -> Self {
+        assert!(
+            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
+            "LineChart::fill(opacity) requires 0.0 <= opacity <= 1.0"
+        );
         self.show_fill = true;
         self.fill_opacity = opacity;
         self
