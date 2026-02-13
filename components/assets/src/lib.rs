@@ -44,6 +44,8 @@ mod data;
 mod error;
 mod kind;
 mod large_file;
+#[cfg(feature = "std")]
+mod url;
 
 pub use data::Data;
 pub use error::AssetError;

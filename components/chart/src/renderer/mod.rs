@@ -66,7 +66,12 @@ pub use scatter::ScatterChartRenderer;
 ///     type Data = Vec<DataPoint>;
 ///     type DataValue = DataPoint;
 ///
-///     fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+///     fn update_data(
+///         &mut self,
+///         data: &Self::Data,
+///         _device: &wgpu::Device,
+///         queue: &wgpu::Queue,
+///     ) {
 ///         // Swap buffers
 ///         std::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 ///         // Upload new data
@@ -100,9 +105,12 @@ pub trait ChartRenderer: GpuRenderer {
     /// 2. Upload new data to the current buffer
     /// 3. Update internal data bounds
     ///
-    /// The queue parameter allows immediate buffer writes without waiting
+    /// The `device` parameter allows renderers to recreate GPU buffers when
+    /// incoming data exceeds current capacity.
+    ///
+    /// The `queue` parameter allows immediate buffer writes without waiting
     /// for the next render frame.
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue);
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue);
 
     /// Sets the current animation state.
     ///
@@ -346,6 +354,12 @@ pub mod base {
     ) {
         let mut storage = StorageBuffer::new(Vec::new());
         storage.write(data).expect("Failed to write storage buffer");
+        let bytes = storage.as_ref().len() as u64;
+        let capacity = buffer.size();
+        assert!(
+            bytes <= capacity,
+            "Chart renderer attempted to write {bytes} bytes into a {capacity}-byte storage buffer"
+        );
         queue.write_buffer(buffer, 0, storage.as_ref());
     }
 
@@ -357,6 +371,12 @@ pub mod base {
     ) {
         let mut uniform = UniformBuffer::new(Vec::new());
         uniform.write(data).expect("Failed to write uniform buffer");
+        let bytes = uniform.as_ref().len() as u64;
+        let capacity = buffer.size();
+        assert!(
+            bytes <= capacity,
+            "Chart renderer attempted to write {bytes} bytes into a {capacity}-byte uniform buffer"
+        );
         queue.write_buffer(buffer, 0, uniform.as_ref());
     }
 

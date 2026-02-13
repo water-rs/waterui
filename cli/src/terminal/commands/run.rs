@@ -240,6 +240,8 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Resolve the backend to use
     let backend = resolve_backend(args.platform, args.backend)?;
+    validate_gtk4_platform_on_host(args.platform, backend)?;
+    validate_device_arg(backend, args.device.as_deref())?;
 
     header!(
         "Running {} on {} ({})",
@@ -660,6 +662,34 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
     }
 }
 
+fn validate_device_arg(backend: TargetBackend, device: Option<&str>) -> Result<()> {
+    if backend == TargetBackend::Gtk4 && device.is_some() {
+        bail!("--device is not supported with --backend gtk4 (GTK4 runs on the local machine)");
+    }
+    Ok(())
+}
+
+fn validate_gtk4_platform_on_host(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
+    if backend != TargetBackend::Gtk4 {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    if platform != TargetPlatform::Macos {
+        bail!("GTK4 backend on macOS host requires --platform macos");
+    }
+
+    #[cfg(target_os = "linux")]
+    if platform != TargetPlatform::Linux {
+        bail!("GTK4 backend on Linux host requires --platform linux");
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    bail!("GTK4 backend is only supported on macOS or Linux hosts");
+
+    Ok(())
+}
+
 /// Handle a device event.
 ///
 /// Returns `true` if the event loop should break.
@@ -699,5 +729,42 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool 
             true
         }
         None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        TargetBackend, TargetPlatform, validate_device_arg, validate_gtk4_platform_on_host,
+    };
+
+    #[test]
+    fn rejects_device_with_gtk4_backend() {
+        let err = validate_device_arg(TargetBackend::Gtk4, Some("foo"))
+            .expect_err("gtk4 with --device should fail");
+        assert!(err.to_string().contains("--device is not supported"));
+    }
+
+    #[test]
+    fn accepts_device_with_non_gtk4_backend() {
+        assert!(validate_device_arg(TargetBackend::Apple, Some("sim-1")).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gtk4_platform_must_match_macos_host() {
+        assert!(validate_gtk4_platform_on_host(TargetPlatform::Macos, TargetBackend::Gtk4).is_ok());
+        assert!(
+            validate_gtk4_platform_on_host(TargetPlatform::Linux, TargetBackend::Gtk4).is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gtk4_platform_must_match_linux_host() {
+        assert!(validate_gtk4_platform_on_host(TargetPlatform::Linux, TargetBackend::Gtk4).is_ok());
+        assert!(
+            validate_gtk4_platform_on_host(TargetPlatform::Macos, TargetBackend::Gtk4).is_err()
+        );
     }
 }

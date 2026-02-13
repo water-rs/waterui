@@ -41,6 +41,8 @@ pub struct BuildOptions {
     output_dir: Option<std::path::PathBuf>,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<std::path::PathBuf>,
+    /// Optional target triple override.
+    target_triple: Option<Triple>,
 }
 
 impl BuildOptions {
@@ -51,6 +53,7 @@ impl BuildOptions {
             release,
             output_dir: None,
             sccache_path: None,
+            target_triple: None,
         }
     }
 
@@ -86,6 +89,19 @@ impl BuildOptions {
     #[must_use]
     pub fn with_sccache(mut self, sccache_path: impl Into<std::path::PathBuf>) -> Self {
         self.sccache_path = Some(sccache_path.into());
+        self
+    }
+
+    /// Get the explicit target triple override, if configured.
+    #[must_use]
+    pub const fn target_triple(&self) -> Option<&Triple> {
+        self.target_triple.as_ref()
+    }
+
+    /// Override the target triple used for compilation.
+    #[must_use]
+    pub fn with_target_triple(mut self, target_triple: Triple) -> Self {
+        self.target_triple = Some(target_triple);
         self
     }
 }

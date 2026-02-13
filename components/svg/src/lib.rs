@@ -153,13 +153,13 @@ impl Svg {
     #[cfg(feature = "cpu")]
     fn to_gpu_surface(&self, color: &str) -> GpuSurface {
         let svg_content = self.build_svg_content(color);
-        GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content))
+        GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content)).on_demand()
     }
 
     #[cfg(all(feature = "vello-backend", not(feature = "cpu")))]
     fn to_gpu_surface(&self, color: &str) -> GpuSurface {
         let svg_content = self.build_svg_content(color);
-        GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+        GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content)).on_demand()
     }
 
     /// Format a ResolvedColor as an SVG-compatible hex string.

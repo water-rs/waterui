@@ -15,7 +15,14 @@ pub mod code;
 /// Rich text widget support.
 #[macro_use]
 pub mod rich_text;
+#[cfg(feature = "flow-markdown")]
+pub mod flow_markdown;
 pub use code::{Code, code};
+#[cfg(feature = "flow-markdown")]
+pub use flow_markdown::{
+    FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
+    FlowTablePolicy, flow_markdown,
+};
 pub use rich_text::{RichText, RichTextElement, rich_text};
 pub mod divider;
 pub use divider::Divider;

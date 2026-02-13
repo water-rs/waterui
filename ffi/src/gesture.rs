@@ -25,6 +25,20 @@ pub enum WuiGesture {
         /// The gesture that runs after the first completes.
         then: *mut WuiGesture,
     },
+    /// A parallel composition of two gestures.
+    Simultaneous {
+        /// The first gesture in the composition.
+        first: *mut WuiGesture,
+        /// The second gesture in the composition.
+        second: *mut WuiGesture,
+    },
+    /// An exclusive composition where first has priority over second.
+    Exclusive {
+        /// The primary gesture.
+        first: *mut WuiGesture,
+        /// The fallback gesture.
+        second: *mut WuiGesture,
+    },
 }
 
 impl IntoFFI for Gesture {
@@ -52,13 +66,22 @@ impl IntoFFI for Gesture {
                     then: then_gesture,
                 }
             }
-            // Handle any future gesture variants
-            _ => WuiGesture::Tap { count: 1 },
+            Gesture::Simultaneous(pair) => {
+                let first = Box::into_raw(Box::new(pair.first().clone().into_ffi()));
+                let second = Box::into_raw(Box::new(pair.second().clone().into_ffi()));
+                WuiGesture::Simultaneous { first, second }
+            }
+            Gesture::Exclusive(pair) => {
+                let first = Box::into_raw(Box::new(pair.first().clone().into_ffi()));
+                let second = Box::into_raw(Box::new(pair.second().clone().into_ffi()));
+                WuiGesture::Exclusive { first, second }
+            }
+            _ => panic!("Unsupported Gesture variant for FFI conversion"),
         }
     }
 }
 
-/// Drops a WuiGesture, recursively freeing any Then variants.
+/// Drops a WuiGesture, recursively freeing any composite variants.
 ///
 /// # Safety
 ///
@@ -70,9 +93,21 @@ pub unsafe extern "C" fn waterui_drop_gesture(gesture: *mut WuiGesture) {
     }
     unsafe {
         let gesture = Box::from_raw(gesture);
-        if let WuiGesture::Then { first, then } = *gesture {
-            waterui_drop_gesture(first);
-            waterui_drop_gesture(then);
+        match *gesture {
+            WuiGesture::Then { first, then } => {
+                waterui_drop_gesture(first);
+                waterui_drop_gesture(then);
+            }
+            WuiGesture::Simultaneous { first, second }
+            | WuiGesture::Exclusive { first, second } => {
+                waterui_drop_gesture(first);
+                waterui_drop_gesture(second);
+            }
+            WuiGesture::Tap { .. }
+            | WuiGesture::LongPress { .. }
+            | WuiGesture::Drag { .. }
+            | WuiGesture::Magnification { .. }
+            | WuiGesture::Rotation { .. } => {}
         }
     }
 }

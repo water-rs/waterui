@@ -4,11 +4,11 @@
 use core::num::NonZeroUsize;
 
 use nami::Binding;
-use waterui_core::Str;
 use waterui_core::configurable;
-use waterui_core::{AnyView, View, layout::StretchAxis};
+use waterui_core::Str;
+use waterui_core::{layout::StretchAxis, AnyView, View};
 
-use waterui_text::Text;
+use waterui_text::{styled::StyledStr, Text};
 
 configurable!(
     /// A single-line text input field.
@@ -59,13 +59,14 @@ pub struct TextFieldConfig {
     /// The label displayed for the text field.
     pub label: AnyView,
     /// The binding to the text value.
-    pub value: Binding<Str>,
+    pub value: Binding<StyledStr>,
     /// The placeholder text shown when the field is empty.
     pub prompt: Text,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
-    /// The maximum number of lines to show.
-    /// If `None`, the text field will show as many lines as needed.
+    /// Reserved for future multi-line support.
+    ///
+    /// Currently only `Some(1)` is supported across backends.
     pub line_limit: Option<NonZeroUsize>,
 }
 
@@ -90,6 +91,13 @@ impl TextField {
     /// Creates a new `TextField` with the given value binding.
     #[must_use]
     pub fn new(value: &Binding<Str>) -> Self {
+        let styled_value = map_plain_binding(value);
+        Self::styled(&styled_value)
+    }
+
+    /// Creates a new `TextField` backed by a styled text binding.
+    #[must_use]
+    pub fn styled(value: &Binding<StyledStr>) -> Self {
         Self(TextFieldConfig {
             label: AnyView::default(),
             value: value.clone(),
@@ -109,21 +117,26 @@ impl TextField {
     ///
     /// By default, the line limit is 1.
     ///
+    /// Currently only `1` is supported across backends.
+    ///
     /// # Panics
     ///
-    /// Panics if `line_limit` is 0.
+    /// Panics if `line_limit` is 0 or not 1.
     #[must_use]
     pub fn line_limit(mut self, line_limit: usize) -> Self {
         assert!(line_limit > 0, "Line limit must be greater than 0");
+        assert_eq!(
+            line_limit, 1,
+            "TextField multi-line editing is not implemented yet"
+        );
         self.0.line_limit = NonZeroUsize::new(line_limit);
         self
     }
 
     /// Disables the line limit.
     #[must_use]
-    pub const fn disable_line_limit(mut self) -> Self {
-        self.0.line_limit = None;
-        self
+    pub fn disable_line_limit(self) -> Self {
+        panic!("TextField multi-line editing is not implemented yet");
     }
 
     /// Sets the prompt for the text field.
@@ -137,4 +150,73 @@ impl TextField {
 /// Creates a new [`TextField`] with the specified label and value binding.
 pub fn field(label: impl View, value: &Binding<Str>) -> TextField {
     TextField::new(value).label(label)
+}
+
+fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
+    Binding::mapping(
+        value,
+        |plain| StyledStr::plain(plain.clone()),
+        |plain_binding, styled| {
+            assert!(
+                is_plain_styled(&styled),
+                "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
+            );
+            *plain_binding.get_mut() = styled.to_plain();
+        },
+    )
+}
+
+fn is_plain_styled(styled: &StyledStr) -> bool {
+    // `Binding<Str>` API must reject rich formatting on write-back.
+    styled.clone().into_chunks().iter().all(|(_, style)| {
+        !style.italic
+            && !style.underline
+            && !style.strikethrough
+            && style.foreground.is_none()
+            && style.background.is_none()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+    use waterui_core::Str;
+    use waterui_text::styled::StyledStr;
+
+    use super::TextField;
+
+    #[test]
+    #[should_panic(expected = "Line limit must be greater than 0")]
+    fn line_limit_zero_panics() {
+        let value = Binding::container(Str::from(""));
+        let _ = TextField::new(&value).line_limit(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "multi-line editing is not implemented yet")]
+    fn line_limit_non_one_panics() {
+        let value = Binding::container(Str::from(""));
+        let _ = TextField::new(&value).line_limit(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "multi-line editing is not implemented yet")]
+    fn disable_line_limit_panics() {
+        let value = Binding::container(Str::from(""));
+        let _ = TextField::new(&value).disable_line_limit();
+    }
+
+    #[test]
+    fn styled_constructor_accepts_styled_binding() {
+        let styled = Binding::container(StyledStr::plain("a"));
+        let _ = TextField::styled(&styled);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot accept styled text updates")]
+    fn plain_mapping_panics_on_styled_write_back() {
+        let plain = Binding::container(Str::from("a"));
+        let mapped = super::map_plain_binding(&plain);
+        mapped.set(StyledStr::plain("b").italic(true));
+    }
 }

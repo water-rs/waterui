@@ -3,6 +3,7 @@ use core::ops::Deref;
 use crate::array::WuiArray;
 use crate::components::form::WuiPickerItem;
 use crate::components::media::WuiLivePhotoSource;
+use crate::components::text::WuiStyledStr;
 use crate::{IntoFFI, IntoRust, OpaqueType, WuiAnyView, WuiStr};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -15,6 +16,7 @@ use waterui::{AnyView, Str};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::live::LivePhotoSource;
+use waterui_text::styled::StyledStr;
 opaque!(WuiWatcherMetadata, Metadata, watcher_metadata);
 
 opaque!(WuiWatcherGuard, BoxWatcherGuard);
@@ -575,6 +577,24 @@ macro_rules! ffi_reactive {
 }
 
 ffi_reactive!(Str, WuiStr);
+ffi_binding!(StyledStr, WuiStyledStr, styled_str);
+
+#[cfg(feature = "c-api")]
+/// Sets a `Binding<StyledStr>` using plain text.
+///
+/// This helper is intended for native text input controls that only emit plain
+/// text updates while the reactive binding type remains `StyledStr`.
+///
+/// # Safety
+/// `binding` must be a valid pointer to `WuiBinding<StyledStr>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_set_binding_styled_str_plain(
+    binding: *mut WuiBinding<StyledStr>,
+    value: WuiStr,
+) {
+    let plain: Str = unsafe { value.into_rust() };
+    unsafe { (*binding).set(StyledStr::plain(plain)) };
+}
 
 ffi_reactive!(AnyView, *mut WuiAnyView);
 

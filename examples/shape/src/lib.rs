@@ -349,8 +349,31 @@ fn layout_demo() -> impl View {
     .padding()
 }
 
+/// Demo: Morphing animation between built-in shapes.
+fn morph_demo() -> impl View {
+    vstack((
+        text("Morph Animation").size(18.0),
+        "SDF-based shape morphing for built-in shapes",
+        hstack((
+            Circle
+                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+                .size(90.0, 90.0),
+            RoundedRectangle::new(0.08)
+                .morph_to(Capsule, Color::srgb_hex("#10B981"))
+                .duration(core::time::Duration::from_millis(1200))
+                .size(120.0, 70.0),
+            Rectangle
+                .morph_to(Ellipse, Color::srgb_hex("#F97316"))
+                .duration(core::time::Duration::from_millis(800))
+                .autoreverse(true)
+                .size(110.0, 70.0),
+        ))
+        .spacing(12.0),
+    ))
+    .padding()
+}
+
 fn main() -> impl View {
-    waterui::log::warn!("[ShapeExample] main() called - this log should appear");
     let show_hdr = binding(true);
 
     //panic!("Shape example app requires WaterUI runtime.");
@@ -385,6 +408,8 @@ fn main() -> impl View {
             vstack((
                 Divider,
                 clip_showcase(),
+                Divider,
+                morph_demo(),
                 Divider,
                 layout_demo(),
                 spacer().min_height(32.0),
