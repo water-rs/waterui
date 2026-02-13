@@ -529,12 +529,8 @@ pub mod gtk4 {
             })),
         );
 
-        // Add waterui-gtk dependency with platform-specific GPU features
-        #[cfg(target_os = "macos")]
-        let gtk_features = vec!["macos".to_string()];
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let gtk_features = vec!["x11".to_string(), "wayland".to_string()];
-        #[cfg(not(unix))]
+        // Keep GTK4 backend lean by default.
+        // Optional integrations (for example WebKit) should be enabled explicitly.
         let gtk_features = vec![];
 
         if let Some(waterui_path) = &ctx.waterui_path {

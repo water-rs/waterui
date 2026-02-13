@@ -1287,7 +1287,7 @@ impl WebViewHandle for GtkWebViewHandle {
         #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
         {
             let _ = script;
-            panic!("{WEBKIT_FEATURE_MSG}");
+            return Box::pin(async { Err(Str::from(WEBKIT_FEATURE_MSG)) });
         }
     }
 }

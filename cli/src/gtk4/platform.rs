@@ -17,7 +17,7 @@ use crate::{
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{run_command, run_command_os},
+    utils::{command, run_command_os},
 };
 
 #[cfg(target_os = "macos")]
@@ -43,22 +43,39 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
-    // Build the GTK4 binary crate
+    // Build the GTK4 binary crate.
     let profile = if options.is_release() {
         "release"
     } else {
         "debug"
     };
+    let host_target = target_lexicon::Triple::host().to_string();
 
-    let mut args = vec!["build", "--manifest-path"];
-    let cargo_toml_str = cargo_toml.to_string_lossy().to_string();
-    args.push(&cargo_toml_str);
-
+    let mut cargo = smol::process::Command::new("cargo");
+    let cargo = command(&mut cargo);
+    cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     if options.is_release() {
-        args.push("--release");
+        cargo.arg("--release");
+    }
+    for (key, value) in crate::toolchain::dav1d::cargo_env_for_target(&host_target).await {
+        cargo.env(key, value);
     }
 
-    run_command("cargo", args.iter().copied()).await?;
+    let output = cargo.output().await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let details = if !stderr.is_empty() {
+            stderr.to_string()
+        } else {
+            stdout.to_string()
+        };
+        bail!(
+            "Failed to build GTK4 backend with cargo (status {}):\n{}",
+            output.status,
+            details
+        );
+    }
 
     // Return the target directory where the binary was built
     // GTK4 uses its own target directory since it's a standalone project

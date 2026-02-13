@@ -11,22 +11,22 @@
 
 use alloc::vec::Vec;
 use executor_core::spawn_local;
-use nami::{signal::IntoComputed, Binding, Signal, SignalExt as _};
-pub use waterui_core::view::*;
+use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
+pub use waterui_core::view::*;
 use waterui_core::{
-    env::{use_env, With},
+    AnyView, Environment, IgnorableMetadata, Retain,
+    env::{With, use_env},
     metadata::MetadataKey,
     plugin::Plugin,
-    AnyView, Environment, IgnorableMetadata, Retain,
 };
-use waterui_graphics::{color::Color, FilterViewExt};
+use waterui_graphics::{FilterViewExt, color::Color};
 
 use waterui_layout::{
+    EdgeSet, IgnoreSafeArea, Overlay,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
-    EdgeSet, IgnoreSafeArea, Overlay,
 };
 use waterui_navigation::NavigationView;
 use waterui_str::Str;
@@ -50,9 +50,9 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
+use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
-use waterui_core::Metadata;
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
     /// Attaches metadata to a view.
@@ -778,34 +778,6 @@ pub trait ViewExt: View + Sized {
         items: impl IntoComputed<Vec<crate::metadata::context_menu::MenuItem>>,
     ) -> Metadata<ContextMenu> {
         Metadata::new(self, ContextMenu::new(items))
-    }
-
-    /// Attaches a selection menu to this view.
-    ///
-    /// This API is intended for text-selection workflows and currently maps to
-    /// the same backend behavior as [`ViewExt::context_menu`]. Keeping it separate
-    /// allows backend text-selection menu integration without changing call sites.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use waterui::prelude::*;
-    /// use waterui::metadata::selection_menu::MenuItem;
-    ///
-    /// TextField::new(&value)
-    ///     .selection_menu(vec![
-    ///         MenuItem::new("Uppercase").action(|| println!("uppercase")),
-    ///         MenuItem::new("Lowercase").action(|| println!("lowercase")),
-    ///     ]);
-    /// ```
-    fn selection_menu(
-        self,
-        items: impl IntoComputed<Vec<crate::metadata::selection_menu::MenuItem>>,
-    ) -> Metadata<crate::metadata::selection_menu::SelectionMenu> {
-        Metadata::new(
-            self,
-            crate::metadata::selection_menu::SelectionMenu::new(items),
-        )
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.

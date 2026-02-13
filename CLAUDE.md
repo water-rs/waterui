@@ -28,6 +28,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do not clean cache blindly
 - Do not use `git checkout` to back out changes, as it can lead to loss of work
 - Import third-party crates instead of writing your own implementation. Less code is better.
+- Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.
+- `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
 </important>
 
 ## Build Commands

@@ -270,7 +270,14 @@ impl RustBuild {
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
 
-        // Apply extra environment variables first.
+        // Configure dav1d dependency resolution for this target.
+        for (key, value) in
+            crate::toolchain::dav1d::cargo_env_for_target(&self.triple.to_string()).await
+        {
+            cmd.env(key, value);
+        }
+
+        // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);
         }

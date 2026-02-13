@@ -203,7 +203,7 @@ ctx.scene()                         // Access underlying Vello scene
 The `GpuRenderer` trait defines three lifecycle methods:
 
 ```rust
-pub trait GpuRenderer: Send + 'static {
+pub trait GpuRenderer: 'static {
     fn setup(&mut self, ctx: &GpuContext);
     fn render(&mut self, frame: &GpuFrame);
     fn resize(&mut self, width: u32, height: u32);

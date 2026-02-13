@@ -3,12 +3,15 @@
 //! ![`TextField`](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
 use core::num::NonZeroUsize;
 
-use nami::Binding;
-use waterui_core::configurable;
+use alloc::vec::Vec;
+use nami::{Binding, Computed, signal::IntoComputed};
 use waterui_core::Str;
-use waterui_core::{layout::StretchAxis, AnyView, View};
+use waterui_core::configurable;
+use waterui_core::{AnyView, View, layout::StretchAxis};
 
-use waterui_text::{styled::StyledStr, Text};
+use waterui_text::{Text, styled::StyledStr};
+
+use crate::menu::MenuItem;
 
 configurable!(
     /// A single-line text input field.
@@ -64,6 +67,10 @@ pub struct TextFieldConfig {
     pub prompt: Text,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
+    /// Optional selected-text menu items.
+    ///
+    /// These actions are shown by native text selection UI.
+    pub selection_menu: Computed<Vec<MenuItem>>,
     /// Reserved for future multi-line support.
     ///
     /// Currently only `Some(1)` is supported across backends.
@@ -103,6 +110,7 @@ impl TextField {
             value: value.clone(),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
+            selection_menu: Computed::constant(Vec::new()),
             line_limit: NonZeroUsize::new(1),
         })
     }
@@ -145,6 +153,13 @@ impl TextField {
         self.0.prompt = prompt.into();
         self
     }
+
+    /// Sets custom selected-text menu items for this text field.
+    #[must_use]
+    pub fn selection_menu(mut self, items: impl IntoComputed<Vec<MenuItem>>) -> Self {
+        self.0.selection_menu = items.into_computed();
+        self
+    }
 }
 
 /// Creates a new [`TextField`] with the specified label and value binding.
@@ -158,23 +173,12 @@ fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
         |plain| StyledStr::plain(plain.clone()),
         |plain_binding, styled| {
             assert!(
-                is_plain_styled(&styled),
+                styled.is_plain(),
                 "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
             );
             *plain_binding.get_mut() = styled.to_plain();
         },
     )
-}
-
-fn is_plain_styled(styled: &StyledStr) -> bool {
-    // `Binding<Str>` API must reject rich formatting on write-back.
-    styled.clone().into_chunks().iter().all(|(_, style)| {
-        !style.italic
-            && !style.underline
-            && !style.strikethrough
-            && style.foreground.is_none()
-            && style.background.is_none()
-    })
 }
 
 #[cfg(test)]

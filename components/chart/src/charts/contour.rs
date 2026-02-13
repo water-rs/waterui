@@ -6,6 +6,7 @@ use waterui_graphics::GpuSurface;
 
 use crate::charts::SignalRenderer;
 use crate::data::ContourData;
+use crate::params::{ChartParamError, PositiveF32};
 use crate::renderer::ContourRenderer;
 
 /// Contour chart for isoline visualization.
@@ -49,13 +50,21 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
 
     /// Sets the line width for contour lines.
     #[must_use]
-    pub fn line_width(mut self, width: f32) -> Self {
-        assert!(
-            width.is_finite() && width > 0.0,
-            "ContourChart::line_width(width) requires width > 0"
-        );
-        self.line_width = width;
+    pub fn line_width(self, width: f32) -> Self {
+        self.try_line_width(width)
+            .expect("ContourChart::line_width(width) requires finite width > 0")
+    }
+
+    /// Sets line width using a validated strong type.
+    #[must_use]
+    pub fn with_line_width(mut self, width: PositiveF32) -> Self {
+        self.line_width = width.get();
         self
+    }
+
+    /// Fallible variant of [`Self::line_width`].
+    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_line_width(PositiveF32::try_new(width)?))
     }
 }
 

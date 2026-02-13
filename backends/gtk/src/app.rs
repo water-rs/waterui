@@ -2,9 +2,11 @@
 
 use std::cell::RefCell;
 
+use executor_core::{try_init_global_executor, try_init_local_executor};
 use gtk4::Application;
 use gtk4::prelude::*;
 use nami::Signal;
+use native_executor::NativeExecutor;
 use waterui::app::App;
 use waterui_core::{Environment, View};
 
@@ -12,6 +14,13 @@ use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guards;
 use crate::webview::ensure_webview_controller;
 use crate::window::{apply_window_background, create_window};
+
+fn ensure_executors_initialized_for_main_thread() {
+    // GTK apps run UI rendering on the main thread. Initialize executors there so
+    // spawn/spawn_local paths used by reactive bindings are always available.
+    let _ = try_init_global_executor(NativeExecutor::new());
+    let _ = try_init_local_executor(NativeExecutor::new());
+}
 
 /// GTK4 application wrapper for WaterUI.
 #[derive(Debug)]
@@ -41,6 +50,7 @@ impl GtkApp {
         let env = env.clone();
 
         self.app.connect_activate(move |app| {
+            ensure_executors_initialized_for_main_thread();
             let window = create_window(app, "WaterUI App", 800, 600);
 
             let mut renderer = GtkRenderer::new();
@@ -68,6 +78,7 @@ impl GtkApp {
         ensure_webview_controller(&mut env);
 
         self.app.connect_activate(move |app| {
+            ensure_executors_initialized_for_main_thread();
             // Take the content or use default if already taken (re-activation)
             let content = content.borrow_mut().take().unwrap_or_default();
 

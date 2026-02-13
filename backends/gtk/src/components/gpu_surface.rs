@@ -15,6 +15,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gdk4::prelude::*;
+use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
@@ -29,20 +30,6 @@ use crate::renderer::GtkRenderer;
 compile_error!(
     "GTK GpuSurface implementation is Linux-only. The waterui-gtk crate should not be built on non-Linux targets."
 );
-
-mod gdk_gl_ffi {
-    use super::*;
-
-    // gtk4/gdk4 link us to libgdk-4 already; declare the symbol directly.
-    //
-    // Safety: the returned pointer is owned by the GL implementation; we must not free it.
-    extern "C" {
-        pub fn gdk_gl_context_get_proc_address(
-            context: *mut gdk4::ffi::GdkGLContext,
-            proc_name: *const c_char,
-        ) -> *const c_void;
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PixelSize {
@@ -65,6 +52,7 @@ impl PixelSize {
 #[derive(Debug)]
 struct GpuState {
     gpu_surface: Option<GpuSurface>,
+    msaa_max_samples: u32,
 
     wgpu_instance: Option<wgpu::Instance>,
     wgpu_adapter: Option<wgpu::Adapter>,
@@ -89,8 +77,10 @@ struct GpuState {
 
 impl GpuState {
     fn new(gpu_surface: GpuSurface) -> Self {
+        let msaa_max_samples = gpu_surface.get_msaa_max_samples().get();
         Self {
             gpu_surface: Some(gpu_surface),
+            msaa_max_samples,
             wgpu_instance: None,
             wgpu_adapter: None,
             wgpu_device: None,
@@ -159,36 +149,7 @@ fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
             map_gl_internal_format_to_wgpu(internal)
         }
         glow::TEXTURE => {
-            let name = unsafe {
-                gl.get_framebuffer_attachment_parameter_i32(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
-                )
-            };
-            let target = unsafe {
-                gl.get_framebuffer_attachment_parameter_i32(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET,
-                )
-            };
-
-            let tex = glow::NativeTexture(
-                NonZeroU32::new(name as u32)
-                    .unwrap_or_else(|| panic!("GpuSurface(GL): expected non-zero texture name")),
-            );
-
-            unsafe {
-                gl.bind_texture(target as u32, Some(tex));
-            }
-            let internal = unsafe {
-                gl.get_tex_level_parameter_i32(target as u32, 0, glow::TEXTURE_INTERNAL_FORMAT)
-            };
-            unsafe {
-                gl.bind_texture(target as u32, None);
-            }
-            map_gl_internal_format_to_wgpu(internal)
+            panic!("GpuSurface(GL): texture-backed GtkGLArea framebuffer is not supported")
         }
         other => panic!("GpuSurface(GL): unexpected framebuffer attachment type {other}"),
     }
@@ -203,16 +164,97 @@ fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
     }))
 }
 
-fn make_gl_loader(gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void {
-    use glib::translate::ToGlibPtr;
+type EglGetProcAddress = unsafe extern "C" fn(*const c_char) -> *const c_void;
+type GlxGetProcAddress = unsafe extern "C" fn(*const u8) -> *const c_void;
 
-    let ctx_ptr = gl_ctx.as_ref().to_glib_none().0;
-    move |name: &str| {
-        let c = CString::new(name)
-            .unwrap_or_else(|_| panic!("GpuSurface(GL): GL proc name contains NUL byte: {name:?}"));
-        // SAFETY: `ctx_ptr` is a valid `GdkGLContext*` as long as `gl_ctx` is alive.
-        unsafe { gdk_gl_ffi::gdk_gl_context_get_proc_address(ctx_ptr, c.as_ptr()) }
+struct GlProcResolver {
+    libs: Vec<libloading::Library>,
+    egl_get_proc: Option<EglGetProcAddress>,
+    glx_get_proc: Option<GlxGetProcAddress>,
+}
+
+impl GlProcResolver {
+    fn new() -> Self {
+        let candidates = [
+            "libGLESv2.so.2",
+            "libGL.so.1",
+            "libOpenGL.so.0",
+            "libEGL.so.1",
+        ];
+        let mut libs = Vec::new();
+        let mut egl_get_proc = None;
+        let mut glx_get_proc = None;
+
+        for path in candidates {
+            let lib = match unsafe { libloading::Library::new(path) } {
+                Ok(lib) => lib,
+                Err(_) => continue,
+            };
+            if egl_get_proc.is_none() {
+                // SAFETY: symbol lookup only; pointer is copied and used while process is alive.
+                if let Ok(symbol) = unsafe { lib.get::<EglGetProcAddress>(b"eglGetProcAddress\0") }
+                {
+                    egl_get_proc = Some(*symbol);
+                }
+            }
+            if glx_get_proc.is_none() {
+                // SAFETY: symbol lookup only; pointer is copied and used while process is alive.
+                if let Ok(symbol) =
+                    unsafe { lib.get::<GlxGetProcAddress>(b"glXGetProcAddressARB\0") }
+                {
+                    glx_get_proc = Some(*symbol);
+                }
+            }
+            libs.push(lib);
+        }
+
+        Self {
+            libs,
+            egl_get_proc,
+            glx_get_proc,
+        }
     }
+
+    fn load(&self, name: &str) -> *const c_void {
+        let cname = match CString::new(name) {
+            Ok(cname) => cname,
+            Err(_) => return std::ptr::null(),
+        };
+        let bytes = cname.as_bytes_with_nul();
+
+        for lib in &self.libs {
+            // SAFETY: this is a symbol lookup by NUL-terminated name.
+            if let Ok(symbol) = unsafe { lib.get::<*const c_void>(bytes) } {
+                let ptr = *symbol;
+                if !ptr.is_null() {
+                    return ptr;
+                }
+            }
+        }
+
+        if let Some(get_proc) = self.egl_get_proc {
+            // SAFETY: function pointer comes from the loaded EGL library.
+            let ptr = unsafe { get_proc(cname.as_ptr()) };
+            if !ptr.is_null() {
+                return ptr;
+            }
+        }
+
+        if let Some(get_proc) = self.glx_get_proc {
+            // SAFETY: function pointer comes from the loaded GLX library.
+            let ptr = unsafe { get_proc(cname.as_ptr().cast()) };
+            if !ptr.is_null() {
+                return ptr;
+            }
+        }
+
+        std::ptr::null()
+    }
+}
+
+fn make_gl_loader(_gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void {
+    let resolver = GlProcResolver::new();
+    move |name: &str| resolver.load(name)
 }
 
 fn init_wgpu_if_needed(area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4::GLContext) {
@@ -242,15 +284,15 @@ fn init_wgpu_if_needed(area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4:
     let required_limits = wgpu::Limits::default().using_resolution(adapter_limits);
 
     // Create the hal device/queue while the GtkGLArea context is current.
+    let hal_adapter = unsafe { adapter.as_hal::<wgpu::hal::api::Gles>() }
+        .expect("GpuSurface(GL): expected GL adapter");
     let open = unsafe {
-        adapter
-            .as_hal::<wgpu::hal::api::Gles>()
-            .expect("GpuSurface(GL): expected GL adapter")
-            .open(
-                wgpu::Features::empty(),
-                &required_limits,
-                &wgpu::MemoryHints::Performance,
-            )
+        wgpu::hal::Adapter::open(
+            &*hal_adapter,
+            wgpu::Features::empty(),
+            &required_limits,
+            &wgpu::MemoryHints::Performance,
+        )
     }
     .unwrap_or_else(|e| panic!("GpuSurface(GL): failed to open hal device: {e:?}"));
 
@@ -273,7 +315,7 @@ fn init_wgpu_if_needed(area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4:
         tracing::error!("[wgpu] Uncaptured error: {error}");
     }));
 
-    let msaa_samples = preferred_msaa_samples(&adapter, format, 4);
+    let msaa_samples = preferred_msaa_samples(&adapter, format, state.msaa_max_samples);
 
     state.wgpu_instance = Some(instance);
     state.wgpu_adapter = Some(adapter);
@@ -294,13 +336,13 @@ fn schedule_setup(state: Rc<RefCell<GpuState>>) {
             if st.setup_in_flight || st.setup_done {
                 return;
             }
-            let Some(device) = st.wgpu_device.as_ref() else {
+            let Some(device) = st.wgpu_device.clone() else {
                 return;
             };
-            let Some(queue) = st.wgpu_queue.as_ref() else {
+            let Some(queue) = st.wgpu_queue.clone() else {
                 return;
             };
-            let Some(adapter) = st.wgpu_adapter.as_ref() else {
+            let Some(adapter) = st.wgpu_adapter.clone() else {
                 return;
             };
             let Some(format) = st.surface_format else {
@@ -312,14 +354,7 @@ fn schedule_setup(state: Rc<RefCell<GpuState>>) {
 
             st.setup_in_flight = true;
 
-            (
-                gpu_surface,
-                device.clone(),
-                queue.clone(),
-                adapter.clone(),
-                format,
-                st.msaa_samples,
-            )
+            (gpu_surface, device, queue, adapter, format, st.msaa_samples)
         };
 
         let ctx = GpuContext {
@@ -341,36 +376,34 @@ fn schedule_setup(state: Rc<RefCell<GpuState>>) {
 }
 
 fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
-    let (device, queue, adapter, format, msaa_samples, mut gpu_surface, pointer, gesture, glow) = {
+    let (device, queue, format, msaa_samples, mut gpu_surface, pointer, gesture, glow) = {
         let mut st = state.borrow_mut();
-        let Some(device) = st.wgpu_device.as_ref() else {
+        let Some(device) = st.wgpu_device.clone() else {
             return;
         };
-        let Some(queue) = st.wgpu_queue.as_ref() else {
-            return;
-        };
-        let Some(adapter) = st.wgpu_adapter.as_ref() else {
+        let Some(queue) = st.wgpu_queue.clone() else {
             return;
         };
         let Some(format) = st.surface_format else {
             return;
         };
-        let Some(glow) = st.glow.as_ref() else { return };
+        let Some(glow) = st.glow.clone() else {
+            return;
+        };
         let Some(gpu_surface) = st.gpu_surface.take() else {
             // Setup may still be running.
             return;
         };
 
         (
-            device.clone(),
-            queue.clone(),
-            adapter.clone(),
+            device,
+            queue,
             format,
-            msaa_samples,
+            st.msaa_samples,
             gpu_surface,
             st.pointer,
             st.gesture,
-            Rc::clone(glow),
+            glow,
         )
     };
 
@@ -461,7 +494,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     st.gpu_surface = Some(gpu_surface);
 
     // Prevent GTK from drawing anything else for this GLArea.
-    let _ = (adapter, msaa_samples);
+    let _ = msaa_samples;
 }
 
 fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
@@ -586,9 +619,9 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
             st.gesture.active = true;
             st.gesture.pinch_scale = scale as f32;
             st.gesture.pinch_center = gesture.bounding_box().map(|bbox| {
-                let center_x = bbox.x() + bbox.width() * 0.5;
-                let center_y = bbox.y() + bbox.height() * 0.5;
-                waterui_core::layout::Point::new(center_x as f32 * scale_factor, center_y as f32 * scale_factor)
+                let center_x = bbox.x() as f32 + bbox.width() as f32 * 0.5;
+                let center_y = bbox.y() as f32 + bbox.height() as f32 * 0.5;
+                waterui_core::layout::Point::new(center_x * scale_factor, center_y * scale_factor)
             });
             st.last_pinch_update = Some(Instant::now());
             area.queue_render();
@@ -605,9 +638,6 @@ fn render_gpu_surface(mut gpu_surface: GpuSurface) -> gtk4::Widget {
     area.set_auto_render(false);
     area.set_has_depth_buffer(false);
     area.set_has_stencil_buffer(false);
-
-    // Request both GL and GLES; GDK picks the best available.
-    area.set_allowed_apis(gdk4::GLAPI::GL | gdk4::GLAPI::GLES);
 
     let state = Rc::new(RefCell::new(GpuState::new(gpu_surface)));
     install_input_controllers(&area, &state);

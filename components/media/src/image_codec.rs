@@ -1,0 +1,222 @@
+use alloc::vec::Vec;
+
+use ::image::GenericImageView;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodePath {
+    Platform,
+    SoftwareFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodeRoute {
+    Platform,
+    Software,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DecodedRgba {
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixel_format: waterkit_codec::DecodedPixelFormat,
+}
+
+pub(crate) fn decode_progressive_frame(data: &[u8]) -> Option<DecodedRgba> {
+    match detect_decode_route(data) {
+        DecodeRoute::Software => decode_with_software_fallback(data).ok(),
+        DecodeRoute::Platform => None,
+    }
+}
+
+pub(crate) fn is_progressive_candidate(content_type: Option<&str>, data: &[u8]) -> bool {
+    if let Ok(format) = ::image::guess_format(data) {
+        return matches!(
+            format,
+            ::image::ImageFormat::Jpeg
+                | ::image::ImageFormat::Png
+                | ::image::ImageFormat::Gif
+                | ::image::ImageFormat::WebP
+                | ::image::ImageFormat::Bmp
+                | ::image::ImageFormat::Ico
+                | ::image::ImageFormat::Tiff
+        );
+    }
+
+    let Some(content_type) = content_type else {
+        return false;
+    };
+    let lower = content_type.to_ascii_lowercase();
+    lower.contains("image/jpeg")
+        || lower.contains("image/png")
+        || lower.contains("image/gif")
+        || lower.contains("image/webp")
+        || lower.contains("image/bmp")
+        || lower.contains("image/x-icon")
+        || lower.contains("image/vnd.microsoft.icon")
+        || lower.contains("image/tiff")
+}
+
+pub(crate) fn decode_to_rgba8(data: &[u8]) -> Result<DecodedRgba, String> {
+    decode_to_rgba8_with_path(data).map(|(decoded, _)| decoded)
+}
+
+pub(crate) fn decode_to_rgba8_with_path(data: &[u8]) -> Result<(DecodedRgba, DecodePath), String> {
+    match detect_decode_route(data) {
+        DecodeRoute::Platform => decode_with_platform(data)
+            .map(|decoded| (decoded, DecodePath::Platform))
+            .map_err(|e| alloc::format!("Platform decode failed: {e}")),
+        DecodeRoute::Software => decode_with_software_fallback(data)
+            .map(|decoded| (decoded, DecodePath::SoftwareFallback))
+            .map_err(|e| alloc::format!("Software decode failed: {e}")),
+    }
+}
+
+fn detect_decode_route(data: &[u8]) -> DecodeRoute {
+    if is_heif_family(data) {
+        return DecodeRoute::Platform;
+    }
+
+    if let Ok(format) = ::image::guess_format(data) {
+        return match format {
+            ::image::ImageFormat::Avif => DecodeRoute::Platform,
+            ::image::ImageFormat::Jpeg
+            | ::image::ImageFormat::Png
+            | ::image::ImageFormat::Gif
+            | ::image::ImageFormat::WebP
+            | ::image::ImageFormat::Bmp
+            | ::image::ImageFormat::Ico
+            | ::image::ImageFormat::Tiff => DecodeRoute::Software,
+            _ => DecodeRoute::Software,
+        };
+    }
+
+    DecodeRoute::Software
+}
+
+fn is_heif_family(data: &[u8]) -> bool {
+    let Some(ftyp) = parse_ftyp(data) else {
+        return false;
+    };
+
+    is_heif_brand(&ftyp.major) || ftyp.compat.iter().any(is_heif_brand)
+}
+
+#[derive(Debug, Clone)]
+struct Ftyp {
+    major: [u8; 4],
+    compat: Vec<[u8; 4]>,
+}
+
+fn parse_ftyp(data: &[u8]) -> Option<Ftyp> {
+    if data.len() < 16 {
+        return None;
+    }
+    let box_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if box_size < 16 || box_size > data.len() || &data[4..8] != b"ftyp" {
+        return None;
+    }
+
+    let major = [data[8], data[9], data[10], data[11]];
+    let compat_bytes = &data[16..box_size];
+    if compat_bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut compat = Vec::with_capacity(compat_bytes.len() / 4);
+    for chunk in compat_bytes.chunks_exact(4) {
+        compat.push([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    Some(Ftyp { major, compat })
+}
+
+pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, String> {
+    let img = match ::image::load_from_memory(data) {
+        Ok(img) => img,
+        Err(primary_err) => {
+            let Some(patched) = patch_heif_brand_to_avif(data) else {
+                return Err(alloc::format!("Image decode failed: {}", primary_err));
+            };
+            ::image::load_from_memory(&patched).map_err(|fallback_err| {
+                alloc::format!(
+                    "Image decode failed: {primary_err}; HEIF fallback failed: \
+                     {fallback_err}. HEIF software decode only supports AV1 payloads"
+                )
+            })?
+        }
+    };
+    let (width, height) = img.dimensions();
+    let pixels = img.into_rgba8().into_raw();
+    Ok(DecodedRgba {
+        pixels,
+        width,
+        height,
+        pixel_format: waterkit_codec::DecodedPixelFormat::Rgba8UnormSrgb,
+    })
+}
+
+pub(crate) fn decode_with_platform(data: &[u8]) -> Result<DecodedRgba, String> {
+    let decoded = waterkit_codec::decode_image(data).map_err(|e| e.to_string())?;
+    Ok(DecodedRgba {
+        pixels: decoded.pixels,
+        width: decoded.width,
+        height: decoded.height,
+        pixel_format: decoded.pixel_format,
+    })
+}
+
+fn is_generic_heif_brand(brand: &[u8; 4]) -> bool {
+    matches!(brand, b"mif1" | b"msf1" | b"heif")
+}
+
+pub(crate) fn patch_heif_brand_to_avif(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 16 {
+        return None;
+    }
+    let box_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if box_size < 16 || box_size > data.len() || &data[4..8] != b"ftyp" {
+        return None;
+    }
+
+    let major = [data[8], data[9], data[10], data[11]];
+    let is_heif = is_heif_brand(&major)
+        || data[16..box_size]
+            .chunks_exact(4)
+            .any(|brand| is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]]));
+    if !is_heif {
+        return None;
+    }
+
+    let mut patched = data.to_vec();
+    patched[8..12].copy_from_slice(b"avif");
+
+    let mut has_avif_compat = false;
+    let mut first_heif_compat_offset: Option<usize> = None;
+    for offset in (16..box_size).step_by(4) {
+        if offset + 4 > box_size {
+            break;
+        }
+        let brand = &patched[offset..offset + 4];
+        if brand == b"avif" || brand == b"avis" {
+            has_avif_compat = true;
+            break;
+        }
+        if first_heif_compat_offset.is_none()
+            && is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]])
+        {
+            first_heif_compat_offset = Some(offset);
+        }
+    }
+    if !has_avif_compat {
+        if let Some(offset) = first_heif_compat_offset {
+            patched[offset..offset + 4].copy_from_slice(b"avif");
+        } else if box_size >= 20 {
+            patched[16..20].copy_from_slice(b"avif");
+        }
+    }
+
+    Some(patched)
+}
+
+fn is_heif_brand(brand: &[u8; 4]) -> bool {
+    is_generic_heif_brand(brand) || matches!(brand, b"heic" | b"heix" | b"hevc" | b"hevx")
+}

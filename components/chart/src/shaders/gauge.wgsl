@@ -62,10 +62,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
-// Calculate angle from UV coordinates (center is 0.5, 0.5)
-fn uv_to_angle(uv: vec2<f32>) -> f32 {
-    let centered = uv - vec2(0.5);
-    return atan2(centered.x, -centered.y);
+// Convert UV to aspect-corrected local coordinates centered at origin.
+// This keeps circular geometry visually circular on non-square viewports.
+fn centered_coords(uv: vec2<f32>) -> vec2<f32> {
+    let aspect = uniforms.viewport.x / max(uniforms.viewport.y, 1.0);
+    return (uv - vec2(0.5)) * vec2(aspect, 1.0);
 }
 
 // Check if angle is within gauge range
@@ -100,7 +101,7 @@ fn value_to_angle(value: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let centered = in.uv - vec2(0.5);
+    let centered = centered_coords(in.uv);
     let dist = length(centered);
     let angle = atan2(centered.x, -centered.y);
 

@@ -41,7 +41,7 @@ pub trait View: 'static {
     #[doc(hidden)]
     /// Returns the stretch axis for this view.
     fn stretch_axis(&self) -> StretchAxis {
-        panic!("View::stretch_axis() only implemented for NativeView");
+        StretchAxis::None
     }
 }
 

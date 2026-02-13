@@ -12,9 +12,16 @@
 //! Image::new(rgba_pixels, 800, 600)
 //! ```
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use crate::image_codec::{self, DecodedRgba};
 use waterui_core::{Environment, View};
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use waterui_layout::frame::Frame;
+
+pub use crate::image_codec::DecodePath;
 
 /// A GPU-accelerated image view.
 ///
@@ -112,6 +119,39 @@ impl Image {
     pub const fn height(&self) -> u32 {
         self.renderer.height
     }
+
+    /// Decode encoded image bytes and construct a GPU-backed `Image`.
+    pub fn from_encoded(data: &[u8]) -> Result<Self, String> {
+        image_codec::decode_to_rgba8(data).map(Self::from_decoded)
+    }
+
+    /// Decode owned encoded image bytes and construct a GPU-backed `Image`.
+    pub fn from_encoded_bytes(data: Vec<u8>) -> Result<Self, String> {
+        Self::from_encoded(&data)
+    }
+
+    /// Decode encoded image bytes and report which decode path was selected.
+    pub fn from_encoded_with_path(data: &[u8]) -> Result<(Self, DecodePath), String> {
+        image_codec::decode_to_rgba8_with_path(data)
+            .map(|(decoded, path)| (Self::from_decoded(decoded), path))
+    }
+
+    /// Build an incremental decoder that accepts binary image stream chunks.
+    #[must_use]
+    pub fn stream_decoder(content_type: Option<&str>) -> ImageStreamDecoder {
+        ImageStreamDecoder::new(content_type)
+    }
+
+    fn from_decoded(decoded: DecodedRgba) -> Self {
+        match decoded.pixel_format {
+            waterkit_codec::DecodedPixelFormat::Rgba8UnormSrgb => {
+                Self::new(decoded.pixels, decoded.width, decoded.height)
+            }
+            waterkit_codec::DecodedPixelFormat::Rgba16Float => {
+                Self::new_rgba16f(decoded.pixels, decoded.width, decoded.height)
+            }
+        }
+    }
 }
 
 impl View for Image {
@@ -176,6 +216,7 @@ impl ImageRenderer {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
+        hdr_to_sdr_tonemap: bool,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
         // Keep alpha blending enabled for both SDR and HDR targets so transparent
         // image assets composite consistently regardless of surface format.
@@ -214,6 +255,11 @@ impl ImageRenderer {
             push_constant_ranges: &[],
         });
 
+        let fragment_entry_point = if hdr_to_sdr_tonemap {
+            "fs_main_tonemap"
+        } else {
+            "fs_main"
+        };
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Image render pipeline"),
             layout: Some(&pipeline_layout),
@@ -225,7 +271,7 @@ impl ImageRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(fragment_entry_point),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend,
@@ -327,8 +373,17 @@ impl GpuRenderer for ImageRenderer {
         }
 
         // Create render pipeline
-        let (render_pipeline, bind_group_layout, sampler) =
-            Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
+        let hdr_to_sdr_tonemap = matches!(self.source_pixel_format, SourcePixelFormat::Rgba16Float)
+            && !matches!(
+                ctx.surface_format,
+                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+            );
+        let (render_pipeline, bind_group_layout, sampler) = Self::create_render_pipeline(
+            ctx.device,
+            ctx.surface_format,
+            ctx.pipeline_cache,
+            hdr_to_sdr_tonemap,
+        );
 
         let texture = self.texture.as_ref().expect("Texture should be created");
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -408,4 +463,508 @@ impl GpuRenderer for ImageRenderer {
 #[must_use]
 pub fn image(pixels: Vec<u8>, width: u32, height: u32) -> Image {
     Image::new(pixels, width, height)
+}
+
+/// Incremental encoded image decoder for streaming/progressive display.
+#[derive(Debug, Clone)]
+pub struct ImageStreamDecoder {
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+    attempts: usize,
+    next_attempt_at: usize,
+    last_fingerprint: Option<u64>,
+}
+
+impl ImageStreamDecoder {
+    const FIRST_ATTEMPT_BYTES: usize = 24 * 1024;
+    const ATTEMPT_STEP_BYTES: usize = 96 * 1024;
+    const MAX_ATTEMPTS: usize = 10;
+    const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+    /// Creates a new stream decoder for progressive encoded image bytes.
+    #[must_use]
+    pub fn new(content_type: Option<&str>) -> Self {
+        Self {
+            content_type: content_type.map(ToOwned::to_owned),
+            bytes: Vec::new(),
+            attempts: 0,
+            next_attempt_at: Self::FIRST_ATTEMPT_BYTES,
+            last_fingerprint: None,
+        }
+    }
+
+    /// Push a stream chunk and optionally produce a progressive frame.
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Option<Image>, String> {
+        if chunk.is_empty() {
+            return Ok(None);
+        }
+        self.bytes.extend_from_slice(chunk);
+        let total_len = self.bytes.len();
+
+        if self.attempts >= Self::MAX_ATTEMPTS
+            || total_len < self.next_attempt_at
+            || total_len > Self::MAX_BUFFER_BYTES
+            || !image_codec::is_progressive_candidate(self.content_type.as_deref(), &self.bytes)
+        {
+            return Ok(None);
+        }
+
+        self.attempts += 1;
+        self.next_attempt_at = total_len.saturating_add(Self::ATTEMPT_STEP_BYTES);
+
+        let Some(decoded) = image_codec::decode_progressive_frame(&self.bytes) else {
+            return Ok(None);
+        };
+
+        let fingerprint = frame_fingerprint(&decoded);
+        if self.last_fingerprint == Some(fingerprint) {
+            return Ok(None);
+        }
+        self.last_fingerprint = Some(fingerprint);
+        Ok(Some(Image::from_decoded(decoded)))
+    }
+
+    /// Finish decoding and produce the final full-quality image.
+    pub fn finish(self) -> Result<Image, String> {
+        if self.bytes.is_empty() {
+            return Err(String::from("image response body was empty"));
+        }
+        Image::from_encoded(&self.bytes)
+    }
+}
+
+fn frame_fingerprint(decoded: &DecodedRgba) -> u64 {
+    let len = decoded.pixels.len();
+    if len == 0 {
+        return 0;
+    }
+    let first = decoded.pixels[0] as u64;
+    let mid = decoded.pixels[len / 2] as u64;
+    let last = decoded.pixels[len - 1] as u64;
+    ((decoded.width as u64) << 32)
+        ^ (decoded.height as u64)
+        ^ ((len as u64) << 8)
+        ^ first
+        ^ (mid << 16)
+        ^ (last << 24)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu};
+
+    fn assert_non_empty_offscreen_rgba(rgba: &[u8]) {
+        assert!(!rgba.is_empty(), "offscreen output should not be empty");
+        let opaque_pixels = rgba.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(
+            opaque_pixels > 16,
+            "offscreen output should contain visible pixels (opaque_pixels={opaque_pixels}, total_pixels={})",
+            rgba.len() / 4
+        );
+        let first = &rgba[0..4];
+        let non_uniform = rgba.chunks_exact(4).any(|px| px != first);
+        assert!(
+            non_uniform,
+            "offscreen output should not be uniform (first_pixel={first:?}, opaque_pixels={opaque_pixels})"
+        );
+    }
+
+    fn render_image_offscreen(image: Image) -> waterui_graphics::OffscreenRenderOutput {
+        let (width, height) = image.dimensions();
+        let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
+            .expect("offscreen size must be valid");
+        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+        GpuSurface::new(image.renderer)
+            .render_offscreen(config)
+            .expect("offscreen image render should succeed")
+    }
+
+    fn render_image_offscreen_rgba16f(image: Image) -> (u32, u32, Vec<u8>) {
+        use waterui_graphics::shared_context::{init_shared_context, shared_context};
+
+        let (width, height) = image.dimensions();
+        let width = width.min(1024);
+        let height = height.min(1024);
+
+        init_shared_context().expect("shared GPU context should initialize");
+        let shared = shared_context();
+        let guard = shared.read();
+        let device = guard.device.as_ref();
+        let queue = guard.queue.as_ref();
+        let adapter = &guard.adapter;
+
+        let mut surface = GpuSurface::new(image.renderer);
+        let ctx = waterui_graphics::GpuContext {
+            adapter: Some(adapter),
+            device,
+            queue,
+            surface_format: wgpu::TextureFormat::Rgba16Float,
+            msaa_samples: 1,
+            pipeline_cache: guard.pipeline_cache.as_ref(),
+        };
+        waterui_graphics::pollster::block_on(surface.setup(&ctx));
+        surface.resize(width, height);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("waterui_image_hdr_probe"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame = waterui_graphics::GpuFrame {
+            device,
+            queue,
+            texture: &texture,
+            view,
+            format: wgpu::TextureFormat::Rgba16Float,
+            width,
+            height,
+            pointer: waterui_graphics::gpu_surface::PointerState::default(),
+            gesture: waterui_graphics::gpu_surface::GestureState::default(),
+        };
+        surface.render(&frame);
+
+        let bytes_per_pixel = 8u32;
+        let copy_alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_bpr = width * bytes_per_pixel;
+        let padded_bpr = unpadded_bpr.div_ceil(copy_alignment) * copy_alignment;
+        let copy_size = (padded_bpr * height) as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("waterui_image_hdr_probe_readback"),
+            size: copy_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("waterui_image_hdr_probe_encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let map_result = rx
+            .recv()
+            .expect("readback completion channel should stay open");
+        map_result.expect("readback mapping should succeed");
+
+        let mapped = slice.get_mapped_range();
+        let mut out = vec![0u8; (width * height * bytes_per_pixel) as usize];
+        for row in 0..height as usize {
+            let src_start = row * padded_bpr as usize;
+            let src_end = src_start + unpadded_bpr as usize;
+            let dst_start = row * unpadded_bpr as usize;
+            let dst_end = dst_start + unpadded_bpr as usize;
+            out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        (width, height, out)
+    }
+
+    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+        use zenwave::{Client, Method, redirect::FollowRedirect};
+
+        let mut client = FollowRedirect::new(zenwave::client());
+        let response = client
+            .method(Method::GET, url)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(alloc::format!("status={}", response.status()));
+        }
+        response
+            .into_body()
+            .into_bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    async fn fetch_hdr_avif_sample() -> Option<(Vec<u8>, &'static str)> {
+        let candidates = [
+            "https://www.bandisoft.com/bandiview/help/hdr-samples/hdr_cosmos01650_cicp9-16-9_yuv420_limited_qp10.avif",
+            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.10bpc.yuv420.avif",
+            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/hato.profile0.10bpc.yuv420.avif",
+            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile1.10bpc.yuv444.avif",
+            "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile2.10bpc.yuv422.avif",
+        ];
+        for url in candidates {
+            let Ok(bytes) = fetch_bytes(url).await else {
+                continue;
+            };
+            let Ok(decoded) = waterkit_codec::decode_image(&bytes) else {
+                continue;
+            };
+            if decoded.pixel_format != waterkit_codec::DecodedPixelFormat::Rgba16Float
+                || !decoded.hdr
+            {
+                continue;
+            }
+            let first = &decoded.pixels[0..8];
+            let non_uniform = decoded.pixels.chunks_exact(8).any(|px| px != first);
+            let nonzero_rgb = decoded.pixels.chunks_exact(8).any(|px| {
+                px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0 || px[4] != 0 || px[5] != 0
+            });
+            if non_uniform && nonzero_rgb {
+                return Some((bytes, url));
+            }
+        }
+        None
+    }
+
+    fn export_dir() -> PathBuf {
+        PathBuf::from("/tmp/waterui-image-offscreen")
+    }
+
+    fn f16_to_f32(bits: u16) -> f32 {
+        let sign = ((bits >> 15) & 0x1) as u32;
+        let exp = ((bits >> 10) & 0x1f) as u32;
+        let frac = (bits & 0x03ff) as u32;
+
+        let f32_bits = if exp == 0 {
+            if frac == 0 {
+                sign << 31
+            } else {
+                let mut frac_norm = frac;
+                let mut e = -14i32;
+                while (frac_norm & 0x0400) == 0 {
+                    frac_norm <<= 1;
+                    e -= 1;
+                }
+                frac_norm &= 0x03ff;
+                let exp32 = (e + 127) as u32;
+                (sign << 31) | (exp32 << 23) | (frac_norm << 13)
+            }
+        } else if exp == 0x1f {
+            (sign << 31) | 0x7f80_0000 | (frac << 13)
+        } else {
+            let exp32 = (exp as i32 - 15 + 127) as u32;
+            (sign << 31) | (exp32 << 23) | (frac << 13)
+        };
+        f32::from_bits(f32_bits)
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[test]
+    #[ignore = "manual probe: inspect decoded HDR headroom from network AVIF sample"]
+    fn probe_hdr_decoded_headroom() {
+        futures::executor::block_on(async {
+            let (bytes, sample_url) = fetch_hdr_avif_sample()
+                .await
+                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
+            let decoded =
+                waterkit_codec::decode_image(&bytes).expect("platform decode should work");
+            assert_eq!(
+                decoded.pixel_format,
+                waterkit_codec::DecodedPixelFormat::Rgba16Float
+            );
+            assert!(decoded.hdr);
+
+            let mut max_rgb = 0.0f32;
+            let mut gt_one = 0usize;
+            let mut total = 0usize;
+            for px in decoded.pixels.chunks_exact(8) {
+                let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
+                let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
+                let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
+                max_rgb = max_rgb.max(r.max(g).max(b));
+                if r > 1.0 || g > 1.0 || b > 1.0 {
+                    gt_one += 1;
+                }
+                total += 1;
+            }
+            let ratio = (gt_one as f64) / (total as f64);
+            eprintln!(
+                "[probe_hdr_decoded_headroom] sample={sample_url} pixels={total} gt_one={gt_one} ratio={ratio:.6} max_rgb={max_rgb:.6}"
+            );
+        });
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[test]
+    #[ignore = "manual probe: verify Image renderer preserves HDR headroom in Rgba16Float target"]
+    fn probe_hdr_render_headroom() {
+        futures::executor::block_on(async {
+            let (bytes, sample_url) = fetch_hdr_avif_sample()
+                .await
+                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
+            let image = Image::from_encoded(&bytes).expect("hdr image decode should succeed");
+            let (_width, _height, pixels) = render_image_offscreen_rgba16f(image);
+
+            let mut max_rgb = 0.0f32;
+            let mut gt_one = 0usize;
+            let mut total = 0usize;
+            for px in pixels.chunks_exact(8) {
+                let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
+                let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
+                let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
+                max_rgb = max_rgb.max(r.max(g).max(b));
+                if r > 1.0 || g > 1.0 || b > 1.0 {
+                    gt_one += 1;
+                }
+                total += 1;
+            }
+            let ratio = (gt_one as f64) / (total as f64);
+            eprintln!(
+                "[probe_hdr_render_headroom] sample={sample_url} pixels={total} gt_one={gt_one} ratio={ratio:.6} max_rgb={max_rgb:.6}"
+            );
+            assert!(
+                gt_one > 0,
+                "renderer output lost HDR headroom (no RGB > 1.0)"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "manual export: writes offscreen PNG renders to /tmp for visual inspection"]
+    fn export_offscreen_real_images_to_tmp() {
+        futures::executor::block_on(async {
+            let dir = export_dir();
+            std::fs::create_dir_all(&dir).expect("export directory should be creatable");
+            let mut manifest = String::new();
+
+            let png_url = "https://raw.githubusercontent.com/libpng/libpng/master/contrib/pngsuite/basn6a16.png";
+            let png_bytes = fetch_bytes(png_url).await.expect("should fetch png bytes");
+            let (png_image, png_path) =
+                Image::from_encoded_with_path(&png_bytes).expect("png should decode successfully");
+            let png_output = render_image_offscreen(png_image);
+            png_output
+                .save_png(dir.join("01_png_sdr.png"))
+                .expect("png output should be writable");
+            manifest.push_str(&alloc::format!(
+                "01_png_sdr.png source={png_url} decode_path={png_path:?}\n"
+            ));
+
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
+            {
+                let (hdr_bytes, hdr_url) = fetch_hdr_avif_sample()
+                    .await
+                    .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
+                let (hdr_image, hdr_path) = Image::from_encoded_with_path(&hdr_bytes)
+                    .expect("hdr avif should decode successfully");
+                let hdr_output = render_image_offscreen(hdr_image);
+                hdr_output
+                    .save_png(dir.join("02_hdr_avif_offscreen.png"))
+                    .expect("hdr avif output should be writable");
+                manifest.push_str(&alloc::format!(
+                    "02_hdr_avif_offscreen.png source={hdr_url} decode_path={hdr_path:?}\n"
+                ));
+            }
+
+            #[cfg(target_vendor = "apple")]
+            {
+                let heic_url = "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic";
+                let heic_bytes = fetch_bytes(heic_url)
+                    .await
+                    .expect("should fetch heic bytes");
+                let (heic_image, heic_path) = Image::from_encoded_with_path(&heic_bytes)
+                    .expect("heic/h265 should decode on Apple");
+                let heic_output = render_image_offscreen(heic_image);
+                heic_output
+                    .save_png(dir.join("03_heic_h265_offscreen.png"))
+                    .expect("heic output should be writable");
+                manifest.push_str(&alloc::format!(
+                    "03_heic_h265_offscreen.png source={heic_url} decode_path={heic_path:?}\n"
+                ));
+            }
+
+            std::fs::write(dir.join("manifest.txt"), manifest)
+                .expect("manifest should be writable");
+            eprintln!(
+                "[export_offscreen_real_images_to_tmp] exported to {}",
+                dir.display()
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "requires network and GPU adapter for offscreen rendering"]
+    fn offscreen_render_real_png_network_smoke() {
+        futures::executor::block_on(async {
+            let bytes = fetch_bytes(
+                "https://raw.githubusercontent.com/libpng/libpng/master/contrib/pngsuite/basn6a16.png",
+            )
+            .await
+            .expect("should fetch png bytes");
+            let (image, path) =
+                Image::from_encoded_with_path(&bytes).expect("png should decode successfully");
+            assert_eq!(path, DecodePath::SoftwareFallback);
+            let output = render_image_offscreen(image);
+            assert_non_empty_offscreen_rgba(&output.rgba8);
+        });
+    }
+
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[test]
+    #[ignore = "requires network, platform HDR decode support, and GPU adapter"]
+    fn offscreen_render_real_hdr_avif_network_smoke() {
+        futures::executor::block_on(async {
+            let (bytes, _) = fetch_hdr_avif_sample()
+                .await
+                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
+
+            let (image, path) =
+                Image::from_encoded_with_path(&bytes).expect("hdr avif should decode successfully");
+            assert_eq!(path, DecodePath::Platform);
+            let output = render_image_offscreen(image);
+            assert_non_empty_offscreen_rgba(&output.rgba8);
+        });
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    #[ignore = "requires network, HEIC/H265 platform decode support, and GPU adapter"]
+    fn offscreen_render_real_heic_h265_network_smoke() {
+        futures::executor::block_on(async {
+            let bytes = fetch_bytes(
+                "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic",
+            )
+            .await
+            .expect("should fetch heic bytes");
+            let (image, path) =
+                Image::from_encoded_with_path(&bytes).expect("heic/h265 should decode on Apple");
+            assert_eq!(path, DecodePath::Platform);
+            let output = render_image_offscreen(image);
+            assert_non_empty_offscreen_rgba(&output.rgba8);
+        });
+    }
 }
