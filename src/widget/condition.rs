@@ -305,9 +305,10 @@ where
         let signal = self.condition.clone().into_signal();
         let any: &dyn Any = &signal;
         if let Some(&cond) = any.downcast_ref::<bool>()
-            && cond {
-                return Some(self.then.build().anyview());
-            }
+            && cond
+        {
+            return Some(self.then.build().anyview());
+        }
         None
     }
 
@@ -346,9 +347,10 @@ where
         let signal = self.condition.clone().into_signal();
         let any: &dyn Any = &signal;
         if let Some(&cond) = any.downcast_ref::<bool>()
-            && cond {
-                return Some(self.then.build().anyview());
-            }
+            && cond
+        {
+            return Some(self.then.build().anyview());
+        }
         None
     }
 

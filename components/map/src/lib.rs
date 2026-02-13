@@ -31,7 +31,9 @@ use nami::signal::IntoComputed;
 use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
 use waterui_str::Str;
 
-// Re-export location types from waterkit for convenience
+// Re-export waterkit-location for downstream convenience.
+pub use waterkit_location as location;
+// Commonly used location type re-export.
 pub use waterkit_location::Location;
 
 /// A geographic coordinate with latitude and longitude.
@@ -60,6 +62,18 @@ impl Coordinate {
             latitude: location.latitude(),
             longitude: location.longitude(),
         }
+    }
+}
+
+impl From<Location> for Coordinate {
+    fn from(value: Location) -> Self {
+        Self::from_location(&value)
+    }
+}
+
+impl From<&Location> for Coordinate {
+    fn from(value: &Location) -> Self {
+        Self::from_location(value)
     }
 }
 
@@ -205,6 +219,15 @@ impl Map {
         Self::new(region_signal)
     }
 
+    /// Creates a new Map centered on reactive `Location` values.
+    pub fn centered_on_location(location: impl Into<Computed<Location>>) -> Self {
+        let location_signal = location.into();
+        let region_signal = location_signal
+            .map(|location| Region::from_coordinate(Coordinate::from(location)))
+            .into_computed();
+        Self::new(region_signal)
+    }
+
     /// Sets the annotations (pins) to display on the map.
     #[must_use]
     pub fn annotations(mut self, annotations: impl Into<Computed<Vec<Annotation>>>) -> Self {
@@ -223,6 +246,17 @@ impl Map {
     #[must_use]
     pub fn shows_user_location(mut self, show: bool) -> Self {
         self.0.shows_user_location = show;
+        self
+    }
+
+    /// Binds the map center to reactive `Location` updates and enables user-location display.
+    #[must_use]
+    pub fn follows_location(mut self, location: impl Into<Computed<Location>>) -> Self {
+        let location_signal = location.into();
+        self.0.region = location_signal
+            .map(|location| Region::from_coordinate(Coordinate::from(location)))
+            .into_computed();
+        self.0.shows_user_location = true;
         self
     }
 

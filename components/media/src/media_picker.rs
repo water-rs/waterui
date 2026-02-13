@@ -1,73 +1,22 @@
 //! # Media Picker
 //!
 //! This module provides media selection functionality through `MediaPicker`.
-//!
-//! ## Platform Support
-//!
-//! The `MediaPicker` is available on iOS, macOS, and Android platforms.
 
-use std::fmt::Debug;
+use alloc::{string::ToString, vec::Vec};
 
-use alloc::rc::Rc;
-
-use waterui_core::extract::Use;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Binding, Computed, Environment, Signal, View, reactive::impl_constant};
 use waterui_text::{Text, text};
 
-use crate::Media;
+#[cfg(feature = "std")]
+use waterkit_dialog::{MediaType, PhotoPicker as KitPhotoPicker};
 
-/// Manager for presenting media picker and loading selected media.
-/// Installed by native backends via FFI.
-///
-/// This trait should be implemented by platform-specific backends to provide
-/// native media picker functionality.
-pub trait CustomMediaPickerManager: 'static {
-    /// Present the native media picker modal with the given filter.
-    /// Returns the selected media ID via callback when user picks media.
-    fn present(&self, filter: MediaFilter, callback: impl FnOnce(SelectedId) + 'static);
-
-    /// Load media content for the given selection ID.
-    /// Returns the loaded Media via callback.
-    fn load(&self, selected: SelectedId, callback: impl FnOnce(Media) + 'static);
-}
-
-/// Type-erased `MediaPickerManager` stored in Environment.
-#[derive(Clone)]
-pub struct MediaPickerManager(Rc<dyn MediaPickerManagerImpl>);
-
-trait MediaPickerManagerImpl: 'static {
-    fn present(&self, filter: MediaFilter, callback: Box<dyn FnOnce(SelectedId)>);
-    fn load(&self, selected: SelectedId, callback: Box<dyn FnOnce(Media)>);
-}
-
-impl<T: CustomMediaPickerManager> MediaPickerManagerImpl for T {
-    fn present(&self, filter: MediaFilter, callback: Box<dyn FnOnce(SelectedId)>) {
-        CustomMediaPickerManager::present(self, filter, callback);
-    }
-
-    fn load(&self, selected: SelectedId, callback: Box<dyn FnOnce(Media)>) {
-        CustomMediaPickerManager::load(self, selected, callback);
-    }
-}
-
-impl MediaPickerManager {
-    /// Creates a new `MediaPickerManager` from any type implementing `CustomMediaPickerManager`.
-    pub fn new<T: CustomMediaPickerManager>(manager: T) -> Self {
-        Self(Rc::new(manager))
-    }
-}
-
-impl Debug for MediaPickerManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MediaPickerManager").finish()
-    }
-}
+use crate::{Media, url::Url};
 
 /// A media picker view that lets users select photos, videos, or live media.
 ///
 /// `MediaPicker` renders as a button that, when clicked, presents the native
-/// platform media picker. The selected media ID is written to the provided binding.
+/// platform media picker via WaterKit dialog APIs.
 #[derive(Debug)]
 pub struct MediaPicker<Label> {
     selection: Binding<Option<Selected>>,
@@ -77,13 +26,6 @@ pub struct MediaPicker<Label> {
 
 impl MediaPicker<Text> {
     /// Creates a new `MediaPicker` with a selection binding.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let selection = binding(Selected::new(0));
-    /// let picker = MediaPicker::new(&selection);
-    /// ```
     #[must_use]
     pub fn new(selection: &Binding<Option<Selected>>) -> Self {
         Self {
@@ -99,12 +41,6 @@ where
     Label: View,
 {
     /// Sets the media filter for this picker.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// MediaPicker::new(&selection).filter(MediaFilter::Video);
-    /// ```
     #[must_use]
     pub fn filter(mut self, filter: impl IntoComputed<MediaFilter>) -> Self {
         self.filter = filter.into_computed();
@@ -112,12 +48,6 @@ where
     }
 
     /// Sets a custom label for the picker button.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// MediaPicker::new(&selection).label("Choose Photo");
-    /// ```
     #[must_use]
     pub fn label<NewLabel: View>(self, label: NewLabel) -> MediaPicker<NewLabel> {
         MediaPicker {
@@ -125,21 +55,6 @@ where
             filter: self.filter,
             label,
         }
-    }
-}
-
-/// Unique identifier for selected media items.
-pub type SelectedId = u32;
-
-impl MediaPickerManager {
-    /// Load media content for the given selection ID.
-    pub fn load(&self, selected: SelectedId, callback: impl FnOnce(Media) + 'static) {
-        self.0.load(selected, Box::new(callback));
-    }
-
-    /// Present the media picker with the specified filter.
-    pub fn present(&self, filter: MediaFilter, callback: impl FnOnce(SelectedId) + 'static) {
-        self.0.present(filter, Box::new(callback));
     }
 }
 
@@ -153,88 +68,120 @@ where
         let selection = self.selection.clone();
         let filter = self.filter.clone();
 
-        button(self.label)
-            .extract::<Use<MediaPickerManager>>()
-            .action(move |manager| {
-                let sel = selection.clone();
-                manager.present(filter.get(), {
-                    let manager = manager.0.clone();
-                    Box::new(move |selected| {
-                        sel.set(Some(Selected {
-                            id: selected,
-                            manager: manager.clone(),
-                        }));
-                    })
-                });
-            })
+        button(self.label).action_async(move || {
+            let selection = selection.clone();
+            let filter = filter.clone();
+            async move {
+                #[cfg(feature = "std")]
+                {
+                    let requested_filter = filter.get();
+                    let picker = KitPhotoPicker::new()
+                        .with_media_type(media_type_from_filter(&requested_filter));
+                    let handle = picker.pick().await.unwrap_or_else(|error| {
+                        panic!("MediaPicker failed to present picker dialog: {error}")
+                    });
+
+                    let Some(handle) = handle else {
+                        return;
+                    };
+
+                    let path = handle.load().await.unwrap_or_else(|error| {
+                        panic!("MediaPicker failed to load selected media: {error}")
+                    });
+
+                    let media = media_from_loaded_path(&path, &requested_filter);
+                    selection.set(Some(Selected { media }));
+                }
+
+                #[cfg(not(feature = "std"))]
+                {
+                    panic!("MediaPicker requires the `std` feature to use native picker dialogs");
+                }
+            }
+        })
     }
 }
 
-/// Represents a selected media item by its unique identifier.
-#[derive(Debug, Clone)]
+#[cfg(feature = "std")]
+fn media_type_from_filter(filter: &MediaFilter) -> MediaType {
+    match filter {
+        MediaFilter::Image => MediaType::Image,
+        MediaFilter::Video => MediaType::Video,
+        MediaFilter::LivePhoto => MediaType::LivePhoto,
+        MediaFilter::All(filters) | MediaFilter::Any(filters) => {
+            if filters.iter().all(|f| matches!(f, MediaFilter::Video)) {
+                MediaType::Video
+            } else {
+                MediaType::Image
+            }
+        }
+        MediaFilter::Not(filters) => {
+            if filters.iter().any(|f| matches!(f, MediaFilter::Image)) {
+                MediaType::Video
+            } else {
+                MediaType::Image
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+fn media_from_loaded_path(path: &std::path::Path, requested_filter: &MediaFilter) -> Media {
+    let path_str = path.to_string_lossy().to_string();
+    let url = Url::from_file_path_str(path_str);
+
+    match requested_filter {
+        MediaFilter::Image => Media::Image(url),
+        MediaFilter::Video => Media::Video(url),
+        MediaFilter::LivePhoto => {
+            tracing::warn!(
+                "MediaPicker selected LivePhoto via WaterKit dialog; current API returns a single asset, falling back to image/video inference"
+            );
+            infer_media_from_path(url, path)
+        }
+        MediaFilter::All(_) | MediaFilter::Any(_) | MediaFilter::Not(_) => {
+            infer_media_from_path(url, path)
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+fn infer_media_from_path(url: Url, path: &std::path::Path) -> Media {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
+
+    let is_video = ext.as_deref().is_some_and(|extension| {
+        matches!(
+            extension,
+            "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "3gp" | "hevc"
+        )
+    });
+
+    if is_video {
+        Media::Video(url)
+    } else {
+        Media::Image(url)
+    }
+}
+
+/// Represents a selected media item.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selected {
-    id: u32,
-    manager: MediaPickerManager,
-}
-
-impl PartialEq for Selected {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl PartialOrd for Selected {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
-    }
+    media: Media,
 }
 
 impl Selected {
-    /// Creates a new `Selected` with the given ID and no manager.
-    ///
-    /// This is typically used to create an initial/empty selection state.
-    /// The manager will be populated when the user picks media via `MediaPicker`.
-    #[allow(dead_code)]
-    const fn new(id: u32, manager: MediaPickerManager) -> Self {
-        Self { id, manager }
+    /// Load the selected media item asynchronously.
+    #[must_use]
+    pub async fn load(self) -> Media {
+        self.media
     }
 
-    /// Load the selected media item asynchronously.
-    ///
-    /// This method retrieves the actual media content from the platform's media library
-    /// based on the selection ID obtained from `MediaPicker`.
-    ///
-    /// # Platform Notes
-    ///
-    /// - **iOS/macOS**: Uses `PHImageManager` to load the photo/video data
-    /// - **Android**: Uses `ContentResolver` to load from the content URI
-    ///
-    /// # Returns
-    ///
-    /// Returns the loaded [`Media`] item (Image, Video, or `LivePhoto`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the media loading operation fails or if the receiver channel is closed.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let selection = binding(Selected::new(0));
-    /// let picker = MediaPicker::new(&selection);
-    ///
-    /// // After user selects media...
-    /// let media = selection.get().load(&env).await;
-    /// ```
-    pub async fn load(self) -> Media {
-        let (mut sender, receiver) = async_oneshot::oneshot();
-        self.manager.load(
-            self.id,
-            Box::new(move |media| {
-                let _ = sender.send(media);
-            }),
-        );
-        receiver.await.expect("Failed to receive media")
+    /// Returns a reference to the loaded media payload.
+    #[must_use]
+    pub const fn media(&self) -> &Media {
+        &self.media
     }
 }
 

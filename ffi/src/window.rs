@@ -166,6 +166,14 @@ impl IntoFFI for Window {
     type FFI = WuiWindow;
 
     fn into_ffi(self) -> Self::FFI {
+        // NOTE: Toolbars transfer ownership of an `AnyView` pointer to native.
+        // Only enable this on backends that actually consume (or drop) the pointer.
+        let toolbar = if cfg!(any(target_vendor = "apple", target_os = "android")) {
+            self.toolbar.into_ffi()
+        } else {
+            null_mut()
+        };
+
         WuiWindow {
             title: self.title.into_ffi(),
             closable: self.closable,
@@ -178,7 +186,7 @@ impl IntoFFI for Window {
             state: self.state.into_ffi(),
             // Toolbars are currently not rendered by native backends. Avoid leaking AnyView
             // pointers across FFI by not transferring ownership.
-            toolbar: null_mut(),
+            toolbar,
             style: self.style.into(),
             background: self.background.into(),
         }

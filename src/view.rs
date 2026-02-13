@@ -48,6 +48,8 @@ use crate::{
     shape::{ClipShape, Shape},
     style::{Anchor, Offset, Rotation, Scale},
 };
+#[cfg(feature = "std")]
+use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
@@ -476,6 +478,27 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn on_tap(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
         self.gesture(TapGesture::new(), action)
+    }
+
+    /// Adds a tap gesture recognizer and triggers haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    fn on_tap_haptic(
+        self,
+        intensity: Intensity,
+        mut action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(TapGesture::new(), move || {
+            let _ = Haptic::impact(intensity);
+            action();
+        })
+    }
+
+    /// Adds a tap gesture recognizer with medium haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    fn on_tap_haptic_default(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
+        self.on_tap_haptic(Intensity::MEDIUM, action)
     }
 
     /// Applies a shadow effect to this view.

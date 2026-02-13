@@ -410,7 +410,11 @@ async fn adb_emulator_boot_completed(adb: &Path, emulator_id: &str) -> bool {
 async fn adb_package_manager_ready(adb: &Path, emulator_id: &str) -> bool {
     run_command_os(adb, ["-s", emulator_id, "shell", "pm", "path", "android"])
         .await
-        .is_ok_and(|output| output.lines().any(|line| line.trim().starts_with("package:")))
+        .is_ok_and(|output| {
+            output
+                .lines()
+                .any(|line| line.trim().starts_with("package:"))
+        })
 }
 
 /// Monitor an Android process and send events when it crashes or exits.
@@ -899,9 +903,7 @@ impl Device for AndroidEmulator {
                 if !boot_completed || !package_ready {
                     debug!(
                         "Emulator {} detected but not fully ready yet (boot_completed={}, package_ready={})",
-                        emulator_id,
-                        boot_completed,
-                        package_ready
+                        emulator_id, boot_completed, package_ready
                     );
                     smol::Timer::after(std::time::Duration::from_secs(2)).await;
                     continue;

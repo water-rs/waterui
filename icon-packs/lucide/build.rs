@@ -31,8 +31,9 @@ fn main() {
     let out_path = Path::new(&out_dir);
     let cache_file = out_path.join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
 
-    let vendored =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
+    let vendored = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
     println!("cargo:rerun-if-changed={}", vendored.display());
 
     // Default to vendored data for deterministic, offline builds.
@@ -91,8 +92,7 @@ fn load_content(source: &str, cache_path: &Path, desc: &str) -> Result<String, S
         let _ = fs::write(cache_path, &content);
         Ok(content)
     } else {
-        fs::read_to_string(source)
-            .map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
+        fs::read_to_string(source).map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
     }
 }
 

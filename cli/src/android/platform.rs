@@ -402,8 +402,8 @@ impl AndroidPlatform {
 
         // Build with RustBuild
         // Enable android-jni feature for waterui-ffi to generate JNI bindings in Rust
-        let mut build = RustBuild::new(project.root(), triple.clone())
-            .with_feature("waterui-ffi/android-jni");
+        let mut build =
+            RustBuild::new(project.root(), triple.clone()).with_feature("waterui-ffi/android-jni");
         if let Some(sccache_path) = options.sccache_path() {
             build = build.with_sccache(sccache_path.to_path_buf());
         }
