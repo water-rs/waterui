@@ -99,6 +99,8 @@ waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 waterkit-audio = { version = "0.1.0", path = "kit/audio" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
+waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
+waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
 waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
@@ -169,6 +171,7 @@ waterui-shape.workspace = true
 waterui-svg.workspace = true
 waterui-assets.workspace = true
 waterui-assets-macros.workspace = true
+waterkit-haptic = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
 robius-open.workspace = true
@@ -194,7 +197,7 @@ arboard = "3.6.1"
 
 [features]
 default = []
-std = []
+std = ["dep:waterkit-haptic"]
 all = ["std"]
 
 

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use icu_locid::Locale;
 use icu_locid_transform::fallback::LocaleFallbacker;
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
 use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Result, Token, parse_macro_input};
@@ -325,7 +325,11 @@ fn build_signal_map(waterui: &TokenStream2, idents: &[Ident], body: TokenStream2
     }
 }
 
-fn build_format_signal(waterui: &TokenStream2, format_str: &LitStr, idents: &[Ident]) -> TokenStream2 {
+fn build_format_signal(
+    waterui: &TokenStream2,
+    format_str: &LitStr,
+    idents: &[Ident],
+) -> TokenStream2 {
     let body = quote! { #waterui::reactive::__alloc::format!(#format_str) };
     build_signal_map(waterui, idents, body)
 }
@@ -463,7 +467,8 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     for locale_code in bundle.locales.keys() {
         // Use bundle.get() to resolve with fallback chain (e.g., zh-TW → zh-Hant → zh → en)
         if let Some(value) = bundle.get(locale_code, &translation_key) {
-            let arm = generate_translation_arm(&waterui, locale_code, value, &all_idents, &plural_names);
+            let arm =
+                generate_translation_arm(&waterui, locale_code, value, &all_idents, &plural_names);
             locale_arms.push(arm);
         }
     }

@@ -103,7 +103,11 @@ impl AssetError {
 
     /// Create a network error.
     #[must_use]
-    pub fn network(url: impl Into<String>, status: Option<u16>, message: impl Into<String>) -> Self {
+    pub fn network(
+        url: impl Into<String>,
+        status: Option<u16>,
+        message: impl Into<String>,
+    ) -> Self {
         Self::Network {
             url: url.into(),
             status,

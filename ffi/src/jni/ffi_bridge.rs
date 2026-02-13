@@ -9,6 +9,7 @@
 extern crate alloc;
 extern crate std;
 
+use alloc::boxed::Box;
 use alloc::format;
 use jni::JNIEnv;
 use jni::objects::JString;
@@ -199,28 +200,96 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
     type_id_to_java(&mut env, type_id).into_raw()
 }
 
-// ============================================================================
-// Environment Install Functions
-// ============================================================================
-
-/// Install media picker manager in the environment.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallMediaPickerManager<
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
+    env: JNIEnv<'local>,
+    class: JClass<'local>,
+) -> jobject {
+    crate::components::webview::Java_dev_waterui_android_ffi_WatcherJni_webviewId(env, class)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWebView<'local>(
+    env: JNIEnv<'local>,
+    class: JClass<'local>,
+    view_ptr: jlong,
+) -> jobject {
+    unsafe {
+        crate::components::webview::Java_dev_waterui_android_ffi_WatcherJni_forceAsWebview(
+            env, class, view_ptr,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloadEndpoint<
     'local,
 >(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
-    env_ptr: jlong,
+    _host: JString<'local>,
+    _port: jint,
 ) {
-    let env_ptr = env_ptr as *mut crate::WuiEnv;
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloadDirectory<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _path: JString<'local>,
+) {
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_nativeInit<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_metadataLifeCycleHookId<'local>(
+    env: JNIEnv<'local>,
+    class: JClass<'local>,
+) -> jobject {
+    crate::Java_dev_waterui_android_ffi_WatcherJni_metadataLifecycleHookId(env, class)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadataLifeCycleHook<
+    'local,
+>(
+    env: JNIEnv<'local>,
+    class: JClass<'local>,
+    view_ptr: jlong,
+) -> jobject {
     unsafe {
-        crate::components::media::waterui_env_install_media_picker_manager(
-            env_ptr,
-            jni_media_picker_present,
-            jni_media_load,
-        );
+        crate::Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadataLifecycleHook(
+            env, class, view_ptr,
+        )
     }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyViews<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+
+    unsafe {
+        drop(Box::from_raw(ptr as *mut crate::WuiAnyView));
+    }
+}
+
+// ============================================================================
+// Environment Install Functions
+// ============================================================================
 
 /// Install web view controller in the environment.
 #[unsafe(no_mangle)]
@@ -268,48 +337,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallWindowM
 // Environment service shims (Rust -> Java)
 // =============================================================================
 
-unsafe extern "C" fn jni_media_picker_present(
-    filter: crate::components::media::WuiMediaFilterType,
-    callback: crate::components::media::MediaPickerPresentCallback,
-) {
-    super::with_jni_env(|env| {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MediaPickerManager")
-            .expect("MediaPickerManager class not found");
-        let _ = env.call_static_method(
-            class,
-            "presentPicker",
-            "(IJJ)V",
-            &[
-                JValue::Int(filter as jint),
-                JValue::Long(callback.data as jlong),
-                JValue::Long(callback.call as usize as jlong),
-            ],
-        );
-    });
-}
-
-unsafe extern "C" fn jni_media_load(
-    selected_id: u32,
-    callback: crate::components::media::MediaLoadCallback,
-) {
-    super::with_jni_env(|env| {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MediaLoader")
-            .expect("MediaLoader class not found");
-        let _ = env.call_static_method(
-            class,
-            "loadMedia",
-            "(IJJ)V",
-            &[
-                JValue::Int(selected_id as jint),
-                JValue::Long(callback.data as jlong),
-                JValue::Long(callback.call as usize as jlong),
-            ],
-        );
-    });
-}
-
 unsafe extern "C" fn jni_window_show(window: crate::window::WuiWindow) {
     let (background_tag, background_color_ptr) = match window.background {
         crate::window::WuiWindowBackground::Opaque => (0i32, 0i64),
@@ -323,12 +350,13 @@ unsafe extern "C" fn jni_window_show(window: crate::window::WuiWindow) {
         let _ = env.call_static_method(
             class,
             "showWindow",
-            "(JZZJJIIJ)V",
+            "(JZZJJJIIJ)V",
             &[
                 JValue::Long(window.title as jlong),
                 JValue::Bool(if window.closable { 1 } else { 0 }),
                 JValue::Bool(if window.resizable { 1 } else { 0 }),
                 JValue::Long(window.content as jlong),
+                JValue::Long(window.toolbar as jlong),
                 JValue::Long(window.state as jlong),
                 JValue::Int(window.style as jint),
                 JValue::Int(background_tag as jint),

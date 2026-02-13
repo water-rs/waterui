@@ -107,6 +107,7 @@ pub use view::ViewExt;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 
+pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
 #[doc(inline)]
@@ -116,7 +117,6 @@ pub use waterui_navigation as navigation;
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 pub use waterui_webview as webview;
-pub use waterui_assets as assets;
 
 // Asset types re-exported for convenience
 #[doc(inline)]
@@ -151,7 +151,6 @@ pub mod task {
 
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
-
 
 mod entry;
 pub use entry::entry;

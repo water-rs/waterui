@@ -751,8 +751,9 @@ struct SolidColorSharedDeviceState {
     pipelines: HashMap<SolidColorPipelineKey, crate::wgpu::RenderPipeline>,
 }
 
-static SOLID_COLOR_SHARED: OnceLock<parking_lot::Mutex<HashMap<usize, SolidColorSharedDeviceState>>> =
-    OnceLock::new();
+static SOLID_COLOR_SHARED: OnceLock<
+    parking_lot::Mutex<HashMap<usize, SolidColorSharedDeviceState>>,
+> = OnceLock::new();
 
 impl SolidColorRenderer {
     fn new(color: ResolvedColor) -> Self {
@@ -785,8 +786,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
         };
 
         let (pipeline, bind_group_layout) = {
-            let cache =
-                SOLID_COLOR_SHARED.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+            let cache = SOLID_COLOR_SHARED.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
             let mut cache = cache.lock();
 
             let shared = cache.entry(device_key).or_insert_with(|| {

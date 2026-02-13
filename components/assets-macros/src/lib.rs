@@ -5,8 +5,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
+    Ident, LitBool, LitStr, Token,
     parse::{Parse, ParseStream},
-    parse_macro_input, Ident, LitBool, LitStr, Token,
+    parse_macro_input,
 };
 
 /// Asset type classification based on file extension.
