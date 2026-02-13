@@ -4,6 +4,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use std::net::IpAddr;
 use syn::{
     Ident, LitBool, LitStr, Token,
     parse::{Parse, ParseStream},
@@ -87,9 +88,35 @@ fn is_remote_url(path: &str) -> bool {
     path.starts_with("https://") || path.starts_with("http://")
 }
 
-/// Determine if a URL is localhost HTTP (allowed).
-fn is_localhost_http(path: &str) -> bool {
-    path.starts_with("http://localhost") || path.starts_with("http://127.0.0.1")
+/// Determine if a URL is loopback HTTP (allowed).
+fn is_loopback_http(path: &str) -> bool {
+    extract_http_host(path)
+        .and_then(normalize_host)
+        .is_some_and(is_loopback_host)
+}
+
+fn extract_http_host(path: &str) -> Option<&str> {
+    let remainder = path.strip_prefix("http://")?;
+    let authority = remainder.split(['/', '?', '#']).next()?;
+    authority.rsplit('@').next()
+}
+
+fn normalize_host(authority: &str) -> Option<&str> {
+    if authority.is_empty() {
+        return None;
+    }
+
+    if let Some(host) = authority.strip_prefix('[') {
+        let closing = host.find(']')?;
+        return Some(&host[..closing]);
+    }
+
+    authority.split(':').next()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Extract file extension from path.
@@ -131,7 +158,7 @@ fn get_extension(path: &str) -> Option<&str> {
 ///
 /// # Security
 ///
-/// `http://` URLs are forbidden (except `localhost`). Use `https://` for remote assets.
+/// `http://` URLs are forbidden (except loopback hosts). Use `https://` for remote assets.
 ///
 /// # Options
 ///
@@ -168,10 +195,10 @@ pub fn asset(input: TokenStream) -> TokenStream {
     let path_span = input.path.span();
 
     // Check for http:// (not allowed except localhost)
-    if path_str.starts_with("http://") && !is_localhost_http(&path_str) {
+    if path_str.starts_with("http://") && !is_loopback_http(&path_str) {
         return syn::Error::new(
             path_span,
-            "HTTP not allowed (use HTTPS). Only localhost permits HTTP.",
+            "HTTP not allowed (use HTTPS). Only loopback hosts permit HTTP.",
         )
         .to_compile_error()
         .into();
@@ -289,4 +316,34 @@ pub fn asset(input: TokenStream) -> TokenStream {
     };
 
     output.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_loopback_http_hosts() {
+        for url in [
+            "http://localhost/file.bin",
+            "http://LOCALHOST:8080/file.bin",
+            "http://127.0.0.1/file.bin",
+            "http://127.1.2.3:9000/file.bin",
+            "http://[::1]/file.bin",
+        ] {
+            assert!(is_loopback_http(url), "expected to allow {url}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_loopback_http_hosts() {
+        for url in [
+            "http://example.com/file.bin",
+            "http://localhost.evil.com/file.bin",
+            "http://127.0.0.1.evil.com/file.bin",
+            "http://[::2]/file.bin",
+        ] {
+            assert!(!is_loopback_http(url), "expected to reject {url}");
+        }
+    }
 }

@@ -20,6 +20,13 @@ use crate::{
     utils::{run_command, run_command_os},
 };
 
+#[cfg(target_os = "macos")]
+const GTK4_INIT_HINT: &str = "water run --platform macos --backend gtk4";
+#[cfg(target_os = "linux")]
+const GTK4_INIT_HINT: &str = "water run --platform linux";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const GTK4_INIT_HINT: &str = "initialize GTK4 backend on macOS or Linux";
+
 // ============================================================================
 // Build Utilities
 // ============================================================================
@@ -31,8 +38,8 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
     if !cargo_toml.exists() {
         bail!(
-            "GTK4 backend not found at {}. Run 'water run --platform gtk4' to initialize it.",
-            backend_path.display()
+            "GTK4 backend not found at {}. Run `{GTK4_INIT_HINT}` to initialize it.",
+            backend_path.display(),
         );
     }
 
@@ -160,9 +167,8 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
 
-    // Copy project assets
-    let assets_dest = resources_dir.join("assets");
-    assets::copy_project_assets(project, &assets_dest).await?;
+    // Stage project assets using platform-native conventions.
+    assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

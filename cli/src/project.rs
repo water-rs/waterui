@@ -391,14 +391,23 @@ impl Project {
             .await
             .map_err(FailToCreateProject::Scaffold)?;
 
-        // Create assets directory
+        // Create assets directory scaffold (strict layout)
         let assets_dir = path.join(default_assets_path());
         smol::fs::create_dir_all(&assets_dir)
             .await
             .map_err(FailToCreateProject::CreateDir)?;
+        smol::fs::create_dir_all(assets_dir.join("raw"))
+            .await
+            .map_err(FailToCreateProject::CreateDir)?;
+        smol::fs::create_dir_all(assets_dir.join("images"))
+            .await
+            .map_err(FailToCreateProject::CreateDir)?;
 
-        // Add .gitkeep to keep assets directory in version control
-        smol::fs::write(assets_dir.join(".gitkeep"), "")
+        // Add .gitkeep files to keep scaffold directories in version control.
+        smol::fs::write(assets_dir.join("raw/.gitkeep"), "")
+            .await
+            .map_err(FailToCreateProject::Scaffold)?;
+        smol::fs::write(assets_dir.join("images/.gitkeep"), "")
             .await
             .map_err(FailToCreateProject::Scaffold)?;
 

@@ -39,13 +39,12 @@
 //!     faded.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //! ```
 //!
-//! The system supports various animation types:
+//! The system supports two native primitives:
 //!
-//! - **`Linear`**: Constant velocity from start to finish
-//! - **`EaseIn`**: Starts slow and accelerates
-//! - **`EaseOut`**: Starts fast and decelerates
-//! - **`EaseInOut`**: Combines ease-in and ease-out for natural movement
+//! - **`Bezier`**: Timed interpolation with cubic bezier control points
 //! - **`Spring`**: Physics-based animation with configurable stiffness and damping
+//!
+//! Convenience constructors (`linear`, `ease_in`, `ease_out`, `ease_in_out`) map to `Bezier`.
 //!
 //! ### Integration with UI Components
 //!
@@ -139,37 +138,26 @@ use core::time::Duration;
 
 use crate::easing::{EasingCurve, Interpolatable};
 
+/// Default duration for timed animations.
+const DEFAULT_TIMED_DURATION: Duration = Duration::from_millis(250);
 /// Default spring animation duration (used for timing calculations).
 const DEFAULT_SPRING_DURATION: Duration = Duration::from_millis(600);
 
 /// An enumeration representing different types of animations
 ///
-/// This enum provides various animation types for UI elements or graphics:
-/// - `Linear`: Constant speed from start to finish
-/// - `EaseIn`: Starts slow and accelerates
-/// - `EaseOut`: Starts fast and decelerates
-/// - `EaseInOut`: Starts and ends slowly with acceleration in the middle
-/// - `CubicBezier`: Custom bezier curve with control points
+/// This enum exposes two native animation primitives:
+/// - `Bezier`: Timed animations represented by cubic bezier control points
 /// - `Spring`: Physics-based movement with configurable stiffness and damping
 ///
-/// Each animation type (except Spring) takes a Duration parameter that specifies
-/// how long the animation should take to complete.
+/// Convenience constructors (`linear`, `ease_in`, etc.) all map to `Bezier`.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Animation {
     /// Default animation behavior (uses system defaults)
     #[default]
     Default,
-    /// Linear animation with constant velocity
-    Linear(Duration),
-    /// Ease-in animation that starts slow and accelerates
-    EaseIn(Duration),
-    /// Ease-out animation that starts fast and decelerates
-    EaseOut(Duration),
-    /// Ease-in-out animation that starts and ends slowly with acceleration in the middle
-    EaseInOut(Duration),
-    /// Custom cubic bezier animation with control points (x1, y1, x2, y2)
-    CubicBezier {
+    /// Timed cubic bezier animation with control points (x1, y1, x2, y2)
+    Bezier {
         /// Animation duration
         duration: Duration,
         /// First control point X (0.0 to 1.0)
@@ -193,9 +181,6 @@ pub enum Animation {
 impl Animation {
     /// Creates a new Linear animation with the specified duration
     ///
-    /// This is an ergonomic constructor that accepts any type that can be converted
-    /// into a Duration (such as u64 milliseconds, etc.)
-    ///
     /// # Examples
     ///
     /// ```
@@ -205,14 +190,17 @@ impl Animation {
     /// let animation = Animation::linear(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::linear(Duration::from_secs(1)); // 1 second
     /// ```
-    pub fn linear(duration: impl Into<Duration>) -> Self {
-        Self::Linear(duration.into())
+    pub const fn linear(duration: Duration) -> Self {
+        Self::Bezier {
+            duration,
+            x1: 0.0,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 1.0,
+        }
     }
 
     /// Creates a new ease-in animation with the specified duration
-    ///
-    /// This is an ergonomic constructor that accepts any type that can be converted
-    /// into a Duration (such as u64 milliseconds, etc.)
     ///
     /// # Examples
     ///
@@ -223,14 +211,17 @@ impl Animation {
     /// let animation = Animation::ease_in(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in(Duration::from_secs(1)); // 1 second
     /// ```
-    pub fn ease_in(duration: impl Into<Duration>) -> Self {
-        Self::EaseIn(duration.into())
+    pub const fn ease_in(duration: Duration) -> Self {
+        Self::Bezier {
+            duration,
+            x1: 0.42,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 1.0,
+        }
     }
 
     /// Creates a new ease-out animation with the specified duration
-    ///
-    /// This is an ergonomic constructor that accepts any type that can be converted
-    /// into a Duration (such as u64 milliseconds, etc.)
     ///
     /// # Examples
     ///
@@ -241,14 +232,17 @@ impl Animation {
     /// let animation = Animation::ease_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_out(Duration::from_secs(1)); // 1 second
     /// ```
-    pub fn ease_out(duration: impl Into<Duration>) -> Self {
-        Self::EaseOut(duration.into())
+    pub const fn ease_out(duration: Duration) -> Self {
+        Self::Bezier {
+            duration,
+            x1: 0.0,
+            y1: 0.0,
+            x2: 0.58,
+            y2: 1.0,
+        }
     }
 
     /// Creates a new ease-in-out animation with the specified duration
-    ///
-    /// This is an ergonomic constructor that accepts any type that can be converted
-    /// into a Duration (such as u64 milliseconds, etc.)
     ///
     /// # Examples
     ///
@@ -259,8 +253,14 @@ impl Animation {
     /// let animation = Animation::ease_in_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in_out(Duration::from_secs(1)); // 1 second
     /// ```
-    pub fn ease_in_out(duration: impl Into<Duration>) -> Self {
-        Self::EaseInOut(duration.into())
+    pub const fn ease_in_out(duration: Duration) -> Self {
+        Self::Bezier {
+            duration,
+            x1: 0.42,
+            y1: 0.0,
+            x2: 0.58,
+            y2: 1.0,
+        }
     }
 
     /// Creates a new Spring animation with the specified stiffness and damping
@@ -274,6 +274,12 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
+        if !stiffness.is_finite() || stiffness <= 0.0 {
+            panic!("Animation::spring requires finite stiffness > 0");
+        }
+        if !damping.is_finite() || damping < 0.0 {
+            panic!("Animation::spring requires finite damping >= 0");
+        }
         Self::Spring { stiffness, damping }
     }
 
@@ -295,9 +301,15 @@ impl Animation {
     /// // Custom bounce-like curve
     /// let animation = Animation::bezier(Duration::from_millis(400), 0.25, 0.1, 0.25, 1.0);
     /// ```
-    pub fn bezier(duration: impl Into<Duration>, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        Self::CubicBezier {
-            duration: duration.into(),
+    pub const fn bezier(duration: Duration, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        if !x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite() {
+            panic!("Animation::bezier requires finite control points");
+        }
+        if x1 < 0.0 || x1 > 1.0 || x2 < 0.0 || x2 > 1.0 {
+            panic!("Animation::bezier requires x1/x2 in [0, 1]");
+        }
+        Self::Bezier {
+            duration,
             x1,
             y1,
             x2,
@@ -312,11 +324,7 @@ impl Animation {
     pub fn curve(&self) -> EasingCurve {
         match self {
             Self::Default => EasingCurve::EASE_IN_OUT,
-            Self::Linear(_) => EasingCurve::LINEAR,
-            Self::EaseIn(_) => EasingCurve::EASE_IN,
-            Self::EaseOut(_) => EasingCurve::EASE_OUT,
-            Self::EaseInOut(_) => EasingCurve::EASE_IN_OUT,
-            Self::CubicBezier { x1, y1, x2, y2, .. } => EasingCurve::bezier(*x1, *y1, *x2, *y2),
+            Self::Bezier { x1, y1, x2, y2, .. } => EasingCurve::bezier(*x1, *y1, *x2, *y2),
             Self::Spring { stiffness, damping } => EasingCurve::spring(*stiffness, *damping),
         }
     }
@@ -328,12 +336,8 @@ impl Animation {
     #[must_use]
     pub fn duration(&self) -> Duration {
         match self {
-            Self::Default => Duration::from_millis(250),
-            Self::Linear(d)
-            | Self::EaseIn(d)
-            | Self::EaseOut(d)
-            | Self::EaseInOut(d)
-            | Self::CubicBezier { duration: d, .. } => *d,
+            Self::Default => DEFAULT_TIMED_DURATION,
+            Self::Bezier { duration: d, .. } => *d,
             Self::Spring { .. } => DEFAULT_SPRING_DURATION,
         }
     }
@@ -416,3 +420,70 @@ pub trait AnimationExt: nami::SignalExt {
 
 // Implement AnimationExt for all types that implement SignalExt
 impl<S: nami::SignalExt> AnimationExt for S {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convenience_curves_use_bezier_variant() {
+        assert!(matches!(
+            Animation::linear(Duration::from_millis(100)),
+            Animation::Bezier {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 1.0,
+                y2: 1.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Animation::ease_in(Duration::from_millis(100)),
+            Animation::Bezier {
+                x1: 0.42,
+                y1: 0.0,
+                x2: 1.0,
+                y2: 1.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Animation::ease_out(Duration::from_millis(100)),
+            Animation::Bezier {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 0.58,
+                y2: 1.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Animation::ease_in_out(Duration::from_millis(100)),
+            Animation::Bezier {
+                x1: 0.42,
+                y1: 0.0,
+                x2: 0.58,
+                y2: 1.0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "stiffness > 0")]
+    fn spring_rejects_non_positive_stiffness() {
+        let _ = Animation::spring(0.0, 10.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "damping >= 0")]
+    fn spring_rejects_negative_damping() {
+        let _ = Animation::spring(100.0, -1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "x1/x2 in [0, 1]")]
+    fn bezier_rejects_invalid_x_range() {
+        let _ = Animation::bezier(Duration::from_millis(100), -0.1, 0.0, 0.5, 1.0);
+    }
+}

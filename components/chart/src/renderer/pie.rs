@@ -130,7 +130,11 @@ impl PieChartRenderer {
     /// Sets the inner radius (0.0 for pie, > 0.0 for donut).
     /// Value is a fraction of the outer radius (0.0 to 1.0).
     pub fn set_inner_radius(&mut self, radius: f32) {
-        self.inner_radius = radius.clamp(0.0, 0.95);
+        assert!(
+            (0.0..=0.95).contains(&radius),
+            "PieChart inner radius must be in [0.0, 0.95]"
+        );
+        self.inner_radius = radius;
         self.needs_redraw = true;
     }
 
@@ -318,7 +322,7 @@ impl GpuRenderer for PieChartRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Pie Chart Uniforms", &uniforms));
 
         // Create slice buffers with initial capacity
-        let max_slices = 64;
+        let max_slices = 512;
         let initial_slices = self.calculate_slices();
         let initial_slice_data: Vec<GpuSliceData> = if initial_slices.is_empty() {
             vec![GpuSliceData::default(); max_slices]
@@ -377,10 +381,16 @@ impl GpuRenderer for PieChartRenderer {
         // Determine hovered slice
         let hovered_slice: f32 = if let Some((x, y)) = frame.pointer_normalized() {
             // Simple hit test based on angle
-            let cx = x - 0.5;
-            let cy = y - 0.5;
+            let mut cx = (x - 0.5) * 2.0;
+            let mut cy = (y - 0.5) * 2.0;
+            let aspect = frame.width as f32 / frame.height as f32;
+            if aspect > 1.0 {
+                cx *= aspect;
+            } else {
+                cy /= aspect.max(1e-6);
+            }
             let dist = (cx * cx + cy * cy).sqrt();
-            let outer = 0.45; // 90% of 0.5
+            let outer = 0.9;
             let inner = outer * self.inner_radius;
 
             if dist >= inner && dist <= outer && !self.data.is_empty() {
@@ -514,7 +524,7 @@ impl ChartRenderer for PieChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = f32;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         self.previous_data = core::mem::take(&mut self.data);
         self.data = data.clone();
 
@@ -543,11 +553,17 @@ impl ChartRenderer for PieChartRenderer {
 
         // Convert to centered coordinates
         let norm = viewport.screen_to_normalized(point)?;
-        let cx = norm.0 - 0.5;
-        let cy = norm.1 - 0.5;
+        let mut cx = (norm.0 - 0.5) * 2.0;
+        let mut cy = (norm.1 - 0.5) * 2.0;
+        let aspect = viewport.width / viewport.height;
+        if aspect > 1.0 {
+            cx *= aspect;
+        } else {
+            cy /= aspect.max(1e-6);
+        }
 
         // Calculate radius and angle
-        let outer = 0.45; // 90% of 0.5
+        let outer = 0.9;
         let inner = outer * self.inner_radius;
         let dist = (cx * cx + cy * cy).sqrt();
 

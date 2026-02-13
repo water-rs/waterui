@@ -1,14 +1,18 @@
 //! GTK4 Picker (DropDown/ComboBox) component implementation.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
+use waterui_core::id::Id;
 use waterui_core::{Environment, Native};
-use waterui_form::picker::PickerConfig;
+use waterui_form::picker::{PickerConfig, PickerItem};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<PickerConfig> {
     /// Renders a `WaterUI` `Picker` as a GTK4 DropDown.
@@ -17,35 +21,50 @@ impl GtkComponent for Native<PickerConfig> {
         let items = config.items;
         let selection = config.selection;
 
-        // Collect items and create string list for dropdown
-        let item_list = items.get();
-        let labels: Vec<String> = item_list
-            .iter()
-            .map(|item| item.content.content().get().to_plain().to_string())
-            .collect();
-        let ids: Vec<_> = item_list.iter().map(|item| item.tag).collect();
+        // Create dropdown (model is installed reactively below).
+        let dropdown = gtk4::DropDown::new(None::<gtk4::StringList>, gtk4::Expression::NONE);
 
-        // Create string list model
-        let string_list =
-            gtk4::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>());
+        // Shared IDs for two-way selection syncing.
+        let ids = Rc::new(RefCell::new(Vec::new()));
 
-        // Create dropdown
-        let dropdown = gtk4::DropDown::new(Some(string_list), gtk4::Expression::NONE);
+        let refresh_items: Rc<dyn Fn(Vec<PickerItem<Id>>)> = {
+            let dropdown = dropdown.clone();
+            let ids = ids.clone();
+            let selection = selection.clone();
+            Rc::new(move |item_list| {
+                let labels: Vec<String> = item_list
+                    .iter()
+                    .map(|item| item.content.content().get().to_plain().to_string())
+                    .collect();
+                let new_ids: Vec<_> = item_list.iter().map(|item| item.tag).collect();
+                let current_id = selection.get();
 
-        // Find initial selected index
-        let current_id = selection.get();
-        let initial_index = ids.iter().position(|id| *id == current_id).unwrap_or(0);
-        dropdown.set_selected(initial_index as u32);
+                *ids.borrow_mut() = new_ids;
 
-        // Store IDs for selection handling
+                let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+                let string_list = gtk4::StringList::new(&label_refs);
+                dropdown.set_model(Some(&string_list));
+
+                let ids_ref = ids.borrow();
+                if ids_ref.is_empty() {
+                    dropdown.set_selected(gtk4::INVALID_LIST_POSITION);
+                } else if let Some(index) = ids_ref.iter().position(|id| *id == current_id) {
+                    dropdown.set_selected(index as u32);
+                } else {
+                    dropdown.set_selected(0);
+                }
+            })
+        };
+
+        refresh_items(items.get());
+
         let ids_for_handler = ids.clone();
         let selection_for_handler = selection.clone();
 
         // Watch dropdown selection changes -> update binding
         dropdown.connect_selected_notify(move |dropdown| {
             let selected_idx = dropdown.selected() as usize;
-            if selected_idx < ids_for_handler.len() {
-                let selected_id = ids_for_handler[selected_idx];
+            if let Some(selected_id) = ids_for_handler.borrow().get(selected_idx).cloned() {
                 if selection_for_handler.get() != selected_id {
                     selection_for_handler.set(selected_id);
                 }
@@ -53,7 +72,7 @@ impl GtkComponent for Native<PickerConfig> {
         });
 
         // Watch binding changes -> update dropdown
-        let guard = selection.computed().watch({
+        let selection_guard = selection.computed().watch({
             let dropdown = dropdown.clone();
             let ids = ids.clone();
             move |ctx| {
@@ -61,7 +80,7 @@ impl GtkComponent for Native<PickerConfig> {
                 let dropdown = dropdown.clone();
                 let ids = ids.clone();
                 glib::idle_add_local_once(move || {
-                    if let Some(idx) = ids.iter().position(|id| *id == value) {
+                    if let Some(idx) = ids.borrow().iter().position(|id| *id == value) {
                         if dropdown.selected() != idx as u32 {
                             dropdown.set_selected(idx as u32);
                         }
@@ -70,7 +89,19 @@ impl GtkComponent for Native<PickerConfig> {
             }
         });
 
-        store_watcher_guard(&dropdown, guard);
+        // Watch items changes -> update dropdown model and selection
+        let items_guard = items.watch({
+            let refresh_items = refresh_items.clone();
+            move |ctx| {
+                let item_list = ctx.into_value();
+                let refresh_items = refresh_items.clone();
+                glib::idle_add_local_once(move || {
+                    refresh_items(item_list);
+                });
+            }
+        });
+
+        store_watcher_guards(&dropdown, vec![selection_guard, items_guard]);
 
         dropdown.upcast()
     }

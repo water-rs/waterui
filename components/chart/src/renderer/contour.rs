@@ -87,7 +87,11 @@ impl ContourRenderer {
 
     /// Sets the line width for contour lines.
     #[must_use]
-    pub const fn line_width(mut self, width: f32) -> Self {
+    pub fn line_width(mut self, width: f32) -> Self {
+        assert!(
+            width.is_finite() && width > 0.0,
+            "Contour line width must be > 0"
+        );
         self.line_width = width;
         self
     }
@@ -202,7 +206,7 @@ impl GpuRenderer for ContourRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Contour Uniforms", &uniforms));
 
         // Create value buffer (scalar field)
-        let initial_capacity = self.data.cell_count().max(64);
+        let initial_capacity = self.data.cell_count().max(16384);
         let initial_values: Vec<f32> = if self.data.values.is_empty() {
             vec![0.0; initial_capacity]
         } else {
@@ -389,7 +393,7 @@ impl ChartRenderer for ContourRenderer {
     type Data = ContourData;
     type DataValue = ContourHit;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Update data
         self.data = data.clone();
         self.bounds = DataBounds::new(0.0, data.cols as f32, 0.0, data.rows as f32);
@@ -417,7 +421,7 @@ impl ChartRenderer for ContourRenderer {
     }
 
     fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<ContourHit>> {
-        if self.data.levels.is_empty() {
+        if self.data.levels.is_empty() || self.data.rows < 2 || self.data.cols < 2 {
             return None;
         }
 

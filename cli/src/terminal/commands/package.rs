@@ -83,18 +83,10 @@ pub struct Args {
 
 /// Run the package command.
 pub async fn run(args: Args) -> Result<()> {
+    validate_arch_args(args.platform, &args.arch)?;
+
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let project = Project::open(&project_path).await?;
-
-    // Validate --arch flag for Android
-    if args.platform == TargetPlatform::Android && args.arch.is_empty() {
-        bail!(
-            "Android platform requires --arch flag.\n\
-             Examples:\n  \
-             water package --platform android --arch arm64\n  \
-             water package --platform android --arch arm64,x86_64"
-        );
-    }
 
     let mode = if args.release { "release" } else { "debug" };
     let dist = if args.distribution {
@@ -183,6 +175,23 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+fn validate_arch_args(platform: TargetPlatform, arch: &[AndroidArch]) -> Result<()> {
+    if platform == TargetPlatform::Android && arch.is_empty() {
+        bail!(
+            "Android platform requires --arch flag.\n\
+             Examples:\n  \
+             water package --platform android --arch arm64\n  \
+             water package --platform android --arch arm64,x86_64"
+        );
+    }
+
+    if platform != TargetPlatform::Android && !arch.is_empty() {
+        bail!("--arch is only valid when --platform android");
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NonAndroidTargetPlatform {
     Ios,
@@ -247,5 +256,27 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::IosSimulator => "iOS Simulator",
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AndroidArch, TargetPlatform, validate_arch_args};
+
+    #[test]
+    fn rejects_empty_arch_for_android() {
+        assert!(validate_arch_args(TargetPlatform::Android, &[]).is_err());
+    }
+
+    #[test]
+    fn rejects_arch_for_non_android() {
+        let err = validate_arch_args(TargetPlatform::Ios, &[AndroidArch::Arm64])
+            .expect_err("non-android --arch should fail");
+        assert!(err.to_string().contains("--arch is only valid"));
+    }
+
+    #[test]
+    fn accepts_android_arch_values() {
+        assert!(validate_arch_args(TargetPlatform::Android, &[AndroidArch::Arm64]).is_ok());
     }
 }

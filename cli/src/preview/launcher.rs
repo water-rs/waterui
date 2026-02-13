@@ -3,12 +3,13 @@
 //! Handles launching the preview app on the target platform and
 //! establishing TCP connection.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use color_eyre::eyre::{Context, Result, bail};
+use sha2::Digest as _;
 use smol::stream::StreamExt;
 use tracing::{error, info};
 
@@ -46,12 +47,12 @@ pub struct PreviewSession {
 }
 
 #[derive(Debug, Clone)]
-/// A built dylib payload (bytes + stable id).
+/// A built dylib payload (stable id + on-disk path).
 pub struct BuiltDylib {
-    /// SHA-256 id of `bytes`.
+    /// SHA-256 id of dylib content.
     pub id: DylibId,
-    /// Raw dylib bytes.
-    pub bytes: Vec<u8>,
+    /// Path to dylib on disk.
+    pub path: PathBuf,
 }
 
 impl PreviewSession {
@@ -91,9 +92,11 @@ impl PreviewSession {
 
         self.dylib_path = Some(dylib_path.clone());
 
-        let data = smol::fs::read(&dylib_path).await?;
-        let id = DylibId::from_payload(&data);
-        Ok(BuiltDylib { id, bytes: data })
+        let id = compute_dylib_id(&dylib_path).await?;
+        Ok(BuiltDylib {
+            id,
+            path: dylib_path,
+        })
     }
 
     /// Render a preview and return PNG bytes.
@@ -105,8 +108,9 @@ impl PreviewSession {
         height: f32,
     ) -> Result<Vec<u8>> {
         self.client
-            .render(dylib.id, &dylib.bytes, symbol, width, height)
+            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
             .await
+            .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
     }
 
     /// Shutdown the preview app if this session launched it.
@@ -141,6 +145,28 @@ async fn dylib_is_up_to_date(path: &std::path::Path, source_mtime: SystemTime) -
 
     let dylib_mtime = metadata.modified()?;
     Ok(dylib_mtime >= source_mtime)
+}
+
+async fn compute_dylib_id(path: &Path) -> Result<DylibId> {
+    let path = path.to_path_buf();
+    smol::unblock(move || {
+        use std::io::Read as _;
+
+        let mut file = std::fs::File::open(&path)?;
+        let mut hasher = sha2::Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+
+        let hash: [u8; 32] = hasher.finalize().into();
+        Ok(DylibId::from_bytes(hash))
+    })
+    .await
 }
 
 /// Launch a preview session for the given platform.

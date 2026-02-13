@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_void};
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gdk4::prelude::*;
 use gtk4::Widget;
@@ -79,6 +80,8 @@ struct GpuState {
 
     pointer: PointerState,
     gesture: GestureState,
+    pan_active: bool,
+    last_pinch_update: Option<Instant>,
 
     // Used only for querying framebuffer properties.
     glow: Option<Rc<glow::Context>>,
@@ -99,6 +102,8 @@ impl GpuState {
             setup_done: false,
             pointer: PointerState::default(),
             gesture: GestureState::default(),
+            pan_active: false,
+            last_pinch_update: None,
             glow: None,
         }
     }
@@ -439,6 +444,19 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
 
     // Keep the surface alive for the next frame.
     let mut st = state.borrow_mut();
+    // `double_tap` is a one-frame pulse.
+    st.gesture.double_tap = false;
+    // Decay pinch state when updates stop coming.
+    if let Some(last) = st.last_pinch_update {
+        if last.elapsed() > Duration::from_millis(140) {
+            st.last_pinch_update = None;
+            st.gesture.pinch_scale = 1.0;
+            st.gesture.pinch_center = None;
+            if !st.pan_active {
+                st.gesture.active = false;
+            }
+        }
+    }
     st.last_size = Some(size);
     st.gpu_surface = Some(gpu_surface);
 
@@ -446,58 +464,137 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     let _ = (adapter, msaa_samples);
 }
 
-fn install_pointer_controllers(widget: &gtk4::Widget, state: &Rc<RefCell<GpuState>>) {
+fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     let motion = gtk4::EventControllerMotion::new();
     motion.connect_enter({
+        let area = area.clone();
         let state = Rc::clone(state);
         move |_ctrl, x, y| {
             let mut st = state.borrow_mut();
-            let scale = widget.scale_factor().max(1) as f32;
+            let scale = area.scale_factor().max(1) as f32;
             st.pointer.position = Some(waterui_core::layout::Point::new(
                 x as f32 * scale,
                 y as f32 * scale,
             ));
+            area.queue_render();
         }
     });
     motion.connect_motion({
+        let area = area.clone();
         let state = Rc::clone(state);
         move |_ctrl, x, y| {
             let mut st = state.borrow_mut();
-            let scale = widget.scale_factor().max(1) as f32;
+            let scale = area.scale_factor().max(1) as f32;
             st.pointer.position = Some(waterui_core::layout::Point::new(
                 x as f32 * scale,
                 y as f32 * scale,
             ));
+            area.queue_render();
         }
     });
     motion.connect_leave({
+        let area = area.clone();
         let state = Rc::clone(state);
         move |_ctrl| {
             let mut st = state.borrow_mut();
             st.pointer.position = None;
+            area.queue_render();
         }
     });
-    widget.add_controller(motion);
+    area.add_controller(motion);
 
     let click = gtk4::GestureClick::new();
     click.set_button(0);
     click.connect_pressed({
+        let area = area.clone();
         let state = Rc::clone(state);
         move |_gesture, _n_press, x, y| {
             let mut st = state.borrow_mut();
-            let scale = widget.scale_factor().max(1) as f32;
+            let scale = area.scale_factor().max(1) as f32;
             let p = waterui_core::layout::Point::new(x as f32 * scale, y as f32 * scale);
             st.pointer.hit = Some(p);
+            area.queue_render();
         }
     });
     click.connect_released({
+        let area = area.clone();
         let state = Rc::clone(state);
-        move |_gesture, _n_press, _x, _y| {
+        move |_gesture, n_press, _x, _y| {
             let mut st = state.borrow_mut();
             st.pointer.hit = None;
+            if n_press >= 2 {
+                st.gesture.double_tap = true;
+                st.gesture.active = false;
+                st.gesture.pinch_scale = 1.0;
+                st.gesture.pinch_center = None;
+                st.gesture.pan_offset = waterui_core::layout::Point::new(0.0, 0.0);
+                st.pan_active = false;
+                st.last_pinch_update = None;
+            }
+            area.queue_render();
         }
     });
-    widget.add_controller(click);
+    area.add_controller(click);
+
+    let pan = gtk4::GestureDrag::new();
+    pan.set_button(0);
+    pan.connect_drag_begin({
+        let area = area.clone();
+        let state = Rc::clone(state);
+        move |_gesture, _x, _y| {
+            let mut st = state.borrow_mut();
+            st.pan_active = true;
+            st.gesture.active = true;
+            st.gesture.pan_offset = waterui_core::layout::Point::new(0.0, 0.0);
+            area.queue_render();
+        }
+    });
+    pan.connect_drag_update({
+        let area = area.clone();
+        let state = Rc::clone(state);
+        move |_gesture, offset_x, offset_y| {
+            let mut st = state.borrow_mut();
+            let scale = area.scale_factor().max(1) as f32;
+            st.gesture.active = true;
+            st.gesture.pan_offset =
+                waterui_core::layout::Point::new(offset_x as f32 * scale, offset_y as f32 * scale);
+            area.queue_render();
+        }
+    });
+    pan.connect_drag_end({
+        let area = area.clone();
+        let state = Rc::clone(state);
+        move |_gesture, _offset_x, _offset_y| {
+            let mut st = state.borrow_mut();
+            st.pan_active = false;
+            st.gesture.pan_offset = waterui_core::layout::Point::new(0.0, 0.0);
+            if st.last_pinch_update.is_none() {
+                st.gesture.active = false;
+            }
+            area.queue_render();
+        }
+    });
+    area.add_controller(pan);
+
+    let zoom = gtk4::GestureZoom::new();
+    zoom.connect_scale_changed({
+        let area = area.clone();
+        let state = Rc::clone(state);
+        move |gesture, scale| {
+            let mut st = state.borrow_mut();
+            let scale_factor = area.scale_factor().max(1) as f32;
+            st.gesture.active = true;
+            st.gesture.pinch_scale = scale as f32;
+            st.gesture.pinch_center = gesture.bounding_box().map(|bbox| {
+                let center_x = bbox.x() + bbox.width() * 0.5;
+                let center_y = bbox.y() + bbox.height() * 0.5;
+                waterui_core::layout::Point::new(center_x as f32 * scale_factor, center_y as f32 * scale_factor)
+            });
+            st.last_pinch_update = Some(Instant::now());
+            area.queue_render();
+        }
+    });
+    area.add_controller(zoom);
 }
 
 fn render_gpu_surface(mut gpu_surface: GpuSurface) -> gtk4::Widget {
@@ -513,7 +610,7 @@ fn render_gpu_surface(mut gpu_surface: GpuSurface) -> gtk4::Widget {
     area.set_allowed_apis(gdk4::GLAPI::GL | gdk4::GLAPI::GLES);
 
     let state = Rc::new(RefCell::new(GpuState::new(gpu_surface)));
-    install_pointer_controllers(&area.clone().upcast(), &state);
+    install_input_controllers(&area, &state);
 
     area.connect_realize({
         let state = Rc::clone(&state);

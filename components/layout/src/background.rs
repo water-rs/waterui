@@ -17,7 +17,7 @@
 
 use core::fmt;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use waterui_core::View;
 
 use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
@@ -27,12 +27,13 @@ use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::F
 /// The content child determines the size, the background fills the bounds.
 /// Children order: `[background, content]`
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BackgroundLayout;
+pub struct BackgroundLayout {
+    stretch_axis: StretchAxis,
+}
 
 impl Layout for BackgroundLayout {
     fn stretch_axis(&self) -> StretchAxis {
-        // Stretch axis should come from content (index 1), not be fixed
-        StretchAxis::None
+        self.stretch_axis
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -101,8 +102,14 @@ where
     Bg: View + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
+        let BackgroundView {
+            content,
+            background,
+        } = self;
+        let stretch_axis = content.stretch_axis();
+
         // Background is first (renders behind), content is second (renders on top)
-        FixedContainer::new(BackgroundLayout, (self.background, self.content))
+        FixedContainer::new(BackgroundLayout { stretch_axis }, (background, content))
     }
 }
 
@@ -121,6 +128,7 @@ mod tests {
     use waterui_core::layout::Point;
 
     use super::*;
+    use alloc::vec;
 
     struct MockSubView {
         size: Size,
@@ -140,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_background_size_from_content() {
-        let layout = BackgroundLayout;
+        let layout = BackgroundLayout::default();
 
         let mut bg = MockSubView {
             size: Size::new(200.0, 200.0),
@@ -159,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_background_fills_bounds() {
-        let layout = BackgroundLayout;
+        let layout = BackgroundLayout::default();
 
         let mut bg = MockSubView {
             size: Size::new(50.0, 50.0),
@@ -177,5 +185,13 @@ mod tests {
         assert_eq!(rects[0].height(), 100.0);
         assert_eq!(rects[1].width(), 100.0);
         assert_eq!(rects[1].height(), 100.0);
+    }
+
+    #[test]
+    fn test_background_layout_preserves_content_stretch_axis() {
+        let layout = BackgroundLayout {
+            stretch_axis: StretchAxis::Horizontal,
+        };
+        assert_eq!(layout.stretch_axis(), StretchAxis::Horizontal);
     }
 }

@@ -3,6 +3,15 @@
 //! Backgrounds fill the bounds behind a view. They support solid colors, gradients,
 //! blur effects (materials), and images.
 //!
+//! # Rendering Model
+//!
+//! Most backgrounds (`Color`, gradients, and any `View` passed to `.background()`)
+//! are composed by the framework in Rust via `BackgroundView`.
+//!
+//! `Material` is different: it becomes `MaterialBackground` metadata and is delegated
+//! to platform backends on a best-effort basis, because true backdrop blur requires
+//! native compositor APIs that are not uniformly available from the Rust layer.
+//!
 //! # Gradient Backgrounds
 //!
 //! Gradients are rendered using GPU shaders for consistent cross-platform appearance:
@@ -35,8 +44,11 @@ use crate::gradient::{
 
 /// A material background metadata for native blur effects.
 ///
-/// This is an ignorable metadata that creates a native blur effect on supported
-/// platforms (Apple). On unsupported platforms, this metadata is silently ignored.
+/// This is an ignorable metadata delegated to native backends. Backends should
+/// provide the best material effect they can (real blur, approximation, or no-op).
+///
+/// This metadata remains ignorable because full material/backdrop effects depend
+/// on platform compositor capabilities and cannot be implemented uniformly in Rust.
 ///
 /// # Usage
 ///
@@ -107,8 +119,9 @@ pub struct Shader {}
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// On iOS/macOS, these map to SwiftUI's `Material` types using `UIVisualEffectView`.
-/// On Android API 31+, these use `RenderEffect.createBlurEffect()` with varying radii.
+/// Material rendering is backend-defined and best-effort.
+/// - On Apple platforms, this typically maps to native material/visual effect APIs.
+/// - Other platforms may provide approximations or ignore the metadata.
 ///
 /// # Examples
 ///

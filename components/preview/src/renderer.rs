@@ -3,8 +3,6 @@
 //! This module re-exports the `ViewRenderer` from `waterui-core` and adds
 //! PNG encoding functionality for the preview system.
 
-use std::io::Cursor;
-
 pub use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 
 /// Extension trait for `RenderResult` to add PNG encoding.
@@ -27,7 +25,8 @@ impl RenderResultExt for RenderResult {
 }
 
 fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Result<Vec<u8>, String> {
-    use image::{ImageBuffer, Rgba};
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::{ExtendedColorType, ImageBuffer, ImageEncoder, Rgba};
 
     if rgba_data.is_empty() || width == 0 || height == 0 {
         return Ok(Vec::new());
@@ -40,7 +39,11 @@ fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Result<Vec<u8>, St
     };
 
     let mut png_bytes = Vec::new();
-    img.write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+    // Preview favors encode speed over smallest file size.
+    let encoder =
+        PngEncoder::new_with_quality(&mut png_bytes, CompressionType::Fast, FilterType::NoFilter);
+    encoder
+        .write_image(img.as_raw(), width, height, ExtendedColorType::Rgba8)
         .map_err(|e| format!("PNG encoding failed: {e}"))?;
     Ok(png_bytes)
 }

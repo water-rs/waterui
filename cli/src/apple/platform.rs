@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::{env, fmt::Write};
 
-use color_eyre::eyre::{self, bail};
+use color_eyre::eyre::{self, Context, bail};
 use smol::fs;
 use target_lexicon::Architecture;
 use tracing::{debug, info};
@@ -37,7 +37,10 @@ pub async fn build_rust_lib(
     let font_declarations = crate::assets::scan_fonts(project).await?;
     let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
 
-    let triple = platform.triple();
+    let triple = options
+        .target_triple()
+        .cloned()
+        .unwrap_or_else(|| platform.triple());
     let mut build = RustBuild::new(project.root(), triple.clone());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
@@ -49,11 +52,16 @@ pub async fn build_rust_lib(
         let lib_name = project.crate_name().replace('-', "_");
         let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
-        if source_lib.exists() {
-            fs::create_dir_all(output_dir).await?;
-            let dest_lib = output_dir.join("libwaterui_app.a");
-            copy_file(&source_lib, &dest_lib).await?;
+        if !source_lib.exists() {
+            bail!(
+                "Built library not found at {} (expected staticlib for Apple target {})",
+                source_lib.display(),
+                triple
+            );
         }
+        fs::create_dir_all(output_dir).await?;
+        let dest_lib = output_dir.join("libwaterui_app.a");
+        copy_file(&source_lib, &dest_lib).await?;
     }
 
     Ok(lib_dir)
@@ -116,6 +124,60 @@ async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
     bail!("{message}");
 }
 
+async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
+    let pbxproj_path = xcodeproj.join("project.pbxproj");
+    if !pbxproj_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&pbxproj_path)
+        .await
+        .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
+    let (updated, changed) = inject_video_toolbox_linker_flag(&content);
+    if changed {
+        fs::write(&pbxproj_path, updated)
+            .await
+            .wrap_err_with(|| format!("Failed to write {}", pbxproj_path.display()))?;
+        info!(
+            "Updated {} to link VideoToolbox for codec support",
+            pbxproj_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn inject_video_toolbox_linker_flag(content: &str) -> (String, bool) {
+    const FLAG: &str = "-framework VideoToolbox";
+    if content.contains(FLAG) {
+        return (content.to_string(), false);
+    }
+
+    let mut changed = false;
+    let mut lines = Vec::new();
+    for line in content.lines() {
+        if line.contains("OTHER_LDFLAGS = \"")
+            && line.contains("-lwaterui_app")
+            && !line.contains(FLAG)
+            && let Some((prefix, rest)) = line.split_once("OTHER_LDFLAGS = \"")
+            && let Some((flags, suffix)) = rest.split_once("\";")
+        {
+            lines.push(format!(
+                "{prefix}OTHER_LDFLAGS = \"{flags} {FLAG}\";{suffix}"
+            ));
+            changed = true;
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+
+    let mut updated = lines.join("\n");
+    if content.ends_with('\n') {
+        updated.push('\n');
+    }
+    (updated, changed)
+}
+
 // ============================================================================
 // Clean
 // ============================================================================
@@ -174,6 +236,7 @@ pub async fn package_apple(
         );
     }
 
+    ensure_video_toolbox_linking(&xcodeproj).await?;
     validate_local_apple_backend(project).await?;
 
     // Copy project assets and fonts
@@ -280,9 +343,8 @@ pub async fn package_apple(
 
 /// Copy project assets and dependency fonts to the app resources directory.
 async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Result<()> {
-    // Copy project assets
-    let assets_dest = dest_dir.join("assets");
-    assets::copy_project_assets(project, &assets_dest).await?;
+    // Stage project assets using platform-native conventions.
+    assets::stage_project_assets_for_apple(project, dest_dir).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;
@@ -354,4 +416,26 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
             | TargetPlatform::VisionOS
             | TargetPlatform::VisionOSSimulator
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_video_toolbox_linker_flag;
+
+    #[test]
+    fn injects_video_toolbox_into_other_ldflags() {
+        let input =
+            "OTHER_LDFLAGS = \"-lwaterui_app -lc++\";\nOTHER_LDFLAGS = \"-lwaterui_app -lc++\";\n";
+        let (output, changed) = inject_video_toolbox_linker_flag(input);
+        assert!(changed);
+        assert_eq!(output.matches("-framework VideoToolbox").count(), 2);
+    }
+
+    #[test]
+    fn linker_flag_injection_is_idempotent() {
+        let input = "OTHER_LDFLAGS = \"-lwaterui_app -lc++ -framework VideoToolbox\";\n";
+        let (output, changed) = inject_video_toolbox_linker_flag(input);
+        assert!(!changed);
+        assert_eq!(output, input);
+    }
 }

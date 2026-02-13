@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use waterui_layout::{absolute, UnitPoint, PositionExt};
+//! use waterui_layout::{absolute, PinConstraints, UnitPoint, PositionExt};
 //!
 //! absolute((
 //!     Color::gray(),  // Fills container
@@ -16,6 +16,7 @@
 //!         UnitPoint::TOP_TRAILING,
 //!         -8.0, 8.0
 //!     ),
+//!     panel.pin(PinConstraints::all(16.0)),
 //! ))
 //! ```
 
@@ -105,10 +106,11 @@ impl Layout for AbsoluteLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
-        // Take whatever space is offered, or infinity if unspecified
+        // Absolute fills offered space. In unconstrained contexts we use 0
+        // to avoid propagating infinite dimensions to native backends.
         Size::new(
-            proposal.width.unwrap_or(f32::INFINITY),
-            proposal.height.unwrap_or(f32::INFINITY),
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
         )
     }
 
@@ -141,6 +143,95 @@ pub enum PositionTarget {
         /// Additional Y offset in points
         offset_y: Computed<f32>,
     },
+    /// Edge-based pinning with optional explicit size.
+    Pinned(PinConstraints),
+}
+
+/// Edge-based constraints for absolute positioning.
+///
+/// This supports common pinning patterns:
+/// - `leading + trailing` computes width from parent bounds
+/// - `top + bottom` computes height from parent bounds
+/// - explicit `width` / `height` override computed dimensions
+#[derive(Debug, Clone, Default)]
+pub struct PinConstraints {
+    leading: Option<Computed<f32>>,
+    trailing: Option<Computed<f32>>,
+    top: Option<Computed<f32>>,
+    bottom: Option<Computed<f32>>,
+    width: Option<Computed<f32>>,
+    height: Option<Computed<f32>>,
+}
+
+impl PinConstraints {
+    /// Creates empty pin constraints.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            leading: None,
+            trailing: None,
+            top: None,
+            bottom: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    /// Pins all four edges by the same inset.
+    #[must_use]
+    pub fn all(inset: impl IntoSignalF32) -> Self {
+        let inset = inset.into_signal_f32().computed();
+        Self {
+            leading: Some(inset.clone()),
+            trailing: Some(inset.clone()),
+            top: Some(inset.clone()),
+            bottom: Some(inset),
+            width: None,
+            height: None,
+        }
+    }
+
+    /// Pins leading edge.
+    #[must_use]
+    pub fn leading(mut self, value: impl IntoSignalF32) -> Self {
+        self.leading = Some(value.into_signal_f32().computed());
+        self
+    }
+
+    /// Pins trailing edge.
+    #[must_use]
+    pub fn trailing(mut self, value: impl IntoSignalF32) -> Self {
+        self.trailing = Some(value.into_signal_f32().computed());
+        self
+    }
+
+    /// Pins top edge.
+    #[must_use]
+    pub fn top(mut self, value: impl IntoSignalF32) -> Self {
+        self.top = Some(value.into_signal_f32().computed());
+        self
+    }
+
+    /// Pins bottom edge.
+    #[must_use]
+    pub fn bottom(mut self, value: impl IntoSignalF32) -> Self {
+        self.bottom = Some(value.into_signal_f32().computed());
+        self
+    }
+
+    /// Sets explicit width.
+    #[must_use]
+    pub fn width(mut self, value: impl IntoSignalF32) -> Self {
+        self.width = Some(value.into_signal_f32().computed());
+        self
+    }
+
+    /// Sets explicit height.
+    #[must_use]
+    pub fn height(mut self, value: impl IntoSignalF32) -> Self {
+        self.height = Some(value.into_signal_f32().computed());
+        self
+    }
 }
 
 // ============================================================================
@@ -170,39 +261,139 @@ impl Layout for PositionedLayout {
 
     fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         Size::new(
-            proposal.width.unwrap_or(f32::INFINITY),
-            proposal.height.unwrap_or(f32::INFINITY),
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
         )
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let child_proposal = ProposalSize::new(
+            bounds
+                .width()
+                .is_finite()
+                .then_some(bounds.width().max(0.0)),
+            bounds
+                .height()
+                .is_finite()
+                .then_some(bounds.height().max(0.0)),
+        );
+
         children
             .iter()
             .map(|child| {
-                let child_size = child.size_that_fits(ProposalSize::UNSPECIFIED);
+                let intrinsic = child.size_that_fits(child_proposal);
 
-                let (target_x, target_y) = match &self.target {
+                match &self.target {
                     PositionTarget::Absolute { x, y } => {
-                        (bounds.x() + x.get(), bounds.y() + y.get())
+                        let child_size = sanitize_size(intrinsic, bounds);
+                        let target_x = bounds.x() + x.get();
+                        let target_y = bounds.y() + y.get();
+
+                        let x = target_x - child_size.width * self.anchor.x;
+                        let y = target_y - child_size.height * self.anchor.y;
+
+                        Rect::new(
+                            Point::new(
+                                if x.is_finite() { x } else { bounds.x() },
+                                if y.is_finite() { y } else { bounds.y() },
+                            ),
+                            child_size,
+                        )
                     }
                     PositionTarget::Fractional {
                         unit,
                         offset_x,
                         offset_y,
-                    } => (
-                        bounds.x() + bounds.width() * unit.x + offset_x.get(),
-                        bounds.y() + bounds.height() * unit.y + offset_y.get(),
-                    ),
-                };
+                    } => {
+                        let child_size = sanitize_size(intrinsic, bounds);
+                        let target_x = bounds.x() + bounds.width() * unit.x + offset_x.get();
+                        let target_y = bounds.y() + bounds.height() * unit.y + offset_y.get();
 
-                // Offset by child's anchor point
-                let x = target_x - child_size.width * self.anchor.x;
-                let y = target_y - child_size.height * self.anchor.y;
+                        let x = target_x - child_size.width * self.anchor.x;
+                        let y = target_y - child_size.height * self.anchor.y;
 
-                Rect::new(Point::new(x, y), child_size)
+                        Rect::new(
+                            Point::new(
+                                if x.is_finite() { x } else { bounds.x() },
+                                if y.is_finite() { y } else { bounds.y() },
+                            ),
+                            child_size,
+                        )
+                    }
+                    PositionTarget::Pinned(pinned) => {
+                        let leading = pinned.leading.as_ref().map(|v| v.get());
+                        let trailing = pinned.trailing.as_ref().map(|v| v.get());
+                        let top = pinned.top.as_ref().map(|v| v.get());
+                        let bottom = pinned.bottom.as_ref().map(|v| v.get());
+                        let explicit_width = pinned.width.as_ref().map(|v| v.get());
+                        let explicit_height = pinned.height.as_ref().map(|v| v.get());
+
+                        let mut width = if let Some(width) = explicit_width {
+                            width
+                        } else if let (Some(leading), Some(trailing)) = (leading, trailing) {
+                            bounds.width() - leading - trailing
+                        } else {
+                            intrinsic.width
+                        };
+                        let mut height = if let Some(height) = explicit_height {
+                            height
+                        } else if let (Some(top), Some(bottom)) = (top, bottom) {
+                            bounds.height() - top - bottom
+                        } else {
+                            intrinsic.height
+                        };
+
+                        if !width.is_finite() {
+                            width = bounds.width();
+                        }
+                        if !height.is_finite() {
+                            height = bounds.height();
+                        }
+                        width = width.max(0.0);
+                        height = height.max(0.0);
+
+                        let x = if let Some(leading) = leading {
+                            bounds.x() + leading
+                        } else if let Some(trailing) = trailing {
+                            bounds.max_x() - trailing - width
+                        } else {
+                            bounds.x()
+                        };
+
+                        let y = if let Some(top) = top {
+                            bounds.y() + top
+                        } else if let Some(bottom) = bottom {
+                            bounds.max_y() - bottom - height
+                        } else {
+                            bounds.y()
+                        };
+
+                        Rect::new(
+                            Point::new(
+                                if x.is_finite() { x } else { bounds.x() },
+                                if y.is_finite() { y } else { bounds.y() },
+                            ),
+                            Size::new(width, height),
+                        )
+                    }
+                }
             })
             .collect()
     }
+}
+
+fn sanitize_size(intrinsic: Size, bounds: Rect) -> Size {
+    let width = if intrinsic.width.is_finite() {
+        intrinsic.width.max(0.0)
+    } else {
+        bounds.width().max(0.0)
+    };
+    let height = if intrinsic.height.is_finite() {
+        intrinsic.height.max(0.0)
+    } else {
+        bounds.height().max(0.0)
+    };
+    Size::new(width, height)
 }
 
 // ============================================================================
@@ -346,6 +537,33 @@ pub trait PositionExt: View + Sized {
             content: self,
         }
     }
+
+    /// Position using edge pins and optional explicit size.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Fill parent with 12pt inset
+    /// background.pin(PinConstraints::all(12.0));
+    ///
+    /// // Bottom trailing fixed-size badge
+    /// badge.pin(
+    ///     PinConstraints::new()
+    ///         .trailing(12.0)
+    ///         .bottom(12.0)
+    ///         .width(28.0)
+    ///         .height(28.0)
+    /// );
+    /// ```
+    fn pin(self, constraints: PinConstraints) -> PositionedChild<Self> {
+        PositionedChild {
+            layout: PositionedLayout {
+                anchor: UnitPoint::TOP_LEADING,
+                target: PositionTarget::Pinned(constraints),
+            },
+            content: self,
+        }
+    }
 }
 
 impl<V: View + Sized> PositionExt for V {}
@@ -357,7 +575,8 @@ impl<V: View + Sized> PositionExt for V {}
 /// Container for absolutely positioned children.
 ///
 /// Fills available space and positions each child within.
-/// Children can use `PositionExt` methods like `.position()` and `.position_in()`.
+/// Children can use `PositionExt` methods like `.position()`, `.position_in()`,
+/// and `.pin()`.
 ///
 /// # Example
 ///
@@ -420,9 +639,11 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use alloc::vec;
+    use core::cell::Cell;
 
     struct MockSubView {
         size: Size,
+        stretch_axis: StretchAxis,
     }
 
     impl SubView for MockSubView {
@@ -430,7 +651,43 @@ mod tests {
             self.size
         }
         fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::None
+            self.stretch_axis
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    struct ProposalAwareView {
+        intrinsic: Size,
+        constrained: Size,
+        last_width: Cell<Option<f32>>,
+        last_height: Cell<Option<f32>>,
+    }
+
+    impl ProposalAwareView {
+        fn new(intrinsic: Size, constrained: Size) -> Self {
+            Self {
+                intrinsic,
+                constrained,
+                last_width: Cell::new(None),
+                last_height: Cell::new(None),
+            }
+        }
+    }
+
+    impl SubView for ProposalAwareView {
+        fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+            self.last_width.set(proposal.width);
+            self.last_height.set(proposal.height);
+            if proposal.width.is_some() || proposal.height.is_some() {
+                self.constrained
+            } else {
+                self.intrinsic
+            }
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
         }
         fn priority(&self) -> i32 {
             0
@@ -438,66 +695,63 @@ mod tests {
     }
 
     #[test]
-    fn test_absolute_layout_fills_parent() {
+    fn test_absolute_layout_uses_finite_size_for_unspecified_proposal() {
         let layout = AbsoluteLayout;
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[]);
 
-        // Absolute fills whatever is proposed
-        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), Some(300.0)), &[]);
-        assert!((size.width - 200.0).abs() < f32::EPSILON);
-        assert!((size.height - 300.0).abs() < f32::EPSILON);
+        assert!(size.width.is_finite());
+        assert!(size.height.is_finite());
+        assert_eq!(size.width, 0.0);
+        assert_eq!(size.height, 0.0);
     }
 
     #[test]
-    fn test_absolute_layout_gives_full_bounds() {
+    fn test_absolute_layout_respects_parent_constraints() {
         let layout = AbsoluteLayout;
+        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), Some(300.0)), &[]);
+        assert_eq!(size.width, 200.0);
+        assert_eq!(size.height, 300.0);
+    }
 
+    #[test]
+    fn test_absolute_layout_gives_full_bounds_to_each_child() {
+        let layout = AbsoluteLayout;
         let mut child1 = MockSubView {
             size: Size::new(50.0, 50.0),
+            stretch_axis: StretchAxis::None,
         };
         let mut child2 = MockSubView {
             size: Size::new(30.0, 30.0),
+            stretch_axis: StretchAxis::None,
         };
-
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
         let bounds = Rect::new(Point::new(10.0, 20.0), Size::new(200.0, 300.0));
-
         let rects = layout.place(bounds, &children);
 
-        // All children get full bounds
         assert_eq!(rects.len(), 2);
-        assert!((rects[0].x() - 10.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 20.0).abs() < f32::EPSILON);
-        assert!((rects[0].width() - 200.0).abs() < f32::EPSILON);
-        assert!((rects[0].height() - 300.0).abs() < f32::EPSILON);
-        assert!((rects[1].x() - 10.0).abs() < f32::EPSILON);
-        assert!((rects[1].y() - 20.0).abs() < f32::EPSILON);
+        assert_eq!(rects[0], bounds);
+        assert_eq!(rects[1], bounds);
     }
 
     #[test]
-    fn test_positioned_layout_absolute_center() {
+    fn test_positioned_layout_uses_finite_size_for_unspecified_proposal() {
         let layout = PositionedLayout {
             anchor: UnitPoint::CENTER,
             target: PositionTarget::Absolute {
-                x: 100.0_f32.into_signal_f32().computed(),
-                y: 50.0_f32.into_signal_f32().computed(),
+                x: 10.0_f32.into_signal_f32().computed(),
+                y: 20.0_f32.into_signal_f32().computed(),
             },
         };
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[]);
 
-        let mut child = MockSubView {
-            size: Size::new(40.0, 20.0),
-        };
-        let children: Vec<&dyn SubView> = vec![&mut child];
-        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(200.0, 200.0));
-
-        let rects = layout.place(bounds, &children);
-
-        // Child's center at (100, 50), so origin is (100 - 20, 50 - 10) = (80, 40)
-        assert!((rects[0].x() - 80.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 40.0).abs() < f32::EPSILON);
+        assert!(size.width.is_finite());
+        assert!(size.height.is_finite());
+        assert_eq!(size.width, 0.0);
+        assert_eq!(size.height, 0.0);
     }
 
     #[test]
-    fn test_positioned_layout_fractional_center() {
+    fn test_positioned_layout_measures_child_with_parent_bounds_proposal() {
         let layout = PositionedLayout {
             anchor: UnitPoint::CENTER,
             target: PositionTarget::Fractional {
@@ -507,18 +761,45 @@ mod tests {
             },
         };
 
-        let mut child = MockSubView {
-            size: Size::new(40.0, 20.0),
-        };
-        let children: Vec<&dyn SubView> = vec![&mut child];
+        let child = ProposalAwareView::new(Size::new(10.0, 10.0), Size::new(200.0, 100.0));
+        let children: Vec<&dyn SubView> = vec![&child];
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(200.0, 100.0));
 
         let rects = layout.place(bounds, &children);
 
-        // Target is center of parent (100, 50), child center there
-        // Origin = (100 - 20, 50 - 10) = (80, 40)
-        assert!((rects[0].x() - 80.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 40.0).abs() < f32::EPSILON);
+        assert_eq!(child.last_width.get(), Some(200.0));
+        assert_eq!(child.last_height.get(), Some(100.0));
+        assert_eq!(rects[0].x(), 0.0);
+        assert_eq!(rects[0].y(), 0.0);
+        assert_eq!(rects[0].width(), 200.0);
+        assert_eq!(rects[0].height(), 100.0);
+    }
+
+    #[test]
+    fn test_positioned_layout_absolute_anchor_math() {
+        let layout = PositionedLayout {
+            anchor: UnitPoint::BOTTOM_TRAILING,
+            target: PositionTarget::Absolute {
+                x: 50.0_f32.into_signal_f32().computed(),
+                y: 40.0_f32.into_signal_f32().computed(),
+            },
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(20.0, 10.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+        let bounds = Rect::new(Point::new(10.0, 20.0), Size::new(200.0, 100.0));
+
+        let rects = layout.place(bounds, &children);
+
+        // Target at (bounds.x + 50, bounds.y + 40) = (60, 60),
+        // bottom-trailing anchor offsets by (20, 10).
+        assert_eq!(rects[0].x(), 40.0);
+        assert_eq!(rects[0].y(), 50.0);
+        assert_eq!(rects[0].width(), 20.0);
+        assert_eq!(rects[0].height(), 10.0);
     }
 
     #[test]
@@ -534,6 +815,7 @@ mod tests {
 
         let mut child = MockSubView {
             size: Size::new(50.0, 50.0),
+            stretch_axis: StretchAxis::None,
         };
         let children: Vec<&dyn SubView> = vec![&mut child];
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(200.0, 200.0));
@@ -544,5 +826,83 @@ mod tests {
         // Child's bottom-right at target, so origin = (184 - 50, 184 - 50) = (134, 134)
         assert!((rects[0].x() - 134.0).abs() < f32::EPSILON);
         assert!((rects[0].y() - 134.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_pin_constraints_fill_with_insets() {
+        let layout = PositionedLayout {
+            anchor: UnitPoint::TOP_LEADING,
+            target: PositionTarget::Pinned(PinConstraints::all(12.0)),
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(20.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(200.0, 100.0));
+
+        let rects = layout.place(bounds, &children);
+
+        assert_eq!(rects[0].x(), 12.0);
+        assert_eq!(rects[0].y(), 12.0);
+        assert_eq!(rects[0].width(), 176.0);
+        assert_eq!(rects[0].height(), 76.0);
+    }
+
+    #[test]
+    fn test_pin_constraints_bottom_trailing_fixed_size() {
+        let layout = PositionedLayout {
+            anchor: UnitPoint::TOP_LEADING,
+            target: PositionTarget::Pinned(
+                PinConstraints::new()
+                    .trailing(16.0)
+                    .bottom(10.0)
+                    .width(40.0)
+                    .height(20.0),
+            ),
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(8.0, 8.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+        let bounds = Rect::new(Point::new(5.0, 10.0), Size::new(200.0, 100.0));
+
+        let rects = layout.place(bounds, &children);
+
+        assert_eq!(rects[0].x(), 149.0);
+        assert_eq!(rects[0].y(), 80.0);
+        assert_eq!(rects[0].width(), 40.0);
+        assert_eq!(rects[0].height(), 20.0);
+    }
+
+    #[test]
+    fn test_pin_constraints_clamp_negative_size() {
+        let layout = PositionedLayout {
+            anchor: UnitPoint::TOP_LEADING,
+            target: PositionTarget::Pinned(
+                PinConstraints::new()
+                    .leading(80.0)
+                    .trailing(80.0)
+                    .top(40.0)
+                    .bottom(40.0),
+            ),
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(30.0, 30.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
+
+        let rects = layout.place(bounds, &children);
+
+        assert_eq!(rects[0].x(), 80.0);
+        assert_eq!(rects[0].y(), 40.0);
+        assert_eq!(rects[0].width(), 0.0);
+        assert_eq!(rects[0].height(), 0.0);
     }
 }

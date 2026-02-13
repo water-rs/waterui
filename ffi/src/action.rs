@@ -14,9 +14,12 @@ opaque!(WuiAction, BoxedAction<()>, action);
 /// * `env` must be a valid pointer to a `waterui_env` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const WuiEnv) {
-    unsafe {
-        ((*action).0)(&*env);
+    if action.is_null() || env.is_null() {
+        return;
     }
+    let _ = crate::ffi_boundary("waterui_call_action", || unsafe {
+        ((*action).0)(&*env);
+    });
 }
 
 // ============================================================================
@@ -52,9 +55,12 @@ pub unsafe extern "C" fn waterui_call_index_action(
     env: *const WuiEnv,
     index: usize,
 ) {
-    unsafe {
-        ((*action).0.0)(&*env, index);
+    if action.is_null() || env.is_null() {
+        return;
     }
+    let _ = crate::ffi_boundary("waterui_call_index_action", || unsafe {
+        ((*action).0.0)(&*env, index);
+    });
 }
 
 // ============================================================================
@@ -91,7 +97,93 @@ pub unsafe extern "C" fn waterui_call_move_action(
     from_index: usize,
     to_index: usize,
 ) {
-    unsafe {
+    if action.is_null() || env.is_null() {
+        return;
+    }
+    let _ = crate::ffi_boundary("waterui_call_move_action", || unsafe {
         ((*action).0.0)(&*env, from_index, to_index);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::{IntoRust, WuiEnv};
+
+    fn test_env() -> *mut WuiEnv {
+        waterui::Environment::new().into_ffi()
+    }
+
+    #[test]
+    fn call_action_executes_handler() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_action = Arc::clone(&hits);
+        let action: BoxedAction<()> = Box::new(move |_| {
+            hits_for_action.fetch_add(1, Ordering::SeqCst);
+        });
+        let action_ptr = action.into_ffi();
+        let env_ptr = test_env();
+
+        unsafe {
+            waterui_call_action(action_ptr, env_ptr);
+        }
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        unsafe {
+            waterui_drop_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
+    }
+
+    #[test]
+    fn call_action_swallows_panics() {
+        let action: BoxedAction<()> = Box::new(|_| panic!("boom"));
+        let action_ptr = action.into_ffi();
+        let env_ptr = test_env();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            waterui_call_action(action_ptr, env_ptr);
+        }));
+        assert!(result.is_ok(), "panic should not cross FFI boundary");
+
+        unsafe {
+            waterui_drop_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
+    }
+
+    #[test]
+    fn call_index_action_swallows_panics() {
+        let action_ptr = IndexHandler(Box::new(|_, _| panic!("boom"))).into_ffi();
+        let env_ptr = test_env();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            waterui_call_index_action(action_ptr, env_ptr, 3);
+        }));
+        assert!(result.is_ok(), "panic should not cross FFI boundary");
+
+        unsafe {
+            waterui_drop_index_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
+    }
+
+    #[test]
+    fn call_move_action_swallows_panics() {
+        let action_ptr = MoveHandler(Box::new(|_, _, _| panic!("boom"))).into_ffi();
+        let env_ptr = test_env();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            waterui_call_move_action(action_ptr, env_ptr, 1, 5);
+        }));
+        assert!(result.is_ok(), "panic should not cross FFI boundary");
+
+        unsafe {
+            waterui_drop_move_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
     }
 }

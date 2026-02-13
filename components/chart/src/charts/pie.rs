@@ -61,6 +61,10 @@ impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
     /// Value is a fraction of the outer radius (0.0 to 1.0).
     #[must_use]
     pub fn donut(mut self, inner_radius: f32) -> Self {
+        assert!(
+            (0.0..=0.95).contains(&inner_radius),
+            "PieChart::donut(inner_radius) requires 0.0 <= inner_radius <= 0.95"
+        );
         self.inner_radius = inner_radius;
         self
     }

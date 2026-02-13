@@ -4,11 +4,11 @@ Text and typography components for WaterUI with rich styling, fonts, markdown, a
 
 ## Overview
 
-`waterui-text` provides comprehensive text rendering and formatting capabilities for the WaterUI framework. It handles everything from simple text display to complex styled text with multiple font properties, markdown rendering with full formatting support, and syntax highlighting for code snippets across 40+ programming languages.
+`waterui-text` provides comprehensive text rendering and formatting capabilities for the WaterUI framework. It handles everything from simple text display to complex styled text with multiple font properties, inline-focused markdown styling, and syntax highlighting for code snippets across 40+ programming languages.
 
 The crate is designed around reactive primitives, automatically updating text when underlying data changes. All text rendering delegates to native platform widgets (UIKit/AppKit on Apple, Android View on Android), ensuring platform-native appearance and accessibility.
 
-Core features include semantic font styles (body, title, headline), granular styling control (bold, italic, underline, colors), markdown parsing with inline and block elements, and production-ready syntax highlighting via `syntect`.
+Core features include semantic font styles (body, title, headline), granular styling control (bold, italic, underline, colors), inline markdown parsing for styled text runs, and production-ready syntax highlighting via `syntect`.
 
 ## Installation
 
@@ -65,7 +65,7 @@ Fonts are resolved through the `Environment`, allowing dynamic theming. The crat
 
 ### Markdown Support
 
-The `StyledStr::from_markdown()` function parses markdown into styled text, supporting headings, emphasis, strong, code blocks, lists, tables, links, and horizontal rules.
+`StyledStr::from_markdown()` focuses on inline semantics (headings/emphasis/strong/strikethrough/inline code) and lightweight block separators. For full block-level markdown rendering, use `RichText` via `include_markdown!()` in the main `waterui` crate.
 
 ## Examples
 

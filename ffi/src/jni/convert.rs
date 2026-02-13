@@ -390,7 +390,7 @@ pub fn struct_to_java<'local, T: ToJavaStruct>(
 // ToJavaStruct implementations for Metadata types
 // ============================================================================
 
-use crate::{WuiAnyView, WuiEnv, WuiMetadata};
+use crate::{WuiEnv, WuiMetadata};
 
 /// MetadataEnvStruct(contentPtr: Long, envPtr: Long)
 impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
@@ -443,80 +443,129 @@ impl ToJavaStruct for crate::WuiMetadataLifeCycleHook {
 
 /// MetadataGestureStruct(contentPtr: Long, gestureType: Int, gestureData: GestureDataStruct, actionPtr: Long)
 /// Note: WuiGestureObserver has `gesture: WuiGesture` and `action: *mut WuiAction`
+fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f32, f32, i64, i64) {
+    match gesture {
+        crate::gesture::WuiGesture::Tap { count } => (
+            0i32,
+            *count as i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            0.0f32,
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::LongPress { duration } => (
+            1i32,
+            0i32,
+            *duration as i32,
+            0.0f32,
+            0.0f32,
+            0.0f32,
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::Drag { min_distance } => {
+            (2i32, 0i32, 0i32, *min_distance, 0.0f32, 0.0f32, 0i64, 0i64)
+        }
+        crate::gesture::WuiGesture::Magnification { initial_scale } => {
+            (3i32, 0i32, 0i32, 0.0f32, *initial_scale, 0.0f32, 0i64, 0i64)
+        }
+        crate::gesture::WuiGesture::Rotation { initial_angle } => {
+            (4i32, 0i32, 0i32, 0.0f32, 0.0f32, *initial_angle, 0i64, 0i64)
+        }
+        crate::gesture::WuiGesture::Then { first, then } => (
+            5i32,
+            0i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            0.0f32,
+            *first as jlong,
+            *then as jlong,
+        ),
+        crate::gesture::WuiGesture::Simultaneous { first, second } => (
+            6i32,
+            0i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            0.0f32,
+            *first as jlong,
+            *second as jlong,
+        ),
+        crate::gesture::WuiGesture::Exclusive { first, second } => (
+            7i32,
+            0i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            0.0f32,
+            *first as jlong,
+            *second as jlong,
+        ),
+    }
+}
+
+fn gesture_data_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    gesture_data_class: &jni::objects::JClass<'local>,
+    gesture: &crate::gesture::WuiGesture,
+) -> JObject<'local> {
+    let (
+        _gesture_type,
+        tap_count,
+        long_press_duration,
+        drag_min_distance,
+        magnification_scale,
+        rotation_angle,
+        first_ptr,
+        second_ptr,
+    ) = gesture_parts(gesture);
+
+    env.new_object(
+        gesture_data_class,
+        "(IIFFFJJ)V",
+        &[
+            JValue::Int(tap_count),
+            JValue::Int(long_press_duration),
+            JValue::Float(drag_min_distance),
+            JValue::Float(magnification_scale),
+            JValue::Float(rotation_angle),
+            JValue::Long(first_ptr),
+            JValue::Long(second_ptr),
+        ],
+    )
+    .expect("Failed to create GestureDataStruct")
+}
+
+impl ToJavaStruct for crate::gesture::WuiGesture {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let gesture_data_class = env
+            .find_class("dev/waterui/android/runtime/GestureDataStruct")
+            .expect("GestureDataStruct class not found");
+        let class = env
+            .find_class("dev/waterui/android/runtime/GestureStruct")
+            .expect("GestureStruct class not found");
+        let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(self);
+        let gesture_data = gesture_data_to_java(env, &gesture_data_class, self);
+        env.new_object(
+            &class,
+            "(ILdev/waterui/android/runtime/GestureDataStruct;)V",
+            &[JValue::Int(gesture_type), JValue::Object(&gesture_data)],
+        )
+        .expect("Failed to create GestureStruct")
+    }
+}
+
 impl ToJavaStruct for crate::WuiMetadataGesture {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create GestureDataStruct first based on gesture type
         let gesture_data_class = env
             .find_class("dev/waterui/android/runtime/GestureDataStruct")
             .expect("GestureDataStruct class not found");
-
-        // Extract gesture type and data based on the variant
-        let (
-            gesture_type,
-            tap_count,
-            long_press_duration,
-            drag_min_distance,
-            magnification_scale,
-            rotation_angle,
-            first_ptr,
-            then_ptr,
-        ) = match &self.value.gesture {
-            crate::gesture::WuiGesture::Tap { count } => (
-                0i32,
-                *count as i32,
-                0i32,
-                0.0f32,
-                0.0f32,
-                0.0f32,
-                0i64,
-                0i64,
-            ),
-            crate::gesture::WuiGesture::LongPress { duration } => (
-                1i32,
-                0i32,
-                *duration as i32,
-                0.0f32,
-                0.0f32,
-                0.0f32,
-                0i64,
-                0i64,
-            ),
-            crate::gesture::WuiGesture::Drag { min_distance } => {
-                (2i32, 0i32, 0i32, *min_distance, 0.0f32, 0.0f32, 0i64, 0i64)
-            }
-            crate::gesture::WuiGesture::Magnification { initial_scale } => {
-                (3i32, 0i32, 0i32, 0.0f32, *initial_scale, 0.0f32, 0i64, 0i64)
-            }
-            crate::gesture::WuiGesture::Rotation { initial_angle } => {
-                (4i32, 0i32, 0i32, 0.0f32, 0.0f32, *initial_angle, 0i64, 0i64)
-            }
-            crate::gesture::WuiGesture::Then { first, then } => (
-                5i32,
-                0i32,
-                0i32,
-                0.0f32,
-                0.0f32,
-                0.0f32,
-                *first as jlong,
-                *then as jlong,
-            ),
-        };
-
-        let gesture_data = env
-            .new_object(
-                &gesture_data_class,
-                "(IIFFF JJ)V",
-                &[
-                    JValue::Int(tap_count),
-                    JValue::Int(long_press_duration),
-                    JValue::Float(drag_min_distance),
-                    JValue::Float(magnification_scale),
-                    JValue::Float(rotation_angle),
-                    JValue::Long(first_ptr),
-                    JValue::Long(then_ptr),
-                ],
-            )
-            .expect("Failed to create GestureDataStruct");
+        let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(&self.value.gesture);
+        let gesture_data = gesture_data_to_java(env, &gesture_data_class, &self.value.gesture);
 
         let class = env
             .find_class("dev/waterui/android/runtime/MetadataGestureStruct")

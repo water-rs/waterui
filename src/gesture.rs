@@ -3,6 +3,8 @@
 //! This module defines lightweight gesture specifications that can be attached to widgets.
 //! Each gesture type captures the minimum configuration necessary for a backend to register
 //! and recognize the interaction, while remaining portable across platforms.
+//! Pointer-hover and cursor appearance are intentionally modeled outside this module
+//! (see [`crate::interaction`] and [`crate::cursor`]), matching SwiftUI-style separation.
 //!
 //! # Hit-Testing Behavior
 //!
@@ -51,7 +53,7 @@
 //! [`overlay`]: crate::prelude::overlay
 
 use waterui_core::{
-    handler::{BoxedAction, boxed_action},
+    handler::{boxed_action, BoxedAction},
     metadata::MetadataKey,
 };
 
@@ -256,6 +258,10 @@ pub enum Gesture {
     Rotation(RotationGesture),
     /// A sequential composition of two gestures where the second runs after the first completes.
     Then(Box<Then>),
+    /// A composition where two gestures can be recognized in parallel.
+    Simultaneous(Box<Simultaneous>),
+    /// A composition where the first gesture has priority and the second is a fallback.
+    Exclusive(Box<Exclusive>),
 }
 
 /// Combines two gestures so the second runs only after the first completes.
@@ -279,16 +285,109 @@ impl Then {
     }
 }
 
+/// Combines two gestures so they can be recognized at the same time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Simultaneous {
+    first: Gesture,
+    second: Gesture,
+}
+
+impl Simultaneous {
+    /// Returns a reference to the first gesture in this composition.
+    #[must_use]
+    pub const fn first(&self) -> &Gesture {
+        &self.first
+    }
+
+    /// Returns a reference to the second gesture in this composition.
+    #[must_use]
+    pub const fn second(&self) -> &Gesture {
+        &self.second
+    }
+}
+
+/// Combines two gestures where the first has recognition priority over the second.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exclusive {
+    first: Gesture,
+    second: Gesture,
+}
+
+impl Exclusive {
+    /// Returns a reference to the primary gesture.
+    #[must_use]
+    pub const fn first(&self) -> &Gesture {
+        &self.first
+    }
+
+    /// Returns a reference to the fallback gesture.
+    #[must_use]
+    pub const fn second(&self) -> &Gesture {
+        &self.second
+    }
+}
+
+impl Gesture {
+    /// Chains another gesture that runs only after this gesture succeeds.
+    #[must_use]
+    pub fn then(self, other: impl Into<Gesture>) -> Gesture {
+        Gesture::Then(Box::new(Then {
+            first: self,
+            then: other.into(),
+        }))
+    }
+
+    /// SwiftUI-style alias for [`Gesture::then`].
+    #[must_use]
+    pub fn sequenced_before(self, other: impl Into<Gesture>) -> Gesture {
+        self.then(other)
+    }
+
+    /// Combines this gesture with another so they can be recognized simultaneously.
+    #[must_use]
+    pub fn simultaneously_with(self, other: impl Into<Gesture>) -> Gesture {
+        Gesture::Simultaneous(Box::new(Simultaneous {
+            first: self,
+            second: other.into(),
+        }))
+    }
+
+    /// Combines this gesture with another where this gesture has priority.
+    #[must_use]
+    pub fn exclusively_before(self, other: impl Into<Gesture>) -> Gesture {
+        Gesture::Exclusive(Box::new(Exclusive {
+            first: self,
+            second: other.into(),
+        }))
+    }
+}
+
 macro_rules! impl_gesture {
     ($(($name:ty, $variant:ident)),*) => {
         $(
             impl $name {
                 /// Chains another gesture to run after this one succeeds.
-                pub fn then(self, other: Gesture) -> Gesture {
-                    Gesture::Then(Box::new(Then {
-                        first: Gesture::$variant(self),
-                        then: other,
-                    }))
+                #[must_use]
+                pub fn then(self, other: impl Into<Gesture>) -> Gesture {
+                    Gesture::$variant(self).then(other)
+                }
+
+                /// SwiftUI-style alias for [`Self::then`].
+                #[must_use]
+                pub fn sequenced_before(self, other: impl Into<Gesture>) -> Gesture {
+                    self.then(other)
+                }
+
+                /// Combines two gestures that can be recognized simultaneously.
+                #[must_use]
+                pub fn simultaneously_with(self, other: impl Into<Gesture>) -> Gesture {
+                    Gesture::$variant(self).simultaneously_with(other)
+                }
+
+                /// Combines two gestures where this gesture has priority.
+                #[must_use]
+                pub fn exclusively_before(self, other: impl Into<Gesture>) -> Gesture {
+                    Gesture::$variant(self).exclusively_before(other)
                 }
             }
 
@@ -418,6 +517,47 @@ impl<S: Clone + 'static> GestureObserverStatefulBuilder<S> {
         GestureObserver {
             gesture: self.gesture,
             action: boxed_action(move || action(state.clone())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequenced_before_aliases_then() {
+        let gesture = TapGesture::new().sequenced_before(LongPressGesture::new(300));
+        match gesture {
+            Gesture::Then(pair) => {
+                assert!(matches!(pair.first(), Gesture::Tap(_)));
+                assert!(matches!(pair.then(), Gesture::LongPress(_)));
+            }
+            other => panic!("expected Gesture::Then, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn simultaneous_composition_contains_both_gestures() {
+        let gesture = TapGesture::new().simultaneously_with(DragGesture::new(8.0));
+        match gesture {
+            Gesture::Simultaneous(pair) => {
+                assert!(matches!(pair.first(), Gesture::Tap(_)));
+                assert!(matches!(pair.second(), Gesture::Drag(_)));
+            }
+            other => panic!("expected Gesture::Simultaneous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exclusive_composition_contains_primary_and_fallback() {
+        let gesture = TapGesture::new().exclusively_before(LongPressGesture::new(500));
+        match gesture {
+            Gesture::Exclusive(pair) => {
+                assert!(matches!(pair.first(), Gesture::Tap(_)));
+                assert!(matches!(pair.second(), Gesture::LongPress(_)));
+            }
+            other => panic!("expected Gesture::Exclusive, got {other:?}"),
         }
     }
 }

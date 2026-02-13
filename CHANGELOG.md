@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add CLAUDE.md for project guidance and build instructions
 - Implement interruptible command execution and secure metadata handling
 - Enhance panic reporting and logging in hot reload system
-- Add RichTextEditor component and enhance TextField with line limit functionality
+- Add RichTextEditor API scaffold and TextField line-limit APIs (multiline backend support pending)
 - Introduce StretchAxis for layout management
 - Introduce comprehensive logging and panic reporting plan
 - Enhance debugging and layout system in Apple backend

@@ -10,8 +10,10 @@ use core::future::Future;
 
 use nami::Signal;
 use std::sync::Mutex;
+use std::time::Instant;
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
 
+use crate::animation::{AnimationConfig, ChartAnimator};
 use crate::renderer::ChartRenderer;
 
 /// A reactive wrapper that synchronizes Signal changes to any ChartRenderer.
@@ -39,6 +41,12 @@ where
     pending_update: Arc<Mutex<bool>>,
     /// Watcher guard to keep the watcher alive.
     _watcher_guard: Option<Box<dyn Any>>,
+    /// Animation timeline controller for entry and data transitions.
+    animator: ChartAnimator,
+    /// Animation configuration for entry and update transitions.
+    animation: AnimationConfig,
+    /// Monotonic clock origin for animation timestamps.
+    clock_origin: Instant,
     /// Whether initial setup is complete.
     setup_complete: bool,
 }
@@ -68,6 +76,9 @@ where
             signal,
             pending_update,
             _watcher_guard: Some(Box::new(guard)),
+            animator: ChartAnimator::new(),
+            animation: AnimationConfig::default(),
+            clock_origin: Instant::now(),
             setup_complete: false,
         }
     }
@@ -81,6 +92,13 @@ where
     pub fn inner_mut(&mut self) -> &mut R {
         &mut self.inner
     }
+
+    /// Overrides transition animation configuration.
+    #[must_use]
+    pub fn animation_config(mut self, animation: AnimationConfig) -> Self {
+        self.animation = animation;
+        self
+    }
 }
 
 impl<R, S> GpuRenderer for SignalRenderer<R, S>
@@ -89,20 +107,30 @@ where
     S: Signal<Output = R::Data> + Clone + 'static,
 {
     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+        self.clock_origin = Instant::now();
+
         // Seed initial data before setup so buffers are sized correctly.
         let initial = self.signal.get();
-        self.inner.update_data(&initial, ctx.queue);
+        self.inner.update_data(&initial, ctx.device, ctx.queue);
 
-        // Set up the inner renderer
-        let setup_future = self.inner.setup(ctx);
-
-        // Mark that we need to load initial data (in case it changed)
-        if let Ok(mut pending) = self.pending_update.lock() {
-            *pending = true;
+        // Start entry animation on first appearance when there's visible data.
+        if self.inner.data_count() > 0 {
+            self.animator.start_entry(
+                core::time::Duration::ZERO,
+                self.animation.duration,
+                self.animation.easing,
+            );
+            let animation = self.animator.current();
+            self.inner.set_animation(&animation);
+        } else {
+            self.animator.finish();
+            let animation = self.animator.current();
+            self.inner.set_animation(&animation);
         }
+
         self.setup_complete = true;
 
-        setup_future
+        self.inner.setup(ctx)
     }
 
     fn render(&mut self, frame: &GpuFrame) {
@@ -116,8 +144,21 @@ where
         if needs_update {
             // Read current value from signal and update renderer
             let current_data = self.signal.get();
-            self.inner.update_data(&current_data, frame.queue);
+            self.inner
+                .update_data(&current_data, frame.device, frame.queue);
+            if self.inner.data_count() > 0 {
+                self.animator.start_transition(
+                    self.clock_origin.elapsed(),
+                    self.animation.duration,
+                    self.animation.easing,
+                );
+            } else {
+                self.animator.finish();
+            }
         }
+
+        let animation = self.animator.update(self.clock_origin.elapsed());
+        self.inner.set_animation(&animation);
 
         // Render the chart
         self.inner.render(frame);

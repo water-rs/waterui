@@ -177,14 +177,14 @@ stepper(&quantity)
 
 ### TextField
 
-Single-line or multi-line text input.
+Single-line text input.
 
 ```rust
 use waterui::prelude::*;
 use waterui::reactive::binding;
+use waterui::text::styled::StyledStr;
 
 let email = binding("");
-let bio = binding("");
 
 // Single-line text field
 TextField::new(&email)
@@ -193,17 +193,21 @@ TextField::new(&email)
 // With label (convenience function)
 field("Email", &email)
 
-// Multi-line text field
-TextField::new(&bio)
-    .line_limit(5)
-    .prompt("Tell us about yourself")
+// Styled binding input path
+let styled = binding(StyledStr::plain("hello"));
+TextField::styled(&styled)
 ```
 
 **Keyboard types**: `Text` (default), `Email`, `URL`, `Number`, `PhoneNumber`
 
+> Note: Multi-line editing (`line_limit > 1` or `disable_line_limit`) is not implemented yet.
+>
+> `TextField::new(&Binding<Str>)` is plain-only and will panic if write-back contains rich styles.
+> Use `TextField::styled(&Binding<StyledStr>)` for styled bindings.
+
 ### RichTextEditor
 
-Multi-line text editor with styled text support.
+Rich text editor API built on the native `TextField` control path.
 
 ```rust
 use waterui::prelude::*;
@@ -214,8 +218,15 @@ let content = binding(StyledStr::default());
 
 RichTextEditor::new(&content)
     .placeholder("Start writing...")
-    .disable_line_limit()
 ```
+
+> Note: Current text input behavior is plain-text editing over `Binding<StyledStr>`,
+> so user edits are written back as `StyledStr::plain(...)`.
+>
+> `RichTextField` is an alias of `RichTextEditor`.
+>
+> For selected-text menu customization, use shared `ViewExt::selection_menu(...)`
+> so the same API can be reused by `TextField` and `RichTextEditor`.
 
 ## Examples
 
@@ -349,8 +360,8 @@ vstack((
 - **`Toggle`**: Boolean switch control
 - **`Slider`**: Continuous range selector (f64)
 - **`Stepper`**: Discrete numeric adjuster (i32)
-- **`TextField`**: Single/multi-line text input
-- **`RichTextEditor`**: Styled text editor
+- **`TextField`**: Single-line text input
+- **`RichTextEditor` / `RichTextField`**: Rich text editor API currently backed by native `TextField` with plain-text storage
 
 ### Convenience Functions
 

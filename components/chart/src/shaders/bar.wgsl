@@ -16,7 +16,7 @@ struct ChartUniforms {
     bounds: vec4<f32>,
     // Animation: [time, progress, easing, entry_active]
     animation: vec4<f32>,
-    // Pointer: [x, y, pressed, 0] - normalized coordinates, -1 if not hovering
+    // Pointer: [x, y, pressed, data_count] - normalized coordinates, -1 if not hovering
     pointer: vec4<f32>,
 }
 
@@ -47,7 +47,7 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let data_count = arrayLength(&current_data);
+    let data_count = max(u32(uniforms.pointer.w), 1u);
     if instance_index >= data_count {
         out.position = vec4<f32>(0.0);
         return out;
@@ -71,7 +71,7 @@ fn vs_main(
     }
 
     // Calculate bar dimensions
-    let bar_count = max(f32(data_count), 1.0);
+    let bar_count = max(uniforms.pointer.w, 1.0);
     let bar_width = 0.8 / bar_count;
     let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
 
@@ -141,7 +141,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Check if this bar is being hovered
     if uniforms.pointer.x >= 0.0 {
-        let data_count = max(f32(arrayLength(&current_data)), 1.0);
+        let data_count = max(uniforms.pointer.w, 1.0);
         let bar_width = 0.8 / data_count;
         let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
         let pointer_x = uniforms.pointer.x;

@@ -28,6 +28,7 @@ gdk4 = { workspace = true, features = ["v4_6"] }
 glib.workspace = true
 cairo-rs.workspace = true
 gdk-pixbuf = "0.20"
+base64 = "0.22"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true

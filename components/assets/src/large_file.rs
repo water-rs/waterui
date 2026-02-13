@@ -8,6 +8,8 @@ use core::ops::Deref;
 use std::path::Path;
 
 use crate::AssetError;
+#[cfg(feature = "std")]
+use crate::url::ensure_http_allowed;
 
 /// Large file, memory-mapped for efficient access.
 ///
@@ -103,13 +105,10 @@ impl LargeFile {
     /// # Errors
     ///
     /// Returns `AssetError::Network` for network errors.
-    /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-localhost.
+    /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
     /// Returns `AssetError::Mmap` if memory mapping fails.
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
-        // Check for HTTP (not allowed except localhost)
-        if url.starts_with("http://") && !url.starts_with("http://localhost") {
-            return Err(AssetError::http_not_allowed(url));
-        }
+        ensure_http_allowed(url)?;
 
         // Download to temp file
         let cache_path = download_to_cache(url).await?;
@@ -220,8 +219,16 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
 
     // If already cached, return the path
     if cache_path.exists() {
-        tracing::debug!("Asset already cached: {url} -> {}", cache_path.display());
-        return Ok(cache_path);
+        if std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0) == 0 {
+            tracing::warn!(
+                "Ignoring empty cached asset for {url}: {}",
+                cache_path.display()
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        } else {
+            tracing::debug!("Asset already cached: {url} -> {}", cache_path.display());
+            return Ok(cache_path);
+        }
     }
 
     tracing::info!("Downloading asset: {url}");
@@ -247,9 +254,28 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
         .await
         .map_err(|e| AssetError::network(url, None, e.to_string()))?;
 
-    // Write to cache
-    std::fs::write(&cache_path, &bytes)
-        .map_err(|e| AssetError::io(format!("Failed to write cache file: {e}")))?;
+    // Write to cache atomically to avoid leaving partial files.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let temp_path = cache_dir.join(format!("{hash}.tmp-{}-{nonce}", std::process::id()));
+    std::fs::write(&temp_path, &bytes)
+        .map_err(|e| AssetError::io(format!("Failed to write temp cache file: {e}")))?;
+
+    if let Err(e) = std::fs::rename(&temp_path, &cache_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        if cache_path.exists() {
+            tracing::debug!(
+                "Asset cache race detected, reusing {}",
+                cache_path.display()
+            );
+            return Ok(cache_path);
+        }
+        return Err(AssetError::io(format!(
+            "Failed to finalize cache file: {e}"
+        )));
+    }
 
     tracing::debug!("Cached asset: {url} -> {}", cache_path.display());
 

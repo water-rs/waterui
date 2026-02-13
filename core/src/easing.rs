@@ -175,6 +175,11 @@ fn spring_ease(t: f32, stiffness: f32, damping: f32) -> f32 {
     if t >= 1.0 {
         return 1.0;
     }
+    if !stiffness.is_finite() || !damping.is_finite() || stiffness <= 0.0 || damping < 0.0 {
+        // Invalid spring parameters should be rejected by constructors, but keep
+        // easing numerically stable for deserialized or externally-provided data.
+        return t;
+    }
 
     // Damped harmonic oscillator
     // x(t) = 1 - e^(-ζωt) * (cos(ωd*t) + (ζω/ωd)*sin(ωd*t))

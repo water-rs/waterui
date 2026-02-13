@@ -1,5 +1,8 @@
 //! CLDR plural rules using ICU4X.
 
+use core::str::FromStr;
+
+use icu_plurals::PluralOperands;
 use icu_plurals::PluralRules;
 use icu_provider::DataLocale;
 use num::ToPrimitive;
@@ -32,8 +35,6 @@ pub use icu_plurals::PluralCategory;
 /// assert_eq!(select_plural(&locales::RU, 5), PluralCategory::Many);
 /// ```
 pub fn select_plural<N: ToPrimitive>(locale: &Locale, n: N) -> PluralCategory {
-    let n_i64 = n.to_i64().unwrap_or(0);
-
     // Create plural rules for the locale
     let data_locale: DataLocale = locale.0.clone().into();
     let rules = PluralRules::try_new_cardinal(&data_locale).unwrap_or_else(|_| {
@@ -43,8 +44,22 @@ pub fn select_plural<N: ToPrimitive>(locale: &Locale, n: N) -> PluralCategory {
             .expect("English plural rules should always be available")
     });
 
-    // Use integer operands for proper plural selection
-    rules.category_for(n_i64 as usize)
+    // Preserve fractional operands when possible (e.g. "1.2" -> Other in English).
+    let float_value = n.to_f64().unwrap_or(0.0);
+    if float_value.is_finite() && float_value.fract() == 0.0 {
+        if let Some(value) = n.to_i64() {
+            return rules.category_for(value);
+        }
+        if let Some(value) = n.to_u64() {
+            return rules.category_for(value);
+        }
+    }
+
+    let operand_str = float_value.abs().to_string();
+    match PluralOperands::from_str(&operand_str) {
+        Ok(operands) => rules.category_for(operands),
+        Err(_) => rules.category_for(0_u8),
+    }
 }
 
 /// Get all valid plural categories for a locale.

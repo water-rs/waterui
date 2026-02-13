@@ -1,0 +1,19 @@
+[package]
+name = "waterui-video"
+version = "0.2.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Video views and player components for WaterUI"
+keywords = ["video", "player", "ui", "components"]
+categories = ["gui", "multimedia::video"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-layout.workspace = true
+waterui-url.workspace = true
+
+[lints]
+workspace = true

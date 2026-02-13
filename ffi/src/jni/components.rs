@@ -12,17 +12,18 @@ extern crate std;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(target_os = "android")]
 use core::ffi::c_void;
 
-use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong, jobject, jobjectArray};
+use jni::JNIEnv;
 use nami::SignalExt;
 use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
+use crate::components::layout::WuiLayout;
 use crate::IntoFFI;
 use crate::IntoRust;
-use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
@@ -83,6 +84,35 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<
     let action = action_ptr as *mut crate::action::WuiAction;
     let wui_env = env_ptr as *const crate::WuiEnv;
     unsafe { crate::action::waterui_call_action(action, wui_env) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    gesture_ptr: jlong,
+) -> jobject {
+    use crate::jni::convert::jlong_to_ptr;
+    if gesture_ptr == 0 {
+        return JObject::null().into_raw();
+    }
+    let gesture = unsafe { jlong_to_ptr::<crate::gesture::WuiGesture>(gesture_ptr) };
+    let gesture = unsafe { &*gesture };
+    crate::jni::convert::struct_to_java(&mut env, gesture).into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    gesture_ptr: jlong,
+) {
+    use crate::jni::convert::jlong_to_ptr_mut;
+    if gesture_ptr == 0 {
+        return;
+    }
+    let gesture = unsafe { jlong_to_ptr_mut::<crate::gesture::WuiGesture>(gesture_ptr) };
+    unsafe { crate::gesture::waterui_drop_gesture(gesture) };
 }
 
 #[unsafe(no_mangle)]
@@ -202,8 +232,12 @@ fn extract_proposal(env: &mut JNIEnv, proposal: &JObject) -> ProposalSize {
         .expect("height is float");
 
     ProposalSize {
-        width: if width.is_nan() { None } else { Some(width) },
-        height: if height.is_nan() { None } else { Some(height) },
+        width: if width.is_finite() { Some(width) } else { None },
+        height: if height.is_finite() {
+            Some(height)
+        } else {
+            None
+        },
     }
 }
 
@@ -633,70 +667,66 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationTag<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    metadata_ptr: jlong,
-) -> jint {
-    let metadata = metadata_ptr as *const crate::reactive::WuiWatcherMetadata;
-    let animation = unsafe { crate::animation::waterui_get_animation(metadata) };
-    match animation {
-        crate::animation::WuiAnimation::None => 0,
-        crate::animation::WuiAnimation::Default => 1,
-        crate::animation::WuiAnimation::Linear { .. } => 2,
-        crate::animation::WuiAnimation::EaseIn { .. } => 3,
-        crate::animation::WuiAnimation::EaseOut { .. } => 4,
-        crate::animation::WuiAnimation::EaseInOut { .. } => 5,
-        crate::animation::WuiAnimation::CubicBezier { .. } => 6,
-        crate::animation::WuiAnimation::Spring { .. } => 7,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationDurationMs<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked<
+    'local,
+>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
 ) -> jlong {
     let metadata = metadata_ptr as *const crate::reactive::WuiWatcherMetadata;
     let animation = unsafe { crate::animation::waterui_get_animation(metadata) };
-    match animation {
-        crate::animation::WuiAnimation::Linear { duration_ms } => duration_ms as jlong,
-        crate::animation::WuiAnimation::EaseIn { duration_ms } => duration_ms as jlong,
-        crate::animation::WuiAnimation::EaseOut { duration_ms } => duration_ms as jlong,
-        crate::animation::WuiAnimation::EaseInOut { duration_ms } => duration_ms as jlong,
-        crate::animation::WuiAnimation::CubicBezier { duration_ms, .. } => duration_ms as jlong,
-        crate::animation::WuiAnimation::Default => 250,
-        _ => 0,
-    }
+
+    let (tag, duration_ms): (u32, u32) = match animation {
+        crate::animation::WuiAnimation::None => (0, 0),
+        crate::animation::WuiAnimation::Bezier { duration_ms, .. } => {
+            (1, duration_ms.min(u64::from(u32::MAX)) as u32)
+        }
+        crate::animation::WuiAnimation::Spring { .. } => (2, 0),
+    };
+
+    ((u64::from(duration_ms) << 32) | u64::from(tag)) as jlong
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationStiffness<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12Packed<
+    'local,
+>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
-) -> jfloat {
+) -> jlong {
     let metadata = metadata_ptr as *const crate::reactive::WuiWatcherMetadata;
     let animation = unsafe { crate::animation::waterui_get_animation(metadata) };
-    match animation {
-        crate::animation::WuiAnimation::Spring { stiffness, .. } => stiffness,
-        _ => 0.0,
-    }
+
+    let (p1, p2): (f32, f32) = match animation {
+        crate::animation::WuiAnimation::Bezier { x1, y1, .. } => (x1, y1),
+        crate::animation::WuiAnimation::Spring { stiffness, damping } => (stiffness, damping),
+        crate::animation::WuiAnimation::None => (0.0, 0.0),
+    };
+
+    ((u64::from(p2.to_bits()) << 32) | u64::from(p1.to_bits())) as jlong
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationDamping<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34Packed<
+    'local,
+>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
-) -> jfloat {
+) -> jlong {
     let metadata = metadata_ptr as *const crate::reactive::WuiWatcherMetadata;
     let animation = unsafe { crate::animation::waterui_get_animation(metadata) };
-    match animation {
-        crate::animation::WuiAnimation::Spring { damping, .. } => damping,
-        _ => 0.0,
-    }
+
+    let (p3, p4): (f32, f32) = match animation {
+        crate::animation::WuiAnimation::Bezier { x2, y2, .. } => (x2, y2),
+        crate::animation::WuiAnimation::Spring { .. } | crate::animation::WuiAnimation::None => {
+            (0.0, 0.0)
+        }
+    };
+
+    ((u64::from(p4.to_bits()) << 32) | u64::from(p3.to_bits())) as jlong
 }
 
 #[unsafe(no_mangle)]
@@ -705,12 +735,52 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimation<'loc
     _class: JClass<'local>,
     metadata_ptr: jlong,
 ) -> jint {
-    Java_dev_waterui_android_ffi_WatcherJni_getAnimationTag(_env, _class, metadata_ptr)
+    (Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked(
+        _env,
+        _class,
+        metadata_ptr,
+    ) as u64
+        & 0xffff_ffff) as jint
 }
 
 // ============================================================================
 // AnyViews Functions (drop function is generated by opaque! macro)
 // ============================================================================
+
+struct AnyViewsWatchData {
+    jvm: jni::JavaVM,
+    callback: GlobalRef,
+}
+
+unsafe extern "C" fn anyviews_watch_call(
+    data: *mut (),
+    ids: crate::array::WuiArray<crate::id::WuiId>,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    // Always release callback payloads from Rust watcher bridge.
+    ids.consume();
+    if !metadata_ptr.is_null() {
+        unsafe { drop(Box::from_raw(metadata_ptr)) };
+    }
+
+    let watcher_data =
+        match (!data.is_null()).then(|| unsafe { &*(data as *const AnyViewsWatchData) }) {
+            Some(value) => value,
+            None => return,
+        };
+
+    if let Ok(mut env) = watcher_data.jvm.attach_current_thread() {
+        let _ = env.call_method(&watcher_data.callback, "run", "()V", &[]);
+    }
+}
+
+unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
+    if !data.is_null() {
+        unsafe {
+            let _: Box<AnyViewsWatchData> = Box::from_raw(data as *mut AnyViewsWatchData);
+        }
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'local>(
@@ -744,6 +814,39 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetId<'lo
     let id = unsafe { crate::views::waterui_anyviews_get_id(anyviews, index as usize) };
     // WuiId wraps an i32, return it directly
     id.inner
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    callback: JObject<'local>,
+) -> jlong {
+    if handle == 0 || callback.is_null() {
+        return 0;
+    }
+
+    let jvm = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(_) => return 0,
+    };
+    let callback = match env.new_global_ref(&callback) {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+
+    let data = Box::new(AnyViewsWatchData { jvm, callback });
+    let data_ptr = Box::into_raw(data) as *mut ();
+    let anyviews = handle as *const crate::views::WuiAnyViews;
+    unsafe {
+        crate::views::waterui_anyviews_watch(
+            anyviews,
+            data_ptr,
+            anyviews_watch_call,
+            anyviews_watch_drop,
+        ) as jlong
+    }
 }
 
 // ============================================================================
@@ -806,6 +909,35 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'loca
     let font = font_ptr as *const crate::components::text::WuiFont;
     let wui_env = env_ptr as *const crate::WuiEnv;
     unsafe { crate::components::text::waterui_resolve_font(font, wui_env) as jlong }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_fontFromResolved<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    size: jfloat,
+    weight: jint,
+    family: JString<'local>,
+) -> jlong {
+    let family = env
+        .get_string(&family)
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let weight = match weight {
+        0 => crate::components::text::WuiFontWeight::Thin,
+        1 => crate::components::text::WuiFontWeight::UltraLight,
+        2 => crate::components::text::WuiFontWeight::Light,
+        3 => crate::components::text::WuiFontWeight::Normal,
+        4 => crate::components::text::WuiFontWeight::Medium,
+        5 => crate::components::text::WuiFontWeight::SemiBold,
+        6 => crate::components::text::WuiFontWeight::Bold,
+        7 => crate::components::text::WuiFontWeight::UltraBold,
+        _ => crate::components::text::WuiFontWeight::Black,
+    };
+
+    let family = waterui::Str::from(family).into_ffi();
+    unsafe { crate::components::text::waterui_font_from_resolved(size, weight, family) as jlong }
 }
 
 // ============================================================================
@@ -1193,7 +1325,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
 
 #[cfg(not(target_os = "android"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetPointer<'local>(
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     _state_ptr: jlong,
@@ -1203,6 +1336,14 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetPoin
     _has_hit: jboolean,
     _hit_x: jfloat,
     _hit_y: jfloat,
+    _gesture_active: jboolean,
+    _pinch_scale: jfloat,
+    _has_pinch_center: jboolean,
+    _pinch_center_x: jfloat,
+    _pinch_center_y: jfloat,
+    _pan_offset_x: jfloat,
+    _pan_offset_y: jfloat,
+    _double_tap: jboolean,
 ) {
 }
 
@@ -1226,12 +1367,17 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
             height as u32,
         )
     };
-    if ok { 1 } else { 0 }
+    if ok {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetPointer<'local>(
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1241,21 +1387,43 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetPoin
     has_hit: jboolean,
     hit_x: jfloat,
     hit_y: jfloat,
+    gesture_active: jboolean,
+    pinch_scale: jfloat,
+    has_pinch_center: jboolean,
+    pinch_center_x: jfloat,
+    pinch_center_y: jfloat,
+    pan_offset_x: jfloat,
+    pan_offset_y: jfloat,
+    double_tap: jboolean,
 ) {
     if state_ptr == 0 {
         return;
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
-    let pointer = crate::components::gpu_surface::WuiPointerState {
-        has_position: has_position != 0,
-        x,
-        y,
-        has_hit: has_hit != 0,
-        hit_x,
-        hit_y,
+
+    let input = crate::components::gpu_surface::WuiGpuSurfaceInput {
+        pointer: crate::components::gpu_surface::WuiPointerState {
+            has_position: has_position != 0,
+            x,
+            y,
+            has_hit: has_hit != 0,
+            hit_x,
+            hit_y,
+        },
+        gesture: crate::components::gpu_surface::WuiGestureState {
+            active: gesture_active != 0,
+            pinch_scale,
+            has_pinch_center: has_pinch_center != 0,
+            pinch_center_x,
+            pinch_center_y,
+            pan_offset_x,
+            pan_offset_y,
+            double_tap: double_tap != 0,
+        },
     };
+
     unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_set_pointer(wrapper.state, pointer);
+        crate::components::gpu_surface::waterui_gpu_surface_set_input(wrapper.state, input);
     }
 }
 
@@ -1435,7 +1603,15 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetI
         )
     };
 
-    if ok { 1 } else { 0 }
+    if !ok {
+        unsafe { drop_hardware_buffer_ref(drop_data) };
+    }
+
+    if ok {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1583,7 +1759,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectRender<
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
     let ok = unsafe { crate::components::view_effect::waterui_view_effect_render(wrapper.state) };
-    if ok { 1 } else { 0 }
+    if ok {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1661,7 +1841,15 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectSetInpu
         )
     };
 
-    if ok { 1 } else { 0 }
+    if !ok {
+        unsafe { drop_hardware_buffer_ref(drop_data) };
+    }
+
+    if ok {
+        1
+    } else {
+        0
+    }
 }
 
 // ============================================================================

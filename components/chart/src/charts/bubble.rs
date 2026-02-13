@@ -59,21 +59,39 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
 
     /// Sets the minimum bubble radius in pixels.
     #[must_use]
-    pub const fn min_radius(mut self, radius: f32) -> Self {
+    pub fn min_radius(mut self, radius: f32) -> Self {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "BubbleChart::min_radius(radius) requires radius > 0"
+        );
         self.min_radius = radius;
+        if self.max_radius < self.min_radius {
+            self.max_radius = self.min_radius;
+        }
         self
     }
 
     /// Sets the maximum bubble radius in pixels.
     #[must_use]
-    pub const fn max_radius(mut self, radius: f32) -> Self {
+    pub fn max_radius(mut self, radius: f32) -> Self {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "BubbleChart::max_radius(radius) requires radius > 0"
+        );
         self.max_radius = radius;
+        if self.max_radius < self.min_radius {
+            self.min_radius = self.max_radius;
+        }
         self
     }
 
     /// Sets the bubble opacity.
     #[must_use]
-    pub const fn opacity(mut self, opacity: f32) -> Self {
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        assert!(
+            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
+            "BubbleChart::opacity(opacity) requires 0.0 <= opacity <= 1.0"
+        );
         self.opacity = opacity;
         self
     }

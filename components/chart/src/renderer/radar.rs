@@ -229,11 +229,17 @@ impl GpuRenderer for RadarRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Radar Uniforms", &uniforms));
 
         // Create value buffer
-        let initial_values = self.pack_values();
+        let mut initial_values = self.pack_values();
+        if initial_values.len() < 4096 {
+            initial_values.resize(4096, 0.0);
+        }
         self.value_buffer = Some(create_storage_buffer(ctx, "Radar Values", &initial_values));
 
         // Create color buffer
-        let initial_colors = self.pack_colors();
+        let mut initial_colors = self.pack_colors();
+        if initial_colors.len() < 256 {
+            initial_colors.resize(256, glam::Vec4::ZERO);
+        }
         self.color_buffer = Some(create_storage_buffer(ctx, "Radar Colors", &initial_colors));
 
         // Create bind group
@@ -401,7 +407,7 @@ impl ChartRenderer for RadarRenderer {
     type Data = RadarData;
     type DataValue = RadarHit;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         self.data = data.clone();
         self.bounds = DataBounds::new(-1.0, 1.0, -1.0, 1.0);
 

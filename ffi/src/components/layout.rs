@@ -70,12 +70,12 @@ impl IntoRust for WuiProposalSize {
     type Rust = ProposalSize;
     unsafe fn into_rust(self) -> Self::Rust {
         ProposalSize {
-            width: if self.width.is_nan() {
+            width: if !self.width.is_finite() {
                 None
             } else {
                 Some(self.width)
             },
-            height: if self.height.is_nan() {
+            height: if !self.height.is_finite() {
                 None
             } else {
                 Some(self.height)
