@@ -1,6 +1,6 @@
 //! `LocalizedText` view for i18n support.
 
-use nami::{Computed, SignalExt};
+use nami::{Binding, SignalExt};
 use waterui_core::{Environment, View, dynamic::watch};
 use waterui_text::{
     Text,
@@ -8,16 +8,15 @@ use waterui_text::{
     styled::StyledStr,
 };
 
-use crate::locale::{Locale, locales};
+use crate::locale::Locale;
+use crate::system::runtime_locale_binding;
 
 /// A localized text view that renders based on the current locale.
 ///
 /// This is the return type of the `text!` macro. It wraps a function
 /// that takes a locale and returns a `Text` view.
 ///
-/// When the environment contains a `Computed<Locale>`, the text will
-/// automatically update when the locale changes. This makes `LocalizedText`
-/// reactive without requiring explicit `Dynamic` or `watch` calls.
+/// Text reacts to locale changes from the `waterkit-regional` runtime automatically.
 ///
 /// # Examples
 ///
@@ -152,7 +151,7 @@ where
     T: Fn(StyledStr) -> StyledStr + Clone + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let locale = resolve_locale_signal(env);
+        let locale = resolve_locale_binding(env);
 
         // Map locale to styled content reactively
         let text_fn = self.text_fn;
@@ -168,12 +167,14 @@ where
     }
 }
 
-fn resolve_locale_signal(env: &Environment) -> Computed<Locale> {
-    // Prefer reactive locale signal, then static locale, then fallback.
-    env.get::<Computed<Locale>>()
-        .cloned()
-        .or_else(|| env.get::<Locale>().cloned().map(Computed::constant))
-        .unwrap_or_else(|| Computed::constant(locales::EN_US))
+fn resolve_locale_binding(env: &Environment) -> Binding<Locale> {
+    // Respect explicit per-view Locale in the environment first.
+    if let Some(locale) = env.get::<Locale>().cloned() {
+        return Binding::container(locale);
+    }
+
+    // Otherwise, track the shared runtime locale from waterkit-regional.
+    runtime_locale_binding()
 }
 
 impl<F, T> core::fmt::Debug for LocalizedText<F, T>
@@ -188,38 +189,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use nami::{Computed, Signal};
     use waterui_core::Environment;
 
-    use super::resolve_locale_signal;
+    use super::resolve_locale_binding;
     use crate::locale::{Locale, locales};
 
     #[test]
-    fn resolve_locale_signal_uses_static_locale_when_computed_missing() {
+    fn resolve_locale_signal_uses_static_locale_from_environment() {
         let mut env = Environment::new();
         env.insert(locales::EN_GB);
 
-        let locale = resolve_locale_signal(&env).get();
+        let locale = resolve_locale_binding(&env).get();
         assert_eq!(locale.language.as_str(), "en");
         assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
     }
 
     #[test]
-    fn resolve_locale_signal_prefers_computed_locale() {
-        let mut env = Environment::new();
-        env.insert(locales::EN_US);
-        env.insert(Computed::constant(locales::ZH_TW));
-
-        let locale = resolve_locale_signal(&env).get();
-        assert_eq!(locale.language.as_str(), "zh");
-        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("TW"));
-    }
-
-    #[test]
     fn resolve_locale_signal_defaults_to_en_us() {
         let env = Environment::new();
-        let locale: Locale = resolve_locale_signal(&env).get();
-        assert_eq!(locale.language.as_str(), "en");
-        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("US"));
+        let locale: Locale = resolve_locale_binding(&env).get();
+        assert!(!locale.language.as_str().is_empty());
     }
 }

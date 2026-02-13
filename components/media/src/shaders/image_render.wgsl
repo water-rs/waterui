@@ -40,3 +40,16 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(image_texture, image_sampler, input.uv);
 }
+
+fn tone_map_reinhard(color: vec3<f32>) -> vec3<f32> {
+    let safe = max(color, vec3<f32>(0.0));
+    return safe / (safe + vec3<f32>(1.0));
+}
+
+@fragment
+fn fs_main_tonemap(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = textureSample(image_texture, image_sampler, input.uv);
+    let mapped = tone_map_reinhard(sample.rgb);
+    let alpha = clamp(sample.a, 0.0, 1.0);
+    return vec4<f32>(mapped, alpha);
+}

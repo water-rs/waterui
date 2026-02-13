@@ -1,8 +1,12 @@
 //! GTK4 `TextField` (Entry) component implementation.
 
-use gtk4::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
+use waterui_controls::menu::MenuItem as WuiMenuItem;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
@@ -31,6 +35,7 @@ impl GtkComponent for Native<TextFieldConfig> {
         let entry = gtk4::Entry::new();
         entry.set_hexpand(true);
 
+        let selection_menu = config.selection_menu;
         let binding = config.value;
         let prompt = config.prompt.content();
 
@@ -67,10 +72,24 @@ impl GtkComponent for Native<TextFieldConfig> {
             }
         });
 
+        let selection_items = Rc::new(RefCell::new(selection_menu.get()));
+        let selection_guard = selection_menu.watch({
+            let selection_items = selection_items.clone();
+            move |ctx| {
+                *selection_items.borrow_mut() = ctx.into_value();
+            }
+        });
+        install_selection_menu(&entry, env.clone(), selection_items);
+
         // Watch for entry changes -> update binding
         entry.connect_changed(move |entry| {
             let text = entry.text().to_string();
-            let current_plain = binding.get().to_plain();
+            let current = binding.get();
+            assert!(
+                current.is_plain(),
+                "GTK TextField cannot edit non-plain StyledStr yet; rich text editing backend support is pending"
+            );
+            let current_plain = current.to_plain();
             if current_plain.as_str() != text {
                 binding.set(StyledStr::plain(text));
             }
@@ -79,8 +98,70 @@ impl GtkComponent for Native<TextFieldConfig> {
         container.append(&entry);
 
         // Store watcher guards
-        store_watcher_guards(&container, vec![value_guard, prompt_guard]);
+        store_watcher_guards(&container, vec![value_guard, prompt_guard, selection_guard]);
 
         container.upcast()
     }
+}
+
+fn install_selection_menu(
+    entry: &gtk4::Entry,
+    env: Environment,
+    selection_items: Rc<RefCell<Vec<WuiMenuItem>>>,
+) {
+    let popover_state: Rc<RefCell<Option<gtk4::Popover>>> = Rc::new(RefCell::new(None));
+
+    let click = gtk4::GestureClick::new();
+    click.set_button(3);
+    click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    click.connect_pressed({
+        let entry = entry.clone();
+        let selection_items = selection_items.clone();
+        let env = env.clone();
+        let popover_state = popover_state.clone();
+        move |gesture, _n_press, x, y| {
+            if entry.selection_bounds().is_none() {
+                return;
+            }
+
+            let items = selection_items.borrow().clone();
+            if items.is_empty() {
+                return;
+            }
+
+            if let Some(popover) = popover_state.borrow_mut().take() {
+                popover.popdown();
+                popover.unparent();
+            }
+
+            let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            for item in items {
+                let title = item.label.content().get().to_plain().to_string();
+                let button = gtk4::Button::with_label(&title);
+                let action = item.action.clone();
+                let env = env.clone();
+                let popover_state = popover_state.clone();
+                button.connect_clicked(move |_| {
+                    action.call(&env);
+                    if let Some(popover) = popover_state.borrow().as_ref() {
+                        popover.popdown();
+                    }
+                });
+                menu_box.append(&button);
+            }
+
+            let popover = gtk4::Popover::new();
+            popover.set_has_arrow(true);
+            popover.set_autohide(true);
+            popover.set_child(Some(&menu_box));
+            popover.set_parent(&entry);
+            let rect = gdk4::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+            *popover_state.borrow_mut() = Some(popover);
+
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+        }
+    });
+    entry.add_controller(click);
 }

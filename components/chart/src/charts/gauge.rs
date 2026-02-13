@@ -9,6 +9,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::GaugeData;
+use crate::params::{ArcAngles, ChartParamError, GaugeRadii};
 use crate::renderer::GaugeRenderer;
 
 /// Gauge chart for speedometer-style value visualization.
@@ -63,38 +64,54 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
     /// Sets the arc angle range in degrees.
     /// Default is -135° to 135° (270° arc).
     #[must_use]
-    pub fn arc_degrees(mut self, start: f32, end: f32) -> Self {
-        assert!(
-            start.is_finite() && end.is_finite() && end > start,
-            "GaugeChart::arc_degrees(start, end) requires finite end > start"
-        );
-        self.start_angle = start * PI / 180.0;
-        self.end_angle = end * PI / 180.0;
+    pub fn arc_degrees(self, start: f32, end: f32) -> Self {
+        self.try_arc_degrees(start, end)
+            .expect("GaugeChart::arc_degrees(start, end) requires finite end > start")
+    }
+
+    /// Sets the arc angle range in degrees (fallible).
+    pub fn try_arc_degrees(self, start: f32, end: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_arc_angles(ArcAngles::try_degrees(start, end)?))
+    }
+
+    /// Sets the arc angle range in radians using a validated strong type.
+    #[must_use]
+    pub fn with_arc_angles(mut self, angles: ArcAngles) -> Self {
+        self.start_angle = angles.start_radians();
+        self.end_angle = angles.end_radians();
         self
     }
 
     /// Sets the arc angle range in radians.
     #[must_use]
-    pub fn arc_radians(mut self, start: f32, end: f32) -> Self {
-        assert!(
-            start.is_finite() && end.is_finite() && end > start,
-            "GaugeChart::arc_radians(start, end) requires finite end > start"
-        );
-        self.start_angle = start;
-        self.end_angle = end;
-        self
+    pub fn arc_radians(self, start: f32, end: f32) -> Self {
+        self.try_arc_radians(start, end)
+            .expect("GaugeChart::arc_radians(start, end) requires finite end > start")
+    }
+
+    /// Sets the arc angle range in radians (fallible).
+    pub fn try_arc_radians(self, start: f32, end: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_arc_angles(ArcAngles::try_radians(start, end)?))
     }
 
     /// Sets the inner and outer radius (0.0 to 0.5, relative to widget size).
     #[must_use]
-    pub fn radii(mut self, inner: f32, outer: f32) -> Self {
-        assert!(
-            inner.is_finite() && outer.is_finite() && inner >= 0.0 && outer > inner && outer <= 0.5,
-            "GaugeChart::radii(inner, outer) requires 0.0 <= inner < outer <= 0.5"
-        );
-        self.inner_radius = inner;
-        self.outer_radius = outer;
+    pub fn radii(self, inner: f32, outer: f32) -> Self {
+        self.try_radii(inner, outer)
+            .expect("GaugeChart::radii(inner, outer) requires finite 0.0 <= inner < outer <= 0.5")
+    }
+
+    /// Sets validated gauge radii.
+    #[must_use]
+    pub fn with_radii(mut self, radii: GaugeRadii) -> Self {
+        self.inner_radius = radii.inner();
+        self.outer_radius = radii.outer();
         self
+    }
+
+    /// Fallible variant of [`Self::radii`].
+    pub fn try_radii(self, inner: f32, outer: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_radii(GaugeRadii::try_new(inner, outer)?))
     }
 
     /// Sets the background arc color.

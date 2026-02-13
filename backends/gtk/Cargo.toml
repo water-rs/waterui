@@ -22,6 +22,8 @@ waterui-media.workspace = true
 waterui-webview.workspace = true
 nami.workspace = true
 tracing.workspace = true
+executor-core.workspace = true
+native-executor.workspace = true
 
 gtk4 = { workspace = true, features = ["v4_6"] }
 gdk4 = { workspace = true, features = ["v4_6"] }
@@ -33,6 +35,7 @@ base64 = "0.22"
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true
 glow = "0.16"
+libloading = "0.9"
 
 [features]
 default = []
