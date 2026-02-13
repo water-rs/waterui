@@ -31,9 +31,12 @@ mod imp {
 
     impl ObjectImpl for WuiFixedContainer {}
 
+    impl FixedImpl for WuiFixedContainer {}
+
     impl WidgetImpl for WuiFixedContainer {
         fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            let Some(layout) = self.layout.borrow().as_ref() else {
+            let layout_borrow = self.layout.borrow();
+            let Some(layout) = layout_borrow.as_ref() else {
                 panic!("WuiFixedContainer: missing layout (internal error)");
             };
 
@@ -73,7 +76,8 @@ mod imp {
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
 
-            let Some(layout) = self.layout.borrow().as_ref() else {
+            let layout_borrow = self.layout.borrow();
+            let Some(layout) = layout_borrow.as_ref() else {
                 panic!("WuiFixedContainer: missing layout (internal error)");
             };
 

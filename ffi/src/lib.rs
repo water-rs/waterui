@@ -50,6 +50,7 @@ use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
+pub use waterui_video;
 
 pub mod app;
 pub mod window;
@@ -98,7 +99,8 @@ macro_rules! export {
                 unsafe {
                     $crate::__init();
                 }
-                let env = waterui::Environment::new();
+                let mut env = waterui::Environment::new();
+                $crate::waterui_video::install_platform_hooks(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 

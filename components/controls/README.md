@@ -207,7 +207,7 @@ TextField::styled(&styled)
 
 ### RichTextEditor
 
-Rich text editor API built on the native `TextField` control path.
+Rich text editor API (styled binding input).
 
 ```rust
 use waterui::prelude::*;
@@ -220,13 +220,10 @@ RichTextEditor::new(&content)
     .placeholder("Start writing...")
 ```
 
-> Note: Current text input behavior is plain-text editing over `Binding<StyledStr>`,
-> so user edits are written back as `StyledStr::plain(...)`.
+> `RichTextField` has been removed.
+> For field-style rich text input, use `TextField::styled(&Binding<StyledStr>)`.
 >
-> `RichTextField` is an alias of `RichTextEditor`.
->
-> For selected-text menu customization, use shared `ViewExt::selection_menu(...)`
-> so the same API can be reused by `TextField` and `RichTextEditor`.
+> For selected-text menu customization, use `TextField::selection_menu(...)`.
 
 ## Examples
 
@@ -361,7 +358,7 @@ vstack((
 - **`Slider`**: Continuous range selector (f64)
 - **`Stepper`**: Discrete numeric adjuster (i32)
 - **`TextField`**: Single-line text input
-- **`RichTextEditor` / `RichTextField`**: Rich text editor API currently backed by native `TextField` with plain-text storage
+- **`RichTextEditor`**: Rich text editor API on styled bindings
 
 ### Convenience Functions
 

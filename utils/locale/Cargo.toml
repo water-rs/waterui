@@ -16,6 +16,7 @@ waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
+waterkit-regional.workspace = true
 anyhow = "1.0"
 
 # ICU4X for locale handling

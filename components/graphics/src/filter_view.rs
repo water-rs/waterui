@@ -1733,6 +1733,9 @@ use wgpu::util::DeviceExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::RgbaImage;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
     struct TestGpu {
@@ -1838,6 +1841,183 @@ mod tests {
         drop(mapped);
         buffer.unmap();
         pixel
+    }
+
+    fn readback_rgba8_image(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        const BYTES_PER_PIXEL: u32 = 4;
+        const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_bpr = width * BYTES_PER_PIXEL;
+        let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let copy_size = (padded_bpr * height) as u64;
+
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("filter gpu test full readback buffer"),
+            size: copy_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("filter gpu test full readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let map_result = rx
+            .recv()
+            .expect("map callback should return a completion result");
+        map_result.expect("buffer mapping should succeed");
+
+        let mapped = slice.get_mapped_range();
+        let mut out = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
+        for row in 0..height as usize {
+            let src_start = row * padded_bpr as usize;
+            let src_end = src_start + unpadded_bpr as usize;
+            let dst_start = row * unpadded_bpr as usize;
+            let dst_end = dst_start + unpadded_bpr as usize;
+            out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        out
+    }
+
+    fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) {
+        let img = RgbaImage::from_raw(width, height, rgba.to_vec())
+            .expect("rgba buffer length should match dimensions");
+        img.save(path).expect("failed to save png");
+    }
+
+    fn create_test_input_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let xf = x as f32 / (width.saturating_sub(1)).max(1) as f32;
+                let yf = y as f32 / (height.saturating_sub(1)).max(1) as f32;
+                let checker = if ((x / 16) + (y / 16)) % 2 == 0 {
+                    32.0
+                } else {
+                    -32.0
+                };
+                let ring = (((x as i32 - width as i32 / 2).pow(2)
+                    + (y as i32 - height as i32 / 2).pow(2)) as f32)
+                    .sqrt();
+                let edge = if ring > (width.min(height) as f32 * 0.28)
+                    && ring < (width.min(height) as f32 * 0.32)
+                {
+                    80.0
+                } else {
+                    0.0
+                };
+
+                let r = (xf * 255.0 + checker + edge).clamp(0.0, 255.0) as u8;
+                let g = (yf * 255.0 - checker + edge).clamp(0.0, 255.0) as u8;
+                let b = (((1.0 - xf) * (1.0 - yf) * 255.0) + edge).clamp(0.0, 255.0) as u8;
+
+                data[idx] = r;
+                data[idx + 1] = g;
+                data[idx + 2] = b;
+                data[idx + 3] = 255;
+            }
+        }
+        data
+    }
+
+    fn run_filter_and_readback<G: GpuFilter>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input_texture: &wgpu::Texture,
+        input_width: u32,
+        input_height: u32,
+        output_width: u32,
+        output_height: u32,
+        mut filter: G,
+    ) -> Option<Vec<u8>> {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gallery output"),
+            size: wgpu::Extent3d {
+                width: output_width,
+                height: output_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let ctx = FilterContext {
+            device,
+            queue,
+            input_format: format,
+            output_format: format,
+            pipeline_cache: None,
+        };
+        crate::pollster::block_on(filter.setup(&ctx));
+
+        let input = FilterInput {
+            device,
+            queue,
+            texture: input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: input_width,
+            height: input_height,
+        };
+        let output = FilterOutput {
+            device,
+            queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: output_width,
+            height: output_height,
+        };
+
+        let _ = filter.render(&input, &output);
+        Some(readback_rgba8_image(
+            device,
+            queue,
+            &output_texture,
+            output_width,
+            output_height,
+        ))
     }
 
     #[test]
@@ -2314,6 +2494,158 @@ mod tests {
             pixel.iter().any(|&c| c > 0),
             "spatial output should not be all zeros, got {pixel:?}"
         );
+    }
+
+    #[test]
+    fn gpu_export_filter_gallery_images() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU gallery test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+
+        let input_width = 256;
+        let input_height = 256;
+        let output_dir = PathBuf::from("/tmp/waterui_filter_gallery");
+        fs::create_dir_all(&output_dir).expect("failed to create output directory");
+
+        let input_rgba = create_test_input_rgba(input_width, input_height);
+        write_png(
+            &output_dir.join("input.png"),
+            input_width,
+            input_height,
+            &input_rgba,
+        );
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gallery input"),
+            size: wgpu::Extent3d {
+                width: input_width,
+                height: input_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(input_width * 4),
+                rows_per_image: Some(input_height),
+            },
+            wgpu::Extent3d {
+                width: input_width,
+                height: input_height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        macro_rules! export_filter {
+            ($name:literal, $ow:expr, $oh:expr, $filter:expr) => {{
+                let result = run_filter_and_readback(
+                    device,
+                    queue,
+                    &input_texture,
+                    input_width,
+                    input_height,
+                    $ow,
+                    $oh,
+                    $filter,
+                )
+                .expect("filter execution should succeed");
+                write_png(&output_dir.join($name), $ow, $oh, &result);
+            }};
+        }
+
+        export_filter!(
+            "brightness.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Brightness(0.2f32))
+        );
+        export_filter!(
+            "contrast.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Contrast(1.4f32))
+        );
+        export_filter!(
+            "saturation.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Saturation(1.8f32))
+        );
+        export_filter!(
+            "grayscale.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Grayscale(1.0f32))
+        );
+        export_filter!(
+            "hue_rotation.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::HueRotation(120.0f32))
+        );
+        export_filter!(
+            "sepia.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Sepia(1.0f32))
+        );
+        export_filter!(
+            "invert.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Invert)
+        );
+        export_filter!(
+            "opacity.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Opacity(0.5f32))
+        );
+        export_filter!(
+            "blur.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Blur(3.0f32))
+        );
+        export_filter!(
+            "sharpen.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Sharpen(1.5f32))
+        );
+        export_filter!(
+            "chain_blur_brightness.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate_core::filters::Blur(2.0f32))
+                .then(filtrate_core::filters::Brightness(0.15f32))
+                .then(filtrate_core::filters::Contrast(1.2f32))
+        );
+        export_filter!(
+            "blur_resized_384x216.png",
+            384,
+            216,
+            FilterAdapter::new(filtrate_core::filters::Blur(2.0f32))
+        );
+
+        eprintln!("Filter gallery exported to {}", output_dir.display());
     }
 }
 

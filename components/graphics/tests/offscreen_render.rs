@@ -1,0 +1,74 @@
+//! Offscreen rendering regression test for `GpuSurface`.
+
+use core::future::Future;
+
+use waterui_graphics::{
+    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu,
+};
+
+#[derive(Debug, Clone, Copy)]
+struct SolidClearRenderer {
+    color: wgpu::Color,
+}
+
+impl GpuRenderer for SolidClearRenderer {
+    fn setup(&mut self, _ctx: &GpuContext) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("offscreen_test_encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("offscreen_test_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+#[test]
+fn render_offscreen_returns_expected_rgba_and_png() {
+    let size = OffscreenSize::try_from_pixels(16, 12).expect("test size must be valid");
+    let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+    let renderer = SolidClearRenderer {
+        color: wgpu::Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        },
+    };
+
+    let output = GpuSurface::new(renderer)
+        .render_offscreen(config)
+        .expect("offscreen render should succeed");
+
+    assert_eq!(output.width, 16);
+    assert_eq!(output.height, 12);
+    assert_eq!(output.rgba8.len(), 16 * 12 * 4);
+    for px in output.rgba8.chunks_exact(4) {
+        assert_eq!(px, [255, 0, 0, 255], "pixel should match clear color");
+    }
+
+    let png = output.to_png().expect("png encoding should succeed");
+    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    assert!(png.len() >= PNG_SIGNATURE.len());
+    assert_eq!(&png[..PNG_SIGNATURE.len()], &PNG_SIGNATURE);
+}
