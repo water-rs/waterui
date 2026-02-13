@@ -30,6 +30,13 @@ struct VertexOutput {
     @location(2) @interpolate(flat) element_type: u32,
 }
 
+// Convert square chart-space coordinates to NDC while preserving circular geometry
+// on non-square render targets.
+fn chart_to_ndc(p: vec2<f32>) -> vec2<f32> {
+    let scale_x = uniforms.viewport.y / max(uniforms.viewport.x, 1.0);
+    return vec2<f32>(p.x * scale_x, p.y);
+}
+
 // Get angle for axis index (starting from top, going clockwise)
 fn axis_angle(axis: u32, axis_count: u32) -> f32 {
     return -PI / 2.0 + TAU * f32(axis) / f32(axis_count);
@@ -96,8 +103,8 @@ fn vs_main(
         let angle0 = axis_angle(segment, axis_count);
         let angle1 = axis_angle(segment + 1u, axis_count);
 
-        let inner_radius = ring_radius - line_width * 0.3 / uniforms.viewport.x;
-        let outer_radius = ring_radius + line_width * 0.3 / uniforms.viewport.x;
+        let inner_radius = ring_radius - line_width * 0.3 / uniforms.viewport.y;
+        let outer_radius = ring_radius + line_width * 0.3 / uniforms.viewport.y;
 
         switch local_vert {
             case 0u: { pos = polar_to_cart(angle0, inner_radius); }
@@ -120,7 +127,7 @@ fn vs_main(
         // 6 vertices for the line quad
         let local_vert = vertex_index % 6u;
         let dir = polar_to_cart(angle, 1.0);
-        let perp = vec2<f32>(-dir.y, dir.x) * line_width * 0.5 / uniforms.viewport.x;
+        let perp = vec2<f32>(-dir.y, dir.x) * line_width * 0.5 / uniforms.viewport.y;
 
         let p0 = center;
         let p1 = center + dir * chart_radius;
@@ -199,7 +206,7 @@ fn vs_main(
         let p1 = polar_to_cart(angle1, r1);
 
         let edge_dir = normalize(p1 - p0);
-        let edge_perp = vec2<f32>(-edge_dir.y, edge_dir.x) * line_width / uniforms.viewport.x;
+        let edge_perp = vec2<f32>(-edge_dir.y, edge_dir.x) * line_width / uniforms.viewport.y;
 
         switch local_vert {
             case 0u: { pos = p0 - edge_perp; }
@@ -219,7 +226,7 @@ fn vs_main(
         return out;
     }
 
-    out.position = vec4<f32>(pos, 0.0, 1.0);
+    out.position = vec4<f32>(chart_to_ndc(pos), 0.0, 1.0);
     out.color = color;
     out.uv = pos;
     out.element_type = element_type;

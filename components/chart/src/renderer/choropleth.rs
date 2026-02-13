@@ -22,6 +22,7 @@ use super::base::{
 use crate::animation::ChartAnimation;
 use crate::data::{ChoroplethData, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
+use crate::params::{ChartParamError, PositiveF32};
 
 /// GPU-accelerated choropleth map renderer.
 ///
@@ -117,9 +118,21 @@ impl ChoroplethRenderer {
 
     /// Sets the stroke width for polygon borders.
     #[must_use]
-    pub const fn stroke_width(mut self, width: f32) -> Self {
-        self.stroke_width = width;
+    pub fn stroke_width(self, width: f32) -> Self {
+        self.try_stroke_width(width)
+            .expect("ChoroplethRenderer::stroke_width(width) requires finite width > 0")
+    }
+
+    /// Sets stroke width using a validated strong type.
+    #[must_use]
+    pub fn with_stroke_width(mut self, width: PositiveF32) -> Self {
+        self.stroke_width = width.get();
         self
+    }
+
+    /// Fallible variant of [`Self::stroke_width`].
+    pub fn try_stroke_width(self, width: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_stroke_width(PositiveF32::try_new(width)?))
     }
 
     /// Sets the stroke color.

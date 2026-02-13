@@ -119,6 +119,18 @@ impl Style {
         self.strikethrough = false;
         self
     }
+
+    /// Returns `true` if this style has no text decorations or colors applied.
+    ///
+    /// Note: font customizations are not currently considered here.
+    #[must_use]
+    pub const fn is_plain(&self) -> bool {
+        !self.italic
+            && !self.underline
+            && !self.strikethrough
+            && self.foreground.is_none()
+            && self.background.is_none()
+    }
 }
 
 /// A string with associated text attributes for rich text formatting.
@@ -290,6 +302,12 @@ impl StyledStr {
             result.push_str(text);
         }
         result.into()
+    }
+
+    /// Returns `true` if all chunks are plain text style.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        self.chunks.iter().all(|(_, style)| style.is_plain())
     }
 
     /// Consumes the attributed string and returns its constituent chunks.
@@ -645,5 +663,11 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[1].0.as_str(), "cargo test");
         assert!(chunks[1].1.background.is_some());
+    }
+
+    #[test]
+    fn plain_detection_works() {
+        assert!(StyledStr::plain("abc").is_plain());
+        assert!(!StyledStr::plain("abc").italic(true).is_plain());
     }
 }

@@ -277,7 +277,7 @@ fn contacts_list() -> impl View {
 - `styled()` - Rich text with multiple style runs
 - `VideoPlayer` - Native video playback with controls and event handling
 - `include_markdown!()` - Compile-time markdown to view conversion
-- `flow_markdown()` - LLM-optimized streaming markdown view (requires `flow-markdown` feature)
+- `flow_markdown()` - LLM-optimized streaming markdown view
 
 ### Form Components
 
@@ -308,7 +308,6 @@ The base `waterui` crate includes layout, controls, text, media, navigation, and
 
 - `graphics` - Enables GPU rendering with canvas drawing primitives and `GpuSurface` (requires `waterui-graphics`)
 - `graphics-minimal` - GPU surface only, without canvas (smaller binary size)
-- `flow-markdown` - Enables `FlowMarkdown` and tree-sitter powered incremental markdown streaming/rendering
 
 ## Application Entry Point
 

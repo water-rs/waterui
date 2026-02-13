@@ -7,19 +7,18 @@
 //! - Language variant fallback (zh-TW vs zh-HK vs zh-CN)
 //! - CLDR plural rules
 //! - Date and unit formatting
-//! - Interactive locale switching with reactive `Computed<Locale>`
+//! - Interactive locale switching via waterkit regional callbacks
 //!
 //! ## How i18n Works
 //!
 //! 1. Define translations in `i18n/<locale>.toml` files
 //! 2. Use `text!("key")` - translations are loaded at compile time
-//! 3. Put `Computed<Locale>` in environment for reactive updates
+//! 3. Push locale updates to `waterkit_regional`
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
 use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
-use waterui::reactive::{Computed, SignalExt};
 use waterui_locale::format::date::{DateStyle, SimpleDate, format_date};
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::{Locale, LocalizedDisplay, locales};
@@ -146,7 +145,7 @@ fn unit_section(locale: Locale) -> impl View {
     ))
 }
 
-/// Content that automatically updates when Computed<Locale> changes
+/// Content that automatically updates when runtime locale changes
 /// The text! macros will react to locale changes via the environment
 fn localized_content() -> impl View {
     vstack((
@@ -196,12 +195,8 @@ fn main(env: &Environment) -> impl View {
     // Create binding for selected locale code
     let selection = Binding::container(initial_code);
     let sel_watch = selection.clone();
-    let sel_for_computed = selection.clone();
-
-    // Create Computed<Locale> from the selection - this is what makes text! reactive!
-    let locale_computed: Computed<Locale> = sel_for_computed
-        .map(|code| locale_from_code(code))
-        .computed();
+    // Initialize shared runtime locale from the picker's initial value.
+    let _ = waterkit_regional::set_locale_tag(initial_code);
 
     scroll(
         vstack((
@@ -212,7 +207,7 @@ fn main(env: &Environment) -> impl View {
             // Locale picker
             locale_picker_section(&selection, &system_locale),
             Divider,
-            // Localized content - text! macros react to Computed<Locale> in environment
+            // Localized content - text! macros react to regional locale updates
             // No watch() needed for these!
             localized_content(),
             Divider,
@@ -224,8 +219,9 @@ fn main(env: &Environment) -> impl View {
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
-    // Inject Computed<Locale> into environment for reactive text! macros
-    .with(locale_computed)
+    .on_change(&selection, |code| {
+        let _ = waterkit_regional::set_locale_tag(code.to_string());
+    })
 }
 
 pub fn app(env: Environment) -> App {
