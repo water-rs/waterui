@@ -2267,6 +2267,7 @@ typedef struct WuiTextField {
   WuiBinding_StyledStr *value;
   struct WuiText prompt;
   enum WuiKeyboardType keyboard;
+  WuiComputed_MenuItems *selection_menu;
 } WuiTextField;
 
 typedef struct WuiToggle {
@@ -5671,7 +5672,7 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
  *
  * This installs both:
  * - `Locale` (snapshot value)
- * - `Computed<Locale>` (reactive signal for dynamic locale updates)
+ * - Shared runtime locale context (waterkit-regional callbacks)
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -5688,7 +5689,7 @@ void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
  *
  * This installs both:
  * - `Locale` (snapshot value)
- * - `Computed<Locale>` (reactive signal for dynamic locale updates)
+ * - Shared runtime locale context (waterkit-regional callbacks)
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.

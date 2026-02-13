@@ -91,6 +91,7 @@ pub mod url;
 pub use url::Url;
 /// Image view primitives and supporting types.
 pub mod image;
+pub(crate) mod image_codec;
 
 use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
 

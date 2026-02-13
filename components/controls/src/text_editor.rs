@@ -1,8 +1,8 @@
 use core::num::NonZeroUsize;
 
 use nami::Binding;
-use waterui_core::{layout::StretchAxis, View};
-use waterui_text::{styled::StyledStr, Text};
+use waterui_core::{View, layout::StretchAxis};
+use waterui_text::{Text, styled::StyledStr};
 
 use crate::text_field::TextField;
 
@@ -19,8 +19,8 @@ pub struct RichTextEditorConfig {
 
 /// A text editor component that allows users to edit text.
 ///
-/// The current implementation is built on `TextField` (native single-line control)
-/// and stores content as `StyledStr::plain(...)` on user edits.
+/// The current implementation is built on the native `TextField` control path
+/// and edits a `Binding<StyledStr>` directly.
 ///
 /// # Layout Behavior
 ///
@@ -28,11 +28,6 @@ pub struct RichTextEditorConfig {
 /// In an `HStack`, it will take up all remaining width after other views are sized.
 #[derive(Debug)]
 pub struct RichTextEditor(RichTextEditorConfig);
-
-/// Alias for `RichTextEditor`.
-///
-/// Kept for naming consistency with roadmap/docs that use `RichTextField`.
-pub type RichTextField = RichTextEditor;
 
 impl RichTextEditor {
     /// Creates a new [`RichTextEditor`] with the given value binding.
@@ -79,6 +74,8 @@ impl RichTextEditor {
 
 impl View for RichTextEditor {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
+        // TODO(rich-text-editor): replace this bridge with a dedicated rich-text editor surface
+        // (multi-line layout, attachment model, rich selection/editing commands, and media spans).
         let config = self.0;
         let mut text_field = TextField::styled(&config.value).prompt(config.placeholder);
         if let Some(line_limit) = config.line_limit {

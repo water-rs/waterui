@@ -1,9 +1,13 @@
 //! Locale-aware date and time formatting.
-//!
-//! Note: This is a simplified implementation. For production use,
-//! consider using the full ICU4X datetime formatting APIs.
 
-use crate::locale::Locale;
+use icu_calendar::{Date, DateTime};
+use icu_datetime::{
+    DateFormatter, DateTimeFormatter, TimeFormatter,
+    options::length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
+};
+use icu_provider::DataLocale;
+
+use crate::locale::{Locale, locales};
 
 /// Date formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -75,198 +79,100 @@ impl SimpleTime {
     }
 }
 
-/// Month names by language.
-struct MonthNames {
-    full: &'static [&'static str; 12],
-    short: &'static [&'static str; 12],
+fn map_date_style(style: DateStyle) -> IcuDateStyle {
+    match style {
+        DateStyle::Short => IcuDateStyle::Short,
+        DateStyle::Medium => IcuDateStyle::Medium,
+        DateStyle::Long => IcuDateStyle::Long,
+        DateStyle::Full => IcuDateStyle::Full,
+    }
 }
 
-const MONTHS_EN: MonthNames = MonthNames {
-    full: &[
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ],
-    short: &[
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ],
-};
+fn map_time_style(style: TimeStyle) -> IcuTimeStyle {
+    match style {
+        TimeStyle::Short => IcuTimeStyle::Short,
+        TimeStyle::Medium => IcuTimeStyle::Medium,
+        TimeStyle::Long => IcuTimeStyle::Long,
+        TimeStyle::Full => IcuTimeStyle::Full,
+    }
+}
 
-const MONTHS_DE: MonthNames = MonthNames {
-    full: &[
-        "Januar",
-        "Februar",
-        "März",
-        "April",
-        "Mai",
-        "Juni",
-        "Juli",
-        "August",
-        "September",
-        "Oktober",
-        "November",
-        "Dezember",
-    ],
-    short: &[
-        "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
-    ],
-};
+fn to_data_locale(locale: &Locale) -> DataLocale {
+    locale.0.clone().into()
+}
 
-const MONTHS_FR: MonthNames = MonthNames {
-    full: &[
-        "janvier",
-        "février",
-        "mars",
-        "avril",
-        "mai",
-        "juin",
-        "juillet",
-        "août",
-        "septembre",
-        "octobre",
-        "novembre",
-        "décembre",
-    ],
-    short: &[
-        "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
-        "déc.",
-    ],
-};
+fn to_iso_date(date: &SimpleDate) -> Option<Date<icu_calendar::Iso>> {
+    Date::try_new_iso_date(date.year, date.month, date.day).ok()
+}
 
-const MONTHS_ES: MonthNames = MonthNames {
-    full: &[
-        "enero",
-        "febrero",
-        "marzo",
-        "abril",
-        "mayo",
-        "junio",
-        "julio",
-        "agosto",
-        "septiembre",
-        "octubre",
-        "noviembre",
-        "diciembre",
-    ],
-    short: &[
-        "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
-    ],
-};
+fn to_iso_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<DateTime<icu_calendar::Iso>> {
+    DateTime::try_new_iso_datetime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+        time.second,
+    )
+    .ok()
+}
 
-fn get_month_names(lang: &str) -> &'static MonthNames {
-    match lang {
-        "de" => &MONTHS_DE,
-        "fr" => &MONTHS_FR,
-        "es" => &MONTHS_ES,
-        _ => &MONTHS_EN,
+fn to_iso_time_only(time: &SimpleTime) -> Option<DateTime<icu_calendar::Iso>> {
+    // Synthetic stable date for time-only formatting.
+    DateTime::try_new_iso_datetime(2000, 1, 1, time.hour, time.minute, time.second).ok()
+}
+
+fn fallback_date_string(date: &SimpleDate) -> String {
+    format!("{}-{:02}-{:02}", date.year, date.month, date.day)
+}
+
+fn fallback_time_string(time: &SimpleTime, with_seconds: bool) -> String {
+    if with_seconds {
+        format!("{:02}:{:02}:{:02}", time.hour, time.minute, time.second)
+    } else {
+        format!("{:02}:{:02}", time.hour, time.minute)
     }
 }
 
 /// Format a date according to locale conventions.
-///
-/// This is a simplified implementation that handles common locales.
 pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> String {
-    let month_idx = (date.month.saturating_sub(1)) as usize;
-    let month_idx = month_idx.min(11);
-    let lang = locale.language.as_str();
-    let months = get_month_names(lang);
+    let Some(date_iso) = to_iso_date(date) else {
+        return fallback_date_string(date);
+    };
 
-    match (lang, style) {
-        // Chinese: 2023年12月31日
-        ("zh", DateStyle::Short) => format!("{}/{}/{}", date.year, date.month, date.day),
-        ("zh", _) => format!("{}年{}月{}日", date.year, date.month, date.day),
+    let length = map_date_style(style);
+    let data_locale = to_data_locale(locale);
 
-        // Japanese: 2023年12月31日
-        ("ja", DateStyle::Short) => format!("{}/{}/{}", date.year, date.month, date.day),
-        ("ja", _) => format!("{}年{}月{}日", date.year, date.month, date.day),
+    let formatter = DateFormatter::try_new_with_length(&data_locale, length)
+        .or_else(|_| DateFormatter::try_new_with_length(&to_data_locale(&locales::EN), length));
 
-        // Korean: 2023년 12월 31일
-        ("ko", DateStyle::Short) => format!("{}.{}.{}", date.year, date.month, date.day),
-        ("ko", _) => format!("{}년 {}월 {}일", date.year, date.month, date.day),
-
-        // German: 31.12.2023 or 31. Dezember 2023
-        ("de", DateStyle::Short) => format!("{}.{}.{}", date.day, date.month, date.year),
-        ("de", DateStyle::Medium) => {
-            format!("{}. {} {}", date.day, months.short[month_idx], date.year)
-        }
-        ("de", DateStyle::Long | DateStyle::Full) => {
-            format!("{}. {} {}", date.day, months.full[month_idx], date.year)
-        }
-
-        // French: 31/12/2023 or 31 décembre 2023
-        ("fr", DateStyle::Short) => format!("{:02}/{:02}/{}", date.day, date.month, date.year),
-        ("fr", DateStyle::Medium) => {
-            format!("{} {} {}", date.day, months.short[month_idx], date.year)
-        }
-        ("fr", DateStyle::Long | DateStyle::Full) => {
-            format!("{} {} {}", date.day, months.full[month_idx], date.year)
-        }
-
-        // Spanish: 31/12/2023 or 31 de diciembre de 2023
-        ("es", DateStyle::Short) => format!("{:02}/{:02}/{}", date.day, date.month, date.year),
-        ("es", DateStyle::Medium) => {
-            format!("{} {} {}", date.day, months.short[month_idx], date.year)
-        }
-        ("es", DateStyle::Long | DateStyle::Full) => {
-            format!(
-                "{} de {} de {}",
-                date.day, months.full[month_idx], date.year
-            )
-        }
-
-        // English (default): 12/31/2023 or December 31, 2023
-        (_, DateStyle::Short) => format!("{}/{}/{}", date.month, date.day, date.year),
-        (_, DateStyle::Medium) => {
-            format!("{} {}, {}", months.short[month_idx], date.day, date.year)
-        }
-        (_, DateStyle::Long | DateStyle::Full) => {
-            format!("{} {}, {}", months.full[month_idx], date.day, date.year)
-        }
+    match formatter {
+        Ok(formatter) => formatter
+            .format(&date_iso.to_any())
+            .map(|formatted| formatted.to_string())
+            .unwrap_or_else(|_| fallback_date_string(date)),
+        Err(_) => fallback_date_string(date),
     }
 }
 
 /// Format a time according to locale conventions.
 pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> String {
-    let use_24h = matches!(
-        locale.language.as_str(),
-        "de" | "fr" | "es" | "ja" | "zh" | "ko" | "ru"
-    );
+    let Some(time_iso) = to_iso_time_only(time) else {
+        let with_seconds = !matches!(style, TimeStyle::Short);
+        return fallback_time_string(time, with_seconds);
+    };
 
-    if use_24h {
-        match style {
-            TimeStyle::Short => format!("{:02}:{:02}", time.hour, time.minute),
-            TimeStyle::Medium | TimeStyle::Long | TimeStyle::Full => {
-                format!("{:02}:{:02}:{:02}", time.hour, time.minute, time.second)
-            }
-        }
-    } else {
-        let (hour12, period) = if time.hour == 0 {
-            (12, "AM")
-        } else if time.hour < 12 {
-            (time.hour, "AM")
-        } else if time.hour == 12 {
-            (12, "PM")
-        } else {
-            (time.hour - 12, "PM")
-        };
+    let length = map_time_style(style);
+    let data_locale = to_data_locale(locale);
 
-        match style {
-            TimeStyle::Short => format!("{}:{:02} {}", hour12, time.minute, period),
-            TimeStyle::Medium | TimeStyle::Long | TimeStyle::Full => {
-                format!(
-                    "{}:{:02}:{:02} {}",
-                    hour12, time.minute, time.second, period
-                )
-            }
+    let formatter = TimeFormatter::try_new_with_length(&data_locale, length)
+        .or_else(|_| TimeFormatter::try_new_with_length(&to_data_locale(&locales::EN), length));
+
+    match formatter {
+        Ok(formatter) => formatter.format(&time_iso).to_string(),
+        Err(_) => {
+            let with_seconds = !matches!(style, TimeStyle::Short);
+            fallback_time_string(time, with_seconds)
         }
     }
 }
@@ -279,7 +185,34 @@ pub fn format_datetime(
     date_style: DateStyle,
     time_style: TimeStyle,
 ) -> String {
-    let date_str = format_date(locale, date, date_style);
-    let time_str = format_time(locale, time, time_style);
-    format!("{date_str} {time_str}")
+    let Some(datetime_iso) = to_iso_datetime(date, time) else {
+        let date_fallback = fallback_date_string(date);
+        let time_fallback = fallback_time_string(time, !matches!(time_style, TimeStyle::Short));
+        return format!("{date_fallback} {time_fallback}");
+    };
+
+    let options =
+        length::Bag::from_date_time_style(map_date_style(date_style), map_time_style(time_style));
+    let data_locale = to_data_locale(locale);
+
+    let formatter =
+        DateTimeFormatter::try_new(&data_locale, options.clone().into()).or_else(|_| {
+            DateTimeFormatter::try_new(&to_data_locale(&locales::EN), options.clone().into())
+        });
+
+    match formatter {
+        Ok(formatter) => formatter
+            .format(&datetime_iso.to_any())
+            .map(|formatted| formatted.to_string())
+            .unwrap_or_else(|_| {
+                let date_fallback = format_date(locale, date, date_style);
+                let time_fallback = format_time(locale, time, time_style);
+                format!("{date_fallback} {time_fallback}")
+            }),
+        Err(_) => {
+            let date_fallback = format_date(locale, date, date_style);
+            let time_fallback = format_time(locale, time, time_style);
+            format!("{date_fallback} {time_fallback}")
+        }
+    }
 }
