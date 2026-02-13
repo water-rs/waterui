@@ -11,6 +11,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::DataPoint;
+use crate::params::{ChartParamError, DonutInnerRadius};
 use crate::renderer::PieChartRenderer;
 
 /// Pie chart visualization.
@@ -60,12 +61,27 @@ impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
     /// Sets the inner radius to create a donut chart.
     /// Value is a fraction of the outer radius (0.0 to 1.0).
     #[must_use]
-    pub fn donut(mut self, inner_radius: f32) -> Self {
-        assert!(
-            (0.0..=0.95).contains(&inner_radius),
-            "PieChart::donut(inner_radius) requires 0.0 <= inner_radius <= 0.95"
-        );
-        self.inner_radius = inner_radius;
+    pub fn donut(self, inner_radius: f32) -> Self {
+        self.try_donut(inner_radius)
+            .expect("PieChart::donut(inner_radius) requires finite 0.0 <= inner_radius <= 0.95")
+    }
+
+    /// Sets inner radius using a validated strong type.
+    #[must_use]
+    pub fn with_donut(mut self, inner_radius: DonutInnerRadius) -> Self {
+        self.inner_radius = inner_radius.get();
+        self
+    }
+
+    /// Fallible variant of [`Self::donut`].
+    pub fn try_donut(self, inner_radius: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_donut(DonutInnerRadius::try_new(inner_radius)?))
+    }
+
+    /// Disables donut mode and renders a full pie.
+    #[must_use]
+    pub fn full_pie(mut self) -> Self {
+        self.inner_radius = 0.0;
         self
     }
 }

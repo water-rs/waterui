@@ -1192,7 +1192,7 @@ impl ToJavaStruct for crate::components::button::WuiButton {
     }
 }
 
-/// WuiTextField -> TextFieldStruct(labelPtr, valuePtr, promptPtr, keyboardType)
+/// WuiTextField -> TextFieldStruct(labelPtr, valuePtr, promptPtr, keyboardType, selectionMenuItemsPtr)
 impl ToJavaStruct for crate::components::form::WuiTextField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1200,12 +1200,13 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
             .expect("TextFieldStruct class not found");
         env.new_object(
             &class,
-            "(JJJI)V",
+            "(JJJIJ)V",
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Long(self.prompt.content as jlong),
                 JValue::Int(self.keyboard as i32),
+                JValue::Long(self.selection_menu as jlong),
             ],
         )
         .expect("Failed to create TextFieldStruct")
@@ -1594,7 +1595,7 @@ impl ToJavaStruct for crate::components::progress::WuiProgress {
 }
 
 /// WuiVideo -> VideoStruct (source URL)
-impl ToJavaStruct for crate::components::media::WuiVideo {
+impl ToJavaStruct for crate::components::video::WuiVideo {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
             .find_class("dev/waterui/android/runtime/VideoStruct")
@@ -1615,7 +1616,7 @@ impl ToJavaStruct for crate::components::media::WuiVideo {
 }
 
 /// WuiVideoPlayer -> VideoPlayerStruct
-impl ToJavaStruct for crate::components::media::WuiVideoPlayer {
+impl ToJavaStruct for crate::components::video::WuiVideoPlayer {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
             .find_class("dev/waterui/android/runtime/VideoPlayerStruct")

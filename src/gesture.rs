@@ -53,7 +53,7 @@
 //! [`overlay`]: crate::prelude::overlay
 
 use waterui_core::{
-    handler::{boxed_action, BoxedAction},
+    handler::{BoxedAction, boxed_action},
     metadata::MetadataKey,
 };
 

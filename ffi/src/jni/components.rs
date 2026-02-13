@@ -15,15 +15,15 @@ use alloc::vec::Vec;
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
 
+use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong, jobject, jobjectArray};
-use jni::JNIEnv;
 use nami::SignalExt;
 use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
-use crate::components::layout::WuiLayout;
 use crate::IntoFFI;
 use crate::IntoRust;
+use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
@@ -1367,11 +1367,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
             height as u32,
         )
     };
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 #[cfg(target_os = "android")]
@@ -1607,11 +1603,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetI
         unsafe { drop_hardware_buffer_ref(drop_data) };
     }
 
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1759,11 +1751,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectRender<
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
     let ok = unsafe { crate::components::view_effect::waterui_view_effect_render(wrapper.state) };
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1845,11 +1833,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectSetInpu
         unsafe { drop_hardware_buffer_ref(drop_data) };
     }
 
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 // ============================================================================

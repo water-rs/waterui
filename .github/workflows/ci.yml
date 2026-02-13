@@ -71,6 +71,24 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  license-check:
+    name: License Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check licenses
+      - name: Check kit licenses
+        if: ${{ hashFiles('kit/Cargo.toml') != '' }}
+        working-directory: kit
+        run: cargo deny check licenses -c ../deny.toml
+
   unused-deps:
     name: Unused Dependencies
     runs-on: ubuntu-latest

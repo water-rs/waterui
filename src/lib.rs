@@ -48,7 +48,8 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
         accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
         filter, form, fullscreen, gesture, gradient, id, layout, locale, media, metadata,
-        navigation, reactive, shape, signal, style, task, text, video, webview, widget, window,
+        navigation, reactive, regional, shape, signal, style, task, text, video, webview, widget,
+        window,
     };
 
     pub use crate::include_markdown;
@@ -84,7 +85,6 @@ pub mod prelude {
     pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{Card, Divider, card, suspense};
-    #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
         FlowTablePolicy, flow_markdown,
@@ -112,6 +112,7 @@ pub use view::ViewExt;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 
+pub use waterkit_regional as regional;
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;

@@ -5,6 +5,7 @@ use std::convert::Infallible;
 use color_eyre::eyre;
 
 pub mod cmake;
+pub mod dav1d;
 pub mod doctor;
 pub mod sccache;
 /// A toolchain that cannot be fixed automatically.

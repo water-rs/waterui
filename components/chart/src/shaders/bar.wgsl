@@ -125,11 +125,11 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = in.color;
 
-    // SDF for rounded rectangle edges (bar with rounded corners)
-    // UV is [0,1] within bar, convert to centered coordinates
+    // Use a flat-edged rectangle SDF to keep the bar baseline perfectly level.
+    // Rounded bottom corners create visible "wavy ground" artifacts across bars.
+    // UV is [0,1] within bar, convert to centered coordinates.
     let centered = (in.bar_uv - 0.5) * 2.0;  // [-1, 1]
-    let corner_radius = 0.1;  // 10% of bar dimension
-    let dist = sdf_rounded_rect(centered, vec2<f32>(1.0 - corner_radius, 1.0 - corner_radius), corner_radius);
+    let dist = sdf_rect(centered, vec2<f32>(1.0, 1.0));
 
     // Anti-aliased coverage using fwidth for resolution-independent AA
     let aa = sdf_coverage(dist);

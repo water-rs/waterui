@@ -23,4 +23,4 @@ pub mod button;
 pub use button::{Button, ButtonStyle, button};
 /// Text editor component.
 pub mod text_editor;
-pub use text_editor::{RichTextEditor, RichTextField};
+pub use text_editor::RichTextEditor;

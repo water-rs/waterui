@@ -13,7 +13,15 @@ categories = ["gui", "multimedia::video"]
 [dependencies]
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-controls.workspace = true
+waterui-graphics.workspace = true
 waterui-url.workspace = true
+waterkit-video.workspace = true
+waterkit-codec.workspace = true
+nami.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+waterkit-audio.workspace = true
 
 [lints]
 workspace = true

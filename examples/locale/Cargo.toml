@@ -18,3 +18,4 @@ crate-type = ["lib", "staticlib", "cdylib"]
 waterui.workspace = true
 waterui-ffi.workspace = true
 waterui-locale.workspace = true
+waterkit-regional.workspace = true

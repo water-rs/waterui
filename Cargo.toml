@@ -98,10 +98,13 @@ waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
+waterkit-regional = { version = "0.1.0", path = "kit/regional" }
 waterkit-audio = { version = "0.1.0", path = "kit/audio" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
 waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
 waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
+waterkit-codec = { version = "0.1.0", path = "kit/codec" }
+waterkit-video = { version = "0.1.0", path = "kit/video" }
 waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
@@ -159,6 +162,7 @@ waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview.workspace = true
 waterui-locale.workspace = true
+waterkit-regional.workspace = true
 executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -178,18 +182,18 @@ waterkit-haptic = { workspace = true, optional = true }
 async-fs = "2.2.0"
 robius-open.workspace = true
 pastey.workspace = true
-tree-sitter = { version = "0.25", optional = true }
-tree-sitter-md = { version = "0.5.2", optional = true }
-tree-sitter-rust = { version = "0.23", optional = true }
-tree-sitter-javascript = { version = "0.23", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.23", optional = true }
-tree-sitter-go = { version = "0.23", optional = true }
-tree-sitter-java = { version = "0.23", optional = true }
-tree-sitter-swift = { version = "0.7", optional = true }
-tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-bash = { version = "0.23", optional = true }
-tree-sitter-sequel = { version = "0.3.11", optional = true }
+tree-sitter = { version = "0.25" }
+tree-sitter-md = { version = "0.5.2" }
+tree-sitter-rust = { version = "0.23" }
+tree-sitter-javascript = { version = "0.23" }
+tree-sitter-typescript = { version = "0.23" }
+tree-sitter-python = { version = "0.23" }
+tree-sitter-go = { version = "0.23" }
+tree-sitter-java = { version = "0.23" }
+tree-sitter-swift = { version = "0.7" }
+tree-sitter-json = { version = "0.24" }
+tree-sitter-bash = { version = "0.23" }
+tree-sitter-sequel = { version = "0.3.11" }
 
 
 
@@ -212,21 +216,7 @@ arboard = "3.6.1"
 [features]
 default = []
 std = ["dep:waterkit-haptic"]
-flow-markdown = [
-    "dep:tree-sitter",
-    "dep:tree-sitter-md",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-python",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-java",
-    "dep:tree-sitter-swift",
-    "dep:tree-sitter-json",
-    "dep:tree-sitter-bash",
-    "dep:tree-sitter-sequel",
-]
-all = ["std", "flow-markdown"]
+all = ["std"]
 
 
 [lints]

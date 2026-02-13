@@ -38,6 +38,12 @@ enum TranslationValue {
         many: Option<String>,
         other: String,
     },
+    DualPlural {
+        one_one: Option<String>,
+        one_other: Option<String>,
+        other_one: Option<String>,
+        other_other: String,
+    },
 }
 
 /// All translations loaded from i18n folder
@@ -114,54 +120,94 @@ impl TranslationBundle {
         let mut translations = BTreeMap::new();
 
         const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
+        const VALID_DUAL_PLURAL_FIELDS: &[&str] =
+            &["one_one", "one_other", "other_one", "other_other"];
 
         for (key, value) in table {
-            let tv = match value {
-                toml::Value::String(s) => TranslationValue::Simple(s),
-                toml::Value::Table(t) => {
-                    for field in t.keys() {
-                        if !VALID_PLURAL_FIELDS.contains(&field.as_str()) {
-                            return Err(format!(
-                                "Unknown plural field '{}' for key '{}' in '{}'",
-                                field,
-                                key,
-                                source.display()
-                            ));
-                        }
-                    }
+            let tv =
+                match value {
+                    toml::Value::String(s) => TranslationValue::Simple(s),
+                    toml::Value::Table(t) => {
+                        let is_dual_plural = t.keys().any(|field| field.contains('_'));
+                        if is_dual_plural {
+                            for field in t.keys() {
+                                if !VALID_DUAL_PLURAL_FIELDS.contains(&field.as_str()) {
+                                    return Err(format!(
+                                        "Unknown dual plural field '{}' for key '{}' in '{}'",
+                                        field,
+                                        key,
+                                        source.display()
+                                    ));
+                                }
+                            }
 
-                    let zero = Self::parse_plural_field(&t, "zero", source, &key)?;
-                    let one = Self::parse_plural_field(&t, "one", source, &key)?;
-                    let two = Self::parse_plural_field(&t, "two", source, &key)?;
-                    let few = Self::parse_plural_field(&t, "few", source, &key)?;
-                    let many = Self::parse_plural_field(&t, "many", source, &key)?;
-                    let other = Self::parse_plural_field(&t, "other", source, &key)?
-                        .filter(|s| !s.trim().is_empty())
-                        .ok_or_else(|| {
-                            format!(
-                                "Plural key '{}' in '{}' must define non-empty 'other'",
+                            let one_one = Self::parse_plural_field(&t, "one_one", source, &key)?;
+                            let one_other =
+                                Self::parse_plural_field(&t, "one_other", source, &key)?;
+                            let other_one =
+                                Self::parse_plural_field(&t, "other_one", source, &key)?;
+                            let other_other =
+                            Self::parse_plural_field(&t, "other_other", source, &key)?
+                                .filter(|s| !s.trim().is_empty())
+                                .ok_or_else(|| {
+                                    format!(
+                                "Dual plural key '{}' in '{}' must define non-empty 'other_other'",
                                 key,
                                 source.display()
                             )
-                        })?;
+                                })?;
 
-                    TranslationValue::Plural {
-                        zero,
-                        one,
-                        two,
-                        few,
-                        many,
-                        other,
+                            TranslationValue::DualPlural {
+                                one_one,
+                                one_other,
+                                other_one,
+                                other_other,
+                            }
+                        } else {
+                            for field in t.keys() {
+                                if !VALID_PLURAL_FIELDS.contains(&field.as_str()) {
+                                    return Err(format!(
+                                        "Unknown plural field '{}' for key '{}' in '{}'",
+                                        field,
+                                        key,
+                                        source.display()
+                                    ));
+                                }
+                            }
+
+                            let zero = Self::parse_plural_field(&t, "zero", source, &key)?;
+                            let one = Self::parse_plural_field(&t, "one", source, &key)?;
+                            let two = Self::parse_plural_field(&t, "two", source, &key)?;
+                            let few = Self::parse_plural_field(&t, "few", source, &key)?;
+                            let many = Self::parse_plural_field(&t, "many", source, &key)?;
+                            let other = Self::parse_plural_field(&t, "other", source, &key)?
+                                .filter(|s| !s.trim().is_empty())
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Plural key '{}' in '{}' must define non-empty 'other'",
+                                        key,
+                                        source.display()
+                                    )
+                                })?;
+
+                            TranslationValue::Plural {
+                                zero,
+                                one,
+                                two,
+                                few,
+                                many,
+                                other,
+                            }
+                        }
                     }
-                }
-                _ => {
-                    return Err(format!(
-                        "Invalid translation value type for key '{}' in '{}'",
-                        key,
-                        source.display()
-                    ));
-                }
-            };
+                    _ => {
+                        return Err(format!(
+                            "Invalid translation value type for key '{}' in '{}'",
+                            key,
+                            source.display()
+                        ));
+                    }
+                };
             translations.insert(key, tv);
         }
 
@@ -535,7 +581,9 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
                     };
 
                     for fallback_locale in #waterui::locale::locale::get_fallback_chain(locale) {
-                        let locale_key = fallback_locale.to_string();
+                        // Match translation tables by language-id form (without extensions),
+                        // e.g. "en-GB", even if runtime locale is "en-GB-u-hc-h23".
+                        let locale_key = fallback_locale.id().to_string();
                         if let Some(text) = resolve(locale_key.as_str()) {
                             return text;
                         }
@@ -668,6 +716,72 @@ fn generate_translation_arm(
                 }
             }
         }
+        TranslationValue::DualPlural {
+            one_one,
+            one_other,
+            other_one,
+            other_other,
+        } => {
+            let plural_var_1 = plural_names.first().copied().unwrap_or("count");
+            let plural_var_2 = plural_names.get(1).copied().unwrap_or(plural_var_1);
+            let plural_ident_1 = Ident::new(plural_var_1, proc_macro2::Span::call_site());
+            let plural_ident_2 = Ident::new(plural_var_2, proc_macro2::Span::call_site());
+
+            let one_one_format = one_one
+                .as_ref()
+                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
+            let one_other_format = one_other
+                .as_ref()
+                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
+            let other_one_format = other_one
+                .as_ref()
+                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
+            let other_other_lit = LitStr::new(&other_other.replace("{#", "{"), Span::call_site());
+            let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+
+            let one_one_expr = one_one_format
+                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
+                .unwrap_or_else(
+                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
+                );
+            let one_other_expr = one_other_format
+                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
+                .unwrap_or_else(
+                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
+                );
+            let other_one_expr = other_one_format
+                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
+                .unwrap_or_else(
+                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
+                );
+
+            let body = quote! {
+                let category_1 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_1);
+                let category_2 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_2);
+                match (category_1, category_2) {
+                    (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
+                        #one_one_expr
+                    }
+                    (#waterui::locale::PluralCategory::One, _) => {
+                        #one_other_expr
+                    }
+                    (_, #waterui::locale::PluralCategory::One) => {
+                        #other_one_expr
+                    }
+                    _ => #waterui::reactive::__alloc::format!(#other_other_lit),
+                }
+            };
+            let content = build_signal_map(waterui, all_idents, body);
+
+            quote! {
+                #locale_pattern => {
+                    let #locale_ident = locale.clone();
+                    Some(
+                        #waterui::text::Text::new(#content)
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -697,5 +811,27 @@ mod tests {
         let err = TranslationBundle::parse_toml(content, &source)
             .expect_err("unknown plural field should fail");
         assert!(err.contains("Unknown plural field"));
+    }
+
+    #[test]
+    fn parse_toml_accepts_dual_plural_fields() {
+        let content = r#"
+"I have {#apples} apple and {#oranges} orange" = { one_one = "I have {apples} apple and {oranges} orange", one_other = "I have {apples} apple and {oranges} oranges", other_one = "I have {apples} apples and {oranges} orange", other_other = "I have {apples} apples and {oranges} oranges" }
+"#;
+        let source = PathBuf::from("i18n/en.toml");
+        let parsed = TranslationBundle::parse_toml(content, &source)
+            .expect("valid dual plural should parse");
+        assert!(parsed.contains_key("I have {#apples} apple and {#oranges} orange"));
+    }
+
+    #[test]
+    fn parse_toml_rejects_unknown_dual_plural_fields() {
+        let content = r#"
+"I have {#apples} apple and {#oranges} orange" = { one_one = "x", one_other = "x", other_one = "x", other_others = "x" }
+"#;
+        let source = PathBuf::from("i18n/en.toml");
+        let err = TranslationBundle::parse_toml(content, &source)
+            .expect_err("unknown dual plural field should fail");
+        assert!(err.contains("Unknown dual plural field"));
     }
 }

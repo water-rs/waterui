@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 use core::future::Future;
+use core::num::NonZeroU32;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
@@ -12,6 +13,7 @@ use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, RadarData};
 use crate::interaction::{ChartViewport, HitResult};
+use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
@@ -74,23 +76,65 @@ impl RadarRenderer {
 
     /// Sets the number of concentric grid rings.
     #[must_use]
-    pub const fn ring_count(mut self, count: u32) -> Self {
-        self.ring_count = count;
+    pub fn ring_count(self, count: u32) -> Self {
+        self.try_ring_count(count)
+            .expect("RadarRenderer::ring_count(count) requires count >= 1")
+    }
+
+    /// Sets ring count using a validated strong type.
+    #[must_use]
+    pub fn with_ring_count(mut self, count: NonZeroU32) -> Self {
+        self.ring_count = count.get();
         self
+    }
+
+    /// Fallible variant of [`Self::ring_count`].
+    pub fn try_ring_count(self, count: u32) -> Result<Self, ChartParamError> {
+        let count = NonZeroU32::new(count).ok_or(ChartParamError::OutOfRange {
+            param: "ring_count",
+            value: count as f32,
+            min: 1.0,
+            max: u32::MAX as f32,
+        })?;
+        Ok(self.with_ring_count(count))
     }
 
     /// Sets the line width for outlines and grid.
     #[must_use]
-    pub const fn line_width(mut self, width: f32) -> Self {
-        self.line_width = width;
+    pub fn line_width(self, width: f32) -> Self {
+        self.try_line_width(width)
+            .expect("RadarRenderer::line_width(width) requires finite width > 0")
+    }
+
+    /// Sets line width using a validated strong type.
+    #[must_use]
+    pub fn with_line_width(mut self, width: PositiveF32) -> Self {
+        self.line_width = width.get();
         self
+    }
+
+    /// Fallible variant of [`Self::line_width`].
+    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_line_width(PositiveF32::try_new(width)?))
     }
 
     /// Sets the fill opacity for data polygons.
     #[must_use]
-    pub const fn fill_opacity(mut self, opacity: f32) -> Self {
-        self.fill_opacity = opacity;
+    pub fn fill_opacity(self, opacity: f32) -> Self {
+        self.try_fill_opacity(opacity)
+            .expect("RadarRenderer::fill_opacity(opacity) requires finite 0.0 <= opacity <= 1.0")
+    }
+
+    /// Sets fill opacity using a validated strong type.
+    #[must_use]
+    pub fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
+        self.fill_opacity = opacity.get();
         self
+    }
+
+    /// Fallible variant of [`Self::fill_opacity`].
+    pub fn try_fill_opacity(self, opacity: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_fill_opacity(UnitInterval::try_new(opacity)?))
     }
 
     fn create_pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
@@ -436,9 +480,11 @@ impl ChartRenderer for RadarRenderer {
             return None;
         }
 
-        // Convert screen point to normalized chart coordinates (-1 to 1)
-        let chart_x = ((point.x - viewport.x) / viewport.width) * 2.0 - 1.0;
+        // Convert screen point to shader chart-space coordinates.
+        // Shader compresses x in NDC by (height / width), so inverse-transform here.
+        let ndc_x = ((point.x - viewport.x) / viewport.width) * 2.0 - 1.0;
         let chart_y = ((point.y - viewport.y) / viewport.height) * 2.0 - 1.0;
+        let chart_x = ndc_x * (viewport.width / viewport.height.max(1.0));
 
         // Convert to polar coordinates
         let radius = (chart_x * chart_x + chart_y * chart_y).sqrt();

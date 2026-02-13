@@ -38,6 +38,7 @@ pub mod charts;
 pub mod data;
 pub mod interaction;
 pub mod legend;
+pub mod params;
 pub mod renderer;
 pub mod tooltip;
 
@@ -82,6 +83,9 @@ pub use data::{
     SeriesStyle,
 };
 pub use interaction::{ChartViewport, HitResult, SelectionState, ZoomPanState};
+pub use params::{
+    ArcAngles, ChartParamError, DonutInnerRadius, GaugeRadii, PositiveF32, UnitInterval,
+};
 pub use renderer::{
     AreaRenderer, BarChartRenderer, BubbleRenderer, CandlestickRenderer, ChartRenderer,
     ChoroplethRenderer, ContourRenderer, DepthRenderer, GaugeRenderer, HeatmapRenderer,

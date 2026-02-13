@@ -7,6 +7,7 @@ use waterui::text::styled::StyledStr;
 use waterui::{
     Color, Str,
     component::{
+        menu::MenuItem,
         slider::SliderConfig,
         stepper::StepperConfig,
         text_field::{KeyboardType, TextFieldConfig},
@@ -33,6 +34,7 @@ into_ffi! {TextFieldConfig,
         value: *mut WuiBinding<StyledStr>,
         prompt: WuiText,
         keyboard: WuiKeyboardType,
+        selection_menu: *mut WuiComputed<Vec<MenuItem>>,
     }
 }
 
