@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhance window management and hot reload functionality
 - Enhance navigation components with tab positioning and FFI support
 - Revamp README and enhance Android hot reload functionality
-- Add RichTextEditor component and enhance TextField with line limit functionality
+- Add RichTextEditor API scaffold and TextField line-limit APIs (multiline backend support pending)
 - Introduce StretchAxis for layout management
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration

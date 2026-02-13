@@ -152,11 +152,7 @@ where
     T: Fn(StyledStr) -> StyledStr + Clone + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        // Get locale - either reactive Computed<Locale> or static Locale wrapped in constant
-        let locale = env.get::<Computed<Locale>>().cloned().unwrap_or_else(|| {
-            // Fallback to default locale if none found
-            Computed::constant(locales::EN_US)
-        });
+        let locale = resolve_locale_signal(env);
 
         // Map locale to styled content reactively
         let text_fn = self.text_fn;
@@ -172,6 +168,14 @@ where
     }
 }
 
+fn resolve_locale_signal(env: &Environment) -> Computed<Locale> {
+    // Prefer reactive locale signal, then static locale, then fallback.
+    env.get::<Computed<Locale>>()
+        .cloned()
+        .or_else(|| env.get::<Locale>().cloned().map(Computed::constant))
+        .unwrap_or_else(|| Computed::constant(locales::EN_US))
+}
+
 impl<F, T> core::fmt::Debug for LocalizedText<F, T>
 where
     F: Fn(&Locale) -> Text,
@@ -179,5 +183,43 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalizedText").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Computed, Signal};
+    use waterui_core::Environment;
+
+    use super::resolve_locale_signal;
+    use crate::locale::{Locale, locales};
+
+    #[test]
+    fn resolve_locale_signal_uses_static_locale_when_computed_missing() {
+        let mut env = Environment::new();
+        env.insert(locales::EN_GB);
+
+        let locale = resolve_locale_signal(&env).get();
+        assert_eq!(locale.language.as_str(), "en");
+        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
+    }
+
+    #[test]
+    fn resolve_locale_signal_prefers_computed_locale() {
+        let mut env = Environment::new();
+        env.insert(locales::EN_US);
+        env.insert(Computed::constant(locales::ZH_TW));
+
+        let locale = resolve_locale_signal(&env).get();
+        assert_eq!(locale.language.as_str(), "zh");
+        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("TW"));
+    }
+
+    #[test]
+    fn resolve_locale_signal_defaults_to_en_us() {
+        let env = Environment::new();
+        let locale: Locale = resolve_locale_signal(&env).get();
+        assert_eq!(locale.language.as_str(), "en");
+        assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("US"));
     }
 }

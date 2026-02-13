@@ -49,7 +49,11 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
 
     /// Sets the line width for contour lines.
     #[must_use]
-    pub const fn line_width(mut self, width: f32) -> Self {
+    pub fn line_width(mut self, width: f32) -> Self {
+        assert!(
+            width.is_finite() && width > 0.0,
+            "ContourChart::line_width(width) requires width > 0"
+        );
         self.line_width = width;
         self
     }

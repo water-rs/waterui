@@ -67,8 +67,8 @@ pub use safe_area::{EdgeSet, IgnoreSafeArea};
 
 pub mod absolute;
 pub use absolute::{
-    Absolute, AbsoluteLayout, PositionExt, PositionTarget, PositionedChild, PositionedLayout,
-    UnitPoint, absolute,
+    Absolute, AbsoluteLayout, PinConstraints, PositionExt, PositionTarget, PositionedChild,
+    PositionedLayout, UnitPoint, absolute,
 };
 
 #[cfg(test)]

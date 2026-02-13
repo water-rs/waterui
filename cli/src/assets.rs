@@ -7,6 +7,7 @@
 //! - Copy assets to platform-specific locations
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::PackageId;
@@ -17,6 +18,9 @@ use smol::stream::StreamExt;
 use tracing::{debug, info, warn};
 
 use crate::project::Project;
+
+mod pipeline;
+pub use pipeline::{DoctorIssue, DoctorReport, MigrateReport};
 
 /// Built-in font registry mapping font names to download URLs.
 ///
@@ -196,6 +200,15 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
             }
 
             let source = if let Some(local_path) = font_meta.local_path {
+                let local_path = PathBuf::from(local_path);
+                if local_path.is_absolute() {
+                    warn!(
+                        "Skipping font '{}': local_path must be relative (crate: {})",
+                        font_meta.name, package.name
+                    );
+                    continue;
+                }
+
                 // Local path - resolve relative to crate root
                 let crate_root = package
                     .manifest_path
@@ -206,7 +219,7 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
 
                 FontSource::Local {
                     crate_root,
-                    relative_path: PathBuf::from(local_path),
+                    relative_path: local_path,
                 }
             } else if let Some(url) = font_meta.remote_path {
                 FontSource::Remote { url }
@@ -259,18 +272,26 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
             FontSource::Local {
                 crate_root,
                 relative_path,
-            } => {
-                let full_path = crate_root.join(relative_path);
-                if !full_path.exists() {
+            } => match resolve_local_font_path(crate_root, relative_path) {
+                Ok(Some(full_path)) => full_path,
+                Ok(None) => {
                     warn!(
                         "Font file not found: {} (declared by {})",
-                        full_path.display(),
+                        crate_root.join(relative_path).display(),
                         decl.crate_name
                     );
                     continue;
                 }
-                full_path
-            }
+                Err(e) => {
+                    warn!(
+                        "Skipping font '{}': invalid local path '{}' (declared by {}): {e}",
+                        name,
+                        relative_path.display(),
+                        decl.crate_name
+                    );
+                    continue;
+                }
+            },
             FontSource::Remote { url } => download_font(&name, url, &cache_dir).await?,
             FontSource::BuiltIn => {
                 // Look up in registry
@@ -309,10 +330,39 @@ fn cache_dir() -> eyre::Result<PathBuf> {
     Ok(cache)
 }
 
+fn resolve_local_font_path(
+    crate_root: &Path,
+    relative_path: &Path,
+) -> eyre::Result<Option<PathBuf>> {
+    let full_path = crate_root.join(relative_path);
+    if !full_path.exists() {
+        return Ok(None);
+    }
+
+    let canonical_root = crate_root
+        .canonicalize()
+        .wrap_err_with(|| format!("Failed to canonicalize crate root {}", crate_root.display()))?;
+    let canonical_path = full_path
+        .canonicalize()
+        .wrap_err_with(|| format!("Failed to canonicalize font path {}", full_path.display()))?;
+
+    if !canonical_path.starts_with(&canonical_root) {
+        eyre::bail!(
+            "path escapes crate root ({} -> {})",
+            full_path.display(),
+            canonical_path.display()
+        );
+    }
+
+    Ok(Some(canonical_path))
+}
+
 /// Downloads a font from a URL and caches it.
 ///
 /// If the font is already cached, returns the cached path.
 async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<PathBuf> {
+    ensure_http_allowed(url)?;
+
     // Create cache directory if needed
     fs::create_dir_all(cache_dir).await?;
 
@@ -323,13 +373,22 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
 
     // If already cached, return the path
     if cache_file.exists() {
-        debug!("Font '{}' already cached at {}", name, cache_file.display());
+        if std::fs::metadata(&cache_file).map(|m| m.len()).unwrap_or(0) == 0 {
+            warn!(
+                "Ignoring empty cached font '{}' at {}",
+                name,
+                cache_file.display()
+            );
+            let _ = fs::remove_file(&cache_file).await;
+        } else {
+            debug!("Font '{}' already cached at {}", name, cache_file.display());
 
-        // For zip files, we need to find the actual font file
-        if extension == "zip" {
-            return find_font_in_extracted_zip(&cache_file, name).await;
+            // For zip files, we need to find the actual font file
+            if extension == "zip" {
+                return find_font_in_extracted_zip(&cache_file, name).await;
+            }
+            return Ok(cache_file);
         }
-        return Ok(cache_file);
     }
 
     info!("Downloading font '{}' from {}", name, url);
@@ -356,7 +415,34 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
         .await
         .wrap_err("Failed to read font data")?;
 
-    fs::write(&cache_file, &bytes).await?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let temp_file = cache_dir.join(format!(
+        "{hash}.{extension}.tmp-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::write(&temp_file, &bytes).await?;
+
+    if let Err(e) = fs::rename(&temp_file, &cache_file).await {
+        let _ = fs::remove_file(&temp_file).await;
+        if cache_file.exists() {
+            debug!(
+                "Font cache race detected for '{}', reusing {}",
+                name,
+                cache_file.display()
+            );
+        } else {
+            return Err(e).wrap_err_with(|| {
+                format!(
+                    "Failed to finalize cache file for '{}' at {}",
+                    name,
+                    cache_file.display()
+                )
+            });
+        }
+    }
 
     // For zip files, extract and find the font
     if extension == "zip" {
@@ -364,6 +450,47 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
     }
 
     Ok(cache_file)
+}
+
+fn ensure_http_allowed(url: &str) -> eyre::Result<()> {
+    if url.starts_with("http://") && !is_loopback_http_url(url) {
+        eyre::bail!(
+            "HTTP not allowed for remote fonts: {}. Only localhost/loopback permits HTTP.",
+            url
+        );
+    }
+
+    Ok(())
+}
+
+fn is_loopback_http_url(url: &str) -> bool {
+    extract_http_host(url)
+        .and_then(normalize_host)
+        .is_some_and(is_loopback_host)
+}
+
+fn extract_http_host(url: &str) -> Option<&str> {
+    let remainder = url.strip_prefix("http://")?;
+    let authority = remainder.split(['/', '?', '#']).next()?;
+    authority.rsplit('@').next()
+}
+
+fn normalize_host(authority: &str) -> Option<&str> {
+    if authority.is_empty() {
+        return None;
+    }
+
+    if let Some(host) = authority.strip_prefix('[') {
+        let closing = host.find(']')?;
+        return Some(&host[..closing]);
+    }
+
+    authority.split(':').next()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Finds a font file in an extracted zip archive.
@@ -386,7 +513,12 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
         .await?;
 
         // For Font Awesome archives, also copy icons.json to the fontawesome cache
-        copy_fontawesome_icons_json(&extract_dir).await.ok();
+        if let Err(e) = copy_fontawesome_icons_json(&extract_dir).await {
+            warn!(
+                "Failed to copy Font Awesome icons.json from {}: {e}",
+                extract_dir.display()
+            );
+        }
     }
 
     // Find a font file (.ttf or .otf)
@@ -427,6 +559,11 @@ async fn find_file_recursive(dir: &Path, filename: &str) -> eyre::Result<PathBuf
     while let Some(entry) = entries.next().await {
         let entry = entry?;
         let path = entry.path();
+
+        if is_symlink(&path)? {
+            warn!("Skipping symlink while searching files: {}", path.display());
+            continue;
+        }
 
         if path.is_dir() {
             if let Ok(found) = Box::pin(find_file_recursive(&path, filename)).await {
@@ -481,6 +618,11 @@ async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
     while let Some(entry) = entries.next().await {
         let entry = entry?;
         let path = entry.path();
+
+        if is_symlink(&path)? {
+            warn!("Skipping symlink while searching fonts: {}", path.display());
+            continue;
+        }
 
         if path.is_dir() {
             if let Ok(found) = Box::pin(find_font_file(&path, name)).await {
@@ -550,6 +692,40 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(result)
 }
 
+/// Validate asset layout and report migration/build issues.
+pub async fn doctor_assets(project: &Project) -> eyre::Result<DoctorReport> {
+    pipeline::doctor(project).await
+}
+
+/// Migrate legacy assets layout to the strict directory convention.
+pub async fn migrate_assets(project: &Project) -> eyre::Result<MigrateReport> {
+    pipeline::migrate(project).await
+}
+
+/// Stage project assets for Apple packaging (Asset Catalog + raw resources).
+pub async fn stage_project_assets_for_apple(
+    project: &Project,
+    dest_dir: &Path,
+) -> eyre::Result<()> {
+    pipeline::stage_for_apple(project, dest_dir).await
+}
+
+/// Stage project assets for Android packaging (res + assets/raw).
+pub async fn stage_project_assets_for_android(
+    project: &Project,
+    backend_path: &Path,
+) -> eyre::Result<()> {
+    pipeline::stage_for_android(project, backend_path).await
+}
+
+/// Stage project assets for GTK4 packaging (resources + gresource bundle).
+pub async fn stage_project_assets_for_gtk(
+    project: &Project,
+    resources_dir: &Path,
+) -> eyre::Result<()> {
+    pipeline::stage_for_gtk(project, resources_dir).await
+}
+
 /// Copies project assets to a destination directory.
 ///
 /// Preserves directory structure within the assets folder.
@@ -598,8 +774,16 @@ async fn copy_dir_recursive(src: &Path, dest: &Path) -> eyre::Result<()> {
     while let Some(entry) = entries.next().await {
         let entry = entry?;
         let path = entry.path();
-        let file_name = path.file_name().unwrap();
+        let Some(file_name) = path.file_name() else {
+            warn!("Skipping path without file name: {}", path.display());
+            continue;
+        };
         let dest_path = dest.join(file_name);
+
+        if is_symlink(&path)? {
+            warn!("Skipping symlink while copying assets: {}", path.display());
+            continue;
+        }
 
         if path.is_dir() {
             Box::pin(copy_dir_recursive(&path, &dest_path)).await?;
@@ -611,9 +795,18 @@ async fn copy_dir_recursive(src: &Path, dest: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+fn is_symlink(path: &Path) -> eyre::Result<bool> {
+    Ok(std::fs::symlink_metadata(path)
+        .wrap_err_with(|| format!("Failed to read metadata for {}", path.display()))?
+        .file_type()
+        .is_symlink())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_font_registry_has_entries() {
@@ -636,5 +829,59 @@ mod tests {
     fn test_sha256_hex() {
         let hash = sha256_hex("hello");
         assert_eq!(hash.len(), 64); // SHA256 = 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn test_http_allowlist() {
+        for url in [
+            "http://localhost/font.ttf",
+            "http://127.0.0.1:8080/font.ttf",
+            "http://[::1]/font.ttf",
+            "https://example.com/font.ttf",
+        ] {
+            assert!(ensure_http_allowed(url).is_ok(), "expected to allow {url}");
+        }
+    }
+
+    #[test]
+    fn test_http_rejects_non_loopback_and_prefix_bypass() {
+        for url in [
+            "http://example.com/font.ttf",
+            "http://localhost.evil.com/font.ttf",
+            "http://127.0.0.1.evil.com/font.ttf",
+        ] {
+            assert!(
+                ensure_http_allowed(url).is_err(),
+                "expected to reject {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_local_font_path_rejects_escape() {
+        let root = tempdir().expect("temp root");
+        let outside = tempdir().expect("temp outside");
+        let outside_font = outside.path().join("outside.ttf");
+        fs::write(&outside_font, b"font").expect("write outside font");
+
+        let rel_escape = Path::new("..").join(outside.path().file_name().expect("outside name"));
+        let rel_escape = rel_escape.join("outside.ttf");
+
+        let result = resolve_local_font_path(root.path(), &rel_escape);
+        assert!(result.is_err(), "expected path traversal to be rejected");
+    }
+
+    #[test]
+    fn test_resolve_local_font_path_accepts_inside_root() {
+        let root = tempdir().expect("temp root");
+        let inside_dir = root.path().join("fonts");
+        fs::create_dir_all(&inside_dir).expect("create fonts dir");
+        let font_path = inside_dir.join("inside.ttf");
+        fs::write(&font_path, b"font").expect("write inside font");
+
+        let resolved = resolve_local_font_path(root.path(), Path::new("fonts/inside.ttf"))
+            .expect("resolve should succeed")
+            .expect("font should exist");
+        assert_eq!(resolved, font_path.canonicalize().expect("canonical path"));
     }
 }

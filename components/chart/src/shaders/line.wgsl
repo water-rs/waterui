@@ -29,6 +29,7 @@ struct LineUniforms {
     show_fill: f32,
     fill_opacity: f32,
     point_count: f32,
+    render_mode: f32, // 0 = line pass, 1 = fill pass
 }
 
 // Data point
@@ -117,28 +118,41 @@ fn vs_main(
         }
     }
 
-    // Calculate line direction and perpendicular
-    let dir = vec2<f32>(norm_x1 - norm_x0, norm_y1 - norm_y0);
-    let len = length(dir);
-    let norm_dir = select(vec2<f32>(1.0, 0.0), dir / len, len > 0.0001);
-    let perp = vec2<f32>(-norm_dir.y, norm_dir.x);
-
-    // Line width in normalized coordinates
-    let half_width = uniforms.line_width * 0.5 / uniforms.chart.viewport.x;
-
-    // Generate quad vertices
-    // Vertices 0-2: first triangle, 3-5: second triangle
+    // Generate quad vertices.
+    // Vertices 0-2: first triangle, 3-5: second triangle.
     var local_pos: vec2<f32>;
     var uv: vec2<f32>;
 
-    switch vertex_index {
-        case 0u: { local_pos = vec2(norm_x0, norm_y0) + perp * half_width; uv = vec2(0.0, 1.0); }
-        case 1u: { local_pos = vec2(norm_x0, norm_y0) - perp * half_width; uv = vec2(0.0, 0.0); }
-        case 2u: { local_pos = vec2(norm_x1, norm_y1) + perp * half_width; uv = vec2(1.0, 1.0); }
-        case 3u: { local_pos = vec2(norm_x0, norm_y0) - perp * half_width; uv = vec2(0.0, 0.0); }
-        case 4u: { local_pos = vec2(norm_x1, norm_y1) - perp * half_width; uv = vec2(1.0, 0.0); }
-        case 5u: { local_pos = vec2(norm_x1, norm_y1) + perp * half_width; uv = vec2(1.0, 1.0); }
-        default: { local_pos = vec2(0.0); uv = vec2(0.0); }
+    if uniforms.render_mode > 0.5 {
+        // Fill area under the line down to chart baseline.
+        switch vertex_index {
+            case 0u: { local_pos = vec2(norm_x0, 0.0);    uv = vec2(0.0, 0.0); }
+            case 1u: { local_pos = vec2(norm_x0, norm_y0); uv = vec2(0.0, 1.0); }
+            case 2u: { local_pos = vec2(norm_x1, norm_y1); uv = vec2(1.0, 1.0); }
+            case 3u: { local_pos = vec2(norm_x0, 0.0);    uv = vec2(0.0, 0.0); }
+            case 4u: { local_pos = vec2(norm_x1, norm_y1); uv = vec2(1.0, 1.0); }
+            case 5u: { local_pos = vec2(norm_x1, 0.0);    uv = vec2(1.0, 0.0); }
+            default: { local_pos = vec2(0.0); uv = vec2(0.0); }
+        }
+    } else {
+        // Calculate line direction and perpendicular.
+        let dir = vec2<f32>(norm_x1 - norm_x0, norm_y1 - norm_y0);
+        let len = length(dir);
+        let norm_dir = select(vec2<f32>(1.0, 0.0), dir / len, len > 0.0001);
+        let perp = vec2<f32>(-norm_dir.y, norm_dir.x);
+
+        // Line width in normalized coordinates.
+        let half_width = uniforms.line_width * 0.5 / uniforms.chart.viewport.x;
+
+        switch vertex_index {
+            case 0u: { local_pos = vec2(norm_x0, norm_y0) + perp * half_width; uv = vec2(0.0, 1.0); }
+            case 1u: { local_pos = vec2(norm_x0, norm_y0) - perp * half_width; uv = vec2(0.0, 0.0); }
+            case 2u: { local_pos = vec2(norm_x1, norm_y1) + perp * half_width; uv = vec2(1.0, 1.0); }
+            case 3u: { local_pos = vec2(norm_x0, norm_y0) - perp * half_width; uv = vec2(0.0, 0.0); }
+            case 4u: { local_pos = vec2(norm_x1, norm_y1) - perp * half_width; uv = vec2(1.0, 0.0); }
+            case 5u: { local_pos = vec2(norm_x1, norm_y1) + perp * half_width; uv = vec2(1.0, 1.0); }
+            default: { local_pos = vec2(0.0); uv = vec2(0.0); }
+        }
     }
 
     // Map to NDC with padding
@@ -150,7 +164,7 @@ fn vs_main(
     out.color = uniforms.line_color;
     out.uv = uv;
     out.segment_index = f32(instance_index);
-    out.is_fill = 0.0;
+    out.is_fill = uniforms.render_mode;
 
     return out;
 }
@@ -158,6 +172,12 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = in.color;
+
+    if in.is_fill > 0.5 {
+        // Fill pass: keep edges soft and apply configured fill opacity.
+        let fill_alpha = color.a * clamp(uniforms.fill_opacity, 0.0, 1.0);
+        return vec4<f32>(color.rgb * fill_alpha, fill_alpha);
+    }
 
     // SDF line: distance from center line (0 at center, 1 at edge)
     // UV.y = 0 at bottom edge, 0.5 at center, 1 at top edge

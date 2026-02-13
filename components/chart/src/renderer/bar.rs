@@ -207,7 +207,7 @@ impl GpuRenderer for BarChartRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Bar Chart Uniforms", &uniforms));
 
         // Create data buffers with initial capacity
-        let initial_capacity = self.data.len().max(64);
+        let initial_capacity = self.data.len().max(16384);
         let initial_data: Vec<GpuDataPoint> = self
             .data
             .iter()
@@ -338,13 +338,13 @@ impl GpuRenderer for BarChartRenderer {
                         } else {
                             0.0
                         },
-                        0.0,
+                        self.data.len() as f32,
                     )
                 } else {
-                    glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                    glam::Vec4::new(-1.0, -1.0, 0.0, self.data.len() as f32)
                 }
             } else {
-                glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                glam::Vec4::new(-1.0, -1.0, 0.0, self.data.len() as f32)
             },
         };
         write_uniform_buffer(
@@ -399,7 +399,7 @@ impl ChartRenderer for BarChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = DataPoint;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 
