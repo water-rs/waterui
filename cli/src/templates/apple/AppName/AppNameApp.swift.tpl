@@ -37,9 +37,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if delegate.isAccessory {
             app.setActivationPolicy(.prohibited)
         } else {
-            app.mainMenu = WaterUIMainMenu.create()
+            app.mainMenu = createDefaultMainMenu()
         }
         app.run()
+    }
+
+    private static func createDefaultMainMenu() -> NSMenu {
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Quit \(ProcessInfo.processInfo.processName)",
+                action: #selector(NSApplication.terminate(_:)),
+                keyEquivalent: "q"
+            )
+        )
+
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+        return mainMenu
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
