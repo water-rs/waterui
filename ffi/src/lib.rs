@@ -168,7 +168,16 @@ pub unsafe fn __init() {
     // Forwards tracing to platform's logging system
     #[cfg(target_os = "android")]
     {
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .or_else(|_| {
+                tracing_subscriber::EnvFilter::try_new(
+                    "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,jni=warn",
+                )
+            })
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
         tracing_subscriber::registry()
+            .with(env_filter)
             .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
             .init();
     }
@@ -592,8 +601,8 @@ use waterui_core::event::{LifeCycleHook, OnEvent};
 /// Type alias for Metadata<LifeCycleHook> FFI struct
 pub type WuiMetadataLifeCycleHook = WuiMetadata<WuiLifeCycleHook>;
 
-// Generate waterui_metadata_life_cycle_hook_id() and waterui_force_as_metadata_life_cycle_hook()
-ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, life_cycle_hook);
+// Generate waterui_metadata_lifecycle_hook_id() and waterui_force_as_metadata_lifecycle_hook()
+ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, lifecycle_hook);
 
 // Used to attach interaction event handlers (hover enter/exit) - repeatable handlers
 
