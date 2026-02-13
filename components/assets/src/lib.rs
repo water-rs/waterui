@@ -40,17 +40,17 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-mod kind;
-mod error;
 mod data;
+mod error;
+mod kind;
 mod large_file;
 
-pub use kind::AssetKind;
-pub use error::AssetError;
 pub use data::Data;
+pub use error::AssetError;
+pub use kind::AssetKind;
 pub use large_file::LargeFile;
 
 /// Prelude for common imports.
 pub mod prelude {
-    pub use crate::{AssetKind, AssetError, Data, LargeFile};
+    pub use crate::{AssetError, AssetKind, Data, LargeFile};
 }

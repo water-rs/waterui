@@ -154,7 +154,10 @@ fn create_live_photo_source_struct<'local>(
         env.new_object_unchecked(
             &classes.live_photo_source_struct_class,
             jni::objects::JMethodID::from_raw(classes.live_photo_source_struct_ctor),
-            &[JValue::Object(&image_str).as_jni(), JValue::Object(&video_str).as_jni()],
+            &[
+                JValue::Object(&image_str).as_jni(),
+                JValue::Object(&video_str).as_jni(),
+            ],
         )
         .expect("Failed to create LivePhotoSourceStruct")
     }
@@ -1260,7 +1263,10 @@ unsafe extern "C" fn watcher_call_picker_items(
             env.new_object_unchecked(
                 &classes.picker_item_struct_class,
                 jni::objects::JMethodID::from_raw(classes.picker_item_struct_ctor),
-                &[JValue::Int(tag_id).as_jni(), JValue::Object(&label_obj).as_jni()],
+                &[
+                    JValue::Int(tag_id).as_jni(),
+                    JValue::Object(&label_obj).as_jni(),
+                ],
             )
             .expect("Failed to create PickerItemStruct")
         };
@@ -1309,7 +1315,10 @@ unsafe extern "C" fn watcher_call_table_cols(
             env.new_object_unchecked(
                 &classes.table_column_struct_class,
                 jni::objects::JMethodID::from_raw(classes.table_column_struct_ctor),
-                &[JValue::Long(label_ptr).as_jni(), JValue::Long(rows_ptr).as_jni()],
+                &[
+                    JValue::Long(label_ptr).as_jni(),
+                    JValue::Long(rows_ptr).as_jni(),
+                ],
             )
             .expect("Failed to create TableColumnStruct")
         };
@@ -1481,11 +1490,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dynamicConnect<'l
         unsafe { core::mem::transmute(drop_ptr as *const ()) };
 
     let watcher = unsafe {
-        crate::reactive::WuiWatcher::<waterui::AnyView>::new(
-            data_ptr as *mut (),
-            call_fn,
-            drop_fn,
-        )
+        crate::reactive::WuiWatcher::<waterui::AnyView>::new(data_ptr as *mut (), call_fn, drop_fn)
     };
 
     // Ownership of the watcher is transferred to Rust; it will be dropped when the

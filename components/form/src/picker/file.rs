@@ -128,10 +128,9 @@ fn import_to_sandbox(path: &Path) -> io::Result<PathBuf> {
 
     let mut destination = base_dir.join(file_name);
     if destination.exists() {
-        let stem = path.file_stem().map_or_else(
-            || Cow::Borrowed("file"),
-            |s: &OsStr| s.to_string_lossy(),
-        );
+        let stem = path
+            .file_stem()
+            .map_or_else(|| Cow::Borrowed("file"), |s: &OsStr| s.to_string_lossy());
         let extension = path
             .extension()
             .map(|e: &OsStr| e.to_string_lossy().to_string());
