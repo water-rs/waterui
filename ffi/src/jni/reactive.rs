@@ -16,9 +16,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JObject, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jint, jlong, jobject, jobjectArray, jsize};
+use jni::JNIEnv;
 
 use crate::reactive::{WuiBinding, WuiComputed, WuiWatcherGuard};
 
@@ -247,6 +247,155 @@ macro_rules! jni_binding_str {
 jni_binding_str!(str);
 jni_binding_str!(secure);
 
+fn styled_str_from_java(env: &mut JNIEnv, styled: &JObject) -> waterui_text::styled::StyledStr {
+    use crate::color::WuiColor;
+    use crate::components::text::WuiFont;
+    use crate::IntoRust;
+    use waterui_text::font::Font;
+    use waterui_text::styled::{Style, StyledStr};
+
+    if styled.is_null() {
+        return StyledStr::plain("");
+    }
+
+    let chunks_obj = env
+        .get_field(
+            styled,
+            "chunks",
+            "[Ldev/waterui/android/runtime/StyledChunkStruct;",
+        )
+        .expect("StyledStrStruct.chunks field not found")
+        .l()
+        .expect("StyledStrStruct.chunks should be an object array");
+    let chunks_array = JObjectArray::from(chunks_obj);
+
+    let len = env
+        .get_array_length(&chunks_array)
+        .expect("Failed to read StyledStrStruct chunks length");
+
+    let mut styled_str = StyledStr::empty();
+
+    for index in 0..len {
+        let chunk_obj = env
+            .get_object_array_element(&chunks_array, index)
+            .expect("Failed to read StyledChunkStruct from array");
+        let text_obj = env
+            .get_field(&chunk_obj, "text", "Ljava/lang/String;")
+            .expect("StyledChunkStruct.text field not found")
+            .l()
+            .expect("StyledChunkStruct.text should be a java.lang.String");
+        let text_jstr = JString::from(text_obj);
+        let text = env
+            .get_string(&text_jstr)
+            .expect("Failed to read StyledChunkStruct.text")
+            .to_string_lossy()
+            .into_owned();
+
+        let style_obj = env
+            .get_field(
+                &chunk_obj,
+                "style",
+                "Ldev/waterui/android/runtime/TextStyleStruct;",
+            )
+            .expect("StyledChunkStruct.style field not found")
+            .l()
+            .expect("StyledChunkStruct.style should be a TextStyleStruct");
+
+        let font_ptr = env
+            .get_field(&style_obj, "fontPtr", "J")
+            .expect("TextStyleStruct.fontPtr field not found")
+            .j()
+            .expect("TextStyleStruct.fontPtr should be a long");
+        let italic = env
+            .get_field(&style_obj, "italic", "Z")
+            .expect("TextStyleStruct.italic field not found")
+            .z()
+            .expect("TextStyleStruct.italic should be a boolean");
+        let underline = env
+            .get_field(&style_obj, "underline", "Z")
+            .expect("TextStyleStruct.underline field not found")
+            .z()
+            .expect("TextStyleStruct.underline should be a boolean");
+        let strikethrough = env
+            .get_field(&style_obj, "strikethrough", "Z")
+            .expect("TextStyleStruct.strikethrough field not found")
+            .z()
+            .expect("TextStyleStruct.strikethrough should be a boolean");
+        let foreground_ptr = env
+            .get_field(&style_obj, "foregroundPtr", "J")
+            .expect("TextStyleStruct.foregroundPtr field not found")
+            .j()
+            .expect("TextStyleStruct.foregroundPtr should be a long");
+        let background_ptr = env
+            .get_field(&style_obj, "backgroundPtr", "J")
+            .expect("TextStyleStruct.backgroundPtr field not found")
+            .j()
+            .expect("TextStyleStruct.backgroundPtr should be a long");
+
+        let font = if font_ptr == 0 {
+            Font::default()
+        } else {
+            unsafe { (font_ptr as *mut WuiFont).into_rust() }
+        };
+
+        let foreground = if foreground_ptr == 0 {
+            None
+        } else {
+            Some(unsafe { (foreground_ptr as *mut WuiColor).into_rust() })
+        };
+
+        let background = if background_ptr == 0 {
+            None
+        } else if background_ptr == foreground_ptr && foreground.is_some() {
+            foreground.clone()
+        } else {
+            Some(unsafe { (background_ptr as *mut WuiColor).into_rust() })
+        };
+
+        styled_str.push(
+            waterui::Str::from(text),
+            Style {
+                font,
+                italic,
+                underline,
+                strikethrough,
+                foreground,
+                background,
+            },
+        );
+    }
+
+    styled_str
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStr<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jobject {
+    use nami::Signal;
+    use waterui_text::styled::StyledStr;
+
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
+    let styled: StyledStr = binding.get();
+    styled_str_to_java(&mut env, styled).into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingStyledStr<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    styled: JObject<'local>,
+) {
+    use waterui_text::styled::StyledStr;
+
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
+    let value = styled_str_from_java(&mut env, &styled);
+    binding.set(value);
+}
+
 // Color read/set is generated by jni_binding_primitive! in color.rs
 
 // WindowState read/set is generated by jni_binding_primitive! in window.rs
@@ -279,8 +428,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'l
     month: jint,
     day: jint,
 ) {
-    use crate::IntoRust;
     use crate::components::form::WuiDate;
+    use crate::IntoRust;
     use waterui_form::picker::date::Date;
 
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Date>) };
@@ -341,8 +490,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::IntoFFI;
     use crate::color::WuiResolvedColor;
+    use crate::IntoFFI;
     use waterui::Signal;
     use waterui_graphics::color::ResolvedColor;
 
@@ -578,8 +727,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedTable
     computed_ptr: jlong,
 ) -> jobjectArray {
     use crate::IntoFFI;
-    use waterui::Signal;
     use waterui::prelude::table::TableColumn;
+    use waterui::Signal;
 
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<Vec<TableColumn>>) };
     let cols: Vec<TableColumn> = computed.get();
@@ -692,8 +841,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedVideo
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::IntoFFI;
     use crate::components::media::Video;
+    use crate::IntoFFI;
     use waterui::Signal;
 
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<Video>) };

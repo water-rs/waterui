@@ -56,6 +56,13 @@ mod tests {
     }
 
     #[test]
+    fn test_plural_selection_english_fractional() {
+        // English fractional values should be "other"
+        assert_eq!(select_plural(&locales::EN, 1.2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, 0.5), PluralCategory::Other);
+    }
+
+    #[test]
     fn test_plural_selection_chinese() {
         // Chinese has no plural distinction - all → Other
         assert_eq!(select_plural(&locales::ZH_CN, 0), PluralCategory::Other);
@@ -111,6 +118,13 @@ mod tests {
         assert_eq!(select_plural(&locales::RU, 5), PluralCategory::Many);
         assert_eq!(select_plural(&locales::RU, 21), PluralCategory::One);
         assert_eq!(select_plural(&locales::RU, 22), PluralCategory::Few);
+    }
+
+    #[test]
+    fn test_plural_selection_negative_uses_absolute_value() {
+        // CLDR plural rules use absolute value.
+        assert_eq!(select_plural(&locales::EN, -1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::EN, -2), PluralCategory::Other);
     }
 
     // =========================================================

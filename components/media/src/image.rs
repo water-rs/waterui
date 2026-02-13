@@ -45,6 +45,12 @@ pub struct Image {
     renderer: ImageRenderer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourcePixelFormat {
+    Rgba8UnormSrgb,
+    Rgba16Float,
+}
+
 impl Image {
     /// Creates a new Image from RGBA pixel data.
     ///
@@ -69,7 +75,23 @@ impl Image {
             "Pixel data length must be width * height * 4"
         );
         Self {
-            renderer: ImageRenderer::new(pixels, width, height),
+            renderer: ImageRenderer::new(pixels, width, height, SourcePixelFormat::Rgba8UnormSrgb),
+        }
+    }
+
+    /// Creates a new Image from RGBA16F pixel data.
+    ///
+    /// The pixel data must be in RGBA16F format (8 bytes per pixel, little-endian half-float
+    /// components) and have exactly `width * height * 8` bytes.
+    #[must_use]
+    pub fn new_rgba16f(pixels: Vec<u8>, width: u32, height: u32) -> Self {
+        assert_eq!(
+            pixels.len(),
+            (width * height * 8) as usize,
+            "Pixel data length must be width * height * 8 for RGBA16F"
+        );
+        Self {
+            renderer: ImageRenderer::new(pixels, width, height, SourcePixelFormat::Rgba16Float),
         }
     }
 
@@ -96,7 +118,7 @@ impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
         let width = self.renderer.width as f32;
         let height = self.renderer.height as f32;
-        Frame::new(GpuSurface::new(self.renderer))
+        Frame::new(GpuSurface::new(self.renderer).on_demand())
             .width(width)
             .height(height)
     }
@@ -106,6 +128,8 @@ impl View for Image {
 struct ImageRenderer {
     /// Pending pixel data (consumed during setup)
     pending_pixels: Option<Vec<u8>>,
+    /// Source pixel format for the pending data
+    source_pixel_format: SourcePixelFormat,
     /// Image width
     width: u32,
     /// Image height
@@ -130,9 +154,15 @@ impl core::fmt::Debug for ImageRenderer {
 }
 
 impl ImageRenderer {
-    fn new(pixels: Vec<u8>, width: u32, height: u32) -> Self {
+    fn new(
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        source_pixel_format: SourcePixelFormat,
+    ) -> Self {
         Self {
             pending_pixels: Some(pixels),
+            source_pixel_format,
             width,
             height,
             texture: None,
@@ -147,14 +177,9 @@ impl ImageRenderer {
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
-        let blend = if matches!(
-            format,
-            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-        ) {
-            None
-        } else {
-            Some(wgpu::BlendState::ALPHA_BLENDING)
-        };
+        // Keep alpha blending enabled for both SDR and HDR targets so transparent
+        // image assets composite consistently regardless of surface format.
+        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
         // Simple shader to render a texture to the screen
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Image render shader"),
@@ -249,6 +274,19 @@ impl GpuRenderer for ImageRenderer {
 
         // Upload pending pixels to GPU texture
         if let Some(pixels) = self.pending_pixels.take() {
+            let (texture_format, bytes_per_row) = match self.source_pixel_format {
+                SourcePixelFormat::Rgba8UnormSrgb => (
+                    // Use sRGB format - standard web/PNG/JPEG content.
+                    // GPU automatically converts sRGB to linear when sampling.
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    self.width * 4,
+                ),
+                SourcePixelFormat::Rgba16Float => (
+                    // HDR path: linear extended-range source pixels.
+                    wgpu::TextureFormat::Rgba16Float,
+                    self.width * 8,
+                ),
+            };
             let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Image source texture"),
                 size: wgpu::Extent3d {
@@ -259,9 +297,7 @@ impl GpuRenderer for ImageRenderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                // Use sRGB format - web images are encoded in sRGB color space.
-                // GPU automatically converts sRGB to linear when sampling.
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: texture_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -276,7 +312,7 @@ impl GpuRenderer for ImageRenderer {
                 &pixels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(self.width * 4),
+                    bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(self.height),
                 },
                 wgpu::Extent3d {

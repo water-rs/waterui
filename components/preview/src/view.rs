@@ -19,7 +19,7 @@ use waterui_core::{Environment, Metadata, Retain, View};
 use crate::library::PreviewLibrary;
 use crate::renderer::RenderResultExt as _;
 use waterui_preview_protocol::tcp::PreviewTcpConfig;
-use waterui_preview_protocol::transport::{read_json_frame, write_json_frame};
+use waterui_preview_protocol::transport::{read_frame, write_frame};
 use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
 };
@@ -136,7 +136,7 @@ async fn handle_connection(
     let mut writer = &stream;
 
     loop {
-        let request = match read_json_frame::<_, PreviewRequest>(&mut reader).await {
+        let request = match read_frame::<_, PreviewRequest>(&mut reader).await {
             Ok(req) => req,
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
@@ -158,7 +158,7 @@ async fn handle_connection(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "preview worker exited"))?;
 
-        write_json_frame(&mut writer, &response).await?;
+        write_frame(&mut writer, &response).await?;
 
         if should_shutdown {
             spawn_local(async {

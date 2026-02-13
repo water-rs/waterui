@@ -18,7 +18,7 @@ struct ChartUniforms {
     bounds: vec4<f32>,
     // Animation: [time, progress, easing, entry_active]
     animation: vec4<f32>,
-    // Pointer: [x, y, pressed, 0] - normalized coordinates, -1 if not hovering
+    // Pointer: [x, y, pressed, data_count] - normalized coordinates, -1 if not hovering
     pointer: vec4<f32>,
 }
 
@@ -82,7 +82,7 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let data_count = arrayLength(&current_data);
+    let data_count = max(u32(uniforms.pointer.w), 1u);
 
     // Each candle has 2 elements: body (6 vertices) + wick (6 vertices) = 12 vertices per candle
     let candle_index = instance_index / 2u;
@@ -103,13 +103,13 @@ fn vs_main(
     let candle = mix_candle(prev, curr, eased_progress);
 
     // Calculate candle dimensions
-    let candle_count = f32(data_count);
+    let candle_count = max(uniforms.pointer.w, 1.0);
     let candle_width = 0.8 / candle_count;
-    let gap = 0.2 / (candle_count + 1.0);
     let wick_width = candle_width * 0.1;  // Wick is 10% of body width
 
-    // Calculate candle X position (centered)
-    let candle_center_x = gap + (candle_width + gap) * f32(candle_index) + candle_width * 0.5;
+    // Calculate candle X position from timestamp
+    let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
+    let candle_center_x = clamp((candle.timestamp - uniforms.bounds.x) / x_range, 0.0, 1.0);
 
     // Normalize OHLC values
     let open_y = normalize_y(candle.open);
@@ -213,13 +213,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Check if this candle is being hovered
     if uniforms.pointer.x >= 0.0 {
-        let data_count = f32(arrayLength(&current_data));
-        let candle_width = 0.8 / data_count;
-        let gap = 0.2 / (data_count + 1.0);
-        let candle_center_x = gap + (candle_width + gap) * f32(in.candle_index) + candle_width * 0.5;
-
-        let padding = 0.1;
-        let pointer_x = uniforms.pointer.x * (1.0 - 2.0 * padding) + padding;
+        let candle_count = max(uniforms.pointer.w, 1.0);
+        let candle_width = 0.8 / candle_count;
+        let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
+        let candle_center_x = clamp(
+            (current_data[in.candle_index].timestamp - uniforms.bounds.x) / x_range,
+            0.0,
+            1.0
+        );
+        let pointer_x = uniforms.pointer.x;
 
         let candle_left = candle_center_x - candle_width * 0.5;
         let candle_right = candle_center_x + candle_width * 0.5;

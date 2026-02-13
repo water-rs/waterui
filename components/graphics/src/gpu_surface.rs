@@ -21,13 +21,11 @@ pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 #[must_use]
 pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     let hdr = wgpu::TextureFormat::Rgba16Float;
-    let prefer_hdr = if cfg!(target_os = "android") {
-        std::env::var("WATERUI_GPU_PREFER_HDR")
-            .ok()
-            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
-    } else {
-        true
-    };
+    // Default to HDR across all platforms. Users can explicitly opt out with:
+    // WATERUI_GPU_PREFER_HDR=0|false|FALSE
+    let prefer_hdr = std::env::var("WATERUI_GPU_PREFER_HDR")
+        .ok()
+        .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"));
 
     // HDR (linear, extended range) preferred when supported by the surface.
     if prefer_hdr && caps.formats.contains(&hdr) {
@@ -155,7 +153,8 @@ impl PointerState {
 /// Gesture state for interactive GPU surfaces.
 ///
 /// Tracks multi-touch gestures like pinch-to-zoom, pan/drag, and double-tap.
-/// Native backends update this state based on platform gesture recognizers.
+/// `GpuSurface` automatically listens to gestures routed through itself and
+/// native backends forward the resulting snapshot to the renderer each frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GestureState {
     /// Cumulative pinch scale factor (1.0 = no scaling).
@@ -225,8 +224,8 @@ pub struct GpuFrame<'a> {
     pub pointer: PointerState,
     /// Gesture state for this frame.
     ///
-    /// Use this to implement zoom/pan interactions. The native backend
-    /// updates this based on platform gesture recognizers.
+    /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
+    /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
 }
 

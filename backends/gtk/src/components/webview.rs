@@ -12,7 +12,7 @@ impl GtkComponent for Native<WebView> {
         let webview = self.into_inner();
 
         let Some(handle) = webview.handle().downcast_ref::<GtkWebViewHandle>() else {
-            return gtk4::Label::new(Some("WebView handle mismatch")).upcast();
+            panic!("WebView handle type mismatch in GTK backend (fast-fail)");
         };
 
         let widget = handle.widget();
