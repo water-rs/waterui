@@ -19,6 +19,7 @@ waterui-text.workspace = true
 waterui-form.workspace = true
 waterui-navigation.workspace = true
 waterui-media.workspace = true
+waterui-video.workspace = true
 native-executor.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true

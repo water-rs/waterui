@@ -4,6 +4,9 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
+use target_lexicon::{
+    Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
+};
 
 use crate::shell::{self, display_output};
 use crate::toolchain_checks;
@@ -75,11 +78,14 @@ pub async fn run(args: Args) -> Result<()> {
     let project = Project::open(&project_path).await?;
 
     // Build options with optional output directory
-    let build_options = if let Some(ref output_dir) = args.output_dir {
+    let mut build_options = if let Some(ref output_dir) = args.output_dir {
         BuildOptions::new(args.release).with_output_dir(output_dir)
     } else {
         BuildOptions::new(args.release)
     };
+    if let Some(triple) = apple_target_triple_override(args.platform, args.arch) {
+        build_options = build_options.with_target_triple(triple);
+    }
     let mode = if args.release { "release" } else { "debug" };
 
     header!(
@@ -181,5 +187,87 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::IosSimulator => "iOS Simulator",
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
+    }
+}
+
+fn apple_target_triple_override(
+    platform: TargetPlatform,
+    arch: Option<TargetArch>,
+) -> Option<Triple> {
+    match (platform, arch) {
+        (TargetPlatform::Macos, Some(TargetArch::Arm64)) => Some(Triple {
+            architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+            vendor: Vendor::Apple,
+            operating_system: OperatingSystem::Darwin(None),
+            environment: Environment::Unknown,
+            binary_format: BinaryFormat::Macho,
+        }),
+        (TargetPlatform::Macos, Some(TargetArch::X86_64)) => Some(Triple {
+            architecture: Architecture::X86_64,
+            vendor: Vendor::Apple,
+            operating_system: OperatingSystem::Darwin(None),
+            environment: Environment::Unknown,
+            binary_format: BinaryFormat::Macho,
+        }),
+        (TargetPlatform::IosSimulator, Some(TargetArch::Arm64)) => Some(Triple {
+            architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+            vendor: Vendor::Apple,
+            operating_system: OperatingSystem::IOS(None),
+            environment: Environment::Sim,
+            binary_format: BinaryFormat::Macho,
+        }),
+        (TargetPlatform::IosSimulator, Some(TargetArch::X86_64)) => Some(Triple {
+            architecture: Architecture::X86_64,
+            vendor: Vendor::Apple,
+            operating_system: OperatingSystem::IOS(None),
+            environment: Environment::Unknown,
+            binary_format: BinaryFormat::Macho,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TargetArch, TargetPlatform, apple_target_triple_override};
+    use target_lexicon::{Architecture, Environment, OperatingSystem};
+
+    #[test]
+    fn macos_arch_overrides_target_triple() {
+        let arm = apple_target_triple_override(TargetPlatform::Macos, Some(TargetArch::Arm64))
+            .expect("arm64 triple");
+        let x64 = apple_target_triple_override(TargetPlatform::Macos, Some(TargetArch::X86_64))
+            .expect("x86_64 triple");
+
+        assert!(matches!(arm.architecture, Architecture::Aarch64(_)));
+        assert!(matches!(x64.architecture, Architecture::X86_64));
+        assert!(matches!(arm.operating_system, OperatingSystem::Darwin(_)));
+    }
+
+    #[test]
+    fn ios_sim_arch_overrides_target_triple() {
+        let arm =
+            apple_target_triple_override(TargetPlatform::IosSimulator, Some(TargetArch::Arm64))
+                .expect("arm64 ios sim triple");
+        let x64 =
+            apple_target_triple_override(TargetPlatform::IosSimulator, Some(TargetArch::X86_64))
+                .expect("x86_64 ios sim triple");
+
+        assert!(matches!(arm.architecture, Architecture::Aarch64(_)));
+        assert!(matches!(x64.architecture, Architecture::X86_64));
+        assert!(matches!(arm.operating_system, OperatingSystem::IOS(_)));
+        assert_eq!(arm.environment, Environment::Sim);
+        assert_eq!(x64.environment, Environment::Unknown);
+    }
+
+    #[test]
+    fn no_override_for_other_platforms() {
+        assert!(
+            apple_target_triple_override(TargetPlatform::Android, Some(TargetArch::Arm64))
+                .is_none()
+        );
+        assert!(
+            apple_target_triple_override(TargetPlatform::Ios, Some(TargetArch::Arm64)).is_none()
+        );
     }
 }

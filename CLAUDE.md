@@ -26,6 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - No simplify, no stub, no fallback, no patch.
 - Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For intance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
 - Do not clean cache blindly
+- Do not use `git checkout` to back out changes, as it can lead to loss of work
 - Import third-party crates instead of writing your own implementation. Less code is better.
 </important>
 
@@ -213,4 +214,3 @@ waterui_ffi::export!();  // Generates FFI entry points
 - All command functions return `Result<(), eyre::Report>` for rich error context
 - Custom error enums use `thiserror` derive macro
 - Shell provides `success!()`, `error!()`, `warn!()`, `note!()` macros for user feedback
-

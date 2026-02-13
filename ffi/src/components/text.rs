@@ -1,11 +1,12 @@
 use crate::array::WuiArray;
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
+use crate::{ffi_computed, ffi_computed_ctor, ffi_reactive, IntoFFI, IntoRust, WuiEnv, WuiStr};
 use alloc::vec::Vec;
 use waterui::view::ConfigurableView;
+use waterui::Str;
 pub use waterui_text::font::ResolvedFont;
-use waterui_text::font::{Font, FontWeight};
+use waterui_text::font::{Body, Font, FontWeight};
 use waterui_text::styled::{Style, StyledStr};
 use waterui_text::{Text, TextConfig};
 
@@ -86,7 +87,13 @@ pub struct WuiStyledStr {
     pub chunks: WuiArray<WuiStyledChunk>,
 }
 
-ffi_safe!(WuiStyledChunk);
+impl IntoFFI for WuiStyledChunk {
+    type FFI = Self;
+
+    fn into_ffi(self) -> Self::FFI {
+        self
+    }
+}
 
 impl IntoFFI for StyledStr {
     type FFI = WuiStyledStr;
@@ -102,6 +109,71 @@ impl IntoFFI for StyledStr {
                 .collect::<Vec<WuiStyledChunk>>()
                 .into_ffi(),
         }
+    }
+}
+
+impl IntoRust for WuiTextStyle {
+    type Rust = Style;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        let font = if self.font.is_null() {
+            Font::default()
+        } else {
+            unsafe { self.font.into_rust() }
+        };
+
+        let foreground = if self.foreground.is_null() {
+            None
+        } else {
+            Some(unsafe { self.foreground.into_rust() })
+        };
+
+        let background = if self.background.is_null() {
+            None
+        } else if self.background == self.foreground && foreground.is_some() {
+            foreground.clone()
+        } else {
+            Some(unsafe { self.background.into_rust() })
+        };
+
+        Style {
+            font,
+            foreground,
+            background,
+            italic: self.italic,
+            underline: self.underline,
+            strikethrough: self.strikethrough,
+        }
+    }
+}
+
+impl IntoRust for WuiStyledChunk {
+    type Rust = (Str, Style);
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        let text = unsafe { self.text.into_rust() };
+        let style = unsafe { self.style.into_rust() };
+        (text, style)
+    }
+}
+
+impl IntoRust for WuiStyledStr {
+    type Rust = StyledStr;
+
+    unsafe fn into_rust(mut self) -> Self::Rust {
+        let mut styled = StyledStr::empty();
+        let chunks = self.chunks.as_mut_slice();
+        let len = chunks.len();
+        let ptr = chunks.as_mut_ptr();
+
+        for index in 0..len {
+            let chunk = unsafe { core::ptr::read(ptr.add(index)) };
+            let (text, style) = unsafe { chunk.into_rust() };
+            styled.push(text, style);
+        }
+
+        self.chunks.consume();
+        styled
     }
 }
 
@@ -140,6 +212,28 @@ pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) ->
         weight,
         family: waterui::Str::from("").into_ffi(),
     }
+}
+
+/// Creates a concrete `Font` from resolved font properties.
+///
+/// `family` can be an empty string to indicate system font.
+///
+/// # Safety
+/// `family` must contain valid UTF-8 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_font_from_resolved(
+    size: f32,
+    weight: WuiFontWeight,
+    family: WuiStr,
+) -> *mut WuiFont {
+    let weight = unsafe { weight.into_rust() };
+    let family: Str = unsafe { family.into_rust() };
+
+    let mut font = Font::from(Body).size(size).weight(weight);
+    if !family.is_empty() {
+        font = font.family(family);
+    }
+    font.into_ffi()
 }
 
 /// Resolves a font in the given environment.

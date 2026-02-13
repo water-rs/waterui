@@ -24,7 +24,7 @@ bytemuck = "1.14"
 encase.workspace = true
 glam = "0.29"
 tracing.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
 parking_lot = "0.12"
 pollster = "0.4"
 inventory = "0.3"

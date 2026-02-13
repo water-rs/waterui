@@ -116,7 +116,7 @@ pub async fn run(args: Args) -> Result<()> {
         for symbol in &symbols {
             match session
                 .client
-                .render_with_dylib_source(dylib.id, &dylib.bytes, symbol, width, height)
+                .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
                 .await
             {
                 Ok(data) => {
@@ -136,7 +136,7 @@ pub async fn run(args: Args) -> Result<()> {
                                 .await?;
                         match session
                             .client
-                            .render_with_dylib_source(dylib.id, &dylib.bytes, symbol, width, height)
+                            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
                             .await
                         {
                             Ok(data) => {
@@ -217,6 +217,13 @@ fn parse_frame(s: &str) -> Result<(f32, f32)> {
         .parse()
         .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
 
+    if !width.is_finite() || width <= 0.0 {
+        bail!("Invalid frame width: must be a positive finite number");
+    }
+    if !height.is_finite() || height <= 0.0 {
+        bail!("Invalid frame height: must be a positive finite number");
+    }
+
     Ok((width, height))
 }
 
@@ -277,5 +284,19 @@ mod tests {
         assert!(message.contains("waterui_preview_app_card_preview"));
         assert!(message.contains("#[preview]"));
         assert!(message.contains("fn card_preview()"));
+    }
+
+    #[test]
+    fn rejects_non_positive_frame_values() {
+        assert!(parse_frame("0x100").is_err());
+        assert!(parse_frame("-1x100").is_err());
+        assert!(parse_frame("100x0").is_err());
+        assert!(parse_frame("100x-1").is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_frame_values() {
+        assert!(parse_frame("NaNx100").is_err());
+        assert!(parse_frame("100xinf").is_err());
     }
 }

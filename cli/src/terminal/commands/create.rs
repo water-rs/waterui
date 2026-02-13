@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Args as ClapArgs;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToSnakeCase};
 
@@ -109,10 +109,16 @@ pub async fn run(args: Args) -> Result<()> {
     };
 
     let backends = match &args.backends {
-        Some(b) => parse_backends(b),
+        Some(b) => parse_backends(b)?,
         None if interactive => prompt_backends()?,
         None => vec![Backend::Apple, Backend::Android],
     };
+
+    if !args.playground && backends.is_empty() {
+        bail!(
+            "At least one backend is required. Choose from: apple, android, gtk4 (or use --playground)."
+        );
+    }
 
     // Compute project path
     let folder_name = name.to_kebab_case();
@@ -136,7 +142,7 @@ pub async fn run(args: Args) -> Result<()> {
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Created Cargo.toml, src/lib.rs, and assets/");
+    success!("Created Cargo.toml, src/lib.rs, and assets/raw + assets/images");
 
     // Initialize backends (skip for playground projects)
     if !args.playground {
@@ -178,12 +184,8 @@ pub async fn run(args: Args) -> Result<()> {
     line!();
     line!("Next steps:");
     line!("  cd {folder_name}");
-    if backends.iter().any(|b| matches!(b, Backend::Apple)) {
-        line!("  water run --platform ios");
-    } else if backends.iter().any(|b| matches!(b, Backend::Android)) {
-        line!("  water run --platform android");
-    } else if backends.iter().any(|b| matches!(b, Backend::Gtk4)) {
-        line!("  water run --platform gtk4");
+    if let Some(command) = next_run_command(&backends) {
+        line!("  {command}");
     }
 
     Ok(())
@@ -214,11 +216,49 @@ fn prompt_bundle_id(app_name: &str) -> Result<String> {
         .interact_text()?)
 }
 
-fn parse_backends(backends: &[String]) -> Vec<Backend> {
-    backends
-        .iter()
-        .filter_map(|s| Backend::from_str(s))
-        .collect()
+fn parse_backends(backends: &[String]) -> Result<Vec<Backend>> {
+    let mut parsed = Vec::with_capacity(backends.len());
+    let mut invalid = Vec::new();
+
+    for backend in backends {
+        if let Some(parsed_backend) = Backend::from_str(backend) {
+            parsed.push(parsed_backend);
+        } else {
+            invalid.push(backend.clone());
+        }
+    }
+
+    if invalid.is_empty() {
+        Ok(parsed)
+    } else {
+        bail!(
+            "Unknown backend(s): {}. Valid values: apple, android, gtk4",
+            invalid.join(", ")
+        )
+    }
+}
+
+fn next_run_command(backends: &[Backend]) -> Option<&'static str> {
+    if backends.iter().any(|b| matches!(b, Backend::Apple)) {
+        return Some("water run --platform ios");
+    }
+
+    if backends.iter().any(|b| matches!(b, Backend::Android)) {
+        return Some("water run --platform android");
+    }
+
+    if backends.iter().any(|b| matches!(b, Backend::Gtk4)) {
+        #[cfg(target_os = "macos")]
+        return Some("water run --platform macos --backend gtk4");
+
+        #[cfg(target_os = "linux")]
+        return Some("water run --platform linux");
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        return None;
+    }
+
+    None
 }
 
 fn prompt_backends() -> Result<Vec<Backend>> {
@@ -232,4 +272,59 @@ fn prompt_backends() -> Result<Vec<Backend>> {
         .interact()?;
 
     Ok(selections.into_iter().map(|i| Backend::ALL[i]).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Backend, next_run_command, parse_backends};
+
+    #[test]
+    fn parse_backends_rejects_unknown_values() {
+        let err = parse_backends(&["apple".to_string(), "androd".to_string()])
+            .expect_err("invalid backend should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown backend(s): androd"));
+        assert!(msg.contains("apple, android, gtk4"));
+    }
+
+    #[test]
+    fn parse_backends_accepts_aliases() {
+        let parsed = parse_backends(&[
+            "ios".to_string(),
+            "android".to_string(),
+            "linux".to_string(),
+        ])
+        .expect("known aliases should parse");
+        assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn next_run_command_prefers_apple_then_android_then_gtk4() {
+        assert_eq!(
+            next_run_command(&[Backend::Apple, Backend::Gtk4]),
+            Some("water run --platform ios")
+        );
+        assert_eq!(
+            next_run_command(&[Backend::Android, Backend::Gtk4]),
+            Some("water run --platform android")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn next_run_command_gtk4_is_valid_on_macos() {
+        assert_eq!(
+            next_run_command(&[Backend::Gtk4]),
+            Some("water run --platform macos --backend gtk4")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn next_run_command_gtk4_is_valid_on_linux() {
+        assert_eq!(
+            next_run_command(&[Backend::Gtk4]),
+            Some("water run --platform linux")
+        );
+    }
 }
