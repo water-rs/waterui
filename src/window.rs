@@ -3,6 +3,8 @@
 //! # Window Backgrounds
 //!
 //! Windows support solid color backgrounds. For blur effects, use `Material`:
+//! `Material` is delegated to platform backends as `MaterialBackground` metadata
+//! and is best-effort (quality and behavior may vary by platform).
 //!
 //! ```rust,ignore
 //! use waterui::prelude::*;
@@ -107,6 +109,7 @@ pub enum WindowStyle {
 ///
 /// - **macOS/iOS**: Supports both opaque and colored backgrounds.
 /// - **Android**: Supports colored backgrounds via `Window.setBackgroundDrawable()`.
+/// - **Linux (GTK)**: Supports colored backgrounds via window CSS/background styling.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
     /// Opaque system default background.
@@ -218,7 +221,7 @@ impl Window {
     ///
     /// Accepts either a `Color` for solid backgrounds or a `Material` for blur effects.
     /// When using `Material`, the window stays opaque and the content is wrapped with
-    /// a native blur effect on supported platforms (Apple).
+    /// `MaterialBackground` metadata handled by the native backend on a best-effort basis.
     ///
     /// # Examples
     ///

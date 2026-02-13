@@ -1,8 +1,9 @@
 use std::{mem, str::FromStr};
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
-use waterui_core::{Environment, View};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
+use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Blue;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_str::Str;
@@ -15,7 +16,6 @@ use waterui_text::{
 
 use crate::{
     ViewExt,
-    component::table::{col, table},
     widget::{self, Divider},
 };
 
@@ -99,6 +99,8 @@ pub enum RichTextElement {
         headers: Vec<Self>,
         /// Table rows.
         rows: Vec<Vec<Self>>,
+        /// Per-column alignment metadata parsed from Markdown.
+        alignments: Vec<MarkdownTableAlignment>,
     },
     /// A list of items.
     List {
@@ -106,6 +108,8 @@ pub enum RichTextElement {
         items: Vec<Self>,
         /// Whether the list is ordered.
         ordered: bool,
+        /// Start index for ordered lists.
+        start: usize,
     },
     /// A code block.
     Code {
@@ -129,6 +133,19 @@ pub enum RichTextElement {
     },
 }
 
+/// Column alignment metadata for Markdown tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownTableAlignment {
+    /// No explicit alignment.
+    None,
+    /// Left aligned.
+    Left,
+    /// Center aligned.
+    Center,
+    /// Right aligned.
+    Right,
+}
+
 impl View for RichTextElement {
     fn body(self, _env: &Environment) -> impl View {
         match self {
@@ -137,22 +154,16 @@ impl View for RichTextElement {
             Self::Image { src, alt: _ } => {
                 Url::parse(&*src).map_or_else(|| ().anyview(), |url| media_photo(url).anyview())
             }
-            Self::Table { headers, rows } => {
-                // Convert row-based data to column-based for native Table
-                let num_cols = headers.len();
-                let columns = (0..num_cols)
-                    .map(|col_idx| {
-                        let header = element_to_text(&headers[col_idx]);
-                        let row_texts: Vec<Text> = rows
-                            .iter()
-                            .filter_map(|row| row.get(col_idx).map(element_to_text))
-                            .collect();
-                        col(header, row_texts)
-                    })
-                    .collect::<Vec<_>>();
-                table(columns).anyview()
-            }
-            Self::List { items, ordered } => render_list(items.as_slice(), ordered).anyview(),
+            Self::Table {
+                headers,
+                rows,
+                alignments,
+            } => render_table(headers, rows, alignments).anyview(),
+            Self::List {
+                items,
+                ordered,
+                start,
+            } => render_list(items.as_slice(), ordered, start).anyview(),
             Self::Code { code, language } => widget::code(language, code).anyview(),
             Self::Quote { content } => quote(content).anyview(),
             Self::Group { elements, inline } => {
@@ -180,13 +191,13 @@ impl View for RichText {
     }
 }
 
-fn render_list(items: &[RichTextElement], ordered: bool) -> impl View {
+fn render_list(items: &[RichTextElement], ordered: bool, start: usize) -> impl View {
     items
         .iter()
         .enumerate()
         .map(|(i, item)| {
             let marker = if ordered {
-                format!("{}. ", i + 1)
+                format!("{}. ", start + i)
             } else {
                 "• ".to_string()
             };
@@ -205,7 +216,86 @@ fn quote(content: Vec<RichTextElement>) -> impl View {
     ))
 }
 
-/// Converts a `RichTextElement` to plain `Text` for use in native Table columns.
+fn render_table(
+    headers: Vec<RichTextElement>,
+    rows: Vec<Vec<RichTextElement>>,
+    alignments: Vec<MarkdownTableAlignment>,
+) -> AnyView {
+    let col_count = headers
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or_default());
+    if col_count == 0 {
+        return AnyView::new(());
+    }
+
+    let header_row: Vec<AnyView> = (0..col_count)
+        .map(|col_idx| {
+            let header = headers
+                .get(col_idx)
+                .map_or_else(|| Text::from(""), element_to_text)
+                .bold();
+            table_cell(
+                header,
+                alignments
+                    .get(col_idx)
+                    .copied()
+                    .unwrap_or(MarkdownTableAlignment::None),
+            )
+        })
+        .collect();
+
+    let mut row_views = Vec::with_capacity(rows.len() + 2);
+    row_views.push(AnyView::new(
+        HStack::from_iter(header_row)
+            .spacing(12.0)
+            .alignment(waterui_layout::stack::VerticalAlignment::Top),
+    ));
+    row_views.push(AnyView::new(Divider));
+
+    for row in rows {
+        let cells: Vec<AnyView> = (0..col_count)
+            .map(|col_idx| {
+                let cell = row
+                    .get(col_idx)
+                    .map_or_else(|| Text::from(""), element_to_text);
+                table_cell(
+                    cell,
+                    alignments
+                        .get(col_idx)
+                        .copied()
+                        .unwrap_or(MarkdownTableAlignment::None),
+                )
+            })
+            .collect();
+        row_views.push(AnyView::new(
+            HStack::from_iter(cells)
+                .spacing(12.0)
+                .alignment(waterui_layout::stack::VerticalAlignment::Top),
+        ));
+    }
+
+    AnyView::new(
+        VStack::from_iter(row_views)
+            .spacing(6.0)
+            .alignment(HorizontalAlignment::Leading),
+    )
+}
+
+fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> AnyView {
+    match alignment {
+        MarkdownTableAlignment::None | MarkdownTableAlignment::Left => {
+            AnyView::new(content.max_width(f32::MAX))
+        }
+        MarkdownTableAlignment::Center => {
+            AnyView::new(hstack((spacer(), content, spacer())).max_width(f32::MAX))
+        }
+        MarkdownTableAlignment::Right => {
+            AnyView::new(hstack((spacer(), content)).max_width(f32::MAX))
+        }
+    }
+}
+
+/// Converts a `RichTextElement` to plain `Text` for table cells.
 fn element_to_text(element: &RichTextElement) -> Text {
     match element {
         RichTextElement::Text(styled) => Text::from(styled.clone()),
@@ -262,6 +352,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     flush_list_item_inline(&mut stack);
                     stack.push(Container::List {
                         ordered: start.is_some(),
+                        start: ordered_list_start(start),
                         items: Vec::new(),
                     });
                 }
@@ -277,11 +368,12 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         code: String::new(),
                     });
                 }
-                Tag::Table(_) => {
+                Tag::Table(alignments) => {
                     flush_list_item_inline(&mut stack);
                     stack.push(Container::Table {
                         headers: Vec::new(),
                         rows: Vec::new(),
+                        alignments: alignments.into_iter().map(map_table_alignment).collect(),
                         in_head: false,
                     });
                 }
@@ -322,6 +414,11 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         sink.enter_strong();
                     }
                 }
+                Tag::Strikethrough => {
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.enter_strikethrough();
+                    }
+                }
                 Tag::Link { dest_url, .. } => {
                     stack.push(Container::InlineLink {
                         url: Str::from(dest_url.into_string()),
@@ -356,8 +453,20 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::List(_) => {
-                    if let Some(Container::List { ordered, items }) = stack.pop() {
-                        push_to_parent(&mut stack, RichTextElement::List { items, ordered });
+                    if let Some(Container::List {
+                        ordered,
+                        start,
+                        items,
+                    }) = stack.pop()
+                    {
+                        push_to_parent(
+                            &mut stack,
+                            RichTextElement::List {
+                                items,
+                                ordered,
+                                start,
+                            },
+                        );
                     }
                 }
                 pulldown_cmark::TagEnd::Item => {
@@ -388,8 +497,21 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::Table => {
-                    if let Some(Container::Table { headers, rows, .. }) = stack.pop() {
-                        push_to_parent(&mut stack, RichTextElement::Table { headers, rows });
+                    if let Some(Container::Table {
+                        headers,
+                        rows,
+                        alignments,
+                        ..
+                    }) = stack.pop()
+                    {
+                        push_to_parent(
+                            &mut stack,
+                            RichTextElement::Table {
+                                headers,
+                                rows,
+                                alignments,
+                            },
+                        );
                     }
                 }
                 pulldown_cmark::TagEnd::TableHead => {
@@ -411,6 +533,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                             headers,
                             rows,
                             in_head,
+                            ..
                         } = &mut stack[idx]
                     {
                         if *in_head && headers.is_empty() {
@@ -447,7 +570,9 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         push_inline_element(&mut stack, element);
                     }
                 }
-                pulldown_cmark::TagEnd::Emphasis | pulldown_cmark::TagEnd::Strong => {
+                pulldown_cmark::TagEnd::Emphasis
+                | pulldown_cmark::TagEnd::Strong
+                | pulldown_cmark::TagEnd::Strikethrough => {
                     if let Some(mut sink) = current_inline_sink(&mut stack) {
                         sink.exit();
                     }
@@ -468,8 +593,16 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
             },
-            Event::Code(text)
-            | Event::Html(text)
+            Event::Code(text) => {
+                if let Some(mut sink) = current_inline_sink(&mut stack) {
+                    sink.push_inline_code(text.as_ref());
+                } else {
+                    let mut styled = StyledStr::empty();
+                    styled.push(text.as_ref().to_string(), inline_code_style());
+                    push_to_parent(&mut stack, RichTextElement::Text(styled));
+                }
+            }
+            Event::Html(text)
             | Event::FootnoteReference(text)
             | Event::InlineMath(text)
             | Event::DisplayMath(text)
@@ -523,6 +656,28 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
             .and_then(|token| Language::from_str(token).ok())
             .unwrap_or(Language::Plaintext),
         CodeBlockKind::Indented => Language::Plaintext,
+    }
+}
+
+fn inline_code_style() -> Style {
+    Style::default()
+        .font(waterui_text::font::Font::from(waterui_text::font::Body).family("monospace"))
+        .background(waterui_graphics::color::Srgb::new_u8(236, 239, 241))
+}
+
+fn ordered_list_start(start: Option<u64>) -> usize {
+    start
+        .and_then(|v| usize::try_from(v).ok())
+        .filter(|v| *v >= 1)
+        .unwrap_or(1)
+}
+
+fn map_table_alignment(alignment: Alignment) -> MarkdownTableAlignment {
+    match alignment {
+        Alignment::None => MarkdownTableAlignment::None,
+        Alignment::Left => MarkdownTableAlignment::Left,
+        Alignment::Center => MarkdownTableAlignment::Center,
+        Alignment::Right => MarkdownTableAlignment::Right,
     }
 }
 
@@ -634,6 +789,20 @@ impl InlineSinkMut<'_> {
         }
     }
 
+    fn enter_strikethrough(&mut self) {
+        match self {
+            Self::Group(group) => group.enter_strikethrough(),
+            Self::Builder(builder) => builder.enter_strikethrough(),
+        }
+    }
+
+    fn push_inline_code(&mut self, text: &str) {
+        match self {
+            Self::Group(group) => group.push_inline_code(text),
+            Self::Builder(builder) => builder.push_inline_code(text),
+        }
+    }
+
     fn exit(&mut self) {
         match self {
             Self::Group(group) => group.exit_style(),
@@ -668,6 +837,7 @@ enum Container {
     BlockQuote(Vec<RichTextElement>),
     List {
         ordered: bool,
+        start: usize,
         items: Vec<RichTextElement>,
     },
     ListItem {
@@ -689,6 +859,7 @@ enum Container {
     Table {
         headers: Vec<RichTextElement>,
         rows: Vec<Vec<RichTextElement>>,
+        alignments: Vec<MarkdownTableAlignment>,
         in_head: bool,
     },
     TableRow {
@@ -729,6 +900,14 @@ impl InlineGroup {
 
     fn enter_strong(&mut self) {
         self.builder.enter_strong();
+    }
+
+    fn enter_strikethrough(&mut self) {
+        self.builder.enter_strikethrough();
+    }
+
+    fn push_inline_code(&mut self, text: &str) {
+        self.builder.push_inline_code(text);
     }
 
     fn exit_style(&mut self) {
@@ -851,11 +1030,63 @@ fn main() {
 
         // Verify table structure
         for el in elements {
-            if let RichTextElement::Table { headers, rows } = el {
+            if let RichTextElement::Table {
+                headers,
+                rows,
+                alignments,
+            } = el
+            {
                 assert_eq!(headers.len(), 3, "Expected 3 headers");
                 assert_eq!(rows.len(), 2, "Expected 2 rows");
+                assert_eq!(alignments.len(), 3, "Expected 3 alignment slots");
             }
         }
+    }
+
+    #[test]
+    fn ordered_list_respects_start_index() {
+        let markdown = "5. five\n6. six";
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+        let list = elements
+            .iter()
+            .find_map(|el| match el {
+                RichTextElement::List {
+                    ordered,
+                    start,
+                    items,
+                } => Some((*ordered, *start, items.len())),
+                _ => None,
+            })
+            .expect("Expected parsed list");
+        assert!(list.0, "List should be ordered");
+        assert_eq!(list.1, 5, "Ordered list should keep explicit start index");
+        assert_eq!(list.2, 2, "Ordered list should include two items");
+    }
+
+    #[test]
+    fn inline_code_has_code_style() {
+        let markdown = "Use `cargo run`";
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+
+        fn find_code_chunk(elements: &[RichTextElement]) -> bool {
+            elements.iter().any(|el| match el {
+                RichTextElement::Text(styled) => styled
+                    .clone()
+                    .into_chunks()
+                    .into_iter()
+                    .any(|(txt, style)| txt.as_str() == "cargo run" && style.background.is_some()),
+                RichTextElement::Group { elements, .. } => find_code_chunk(elements),
+                _ => false,
+            })
+        }
+
+        let code_styled = find_code_chunk(elements);
+        assert!(
+            code_styled,
+            "Expected inline code chunk with background style"
+        );
     }
 
     #[test]

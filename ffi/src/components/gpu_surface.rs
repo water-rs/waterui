@@ -898,32 +898,9 @@ pub struct WuiPointerState {
     pub hit_y: f32,
 }
 
-/// Update the pointer/cursor state for a GpuSurface.
-///
-/// Native backends should call this before each render to update pointer state.
-/// This enables GPU renderers to implement hover effects, hit detection, and
-/// interactive feedback.
-///
-/// # Arguments
-///
-/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
-/// * `pointer` - Current pointer state
-///
-/// # Safety
-///
-/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_set_pointer(
-    state: *mut WuiGpuSurfaceState,
-    pointer: WuiPointerState,
-) {
-    if state.is_null() {
-        return;
-    }
-
-    let state = unsafe { &mut *state };
-
-    state.pointer_state = PointerState {
+#[inline]
+fn pointer_state_from_ffi(pointer: WuiPointerState) -> PointerState {
+    PointerState {
         position: if pointer.has_position {
             Some(waterui_core::layout::Point::new(pointer.x, pointer.y))
         } else {
@@ -937,7 +914,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_pointer(
         } else {
             None
         },
-    };
+    }
 }
 
 /// FFI-safe gesture state for zoom/pan interactions.
@@ -964,32 +941,9 @@ pub struct WuiGestureState {
     pub double_tap: bool,
 }
 
-/// Update the gesture state for a GpuSurface.
-///
-/// Native backends should call this when pinch/pan/double-tap gestures are
-/// detected. This enables GPU renderers (like charts) to implement zoom/pan
-/// interactions.
-///
-/// # Arguments
-///
-/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
-/// * `gesture` - Current gesture state
-///
-/// # Safety
-///
-/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_set_gesture(
-    state: *mut WuiGpuSurfaceState,
-    gesture: WuiGestureState,
-) {
-    if state.is_null() {
-        return;
-    }
-
-    let state = unsafe { &mut *state };
-
-    state.gesture_state = GestureState {
+#[inline]
+fn gesture_state_from_ffi(gesture: WuiGestureState) -> GestureState {
+    GestureState {
         pinch_scale: gesture.pinch_scale,
         pinch_center: if gesture.has_pinch_center {
             Some(waterui_core::layout::Point::new(
@@ -1002,7 +956,45 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_gesture(
         pan_offset: waterui_core::layout::Point::new(gesture.pan_offset_x, gesture.pan_offset_y),
         double_tap: gesture.double_tap,
         active: gesture.active,
-    };
+    }
+}
+
+/// FFI-safe combined input state for a GpuSurface.
+///
+/// This keeps the native bridge minimal by forwarding pointer and gesture
+/// snapshots in one call.
+#[repr(C)]
+pub struct WuiGpuSurfaceInput {
+    /// Current pointer snapshot.
+    pub pointer: WuiPointerState,
+    /// Current gesture snapshot.
+    pub gesture: WuiGestureState,
+}
+
+/// Update both pointer and gesture state for a GpuSurface.
+///
+/// Native backends should prefer this API to minimize bridge calls.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+/// * `input` - Combined pointer + gesture snapshot
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_set_input(
+    state: *mut WuiGpuSurfaceState,
+    input: WuiGpuSurfaceInput,
+) {
+    if state.is_null() {
+        return;
+    }
+
+    let state = unsafe { &mut *state };
+    state.pointer_state = pointer_state_from_ffi(input.pointer);
+    state.gesture_state = gesture_state_from_ffi(input.gesture);
 }
 
 /// Create a wgpu Surface from a platform-specific layer pointer.

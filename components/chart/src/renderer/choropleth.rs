@@ -687,7 +687,7 @@ impl ChartRenderer for ChoroplethRenderer {
     type Data = ChoroplethData;
     type DataValue = u32; // Polygon ID
 
-    fn update_data(&mut self, data: &Self::Data, _queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, __device: &wgpu::Device, _queue: &wgpu::Queue) {
         // Capture current vertices as "previous" for animation
         let (mut prev_vertices, _) = self.data_to_vertices();
 

@@ -245,7 +245,7 @@ impl GpuRenderer for DepthRenderer {
         self.color_buffer = Some(create_uniform_buffer(ctx, "Depth Colors", &colors));
 
         // Create bid/ask buffers
-        let initial_capacity = 64;
+        let initial_capacity = 16384;
         let bid_data: Vec<GpuDepthLevel> = self
             .data
             .bids
@@ -469,7 +469,7 @@ impl ChartRenderer for DepthRenderer {
     type Data = DepthData;
     type DataValue = DepthLevel;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Update data
         self.data = data.clone();
         self.bounds = data.bounds().with_padding(0.05);
