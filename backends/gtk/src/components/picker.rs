@@ -64,7 +64,8 @@ impl GtkComponent for Native<PickerConfig> {
         // Watch dropdown selection changes -> update binding
         dropdown.connect_selected_notify(move |dropdown| {
             let selected_idx = dropdown.selected() as usize;
-            if let Some(selected_id) = ids_for_handler.borrow().get(selected_idx).cloned() {
+            let ids_ref = ids_for_handler.borrow();
+            if let Some(selected_id) = ids_ref.as_slice().get(selected_idx).copied() {
                 if selection_for_handler.get() != selected_id {
                     selection_for_handler.set(selected_id);
                 }

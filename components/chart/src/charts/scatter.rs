@@ -11,6 +11,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::DataPoint;
+use crate::params::{ChartParamError, PositiveF32};
 use crate::renderer::ScatterChartRenderer;
 
 /// Scatter plot visualization.
@@ -61,13 +62,21 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
 
     /// Sets the point radius in pixels.
     #[must_use]
-    pub fn radius(mut self, radius: f32) -> Self {
-        assert!(
-            radius.is_finite() && radius > 0.0,
-            "ScatterChart::radius(radius) requires radius > 0"
-        );
-        self.radius = radius;
+    pub fn radius(self, radius: f32) -> Self {
+        self.try_radius(radius)
+            .expect("ScatterChart::radius(radius) requires finite radius > 0")
+    }
+
+    /// Sets the point radius using a validated strong type.
+    #[must_use]
+    pub fn with_radius(mut self, radius: PositiveF32) -> Self {
+        self.radius = radius.get();
         self
+    }
+
+    /// Fallible variant of [`Self::radius`].
+    pub fn try_radius(self, radius: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_radius(PositiveF32::try_new(radius)?))
     }
 }
 

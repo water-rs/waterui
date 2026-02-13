@@ -11,6 +11,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::DataPoint;
+use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 use crate::renderer::LineChartRenderer;
 
 /// Line chart visualization.
@@ -65,25 +66,41 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
 
     /// Sets the line width in pixels.
     #[must_use]
-    pub fn line_width(mut self, width: f32) -> Self {
-        assert!(
-            width.is_finite() && width > 0.0,
-            "LineChart::line_width(width) requires width > 0"
-        );
-        self.line_width = width;
+    pub fn line_width(self, width: f32) -> Self {
+        self.try_line_width(width)
+            .expect("LineChart::line_width(width) requires finite width > 0")
+    }
+
+    /// Sets the line width using a validated strong type.
+    #[must_use]
+    pub fn with_line_width(mut self, width: PositiveF32) -> Self {
+        self.line_width = width.get();
         self
+    }
+
+    /// Fallible variant of [`Self::line_width`].
+    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_line_width(PositiveF32::try_new(width)?))
     }
 
     /// Enables area fill below the line.
     #[must_use]
-    pub fn fill(mut self, opacity: f32) -> Self {
-        assert!(
-            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
-            "LineChart::fill(opacity) requires 0.0 <= opacity <= 1.0"
-        );
+    pub fn fill(self, opacity: f32) -> Self {
+        self.try_fill(opacity)
+            .expect("LineChart::fill(opacity) requires finite 0.0 <= opacity <= 1.0")
+    }
+
+    /// Enables area fill using a validated strong type.
+    #[must_use]
+    pub fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
         self.show_fill = true;
-        self.fill_opacity = opacity;
+        self.fill_opacity = opacity.get();
         self
+    }
+
+    /// Fallible variant of [`Self::fill`].
+    pub fn try_fill(self, opacity: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_fill_opacity(UnitInterval::try_new(opacity)?))
     }
 }
 

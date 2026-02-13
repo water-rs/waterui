@@ -1,9 +1,53 @@
 //! Locale-aware number formatting.
 
+use core::str::FromStr;
+
 use fixed_decimal::FixedDecimal;
 use icu_decimal::FixedDecimalFormatter;
+use icu_provider::DataLocale;
 
-use crate::locale::Locale;
+use crate::locale::{Locale, locales};
+
+fn data_locale(locale: &Locale) -> DataLocale {
+    locale.0.clone().into()
+}
+
+fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
+    FixedDecimalFormatter::try_new(&data_locale(locale), Default::default())
+        .or_else(|_| FixedDecimalFormatter::try_new(&data_locale(&locales::EN), Default::default()))
+        .ok()
+}
+
+fn to_fixed_decimal(n: f64) -> FixedDecimal {
+    if !n.is_finite() {
+        return FixedDecimal::from(0);
+    }
+
+    if n.fract() == 0.0 && n.abs() <= i64::MAX as f64 {
+        return FixedDecimal::from(n as i64);
+    }
+
+    // Preserve up to 15 fractional digits while avoiding scientific notation.
+    let mut buf = format!("{n:.15}");
+    if buf.contains('.') {
+        while buf.ends_with('0') {
+            buf.pop();
+        }
+        if buf.ends_with('.') {
+            buf.pop();
+        }
+    }
+
+    if let Ok(parsed) = FixedDecimal::from_str(&buf) {
+        return parsed;
+    }
+
+    // Fallback with two decimal places.
+    let scaled = (n * 100.0).round() as i64;
+    let mut dec = FixedDecimal::from(scaled);
+    dec.multiply_pow10(-2);
+    dec
+}
 
 /// Format a number with locale-appropriate separators.
 ///
@@ -22,27 +66,11 @@ use crate::locale::Locale;
 /// assert_eq!(format_number(&locales::FR, 1234.56), "1 234,56");
 /// ```
 pub fn format_number(locale: &Locale, n: f64) -> String {
-    let data_locale: icu_provider::DataLocale = locale.0.clone().into();
-    let formatter = FixedDecimalFormatter::try_new(&data_locale, Default::default())
-        .unwrap_or_else(|_| {
-            let en_locale: icu_provider::DataLocale = icu_locid::langid!("en").into();
-            FixedDecimalFormatter::try_new(&en_locale, Default::default())
-                .expect("English number formatter should always be available")
-        });
-
-    // Convert f64 to FixedDecimal with reasonable precision
-    // Handle both integers and floats appropriately
-    let decimal = if n.fract() == 0.0 {
-        FixedDecimal::from(n as i64)
-    } else {
-        // For floating point, format with up to 2 decimal places
-        let scaled = (n * 100.0).round() as i64;
-        let mut dec = FixedDecimal::from(scaled);
-        dec.multiply_pow10(-2);
-        dec
-    };
-
-    formatter.format(&decimal).to_string()
+    let decimal = to_fixed_decimal(n);
+    match decimal_formatter(locale) {
+        Some(formatter) => formatter.format(&decimal).to_string(),
+        None => n.to_string(),
+    }
 }
 
 /// Format a number as a percentage.
@@ -56,9 +84,15 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
 /// assert_eq!(format_percent(&locales::EN, 0.75), "75%");
 /// ```
 pub fn format_percent(locale: &Locale, n: f64) -> String {
-    // Convert to percentage value
     let percent_value = n * 100.0;
-    format!("{}%", format_number(locale, percent_value))
+    let formatted = format_number(locale, percent_value);
+
+    // Locale-aware percent symbol and spacing.
+    match locale.language.as_str() {
+        "fr" => format!("{formatted}\u{00A0}%"),
+        "ar" => format!("{formatted}٪"),
+        _ => format!("{formatted}%"),
+    }
 }
 
 /// Format a currency amount (display only, no conversion).
@@ -100,20 +134,34 @@ impl Currency {
             Self::CNY => "¥",
         }
     }
+
+    /// Get ISO 4217 currency code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::USD => "USD",
+            Self::EUR => "EUR",
+            Self::GBP => "GBP",
+            Self::JPY => "JPY",
+            Self::CNY => "CNY",
+        }
+    }
 }
 
 /// Format a currency amount with locale-appropriate formatting.
 ///
-/// Note: This only handles display formatting, not currency conversion.
-/// Exchange rates are real-time and outside the scope of i18n.
+/// Note: This handles symbol placement and locale number formatting;
+/// no exchange-rate conversion is performed.
 pub fn format_currency(locale: &Locale, amount: f64, currency: Currency) -> String {
     let formatted_amount = format_number(locale, amount);
     let symbol = currency.symbol();
 
-    // Symbol position varies by locale
-    // This is a simplified version - ICU4X has more sophisticated currency formatting
+    // Symbol position varies by locale.
     match locale.language.as_str() {
-        "de" | "fr" | "es" | "it" => format!("{formatted_amount} {symbol}"),
+        "de" | "fr" | "es" | "it" | "pt" | "ru" => {
+            format!("{formatted_amount}\u{00A0}{symbol}")
+        }
+        "ar" => format!("{symbol}\u{00A0}{formatted_amount}"),
         _ => format!("{symbol}{formatted_amount}"),
     }
 }
