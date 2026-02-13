@@ -151,12 +151,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Check if pointer is near this point for hover effect
     if uniforms.pointer.x >= 0.0 {
-        let point_count = f32(arrayLength(&current_data));
-        let point_norm_x = f32(u32(in.point_index)) / max(point_count - 1.0, 1.0);
-
-        // Simple hover check based on x proximity
-        let hover_dist = abs(uniforms.pointer.x - point_norm_x);
-        if hover_dist < 0.05 {
+        let point = current_data[u32(in.point_index)];
+        let point_norm = vec2<f32>(normalize_x(point.x), normalize_y(point.y));
+        let pointer_norm = uniforms.pointer.xy;
+        let padding = 0.1;
+        let min_viewport = max(min(uniforms.viewport.x, uniforms.viewport.y), 1.0);
+        let hover_radius = (uniforms.pointer.w / min_viewport) / max(1.0 - 2.0 * padding, 0.001) * 1.5;
+        let hover_dist = distance(pointer_norm, point_norm);
+        if hover_dist <= hover_radius {
             // Highlight on hover
             color = vec4<f32>(
                 min(color.r * 1.3, 1.0),

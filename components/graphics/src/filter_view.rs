@@ -26,62 +26,14 @@ use core::cell::RefCell;
 use core::future::Future;
 use core::time::Duration;
 
-use filtrate_core::{Chain, Filter, FragmentList, ParamArray};
+use filtrate_core::{Chain, Filter, ParamArray};
 use nami::Signal;
-use nami::signal::IntoSignal;
 use waterui_core::animation::Animation;
 use waterui_core::easing::EasingCurve;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, IntoSignalF32, Metadata, View};
 
 use crate::gpu_surface::SetupFuture;
-
-/// Convert a wgpu texture format to its WGSL storage texture format string.
-///
-/// This is used to dynamically generate shaders that support different
-/// texture formats, including HDR formats like Rgba16Float.
-fn texture_format_to_wgsl(format: wgpu::TextureFormat) -> &'static str {
-    match format {
-        // 8-bit formats
-        wgpu::TextureFormat::R8Unorm => "r8unorm",
-        wgpu::TextureFormat::R8Snorm => "r8snorm",
-        wgpu::TextureFormat::R8Uint => "r8uint",
-        wgpu::TextureFormat::R8Sint => "r8sint",
-        wgpu::TextureFormat::Rg8Unorm => "rg8unorm",
-        wgpu::TextureFormat::Rg8Snorm => "rg8snorm",
-        wgpu::TextureFormat::Rg8Uint => "rg8uint",
-        wgpu::TextureFormat::Rg8Sint => "rg8sint",
-        wgpu::TextureFormat::Rgba8Unorm => "rgba8unorm",
-        wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8unorm", // WGSL doesn't have srgb storage
-        wgpu::TextureFormat::Rgba8Snorm => "rgba8snorm",
-        wgpu::TextureFormat::Rgba8Uint => "rgba8uint",
-        wgpu::TextureFormat::Rgba8Sint => "rgba8sint",
-        wgpu::TextureFormat::Bgra8Unorm => "bgra8unorm",
-        wgpu::TextureFormat::Bgra8UnormSrgb => "bgra8unorm", // WGSL doesn't have srgb storage
-        // 16-bit formats
-        wgpu::TextureFormat::R16Uint => "r16uint",
-        wgpu::TextureFormat::R16Sint => "r16sint",
-        wgpu::TextureFormat::R16Float => "r16float",
-        wgpu::TextureFormat::Rg16Uint => "rg16uint",
-        wgpu::TextureFormat::Rg16Sint => "rg16sint",
-        wgpu::TextureFormat::Rg16Float => "rg16float",
-        wgpu::TextureFormat::Rgba16Uint => "rgba16uint",
-        wgpu::TextureFormat::Rgba16Sint => "rgba16sint",
-        wgpu::TextureFormat::Rgba16Float => "rgba16float",
-        // 32-bit formats
-        wgpu::TextureFormat::R32Uint => "r32uint",
-        wgpu::TextureFormat::R32Sint => "r32sint",
-        wgpu::TextureFormat::R32Float => "r32float",
-        wgpu::TextureFormat::Rg32Uint => "rg32uint",
-        wgpu::TextureFormat::Rg32Sint => "rg32sint",
-        wgpu::TextureFormat::Rg32Float => "rg32float",
-        wgpu::TextureFormat::Rgba32Uint => "rgba32uint",
-        wgpu::TextureFormat::Rgba32Sint => "rgba32sint",
-        wgpu::TextureFormat::Rgba32Float => "rgba32float",
-        // Default fallback for unsupported formats
-        _ => "rgba8unorm",
-    }
-}
 
 /// GPU resources provided to the filter during setup.
 ///
@@ -276,7 +228,8 @@ impl<V: View, F: GpuFilter> FilteredView<V, F> {
     }
 }
 
-impl<V: View, F: Filter> FilteredView<V, FilterAdapter<F>> {
+#[allow(private_bounds)]
+impl<V: View, F: Filter + FilterGraph> FilteredView<V, FilterAdapter<F>> {
     /// Chain another filter onto this view.
     ///
     /// Returns a new `FilteredView` with the filters chained together.
@@ -291,8 +244,36 @@ impl<V: View, F: Filter> FilteredView<V, FilterAdapter<F>> {
     ///     .then(Contrast(1.5))
     /// ```
     #[must_use]
-    pub fn then<F2: Filter>(self, filter: F2) -> FilteredView<V, FilterAdapter<Chain<F, F2>>> {
+    pub fn then<F2: Filter + FilterGraph>(
+        self,
+        filter: F2,
+    ) -> FilteredView<V, FilterAdapter<Chain<F, F2>>> {
         FilteredView::new(self.content, self.filter.then(filter))
+    }
+
+    /// Set HDR behavior policy for this filtered view.
+    #[must_use]
+    pub fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
+        self.filter = self.filter.hdr_policy(policy);
+        self
+    }
+
+    /// Require HDR intermediates; setup fails if unsupported.
+    #[must_use]
+    pub fn require_hdr(self) -> Self {
+        self.hdr_policy(HdrPolicy::RequireHdr)
+    }
+
+    /// Prefer HDR intermediates with automatic LDR fallback.
+    #[must_use]
+    pub fn prefer_hdr(self) -> Self {
+        self.hdr_policy(HdrPolicy::PreferHdr)
+    }
+
+    /// Force LDR intermediates for compatibility/performance.
+    #[must_use]
+    pub fn force_ldr(self) -> Self {
+        self.hdr_policy(HdrPolicy::ForceLdr)
     }
 }
 
@@ -303,8 +284,386 @@ impl<V: View, F: GpuFilter> View for FilteredView<V, F> {
 }
 
 // ============================================================================
-// Animation State Tracking
+// Filter Graph + Animation Tracking
 // ============================================================================
+
+const MAX_FILTER_PARAMS: usize = 64;
+const SPATIAL_OUTPUT_FORMAT_TOKEN: &str = "OUTPUT_STORAGE_FORMAT";
+
+/// Policy for HDR behavior in filter pipelines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrPolicy {
+    /// Require HDR-capable intermediate pipeline; fail setup if unavailable.
+    RequireHdr,
+    /// Prefer HDR intermediates and automatically downgrade to LDR when unsupported.
+    PreferHdr,
+    /// Force LDR intermediates even on HDR-capable devices.
+    ForceLdr,
+}
+
+impl Default for HdrPolicy {
+    fn default() -> Self {
+        Self::PreferHdr
+    }
+}
+
+fn is_hdr_texture_format(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    )
+}
+
+fn preferred_scratch_format(
+    input_format: wgpu::TextureFormat,
+    output_format: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if is_hdr_texture_format(input_format) || is_hdr_texture_format(output_format) {
+        wgpu::TextureFormat::Rgba16Float
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
+}
+
+fn scratch_texture_usage() -> wgpu::TextureUsages {
+    wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::STORAGE_BINDING
+        | wgpu::TextureUsages::RENDER_ATTACHMENT
+}
+
+fn storage_format_to_wgsl(format: wgpu::TextureFormat) -> Result<&'static str, &'static str> {
+    match format {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Ok("rgba8unorm"),
+        wgpu::TextureFormat::Rgba16Float => Ok("rgba16float"),
+        wgpu::TextureFormat::Rgba32Float => Ok("rgba32float"),
+        _ => Err("unsupported storage texture format for spatial filter"),
+    }
+}
+
+fn specialize_spatial_shader(
+    shader_source: &str,
+    storage_format: wgpu::TextureFormat,
+) -> Result<alloc::string::String, &'static str> {
+    let storage_ty = storage_format_to_wgsl(storage_format)?;
+    Ok(shader_source.replace(SPATIAL_OUTPUT_FORMAT_TOKEN, storage_ty))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AtomicStageKind {
+    ColorFragment(&'static str),
+    SpatialShader(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AtomicStage {
+    kind: AtomicStageKind,
+    param_count: usize,
+}
+
+#[derive(Debug, Clone)]
+enum PlannedPassKind {
+    Color { fragments: alloc::string::String },
+    Spatial { shader: &'static str },
+}
+
+#[derive(Debug, Clone)]
+struct PlannedPass {
+    kind: PlannedPassKind,
+    param_offset: usize,
+    param_count: usize,
+}
+
+enum CompiledPassKind {
+    Color {
+        pipeline: wgpu::RenderPipeline,
+        bind_group_layout: wgpu::BindGroupLayout,
+    },
+    Spatial {
+        pipeline: wgpu::ComputePipeline,
+        bind_group_layout: wgpu::BindGroupLayout,
+    },
+}
+
+struct CompiledPass {
+    kind: CompiledPassKind,
+    param_offset: usize,
+    param_count: usize,
+}
+
+/// Filter graph introspection for smart pass planning and animation hook installation.
+trait FilterGraph: Filter {
+    /// Collect atomic stages in source order.
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>);
+
+    /// Install animation watchers for all reactive parameters.
+    fn bind_animation_watchers(
+        &self,
+        _param_base: usize,
+        _animation_state: Rc<RefCell<SharedAnimationState>>,
+        _guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+    }
+}
+
+fn push_color_stage(stages: &mut Vec<AtomicStage>, fragment: &'static str, param_count: usize) {
+    stages.push(AtomicStage {
+        kind: AtomicStageKind::ColorFragment(fragment),
+        param_count,
+    });
+}
+
+fn push_spatial_stage(stages: &mut Vec<AtomicStage>, shader: &'static str, param_count: usize) {
+    stages.push(AtomicStage {
+        kind: AtomicStageKind::SpatialShader(shader),
+        param_count,
+    });
+}
+
+fn bind_param_watcher<S>(
+    signal: &S,
+    param_index: usize,
+    animation_state: Rc<RefCell<SharedAnimationState>>,
+    guards: &mut Vec<Box<dyn core::any::Any>>,
+) where
+    S: Signal<Output = f32> + 'static,
+    S::Guard: 'static,
+{
+    let guard = signal.watch(move |context| {
+        let animation = context.metadata().try_get::<Animation>();
+        if let Some(animation) = animation {
+            let target = context.into_value();
+            let mut state = animation_state.borrow_mut();
+            if param_index < state.current_values.len() {
+                let start = state.current_values[param_index];
+                state.animations[param_index] = Some(ParamAnimation::new(start, target, animation));
+                state.has_active_animation = true;
+            }
+        }
+    });
+    guards.push(Box::new(guard));
+}
+
+macro_rules! impl_filter_graph_one_param {
+    ($ty:ident, color, $shader:expr) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, $shader, 1);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_state: Rc<RefCell<SharedAnimationState>>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_state, guards);
+            }
+        }
+    };
+    ($ty:ident, spatial, $shader:expr) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, $shader, 1);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_state: Rc<RefCell<SharedAnimationState>>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_state, guards);
+            }
+        }
+    };
+}
+
+impl_filter_graph_one_param!(
+    Brightness,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl")
+);
+impl_filter_graph_one_param!(
+    Contrast,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/contrast.wgsl")
+);
+impl_filter_graph_one_param!(
+    Saturation,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/saturation.wgsl")
+);
+impl_filter_graph_one_param!(
+    Grayscale,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/grayscale.wgsl")
+);
+impl_filter_graph_one_param!(
+    HueRotation,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/hue_rotation.wgsl")
+);
+impl_filter_graph_one_param!(
+    Opacity,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/opacity.wgsl")
+);
+impl_filter_graph_one_param!(
+    Sepia,
+    color,
+    include_str!("../../../utils/filtrate-core/src/shaders/fragments/sepia.wgsl")
+);
+impl_filter_graph_one_param!(
+    Blur,
+    spatial,
+    include_str!("../../../utils/filtrate-core/src/shaders/blur.wgsl")
+);
+impl_filter_graph_one_param!(
+    Sharpen,
+    spatial,
+    include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl")
+);
+
+impl FilterGraph for filtrate_core::filters::Invert {
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        push_color_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/fragments/invert.wgsl"),
+            0,
+        );
+    }
+}
+
+impl<R, S> FilterGraph for filtrate_core::filters::Vignette<R, S>
+where
+    R: Signal<Output = f32> + 'static,
+    S: Signal<Output = f32> + 'static,
+    R::Guard: 'static,
+    S::Guard: 'static,
+{
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        push_color_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/fragments/vignette.wgsl"),
+            2,
+        );
+    }
+
+    fn bind_animation_watchers(
+        &self,
+        param_base: usize,
+        animation_state: Rc<RefCell<SharedAnimationState>>,
+        guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+        bind_param_watcher(&self.0, param_base, animation_state.clone(), guards);
+        bind_param_watcher(&self.1, param_base + 1, animation_state, guards);
+    }
+}
+
+impl<A, B> FilterGraph for Chain<A, B>
+where
+    A: Filter + FilterGraph,
+    B: Filter + FilterGraph,
+{
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        self.first.collect_stages(out);
+        self.second.collect_stages(out);
+    }
+
+    fn bind_animation_watchers(
+        &self,
+        param_base: usize,
+        animation_state: Rc<RefCell<SharedAnimationState>>,
+        guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+        self.first
+            .bind_animation_watchers(param_base, animation_state.clone(), guards);
+        self.second.bind_animation_watchers(
+            param_base + <A::Params as ParamArray>::LEN,
+            animation_state,
+            guards,
+        );
+    }
+}
+
+fn validate_stage(stage: AtomicStage) -> Result<(), &'static str> {
+    match stage.kind {
+        AtomicStageKind::ColorFragment(src) => {
+            if src.contains("@compute") || src.contains("@fragment") {
+                return Err(
+                    "color-only stage must provide a fragment snippet, not a full shader program",
+                );
+            }
+        }
+        AtomicStageKind::SpatialShader(src) => {
+            if !src.contains("@compute") {
+                return Err("spatial stage must provide a full compute shader");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str> {
+    if stages.is_empty() {
+        return Err("filter graph produced no stages");
+    }
+
+    let mut passes: Vec<PlannedPass> = Vec::with_capacity(stages.len());
+    let mut param_offset = 0usize;
+
+    for stage in stages {
+        validate_stage(*stage)?;
+
+        match stage.kind {
+            AtomicStageKind::ColorFragment(fragment) => {
+                if let Some(last) = passes.last_mut() {
+                    if let PlannedPassKind::Color { fragments } = &mut last.kind {
+                        fragments.push_str(fragment);
+                        fragments.push('\n');
+                        last.param_count += stage.param_count;
+                    } else {
+                        let mut fused = alloc::string::String::new();
+                        fused.push_str(fragment);
+                        fused.push('\n');
+                        passes.push(PlannedPass {
+                            kind: PlannedPassKind::Color { fragments: fused },
+                            param_offset,
+                            param_count: stage.param_count,
+                        });
+                    }
+                } else {
+                    let mut fused = alloc::string::String::new();
+                    fused.push_str(fragment);
+                    fused.push('\n');
+                    passes.push(PlannedPass {
+                        kind: PlannedPassKind::Color { fragments: fused },
+                        param_offset,
+                        param_count: stage.param_count,
+                    });
+                }
+            }
+            AtomicStageKind::SpatialShader(shader) => {
+                passes.push(PlannedPass {
+                    kind: PlannedPassKind::Spatial { shader },
+                    param_offset,
+                    param_count: stage.param_count,
+                });
+            }
+        }
+        param_offset += stage.param_count;
+    }
+
+    Ok(passes)
+}
 
 /// Tracks the state of an in-progress animation for a single parameter.
 #[derive(Debug, Clone)]
@@ -342,33 +701,16 @@ impl ParamAnimation {
 
         match &self.animation {
             Animation::Default => {
-                // Default uses ease-in-out with 250ms
-                let duration = Duration::from_millis(250);
-                let (value, complete) = self.interpolate_easing(elapsed, duration, ease_in_out);
+                // Default uses ease-in-out with 250ms.
+                let (value, complete) = self.interpolate_with_curve(
+                    elapsed,
+                    Duration::from_millis(250),
+                    EasingCurve::EASE_IN_OUT,
+                );
                 self.current_value = value;
                 (value, complete)
             }
-            Animation::Linear(duration) => {
-                let (value, complete) = self.interpolate_easing(elapsed, *duration, linear);
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::EaseIn(duration) => {
-                let (value, complete) = self.interpolate_easing(elapsed, *duration, ease_in);
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::EaseOut(duration) => {
-                let (value, complete) = self.interpolate_easing(elapsed, *duration, ease_out);
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::EaseInOut(duration) => {
-                let (value, complete) = self.interpolate_easing(elapsed, *duration, ease_in_out);
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::CubicBezier { duration, .. } => {
+            Animation::Bezier { duration, .. } => {
                 // Use the unified easing system for custom bezier curves
                 let (value, complete) =
                     self.interpolate_with_curve(elapsed, *duration, self.animation.curve());
@@ -380,27 +722,6 @@ impl ParamAnimation {
                 self.current_value = value;
                 (value, complete)
             }
-        }
-    }
-
-    /// Interpolate using an easing function.
-    fn interpolate_easing(
-        &self,
-        elapsed: Duration,
-        duration: Duration,
-        easing: fn(f32) -> f32,
-    ) -> (f32, bool) {
-        if duration.is_zero() {
-            return (self.target_value, true);
-        }
-
-        let t = elapsed.as_secs_f32() / duration.as_secs_f32();
-        if t >= 1.0 {
-            (self.target_value, true)
-        } else {
-            let eased_t = easing(t);
-            let value = self.start_value + (self.target_value - self.start_value) * eased_t;
-            (value, false)
         }
     }
 
@@ -455,27 +776,6 @@ impl ParamAnimation {
     }
 }
 
-// Easing functions
-fn linear(t: f32) -> f32 {
-    t
-}
-
-fn ease_in(t: f32) -> f32 {
-    t * t
-}
-
-fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t) * (1.0 - t)
-}
-
-fn ease_in_out(t: f32) -> f32 {
-    if t < 0.5 {
-        2.0 * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
-    }
-}
-
 /// Get current time as Duration since program start.
 fn current_time() -> Duration {
     use std::sync::OnceLock;
@@ -514,25 +814,30 @@ struct SharedAnimationState {
 /// - **Spatial filters** (`F::COLOR_ONLY = false`): Use compute shaders with intermediate texture for HDR.
 pub struct FilterAdapter<F: Filter> {
     filter: F,
-    // Fragment shader resources (for COLOR_ONLY = true)
-    fragment_pipeline: Option<wgpu::RenderPipeline>,
-    fragment_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    // Compute shader resources (for COLOR_ONLY = false)
-    compute_pipeline: Option<wgpu::ComputePipeline>,
-    compute_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    /// Reused parameter buffer to avoid per-frame heap allocations.
+    target_params: Vec<f32>,
+    passes: Vec<CompiledPass>,
+    /// Whether render should use scratch ping-pong textures.
+    requires_scratch: bool,
+    /// HDR/LDR behavior policy for intermediate passes.
+    hdr_policy: HdrPolicy,
+    /// Scratch texture format for intermediate passes (SDR/HDR).
+    scratch_format: wgpu::TextureFormat,
+    /// Sticky setup error: once set, render fails fast.
+    setup_error: Option<&'static str>,
     // Shared resources
     sampler: Option<wgpu::Sampler>,
     /// Shared animation state (updated by watchers, read during render).
     animation_state: Rc<RefCell<SharedAnimationState>>,
-    /// Watcher guard to keep the watcher alive.
-    _watcher_guard: Option<Box<dyn core::any::Any>>,
-    // HDR fallback for spatial filters
-    intermediate_texture: Option<wgpu::Texture>,
-    intermediate_view: Option<wgpu::TextureView>,
+    /// Watcher guards to keep animation watchers alive.
+    _watcher_guards: Vec<Box<dyn core::any::Any>>,
+    // Scratch ping-pong textures for multi-pass.
+    scratch_textures: [Option<wgpu::Texture>; 2],
+    scratch_views: [Option<wgpu::TextureView>; 2],
+    scratch_size: (u32, u32),
+    // Final blit when last stage is spatial.
     blit_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    /// Cached output format from setup
-    output_format: wgpu::TextureFormat,
 }
 
 impl<F: Filter> core::fmt::Debug for FilterAdapter<F> {
@@ -541,7 +846,8 @@ impl<F: Filter> core::fmt::Debug for FilterAdapter<F> {
     }
 }
 
-impl<F: Filter> FilterAdapter<F> {
+#[allow(private_bounds)]
+impl<F: Filter + FilterGraph> FilterAdapter<F> {
     /// Create a new filter adapter.
     #[must_use]
     pub fn new(filter: F) -> Self {
@@ -552,20 +858,25 @@ impl<F: Filter> FilterAdapter<F> {
             has_active_animation: false,
         }));
 
+        let mut watcher_guards: Vec<Box<dyn core::any::Any>> = Vec::new();
+        filter.bind_animation_watchers(0, animation_state.clone(), &mut watcher_guards);
+
         Self {
             filter,
-            fragment_pipeline: None,
-            fragment_bind_group_layout: None,
-            compute_pipeline: None,
-            compute_bind_group_layout: None,
+            target_params: alloc::vec![0.0; param_count],
+            passes: Vec::new(),
+            requires_scratch: false,
+            hdr_policy: HdrPolicy::default(),
+            scratch_format: wgpu::TextureFormat::Rgba8Unorm,
+            setup_error: None,
             sampler: None,
             animation_state,
-            _watcher_guard: None,
-            intermediate_texture: None,
-            intermediate_view: None,
+            _watcher_guards: watcher_guards,
+            scratch_textures: [None, None],
+            scratch_views: [None, None],
+            scratch_size: (0, 0),
             blit_pipeline: None,
             blit_bind_group_layout: None,
-            output_format: wgpu::TextureFormat::Rgba8Unorm, // Default, updated in setup
         }
     }
 
@@ -574,26 +885,55 @@ impl<F: Filter> FilterAdapter<F> {
     /// Returns a new `FilterAdapter` wrapping a `Chain` of both filters.
     /// Consecutive color-only filters will be fused into a single GPU pass.
     #[must_use]
-    pub fn then<F2: Filter>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
-        FilterAdapter::new(Chain {
+    pub fn then<F2: Filter + FilterGraph>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
+        let mut next = FilterAdapter::new(Chain {
             first: self.filter,
             second: filter,
-        })
+        });
+        next.hdr_policy = self.hdr_policy;
+        next
     }
 
-    /// Get the current interpolated parameters, updating any active animations.
-    fn get_interpolated_params(&self) -> (Vec<f32>, bool) {
-        let mut state = self.animation_state.borrow_mut();
-        let param_count = <F::Params as ParamArray>::LEN;
+    /// Set HDR behavior policy for this filter chain.
+    #[must_use]
+    pub fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
+        self.hdr_policy = policy;
+        self
+    }
 
-        // Get target values from the filter
-        let mut target_params = [0.0f32; 64];
-        self.filter.params().write_to(&mut target_params);
+    /// Require HDR intermediates; setup fails if unsupported.
+    #[must_use]
+    pub fn require_hdr(self) -> Self {
+        self.hdr_policy(HdrPolicy::RequireHdr)
+    }
+
+    /// Prefer HDR intermediates with automatic LDR fallback.
+    #[must_use]
+    pub fn prefer_hdr(self) -> Self {
+        self.hdr_policy(HdrPolicy::PreferHdr)
+    }
+
+    /// Force LDR intermediates for maximum compatibility.
+    #[must_use]
+    pub fn force_ldr(self) -> Self {
+        self.hdr_policy(HdrPolicy::ForceLdr)
+    }
+
+    /// Update interpolated parameters in-place; returns whether another frame is needed.
+    fn update_interpolated_params(&mut self) -> bool {
+        let mut state = self.animation_state.borrow_mut();
+        let param_count = self.target_params.len();
+        if param_count > MAX_FILTER_PARAMS {
+            return false;
+        }
+
+        // Update target values from the filter into reusable storage.
+        self.filter.params().write_to(&mut self.target_params);
 
         let mut needs_redraw = false;
 
         for i in 0..param_count {
-            let target = target_params[i];
+            let target = self.target_params[i];
 
             if let Some(ref mut anim) = state.animations[i] {
                 // Check if target changed during animation
@@ -620,27 +960,165 @@ impl<F: Filter> FilterAdapter<F> {
         }
 
         state.has_active_animation = needs_redraw;
-        (state.current_values.clone(), needs_redraw)
+        needs_redraw
     }
 
-    /// Start an animation for a parameter.
-    ///
-    /// This is called from watcher callbacks when animation metadata is detected.
-    #[allow(dead_code)]
-    fn start_animation(&self, param_index: usize, target: f32, animation: Animation) {
-        let mut state = self.animation_state.borrow_mut();
-        if param_index < state.current_values.len() {
-            let start_value = state.current_values[param_index];
-            state.animations[param_index] =
-                Some(ParamAnimation::new(start_value, target, animation));
-            state.has_active_animation = true;
+    fn set_setup_error(&mut self, err: &'static str) {
+        if self.setup_error.is_none() {
+            self.setup_error = Some(err);
+            tracing::error!("[Filter] setup failed fast: {err}");
         }
+    }
+
+    fn has_setup_error(&self) -> bool {
+        self.setup_error.is_some()
+    }
+
+    fn ensure_scratch_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if !self.requires_scratch {
+            return;
+        }
+        if self.scratch_size == (width, height)
+            && self.scratch_views[0].is_some()
+            && self.scratch_views[1].is_some()
+        {
+            return;
+        }
+
+        for slot in 0..2 {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("filter scratch texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.scratch_format,
+                usage: scratch_texture_usage(),
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.scratch_textures[slot] = Some(texture);
+            self.scratch_views[slot] = Some(view);
+        }
+
+        self.scratch_size = (width, height);
+    }
+
+    fn take_validation_error(device: &wgpu::Device) -> Option<wgpu::Error> {
+        crate::pollster::block_on(device.pop_error_scope())
+    }
+
+    fn build_compiled_passes(
+        &mut self,
+        ctx: &FilterContext,
+        planned: &[PlannedPass],
+        scratch_format: wgpu::TextureFormat,
+    ) -> Result<(), &'static str> {
+        self.passes.clear();
+
+        if self.requires_scratch {
+            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let probe = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("filter scratch format probe"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: scratch_format,
+                usage: scratch_texture_usage(),
+                view_formats: &[],
+            });
+            let _ = probe.create_view(&wgpu::TextureViewDescriptor::default());
+            if Self::take_validation_error(ctx.device).is_some() {
+                return Err("selected scratch texture format is unsupported on this device");
+            }
+        }
+
+        for (idx, pass) in planned.iter().enumerate() {
+            let is_last = idx + 1 == planned.len();
+            match &pass.kind {
+                PlannedPassKind::Color { fragments } => {
+                    let target_format = if is_last {
+                        ctx.output_format
+                    } else {
+                        scratch_format
+                    };
+                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let (pipeline, bind_group_layout) =
+                        self.create_color_pipeline(ctx, fragments, target_format);
+                    if Self::take_validation_error(ctx.device).is_some() {
+                        return Err("failed to create color pipeline for selected target format");
+                    }
+                    self.passes.push(CompiledPass {
+                        kind: CompiledPassKind::Color {
+                            pipeline,
+                            bind_group_layout,
+                        },
+                        param_offset: pass.param_offset,
+                        param_count: pass.param_count,
+                    });
+                }
+                PlannedPassKind::Spatial { shader } => {
+                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let (pipeline, bind_group_layout) =
+                        self.create_spatial_pipeline(ctx, shader, scratch_format)?;
+                    if let Some(err) = Self::take_validation_error(ctx.device) {
+                        tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
+                        return Err(
+                            "failed to create spatial pipeline for selected storage format",
+                        );
+                    }
+                    self.passes.push(CompiledPass {
+                        kind: CompiledPassKind::Spatial {
+                            pipeline,
+                            bind_group_layout,
+                        },
+                        param_offset: pass.param_offset,
+                        param_count: pass.param_count,
+                    });
+                }
+            }
+        }
+
+        if self.passes.is_empty() {
+            return Err("filter setup produced no executable passes");
+        }
+
+        if matches!(
+            self.passes.last().map(|p| &p.kind),
+            Some(CompiledPassKind::Spatial { .. })
+        ) {
+            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let (blit_pipeline, blit_bind_group_layout) = self.create_blit_pipeline(ctx);
+            if Self::take_validation_error(ctx.device).is_some() {
+                return Err("failed to create final blit pipeline");
+            }
+            self.blit_pipeline = Some(blit_pipeline);
+            self.blit_bind_group_layout = Some(blit_bind_group_layout);
+        } else {
+            self.blit_pipeline = None;
+            self.blit_bind_group_layout = None;
+        }
+
+        Ok(())
     }
 }
 
-impl<F: Filter> GpuFilter for FilterAdapter<F> {
+impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
     fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()> {
-        self.output_format = ctx.output_format;
+        let param_count = <F::Params as ParamArray>::LEN;
+        if param_count > MAX_FILTER_PARAMS {
+            self.set_setup_error("filter chain exceeds 64 params (uniform limit)");
+            return core::future::ready(());
+        }
 
         // Create shared sampler
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -655,81 +1133,344 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
         });
         self.sampler = Some(sampler);
 
-        // Choose pipeline based on filter type
-        if F::COLOR_ONLY {
-            self.setup_fragment_pipeline(ctx);
+        let mut stages = Vec::new();
+        self.filter.collect_stages(&mut stages);
+        let planned = match fuse_stages(&stages) {
+            Ok(passes) => passes,
+            Err(err) => {
+                self.set_setup_error(err);
+                return core::future::ready(());
+            }
+        };
+
+        self.requires_scratch = planned.len() > 1
+            || matches!(
+                planned.last().map(|p| &p.kind),
+                Some(PlannedPassKind::Spatial { .. })
+            );
+
+        let scratch_candidates = if self.requires_scratch {
+            match self.hdr_policy {
+                HdrPolicy::ForceLdr => alloc::vec![wgpu::TextureFormat::Rgba8Unorm],
+                HdrPolicy::RequireHdr => alloc::vec![wgpu::TextureFormat::Rgba16Float],
+                HdrPolicy::PreferHdr => {
+                    let preferred = preferred_scratch_format(ctx.input_format, ctx.output_format);
+                    if is_hdr_texture_format(preferred) {
+                        alloc::vec![preferred, wgpu::TextureFormat::Rgba8Unorm]
+                    } else {
+                        alloc::vec![preferred, wgpu::TextureFormat::Rgba16Float]
+                    }
+                }
+            }
         } else {
-            self.setup_compute_pipeline(ctx);
-            // Spatial filters always blit from the intermediate texture.
-            self.setup_blit_pipeline(ctx);
+            alloc::vec![wgpu::TextureFormat::Rgba8Unorm]
+        };
+
+        let mut build_ok = false;
+        let mut last_err: Option<&'static str> = None;
+        for (idx, candidate) in scratch_candidates.iter().enumerate() {
+            match self.build_compiled_passes(ctx, &planned, *candidate) {
+                Ok(()) => {
+                    self.scratch_format = *candidate;
+                    build_ok = true;
+                    if idx > 0 && self.hdr_policy == HdrPolicy::PreferHdr {
+                        tracing::warn!(
+                            "[Filter] preferred scratch format unavailable, falling back to {:?}",
+                            candidate
+                        );
+                    }
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    self.passes.clear();
+                    self.blit_pipeline = None;
+                    self.blit_bind_group_layout = None;
+                }
+            }
+        }
+
+        if !build_ok {
+            self.set_setup_error(match (self.hdr_policy, last_err) {
+                (HdrPolicy::RequireHdr, Some(_)) => {
+                    "HDR is required by policy but unavailable for this filter pipeline"
+                }
+                (_, Some(err)) => err,
+                (_, None) => "filter setup produced no executable passes",
+            });
+            return core::future::ready(());
         }
 
         // Initialize current values from filter
         {
             let mut state = self.animation_state.borrow_mut();
-            let mut target_params = [0.0f32; 64];
-            self.filter.params().write_to(&mut target_params);
-            let param_count = <F::Params as ParamArray>::LEN;
+            self.filter.params().write_to(&mut self.target_params);
             for i in 0..param_count {
-                state.current_values[i] = target_params[i];
+                state.current_values[i] = self.target_params[i];
             }
         }
 
-        async {}
+        core::future::ready(())
     }
 
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        if F::COLOR_ONLY {
-            self.render_fragment(input, output)
-        } else {
-            self.render_compute_with_blit(input, output)
+        if self.has_setup_error() || self.passes.is_empty() {
+            return false;
         }
+
+        if self.requires_scratch {
+            self.ensure_scratch_textures(input.device, output.width, output.height);
+            if self.scratch_views[0].is_none() || self.scratch_views[1].is_none() {
+                return false;
+            }
+        }
+
+        let needs_redraw = self.update_interpolated_params();
+        let current_values = self.animation_state.borrow();
+        if current_values.current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
+            return false;
+        }
+
+        let Some(sampler) = &self.sampler else {
+            return false;
+        };
+
+        let mut encoder = input
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("filter pass encoder"),
+            });
+
+        let mut source_view: &wgpu::TextureView = &input.view;
+        let mut source_width = input.width;
+        let mut source_height = input.height;
+        let mut scratch_index = 0usize;
+
+        for (idx, pass) in self.passes.iter().enumerate() {
+            let is_last = idx + 1 == self.passes.len();
+            let param_start = pass.param_offset;
+            let param_end = param_start + pass.param_count;
+            let params = &current_values.current_values[param_start..param_end];
+
+            match &pass.kind {
+                CompiledPassKind::Color {
+                    pipeline,
+                    bind_group_layout,
+                } => {
+                    let uniform_data =
+                        build_color_uniform_data(source_width, source_height, params);
+                    let uniform_buffer =
+                        input
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("filter color uniform"),
+                                contents: bytemuck::cast_slice(&uniform_data[..]),
+                                usage: wgpu::BufferUsages::UNIFORM,
+                            });
+
+                    let target_view: &wgpu::TextureView = if is_last {
+                        &output.view
+                    } else {
+                        let Some(view) = self.scratch_views[scratch_index].as_ref() else {
+                            return false;
+                        };
+                        view
+                    };
+
+                    let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("filter color bind group"),
+                        layout: bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(source_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: uniform_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+
+                    {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("filter color pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: target_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                    depth_slice: None,
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        render_pass.set_pipeline(pipeline);
+                        render_pass.set_bind_group(0, &bind_group, &[]);
+                        render_pass.draw(0..6, 0..1);
+                    }
+
+                    if !is_last {
+                        source_view = target_view;
+                        source_width = output.width;
+                        source_height = output.height;
+                        scratch_index ^= 1;
+                    }
+                }
+                CompiledPassKind::Spatial {
+                    pipeline,
+                    bind_group_layout,
+                } => {
+                    let Some(target_view) = self.scratch_views[scratch_index].as_ref() else {
+                        return false;
+                    };
+                    let target_width = output.width;
+                    let target_height = output.height;
+
+                    let uniform_data = build_spatial_uniform_data(
+                        target_width,
+                        target_height,
+                        source_width,
+                        source_height,
+                        params,
+                    );
+                    let uniform_buffer =
+                        input
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("filter spatial uniform"),
+                                contents: bytemuck::cast_slice(&uniform_data[..]),
+                                usage: wgpu::BufferUsages::UNIFORM,
+                            });
+
+                    let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("filter spatial bind group"),
+                        layout: bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(source_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(target_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: uniform_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+
+                    {
+                        let mut compute_pass =
+                            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                label: Some("filter spatial pass"),
+                                timestamp_writes: None,
+                            });
+                        compute_pass.set_pipeline(pipeline);
+                        compute_pass.set_bind_group(0, &bind_group, &[]);
+                        let workgroups_x = target_width.div_ceil(8);
+                        let workgroups_y = target_height.div_ceil(8);
+                        compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+                    }
+
+                    source_view = target_view;
+                    source_width = target_width;
+                    source_height = target_height;
+                    scratch_index ^= 1;
+                }
+            }
+        }
+
+        if matches!(
+            self.passes.last().map(|p| &p.kind),
+            Some(CompiledPassKind::Spatial { .. })
+        ) {
+            let Some(blit_pipeline) = &self.blit_pipeline else {
+                return false;
+            };
+            let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
+                return false;
+            };
+
+            let blit_bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("filter final blit bind group"),
+                layout: blit_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            });
+
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("filter final blit pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &output.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                render_pass.set_pipeline(blit_pipeline);
+                render_pass.set_bind_group(0, &blit_bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
+        }
+
+        input.queue.submit([encoder.finish()]);
+        needs_redraw
     }
 }
-
-/// Check if a texture format is HDR (not supported as storage texture on Metal)
-fn is_hdr_format(format: wgpu::TextureFormat) -> bool {
-    matches!(
-        format,
-        wgpu::TextureFormat::Rgba16Float
-            | wgpu::TextureFormat::Rgba32Float
-            | wgpu::TextureFormat::Rg16Float
-            | wgpu::TextureFormat::Rg32Float
-            | wgpu::TextureFormat::R16Float
-            | wgpu::TextureFormat::R32Float
-    )
-}
-
-impl<F: Filter> FilterAdapter<F> {
-    /// Setup fragment shader pipeline for color-only filters.
-    /// Fragment shaders can write to any render attachment format including HDR.
-    fn setup_fragment_pipeline(&mut self, ctx: &FilterContext) {
-        tracing::debug!(
-            "[Filter] setup_fragment_pipeline: creating pipeline for {:?}",
-            ctx.output_format
-        );
+#[allow(private_bounds)]
+impl<F: Filter + FilterGraph> FilterAdapter<F> {
+    fn create_color_pipeline(
+        &self,
+        ctx: &FilterContext,
+        fragments: &str,
+        target_format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let preamble =
             include_str!("../../../utils/filtrate-core/src/shaders/fragment_preamble.wgsl");
         let postamble =
             include_str!("../../../utils/filtrate-core/src/shaders/fragment_postamble.wgsl");
 
         let mut shader_source = alloc::string::String::from(preamble);
-        self.filter.fragments().write_to(&mut shader_source);
+        shader_source.push_str(fragments);
         shader_source.push_str(postamble);
 
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filter fragment shader"),
+                label: Some("filter color shader"),
                 source: wgpu::ShaderSource::Wgsl(shader_source.into()),
             });
 
-        // Fragment shader bind group: input texture + sampler + uniforms
-        // Use VERTEX_FRAGMENT visibility because WGSL module-level bindings are checked for all stages
         let bind_group_layout =
             ctx.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("filter fragment bind group layout"),
+                    label: Some("filter color bind group layout"),
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
                             binding: 0,
@@ -763,7 +1504,7 @@ impl<F: Filter> FilterAdapter<F> {
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("filter fragment pipeline layout"),
+                label: Some("filter color pipeline layout"),
                 bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -771,7 +1512,7 @@ impl<F: Filter> FilterAdapter<F> {
         let pipeline = ctx
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("filter fragment pipeline"),
+                label: Some("filter color pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
@@ -783,7 +1524,7 @@ impl<F: Filter> FilterAdapter<F> {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.output_format, // Native HDR support!
+                        format: target_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -799,40 +1540,27 @@ impl<F: Filter> FilterAdapter<F> {
                 cache: ctx.pipeline_cache,
             });
 
-        self.fragment_pipeline = Some(pipeline);
-        self.fragment_bind_group_layout = Some(bind_group_layout);
+        (pipeline, bind_group_layout)
     }
 
-    /// Setup compute shader pipeline for spatial filters.
-    /// Uses standalone shader directly (not fused with preamble/postamble).
-    /// Uses Rgba8Unorm for storage texture (universally supported).
-    fn setup_compute_pipeline(&mut self, ctx: &FilterContext) {
-        tracing::debug!(
-            "[Filter] setup_compute_pipeline: creating pipeline for {:?}",
-            ctx.output_format
-        );
-        // Spatial filters provide a complete standalone shader via fragments()
-        // Don't wrap with preamble/postamble - use directly
-        let mut shader_source = alloc::string::String::new();
-        self.filter.fragments().write_to(&mut shader_source);
-        tracing::debug!(
-            "[Filter] setup_compute_pipeline: shader source length = {}",
-            shader_source.len()
-        );
-
+    fn create_spatial_pipeline(
+        &self,
+        ctx: &FilterContext,
+        shader_source: &str,
+        storage_format: wgpu::TextureFormat,
+    ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
+        let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filter compute shader"),
+                label: Some("filter spatial shader"),
                 source: wgpu::ShaderSource::Wgsl(shader_source.into()),
             });
 
-        // Spatial filter shaders use 3 bindings: input texture, output storage, uniforms
-        // No sampler needed (they use textureLoad for sampling)
         let bind_group_layout =
             ctx.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("filter compute bind group layout"),
+                    label: Some("filter spatial bind group layout"),
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
                             binding: 0,
@@ -849,7 +1577,7 @@ impl<F: Filter> FilterAdapter<F> {
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
                                 access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: wgpu::TextureFormat::Rgba8Unorm, // Always use Rgba8Unorm
+                                format: storage_format,
                                 view_dimension: wgpu::TextureViewDimension::D2,
                             },
                             count: None,
@@ -870,7 +1598,7 @@ impl<F: Filter> FilterAdapter<F> {
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("filter compute pipeline layout"),
+                label: Some("filter spatial pipeline layout"),
                 bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -878,7 +1606,7 @@ impl<F: Filter> FilterAdapter<F> {
         let pipeline = ctx
             .device
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("filter compute pipeline"),
+                label: Some("filter spatial pipeline"),
                 layout: Some(&pipeline_layout),
                 module: &shader,
                 entry_point: Some("main"),
@@ -886,18 +1614,18 @@ impl<F: Filter> FilterAdapter<F> {
                 cache: ctx.pipeline_cache,
             });
 
-        self.compute_pipeline = Some(pipeline);
-        self.compute_bind_group_layout = Some(bind_group_layout);
+        Ok((pipeline, bind_group_layout))
     }
 
-    /// Setup blit pipeline for copying intermediate Rgba8Unorm to HDR output.
-    fn setup_blit_pipeline(&mut self, ctx: &FilterContext) {
-        let blit_shader_source = include_str!("shaders/blit.wgsl");
+    fn create_blit_pipeline(
+        &self,
+        ctx: &FilterContext,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("filter blit shader"),
-                source: wgpu::ShaderSource::Wgsl(blit_shader_source.into()),
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit.wgsl").into()),
             });
 
         let bind_group_layout =
@@ -947,7 +1675,7 @@ impl<F: Filter> FilterAdapter<F> {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.output_format, // HDR format
+                        format: ctx.output_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -963,402 +1691,629 @@ impl<F: Filter> FilterAdapter<F> {
                 cache: ctx.pipeline_cache,
             });
 
-        self.blit_pipeline = Some(pipeline);
-        self.blit_bind_group_layout = Some(bind_group_layout);
+        (pipeline, bind_group_layout)
     }
+}
 
-    /// Render using fragment shader (for color-only filters).
-    fn render_fragment(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        let Some(pipeline) = &self.fragment_pipeline else {
-            tracing::warn!(
-                "[Filter] render_fragment: fragment_pipeline is None, was setup called?"
-            );
-            return false;
-        };
-        let Some(bind_group_layout) = &self.fragment_bind_group_layout else {
-            tracing::warn!("[Filter] render_fragment: bind_group_layout is None");
-            return false;
-        };
-        let Some(sampler) = &self.sampler else {
-            tracing::warn!("[Filter] render_fragment: sampler is None");
-            return false;
-        };
-        tracing::debug!(
-            "[Filter] render_fragment: rendering {}x{}",
-            input.width,
-            input.height
-        );
-
-        let (current_values, needs_redraw) = self.get_interpolated_params();
-
-        // Build uniform buffer with proper alignment for WGSL:
-        // - dimensions: vec2<f32> (2 floats)
-        // - _padding: vec2<f32> (2 floats for 16-byte alignment)
-        // - params: array<vec4<f32>, 16> (64 floats)
-        let param_count = <F::Params as ParamArray>::LEN;
-        let mut uniform_data = alloc::vec![0.0f32; 4 + 64]; // 4 for header + 64 for params
-        uniform_data[0] = input.width as f32;
-        uniform_data[1] = input.height as f32;
-        // uniform_data[2] and [3] are padding (already 0)
-        for (i, &value) in current_values.iter().enumerate().take(param_count) {
-            uniform_data[4 + i] = value;
-        }
-
-        let uniform_buffer = input
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("filter uniform buffer"),
-                contents: bytemuck::cast_slice(&uniform_data),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("filter fragment bind group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter fragment encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("filter fragment render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1); // Full-screen quad
-        }
-
-        input.queue.submit([encoder.finish()]);
-        needs_redraw
+fn build_color_uniform_data(
+    width: u32,
+    height: u32,
+    params: &[f32],
+) -> [f32; 4 + MAX_FILTER_PARAMS] {
+    let mut data = [0.0f32; 4 + MAX_FILTER_PARAMS];
+    data[0] = width as f32;
+    data[1] = height as f32;
+    for (idx, value) in params.iter().enumerate().take(MAX_FILTER_PARAMS) {
+        data[4 + idx] = *value;
     }
+    data
+}
 
-    /// Render using compute shader (for spatial filters, SDR output).
-    fn render_compute(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        let Some(pipeline) = &self.compute_pipeline else {
-            return false;
-        };
-        let Some(bind_group_layout) = &self.compute_bind_group_layout else {
-            return false;
-        };
-
-        let (current_values, needs_redraw) = self.get_interpolated_params();
-
-        // Spatial filter uniform layout: dimensions first, then params
-        // Matches blur.wgsl: struct Uniforms { dimensions: vec2<f32>, radius: f32, _padding: f32 }
-        let param_count = <F::Params as ParamArray>::LEN;
-        let mut uniform_data = alloc::vec![0.0f32; 4 + param_count]; // dimensions (2) + padding (2) + params
-        uniform_data[0] = input.width as f32;
-        uniform_data[1] = input.height as f32;
-        // uniform_data[2] is first param, [3] is second param, etc.
-        for (i, &value) in current_values.iter().enumerate().take(param_count) {
-            uniform_data[2 + i] = value;
-        }
-
-        let uniform_buffer = input
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("filter uniform buffer"),
-                contents: bytemuck::cast_slice(&uniform_data),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        // Spatial filters use 3 bindings: input texture, output storage, uniforms
-        let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("filter compute bind group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&output.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter compute encoder"),
-            });
-
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("filter compute pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-            let workgroups_x = (output.width + 7) / 8;
-            let workgroups_y = (output.height + 7) / 8;
-            compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
-        }
-
-        input.queue.submit([encoder.finish()]);
-        needs_redraw
+fn build_spatial_uniform_data(
+    output_width: u32,
+    output_height: u32,
+    input_width: u32,
+    input_height: u32,
+    params: &[f32],
+) -> [f32; 4 + MAX_FILTER_PARAMS] {
+    let mut data = [0.0f32; 4 + MAX_FILTER_PARAMS];
+    data[0] = output_width as f32;
+    data[1] = output_height as f32;
+    data[2] = input_width as f32;
+    data[3] = input_height as f32;
+    for (idx, value) in params.iter().enumerate().take(MAX_FILTER_PARAMS) {
+        data[4 + idx] = *value;
     }
-
-    /// Render using compute shader with blit to HDR output (for spatial filters).
-    fn render_compute_with_blit(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        let Some(compute_pipeline) = &self.compute_pipeline else {
-            tracing::warn!("[Filter] render_compute_with_blit: compute_pipeline is None");
-            return false;
-        };
-        let Some(compute_bind_group_layout) = &self.compute_bind_group_layout else {
-            tracing::warn!("[Filter] render_compute_with_blit: compute_bind_group_layout is None");
-            return false;
-        };
-        let Some(blit_pipeline) = &self.blit_pipeline else {
-            tracing::warn!("[Filter] render_compute_with_blit: blit_pipeline is None");
-            return false;
-        };
-        let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
-            tracing::warn!("[Filter] render_compute_with_blit: blit_bind_group_layout is None");
-            return false;
-        };
-        let Some(sampler) = &self.sampler else {
-            tracing::warn!("[Filter] render_compute_with_blit: sampler is None");
-            return false;
-        };
-        tracing::debug!(
-            "[Filter] render_compute_with_blit: rendering {}x{}",
-            input.width,
-            input.height
-        );
-
-        // Ensure intermediate texture exists and is correct size
-        let needs_new_intermediate = self.intermediate_texture.as_ref().map_or(true, |tex| {
-            tex.width() != output.width || tex.height() != output.height
-        });
-
-        if needs_new_intermediate {
-            let texture = input.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("filter intermediate texture"),
-                size: wgpu::Extent3d {
-                    width: output.width,
-                    height: output.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.intermediate_texture = Some(texture);
-            self.intermediate_view = Some(view);
-        }
-
-        let intermediate_view = self.intermediate_view.as_ref().unwrap();
-
-        let (current_values, needs_redraw) = self.get_interpolated_params();
-
-        // Step 1: Compute to intermediate
-        // Spatial filter uniform layout: dimensions first, then params
-        let param_count = <F::Params as ParamArray>::LEN;
-        let mut uniform_data = alloc::vec![0.0f32; 4 + param_count];
-        uniform_data[0] = input.width as f32;
-        uniform_data[1] = input.height as f32;
-        for (i, &value) in current_values.iter().enumerate().take(param_count) {
-            uniform_data[2 + i] = value;
-        }
-
-        let uniform_buffer = input
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("filter uniform buffer"),
-                contents: bytemuck::cast_slice(&uniform_data),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        // Compute bind group: 3 bindings (input texture, output storage, uniforms)
-        let compute_bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("filter compute bind group"),
-            layout: compute_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&input.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(intermediate_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter compute+blit encoder"),
-            });
-
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("filter compute pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(compute_pipeline);
-            compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-            let workgroups_x = (output.width + 7) / 8;
-            let workgroups_y = (output.height + 7) / 8;
-            compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
-        }
-
-        // Step 2: Blit intermediate to HDR output
-        let blit_bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("filter blit bind group"),
-            layout: blit_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(intermediate_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("filter blit render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            render_pass.set_pipeline(blit_pipeline);
-            render_pass.set_bind_group(0, &blit_bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        input.queue.submit([encoder.finish()]);
-        needs_redraw
-    }
+    data
 }
 
 // Need wgpu::util for BufferInitDescriptor
 use wgpu::util::DeviceExt;
 
-// ============================================================================
-// Animated Filter Adapter - wraps FilterAdapter with watcher for animation
-// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
 
-/// A filter adapter that watches for value changes and handles animation metadata.
-///
-/// This wraps a `FilterAdapter` and sets up a watcher on the underlying signal
-/// to detect animation metadata when values change.
-pub struct AnimatedFilterAdapter<F: Filter, S: Signal<Output = f32>> {
-    adapter: FilterAdapter<F>,
-    /// Keep signal alive for the watcher to work.
-    #[allow(dead_code)]
-    signal: S,
-    /// Watcher guard to keep the watcher alive.
-    _guard: Rc<dyn core::any::Any>,
-}
-
-impl<F: Filter, S: Signal<Output = f32>> core::fmt::Debug for AnimatedFilterAdapter<F, S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AnimatedFilterAdapter")
-            .finish_non_exhaustive()
+    struct TestGpu {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter_info: wgpu::AdapterInfo,
+        rgba8_storage: bool,
+        rgba16_storage: bool,
     }
-}
 
-impl<F: Filter, S: Signal<Output = f32> + 'static> AnimatedFilterAdapter<F, S> {
-    /// Create a new animated filter adapter.
-    pub fn new<C>(filter_fn: C, signal: S) -> Self
-    where
-        C: FnOnce(S) -> F,
-        S: Clone,
-    {
-        let filter = filter_fn(signal.clone());
-        let adapter = FilterAdapter::new(filter);
-        let animation_state = adapter.animation_state.clone();
+    fn create_test_device() -> Option<TestGpu> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter =
+            crate::pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            }))
+            .ok()?;
+        let adapter_info = adapter.get_info();
+        let rgba8_storage = adapter
+            .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
+            .allowed_usages
+            .contains(wgpu::TextureUsages::STORAGE_BINDING);
+        let rgba16_storage = adapter
+            .get_texture_format_features(wgpu::TextureFormat::Rgba16Float)
+            .allowed_usages
+            .contains(wgpu::TextureUsages::STORAGE_BINDING);
+        let (device, queue) =
+            crate::pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .ok()?;
+        Some(TestGpu {
+            device,
+            queue,
+            adapter_info,
+            rgba8_storage,
+            rgba16_storage,
+        })
+    }
 
-        // Set up watcher to detect animation metadata
-        let guard = signal.watch(move |context| {
-            let animation = context.metadata().try_get::<Animation>();
-            let value = context.into_value();
-            if let Some(animation) = animation {
-                // Animation metadata present - start animation
-                let mut state = animation_state.borrow_mut();
-                if !state.current_values.is_empty() {
-                    let start_value = state.current_values[0];
-                    state.animations[0] = Some(ParamAnimation::new(start_value, value, animation));
-                    state.has_active_animation = true;
-                }
-            }
-            // If no animation metadata, the filter will use the value directly
+    fn readback_rgba8_pixel(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> [u8; 4] {
+        const BYTES_PER_PIXEL: u32 = 4;
+        const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_bpr = width * BYTES_PER_PIXEL;
+        let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let copy_size = (padded_bpr * height) as u64;
+
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("filter gpu test readback buffer"),
+            size: copy_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
 
-        Self {
-            adapter,
-            signal,
-            _guard: Rc::new(guard),
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("filter gpu test readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let map_result = rx
+            .recv()
+            .expect("map callback should return a completion result");
+        map_result.expect("buffer mapping should succeed");
+
+        let mapped = slice.get_mapped_range();
+        let pixel = [mapped[0], mapped[1], mapped[2], mapped[3]];
+        drop(mapped);
+        buffer.unmap();
+        pixel
+    }
+
+    #[test]
+    fn reject_empty_stage_graph() {
+        let err = fuse_stages(&[]).expect_err("empty stage graph should fail");
+        assert_eq!(err, "filter graph produced no stages");
+    }
+
+    #[test]
+    fn reject_invalid_color_stage_program() {
+        let stages = [AtomicStage {
+            kind: AtomicStageKind::ColorFragment("@fragment fn fs_main() {}"),
+            param_count: 0,
+        }];
+
+        let err = fuse_stages(&stages).expect_err("full shader in color stage should fail");
+        assert_eq!(
+            err,
+            "color-only stage must provide a fragment snippet, not a full shader program"
+        );
+    }
+
+    #[test]
+    fn reject_invalid_spatial_stage_snippet() {
+        let stages = [AtomicStage {
+            kind: AtomicStageKind::SpatialShader("color = vec4<f32>(1.0);"),
+            param_count: 1,
+        }];
+
+        let err = fuse_stages(&stages).expect_err("spatial stage without @compute should fail");
+        assert_eq!(err, "spatial stage must provide a full compute shader");
+    }
+
+    #[test]
+    fn fuse_adjacent_color_stages() {
+        let filter = Chain {
+            first: filtrate_core::filters::Brightness(0.2f32),
+            second: Chain {
+                first: filtrate_core::filters::Contrast(1.1f32),
+                second: filtrate_core::filters::Invert,
+            },
+        };
+
+        let mut stages = Vec::new();
+        filter.collect_stages(&mut stages);
+        let passes = fuse_stages(&stages).expect("fuse should succeed");
+
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].param_offset, 0);
+        assert_eq!(passes[0].param_count, 2);
+        assert!(matches!(passes[0].kind, PlannedPassKind::Color { .. }));
+    }
+
+    #[test]
+    fn keep_spatial_boundaries() {
+        let filter = Chain {
+            first: filtrate_core::filters::Blur(2.0f32),
+            second: Chain {
+                first: filtrate_core::filters::Brightness(0.1f32),
+                second: filtrate_core::filters::Sharpen(0.8f32),
+            },
+        };
+
+        let mut stages = Vec::new();
+        filter.collect_stages(&mut stages);
+        let passes = fuse_stages(&stages).expect("fuse should succeed");
+
+        assert_eq!(passes.len(), 3);
+        assert!(matches!(passes[0].kind, PlannedPassKind::Spatial { .. }));
+        assert!(matches!(passes[1].kind, PlannedPassKind::Color { .. }));
+        assert!(matches!(passes[2].kind, PlannedPassKind::Spatial { .. }));
+    }
+
+    #[test]
+    fn preserve_param_offsets_across_fused_and_spatial_passes() {
+        let filter = Chain {
+            first: filtrate_core::filters::Brightness(0.2f32),
+            second: Chain {
+                first: filtrate_core::filters::Contrast(1.1f32),
+                second: Chain {
+                    first: filtrate_core::filters::Blur(2.0f32),
+                    second: filtrate_core::filters::Sepia(0.7f32),
+                },
+            },
+        };
+
+        let mut stages = Vec::new();
+        filter.collect_stages(&mut stages);
+        let passes = fuse_stages(&stages).expect("fuse should succeed");
+
+        assert_eq!(passes.len(), 3);
+        assert_eq!(passes[0].param_offset, 0);
+        assert_eq!(passes[0].param_count, 2);
+        assert_eq!(passes[1].param_offset, 2);
+        assert_eq!(passes[1].param_count, 1);
+        assert_eq!(passes[2].param_offset, 3);
+        assert_eq!(passes[2].param_count, 1);
+    }
+
+    type HugeParams = (
+        (
+            (
+                (((([f32; 8], [f32; 8]), [f32; 8]), [f32; 8]), [f32; 8]),
+                [f32; 8],
+            ),
+            [f32; 8],
+        ),
+        ([f32; 8], [f32; 8]),
+    );
+
+    #[derive(Debug, Clone, Copy)]
+    struct HugeFilter;
+
+    impl Filter for HugeFilter {
+        const COLOR_ONLY: bool = true;
+        type Params = HugeParams;
+        type Fragments = &'static str;
+
+        fn params(&self) -> Self::Params {
+            (
+                (
+                    (
+                        (((([0.0; 8], [0.0; 8]), [0.0; 8]), [0.0; 8]), [0.0; 8]),
+                        [0.0; 8],
+                    ),
+                    [0.0; 8],
+                ),
+                ([0.0; 8], [0.0; 8]),
+            )
+        }
+
+        fn fragments(&self) -> Self::Fragments {
+            include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl")
         }
     }
-}
 
-impl<F: Filter, S: Signal<Output = f32> + 'static> GpuFilter for AnimatedFilterAdapter<F, S> {
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()> {
-        GpuFilter::setup(&mut self.adapter, ctx)
+    impl FilterGraph for HugeFilter {
+        fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+            push_color_stage(
+                out,
+                include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl"),
+                <Self::Params as ParamArray>::LEN,
+            );
+        }
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        GpuFilter::render(&mut self.adapter, input, output)
+    #[test]
+    fn fast_fail_when_param_count_exceeds_uniform_limit() {
+        assert!(<HugeParams as ParamArray>::LEN > MAX_FILTER_PARAMS);
+
+        let mut adapter = FilterAdapter::new(HugeFilter);
+        let needs_redraw = adapter.update_interpolated_params();
+        assert!(!needs_redraw);
+    }
+
+    #[test]
+    fn prefer_hdr_scratch_format_for_hdr_input_or_output() {
+        assert_eq!(
+            preferred_scratch_format(
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureFormat::Bgra8Unorm
+            ),
+            wgpu::TextureFormat::Rgba16Float
+        );
+        assert_eq!(
+            preferred_scratch_format(
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Rgba16Float
+            ),
+            wgpu::TextureFormat::Rgba16Float
+        );
+        assert_eq!(
+            preferred_scratch_format(
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm
+            ),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+    }
+
+    #[test]
+    fn specialize_spatial_shader_rewrites_storage_format_token() {
+        let src =
+            "@group(0) @binding(2) var out_tex: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;";
+        let shader = specialize_spatial_shader(src, wgpu::TextureFormat::Rgba16Float)
+            .expect("specialization should succeed");
+        assert!(shader.contains("texture_storage_2d<rgba16float, write>"));
+        assert!(!shader.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+    }
+
+    #[test]
+    fn spatial_uniform_data_uses_vec4_packed_layout() {
+        let data = build_spatial_uniform_data(320, 240, 640, 480, &[2.0, 3.0]);
+        assert_eq!(data.len(), 4 + MAX_FILTER_PARAMS);
+        assert_eq!(data[0], 320.0);
+        assert_eq!(data[1], 240.0);
+        assert_eq!(data[2], 640.0);
+        assert_eq!(data[3], 480.0);
+        assert_eq!(data[4], 2.0);
+        assert_eq!(data[5], 3.0);
+    }
+
+    #[test]
+    fn color_uniform_data_uses_fixed_array_layout() {
+        let data = build_color_uniform_data(800, 600, &[1.0, 2.0]);
+        assert_eq!(data.len(), 4 + MAX_FILTER_PARAMS);
+        assert_eq!(data[0], 800.0);
+        assert_eq!(data[1], 600.0);
+        assert_eq!(data[4], 1.0);
+        assert_eq!(data[5], 2.0);
+    }
+
+    #[test]
+    fn hdr_color_fragments_do_not_clamp_to_unit_range() {
+        let brightness =
+            include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl");
+        let contrast =
+            include_str!("../../../utils/filtrate-core/src/shaders/fragments/contrast.wgsl");
+        let sharpen = include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl");
+
+        assert!(!brightness.contains("clamp("));
+        assert!(!contrast.contains("clamp("));
+        assert!(!sharpen.contains("clamp(result.rgb"));
+    }
+
+    #[test]
+    fn spatial_shaders_use_dynamic_storage_format_and_texture_load() {
+        let blur = include_str!("../../../utils/filtrate-core/src/shaders/blur.wgsl");
+        let sharpen = include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl");
+
+        assert!(blur.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+        assert!(sharpen.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+        assert!(blur.contains("textureLoad("));
+        assert!(sharpen.contains("textureLoad("));
+        assert!(!blur.contains("input_sampler"));
+        assert!(!sharpen.contains("input_sampler"));
+    }
+
+    #[test]
+    fn hdr_policy_builders_update_adapter_policy() {
+        let adapter = FilterAdapter::new(filtrate_core::filters::Blur(2.0f32));
+        assert_eq!(adapter.hdr_policy, HdrPolicy::PreferHdr);
+
+        let adapter = adapter.require_hdr();
+        assert_eq!(adapter.hdr_policy, HdrPolicy::RequireHdr);
+
+        let adapter = adapter.force_ldr();
+        assert_eq!(adapter.hdr_policy, HdrPolicy::ForceLdr);
+    }
+
+    #[test]
+    fn then_preserves_hdr_policy() {
+        let adapter = FilterAdapter::new(filtrate_core::filters::Blur(2.0f32)).require_hdr();
+        let chained = adapter.then(filtrate_core::filters::Sharpen(1.0f32));
+        assert_eq!(chained.hdr_policy, HdrPolicy::RequireHdr);
+    }
+
+    #[test]
+    fn gpu_color_filter_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+
+        let width = 8;
+        let height = 8;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gpu color input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let input_data = vec![0u8; (width * height * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gpu color output"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let mut adapter = FilterAdapter::new(filtrate_core::filters::Brightness(0.25f32));
+        let ctx = FilterContext {
+            device,
+            queue,
+            input_format: format,
+            output_format: format,
+            pipeline_cache: None,
+        };
+        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+
+        let input = FilterInput {
+            device: &device,
+            queue: &queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+        let output = FilterOutput {
+            device: &device,
+            queue: &queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+
+        let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
+        assert!(!needs_redraw);
+
+        let pixel = readback_rgba8_pixel(device, queue, &output_texture, width, height);
+        assert!(pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0);
+    }
+
+    #[test]
+    fn gpu_spatial_filter_supports_mismatched_input_output_sizes() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let adapter_info = &gpu.adapter_info;
+
+        let in_width = 6;
+        let in_height = 4;
+        let out_width = 11;
+        let out_height = 7;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gpu spatial input"),
+            size: wgpu::Extent3d {
+                width: in_width,
+                height: in_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let input_data = vec![255u8; (in_width * in_height * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(in_width * 4),
+                rows_per_image: Some(in_height),
+            },
+            wgpu::Extent3d {
+                width: in_width,
+                height: in_height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter gpu spatial output"),
+            size: wgpu::Extent3d {
+                width: out_width,
+                height: out_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let ctx = FilterContext {
+            device,
+            queue,
+            input_format: format,
+            output_format: format,
+            pipeline_cache: None,
+        };
+        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        if adapter.has_setup_error() {
+            eprintln!(
+                "Skipping spatial GPU test on adapter {} ({:?}): unsupported capability ({:?})",
+                adapter_info.name, adapter_info.backend, adapter.setup_error,
+            );
+            eprintln!(
+                "Adapter storage support: rgba8={}, rgba16f={}",
+                gpu.rgba8_storage, gpu.rgba16_storage
+            );
+            return;
+        }
+        assert!(
+            !adapter.passes.is_empty(),
+            "spatial passes should be compiled"
+        );
+
+        let input = FilterInput {
+            device: &device,
+            queue: &queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: in_width,
+            height: in_height,
+        };
+        let output = FilterOutput {
+            device: &device,
+            queue: &queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width: out_width,
+            height: out_height,
+        };
+
+        let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
+        assert!(!needs_redraw);
+
+        let pixel = readback_rgba8_pixel(device, queue, &output_texture, out_width, out_height);
+        assert!(
+            pixel.iter().any(|&c| c > 0),
+            "spatial output should not be all zeros, got {pixel:?}"
+        );
     }
 }
 
@@ -1395,7 +2350,8 @@ pub trait FilterViewExt: View + Sized {
         radius: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Blur<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1409,7 +2365,8 @@ pub trait FilterViewExt: View + Sized {
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Brightness<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1423,7 +2380,8 @@ pub trait FilterViewExt: View + Sized {
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Contrast<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1437,7 +2395,8 @@ pub trait FilterViewExt: View + Sized {
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Saturation<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1451,7 +2410,8 @@ pub trait FilterViewExt: View + Sized {
         intensity: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Grayscale<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1467,7 +2427,8 @@ pub trait FilterViewExt: View + Sized {
         angle: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::HueRotation<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1486,7 +2447,8 @@ pub trait FilterViewExt: View + Sized {
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Opacity<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1500,7 +2462,8 @@ pub trait FilterViewExt: View + Sized {
         intensity: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sepia<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1514,7 +2477,8 @@ pub trait FilterViewExt: View + Sized {
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sharpen<T::Signal>>>
     where
-        T::Signal: 'static,
+        T::Signal: Signal<Output = f32> + 'static,
+        <T::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,
@@ -1528,6 +2492,11 @@ pub trait FilterViewExt: View + Sized {
         radius: R,
         softness: S,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Vignette<R::Signal, S::Signal>>>
+    where
+        R::Signal: Signal<Output = f32> + 'static,
+        S::Signal: Signal<Output = f32> + 'static,
+        <R::Signal as Signal>::Guard: 'static,
+        <S::Signal as Signal>::Guard: 'static,
     {
         FilteredView::new(
             self,

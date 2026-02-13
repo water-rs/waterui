@@ -2,8 +2,8 @@
 //!
 //! This module provides two distinct video components:
 //!
-//! - [`Video`]: A raw view that displays video without controls (uses AVPlayerLayer/SurfaceView)
-//! - [`VideoPlayer`]: A full-featured player with native controls (uses AVPlayerViewController/ExoPlayer)
+//! - [`Video`]: A raw view that displays video without controls.
+//! - [`VideoPlayer`]: A full-featured player view for standard playback UX.
 //!
 //! ## Volume Control System
 //!
@@ -15,7 +15,7 @@
 //! ## Examples
 //!
 //! ```ignore
-//! use waterui_media::{Video, VideoPlayer};
+//! use waterui_video::{Video, VideoPlayer};
 //! use waterui_core::binding;
 //!
 //! // Raw video view - no controls, just displays video
@@ -125,8 +125,8 @@ configurable!(
     ///
     /// # Platform Implementation
     ///
-    /// - **iOS/macOS**: Uses `AVPlayerLayer` directly
-    /// - **Android**: Uses `SurfaceView` with ExoPlayer
+    /// - **iOS/macOS**: currently native-backed raw surface
+    /// - **Android**: currently runtime-managed raw surface
     Video,
     VideoConfig,
     |config| match config.aspect_ratio {
@@ -230,17 +230,17 @@ impl core::fmt::Debug for VideoPlayerConfig {
 }
 
 configurable!(
-    /// A full-featured video player with native playback controls.
+    /// A full-featured video player component.
     ///
     /// Use this component when you want a complete video playback experience
-    /// with platform-native controls (play/pause, seek, fullscreen, etc.).
+    /// with a platform-appropriate control experience (play/pause, seek,
+    /// fullscreen, etc.).
     /// For a raw video view without controls, use [`Video`] instead.
     ///
     /// # Platform Implementation
     ///
-    /// - **iOS/tvOS**: Uses `AVPlayerViewController` with standard iOS controls
-    /// - **macOS**: Uses `AVPlayerView` with inline controls
-    /// - **Android**: Uses ExoPlayer with `PlayerView`
+    /// - **Apple platforms**: native player controls
+    /// - **Android**: WaterUI/Rust player controls
     VideoPlayer,
     VideoPlayerConfig,
     |config| match config.aspect_ratio {

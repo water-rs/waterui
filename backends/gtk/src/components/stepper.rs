@@ -8,7 +8,7 @@ use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<StepperConfig> {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
@@ -45,7 +45,7 @@ impl GtkComponent for Native<StepperConfig> {
 
         // Two-way binding: Binding -> SpinButton
         let binding = config.value;
-        let guard = binding.clone().computed().watch({
+        let value_guard = binding.clone().computed().watch({
             let spin_button = spin_button.clone();
             move |ctx: nami::watcher::Context<i32>| {
                 let value = ctx.into_value();
@@ -59,7 +59,19 @@ impl GtkComponent for Native<StepperConfig> {
                 });
             }
         });
-        store_watcher_guard(&spin_button, guard);
+
+        let step_guard = config.step.watch({
+            let adjustment = adjustment.clone();
+            move |ctx| {
+                let step = ctx.into_value();
+                let adjustment = adjustment.clone();
+                glib::idle_add_local_once(move || {
+                    adjustment.set_step_increment(f64::from(step));
+                    adjustment.set_page_increment(f64::from(step.saturating_mul(10)));
+                });
+            }
+        });
+        store_watcher_guards(&spin_button, vec![value_guard, step_guard]);
 
         // Two-way binding: SpinButton -> Binding
         let binding_for_signal = binding.clone();

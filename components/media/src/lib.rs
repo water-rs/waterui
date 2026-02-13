@@ -34,9 +34,9 @@
 //! use waterui_media::{Video, VideoPlayer, url::Url};
 //!
 //! let url = Url::parse("https://example.com/video.mp4").unwrap();
-//! let video = Video::new(url);
 //! let muted = binding(false);
-//! let _player = VideoPlayer::new(video).muted(&muted);
+//! let _video = Video::new(url.clone());
+//! let _player = VideoPlayer::new(url).muted(&muted);
 //! ```
 //!
 //! ### Unified Media Type
@@ -72,16 +72,15 @@ pub mod photo;
 
 /// Media picker functionality for platform-native media selection.
 pub mod media_picker;
-/// Video components and types.
-///
-/// This module provides [`Video`] sources and [`VideoPlayer`] components
-/// for video playback with reactive controls.
-pub mod video;
+/// Video components and types re-exported from `waterui-video`.
+pub mod video {
+    pub use waterui_video::video::*;
+}
 pub use {
     image::Image,
     live::LivePhoto,
     photo::Photo,
-    video::{AspectRatio, Video, VideoConfig, VideoPlayer, VideoPlayerConfig},
+    video::{AspectRatio, Event, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
 };
 
 /// Re-export filtrate's Filter enum for GPU-accelerated image filters.
@@ -101,7 +100,7 @@ use crate::live::LivePhotoSource;
 ///
 /// This enum automatically chooses the appropriate component when used as a View:
 /// - [`Media::Image`] renders as a [`Photo`] component
-/// - [`Media::Video`] renders as a [`Video`] component  
+/// - [`Media::Video`] renders as a [`VideoPlayer`] component
 /// - [`Media::LivePhoto`] renders as a [`LivePhoto`] component
 ///
 /// # Examples
@@ -125,7 +124,7 @@ pub enum Media {
     Image(Url),
     /// A Live Photo with image and video components that will be displayed using the [`LivePhoto`] component.
     LivePhoto(LivePhotoSource),
-    /// A video from a URL that will be displayed using the [`Video`] component.
+    /// A video from a URL that will be displayed using the [`VideoPlayer`] component.
     Video(Url),
 }
 

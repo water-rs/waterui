@@ -9,7 +9,7 @@ use core::ops::AddAssign;
 use nami::impl_constant;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use waterui_core::{Str, View};
-use waterui_graphics::color::Color;
+use waterui_graphics::color::{Color, Srgb};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
@@ -134,10 +134,10 @@ impl StyledStr {
         Self { chunks: Vec::new() }
     }
 
-    /// Creates a styled string from a subset of Markdown.
+    /// Creates a styled string from Markdown inline semantics.
     ///
-    /// Supported features include headings, bold, and italic text. Other
-    /// Markdown constructs are preserved as plain text.
+    /// Supported features include headings, emphasis, strong text,
+    /// strikethrough, and inline code styling.
     #[must_use]
     pub fn from_markdown(markdown: &str) -> Self {
         let options =
@@ -165,6 +165,7 @@ impl StyledStr {
                     }
                     Tag::Emphasis => builder.enter_emphasis(),
                     Tag::Strong => builder.enter_strong(),
+                    Tag::Strikethrough => builder.enter_strikethrough(),
                     Tag::CodeBlock(kind) => {
                         if pending_block_break || !builder.is_empty() {
                             builder.push_text("\n\n");
@@ -195,13 +196,14 @@ impl StyledStr {
                     | pulldown_cmark::TagEnd::List(_) => {
                         pending_block_break = true;
                     }
-                    pulldown_cmark::TagEnd::Emphasis | pulldown_cmark::TagEnd::Strong => {
+                    pulldown_cmark::TagEnd::Emphasis
+                    | pulldown_cmark::TagEnd::Strong
+                    | pulldown_cmark::TagEnd::Strikethrough => {
                         builder.exit();
                     }
                     _ => {}
                 },
                 Event::Text(text)
-                | Event::Code(text)
                 | Event::Html(text)
                 | Event::FootnoteReference(text)
                 | Event::InlineMath(text)
@@ -212,6 +214,13 @@ impl StyledStr {
                         pending_block_break = false;
                     }
                     builder.push_text(text.as_ref());
+                }
+                Event::Code(text) => {
+                    if pending_block_break && !builder.is_empty() {
+                        builder.push_text("\n\n");
+                        pending_block_break = false;
+                    }
+                    builder.push_inline_code(text.as_ref());
                 }
                 Event::SoftBreak => builder.push_soft_break(),
                 Event::HardBreak => builder.push_hard_break(),
@@ -457,6 +466,23 @@ impl MarkdownInlineBuilder {
         self.enter_with(Style::bold);
     }
 
+    /// Enters a strikethrough styled span.
+    pub fn enter_strikethrough(&mut self) {
+        self.enter_with(Style::strikethrough);
+    }
+
+    /// Enters an inline code styled span.
+    pub fn enter_code(&mut self) {
+        self.enter_with(inline_code_style);
+    }
+
+    /// Pushes inline code text with code styling applied.
+    pub fn push_inline_code(&mut self, text: &str) {
+        self.enter_code();
+        self.push_text(text);
+        self.exit();
+    }
+
     /// Returns `true` if the builder has emitted no content yet.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -512,6 +538,12 @@ pub fn heading_style(level: HeadingLevel) -> Style {
     };
 
     Style::default().font(font).bold()
+}
+
+fn inline_code_style(mut style: Style) -> Style {
+    style.font = style.font.clone().family("monospace");
+    style.background = Some(Color::from(Srgb::new_u8(236, 239, 241)));
+    style
 }
 
 impl View for StyledStr {
@@ -595,5 +627,23 @@ mod tests {
         let chunks = styled.into_chunks();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].0.as_str(), "Title");
+    }
+
+    #[test]
+    fn parses_strikethrough_markdown() {
+        let styled = StyledStr::from_markdown("Normal ~~removed~~ text");
+        let chunks = styled.into_chunks();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[1].0.as_str(), "removed");
+        assert!(chunks[1].1.strikethrough);
+    }
+
+    #[test]
+    fn parses_inline_code_markdown() {
+        let styled = StyledStr::from_markdown("Run `cargo test` now");
+        let chunks = styled.into_chunks();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[1].0.as_str(), "cargo test");
+        assert!(chunks[1].1.background.is_some());
     }
 }

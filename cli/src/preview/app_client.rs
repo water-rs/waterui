@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use color_eyre::eyre::WrapErr as _;
@@ -15,7 +17,7 @@ use super::protocol::{
     AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size,
 };
 
-use waterui_preview_protocol::transport::{read_json_frame, write_json_frame};
+use waterui_preview_protocol::transport::{read_frame, write_frame};
 
 /// TCP client for the preview support app.
 #[derive(Debug)]
@@ -25,38 +27,30 @@ pub struct PreviewAppClient {
     present_dylibs: HashSet<DylibId>,
 }
 
+static LAST_SUCCESSFUL_PORT: AtomicU16 = AtomicU16::new(0);
+
 impl PreviewAppClient {
     /// Try to connect to a running preview app.
     ///
     /// # Errors
     /// Returns an error if no preview app is found.
     pub async fn connect(config: PreviewTcpConfig) -> Result<Self> {
+        let preferred = preferred_port(config);
+        if let Some(port) = preferred {
+            if let Some(client) = Self::connect_on_port(config, port).await {
+                LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
+                return Ok(client);
+            }
+        }
+
         for port in config.ports() {
-            let addr = SocketAddr::new(config.host, port);
-            if let Ok(stream) = connect_with_timeout(addr, connect_timeout()).await {
-                tracing::info!("Connected to preview app on {addr}");
-
-                let _ = stream.set_nodelay(true);
-
-                let mut client = Self {
-                    stream,
-                    present_dylibs: HashSet::new(),
-                };
-
-                // Fast handshake: ensure the server is responsive (not just accepting TCP).
-                //
-                // Some failure modes leave the TCP listener alive while the single render worker
-                // is wedged, causing all requests to hang. A short Ping roundtrip detects this.
-                let handshake = AppRequest::Ping;
-                if let Ok(waterui_preview_protocol::PreviewResponse::Pong) = client
-                    .request_with_timeout(handshake, handshake_timeout())
-                    .await
-                {
-                    return Ok(client);
-                }
-
-                // Not responsive - try the next port.
+            if Some(port) == preferred {
                 continue;
+            }
+
+            if let Some(client) = Self::connect_on_port(config, port).await {
+                LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
+                return Ok(client);
             }
         }
 
@@ -65,6 +59,33 @@ impl PreviewAppClient {
             config.port_start,
             config.ports().end()
         )
+    }
+
+    async fn connect_on_port(config: PreviewTcpConfig, port: u16) -> Option<Self> {
+        let addr = SocketAddr::new(config.host, port);
+        let stream = connect_with_timeout(addr, connect_timeout()).await.ok()?;
+
+        tracing::info!("Connected to preview app on {addr}");
+        let _ = stream.set_nodelay(true);
+
+        let mut client = Self {
+            stream,
+            present_dylibs: HashSet::new(),
+        };
+
+        // Fast handshake: ensure the server is responsive (not just accepting TCP).
+        //
+        // Some failure modes leave the TCP listener alive while the single render worker
+        // is wedged, causing all requests to hang. A short Ping roundtrip detects this.
+        let handshake = AppRequest::Ping;
+        if let Ok(waterui_preview_protocol::PreviewResponse::Pong) = client
+            .request_with_timeout(handshake, handshake_timeout())
+            .await
+        {
+            return Some(client);
+        }
+
+        None
     }
 
     /// Render a view symbol to PNG bytes.
@@ -79,6 +100,55 @@ impl PreviewAppClient {
         self.render_with_dylib_source(dylib_id, dylib_bytes, symbol, width, height)
             .await
             .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
+    }
+
+    /// Render a view symbol, loading dylib bytes from file only when needed.
+    pub async fn render_with_dylib_file(
+        &mut self,
+        dylib_id: DylibId,
+        dylib_path: &Path,
+        symbol: &str,
+        width: f32,
+        height: f32,
+    ) -> Result<Vec<u8>, AppError> {
+        if self.present_dylibs.contains(&dylib_id) {
+            return self
+                .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
+                .await;
+        }
+
+        let present = self
+            .has_dylib(dylib_id)
+            .await
+            .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
+        if present {
+            self.present_dylibs.insert(dylib_id);
+            return self
+                .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
+                .await;
+        }
+
+        let dylib_bytes = smol::fs::read(dylib_path)
+            .await
+            .map_err(|e| AppError::RenderFailed(format!("failed to read dylib: {e}")))?;
+
+        let result = self
+            .render_with_source(
+                DylibSource::Bytes {
+                    id: dylib_id,
+                    bytes: dylib_bytes,
+                },
+                symbol,
+                width,
+                height,
+            )
+            .await;
+
+        if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
+            self.present_dylibs.insert(dylib_id);
+        }
+
+        result
     }
 
     /// Render a view symbol, returning structured app errors for fallback logic.
@@ -101,7 +171,6 @@ impl PreviewAppClient {
                 self.present_dylibs.insert(dylib_id);
                 DylibSource::Cached { id: dylib_id }
             } else {
-                self.present_dylibs.insert(dylib_id);
                 DylibSource::Bytes {
                     id: dylib_id,
                     bytes: dylib_bytes.to_vec(),
@@ -109,6 +178,24 @@ impl PreviewAppClient {
             }
         };
 
+        let result = self.render_with_source(dylib, symbol, width, height).await;
+
+        if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
+            self.present_dylibs.insert(dylib_id);
+        } else if matches!(result, Err(AppError::UnknownDylibId(_))) {
+            self.present_dylibs.remove(&dylib_id);
+        }
+
+        result
+    }
+
+    async fn render_with_source(
+        &mut self,
+        dylib: DylibSource,
+        symbol: &str,
+        width: f32,
+        height: f32,
+    ) -> Result<Vec<u8>, AppError> {
         let request = AppRequest::Render {
             dylib,
             symbol: symbol.to_string(),
@@ -158,12 +245,12 @@ impl PreviewAppClient {
         timeout: Duration,
     ) -> Result<AppResponse> {
         let kind = request_kind(&request);
-        write_json_frame(&mut self.stream, &request)
+        write_frame(&mut self.stream, &request)
             .await
             .wrap_err("Failed to send request")?;
 
         let recv = async {
-            match read_json_frame::<_, AppResponse>(&mut self.stream).await {
+            match read_frame::<_, AppResponse>(&mut self.stream).await {
                 Ok(response) => Ok(response),
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     bail!(
@@ -186,6 +273,14 @@ impl PreviewAppClient {
             }
         }
     }
+}
+
+fn preferred_port(config: PreviewTcpConfig) -> Option<u16> {
+    let preferred = LAST_SUCCESSFUL_PORT.load(Ordering::Relaxed);
+    if preferred == 0 {
+        return Some(config.port_start);
+    }
+    config.ports().contains(&preferred).then_some(preferred)
 }
 
 fn connect_timeout() -> Duration {

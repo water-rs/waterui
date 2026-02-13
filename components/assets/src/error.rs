@@ -76,7 +76,7 @@ impl fmt::Display for AssetError {
             Self::HttpNotAllowed { url } => {
                 write!(
                     f,
-                    "HTTP not allowed (use HTTPS): {url}. Only localhost permits HTTP."
+                    "HTTP not allowed (use HTTPS): {url}. Only loopback hosts permit HTTP."
                 )
             }
         }

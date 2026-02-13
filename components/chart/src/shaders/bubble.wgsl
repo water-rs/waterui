@@ -36,8 +36,10 @@ struct VertexOutput {
 // Convert data coordinates to padded NDC
 fn data_to_padded_ndc(x: f32, y: f32) -> vec2<f32> {
     let padding = 0.1;
-    let norm_x = (x - uniforms.bounds.x) / (uniforms.bounds.y - uniforms.bounds.x);
-    let norm_y = (y - uniforms.bounds.z) / (uniforms.bounds.w - uniforms.bounds.z);
+    let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
+    let y_range = max(uniforms.bounds.w - uniforms.bounds.z, 1e-6);
+    let norm_x = (x - uniforms.bounds.x) / x_range;
+    let norm_y = (y - uniforms.bounds.z) / y_range;
     let ndc_x = (norm_x * (1.0 - 2.0 * padding) + padding) * 2.0 - 1.0;
     let ndc_y = (norm_y * (1.0 - 2.0 * padding) + padding) * 2.0 - 1.0;
     return vec2<f32>(ndc_x, ndc_y);

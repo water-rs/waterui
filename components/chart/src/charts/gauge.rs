@@ -64,6 +64,10 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
     /// Default is -135° to 135° (270° arc).
     #[must_use]
     pub fn arc_degrees(mut self, start: f32, end: f32) -> Self {
+        assert!(
+            start.is_finite() && end.is_finite() && end > start,
+            "GaugeChart::arc_degrees(start, end) requires finite end > start"
+        );
         self.start_angle = start * PI / 180.0;
         self.end_angle = end * PI / 180.0;
         self
@@ -72,6 +76,10 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
     /// Sets the arc angle range in radians.
     #[must_use]
     pub fn arc_radians(mut self, start: f32, end: f32) -> Self {
+        assert!(
+            start.is_finite() && end.is_finite() && end > start,
+            "GaugeChart::arc_radians(start, end) requires finite end > start"
+        );
         self.start_angle = start;
         self.end_angle = end;
         self
@@ -80,6 +88,10 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
     /// Sets the inner and outer radius (0.0 to 0.5, relative to widget size).
     #[must_use]
     pub fn radii(mut self, inner: f32, outer: f32) -> Self {
+        assert!(
+            inner.is_finite() && outer.is_finite() && inner >= 0.0 && outer > inner && outer <= 0.5,
+            "GaugeChart::radii(inner, outer) requires 0.0 <= inner < outer <= 0.5"
+        );
         self.inner_radius = inner;
         self.outer_radius = outer;
         self

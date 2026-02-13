@@ -93,6 +93,10 @@ impl GaugeRenderer {
     /// Default is -135° to 135° (270° arc).
     #[must_use]
     pub fn arc_angles(mut self, start: f32, end: f32) -> Self {
+        assert!(
+            start.is_finite() && end.is_finite() && end > start,
+            "Gauge renderer arc requires finite end > start"
+        );
         self.start_angle = start;
         self.end_angle = end;
         self
@@ -101,6 +105,10 @@ impl GaugeRenderer {
     /// Sets the inner and outer radius (0.0 to 0.5, relative to widget size).
     #[must_use]
     pub fn radii(mut self, inner: f32, outer: f32) -> Self {
+        assert!(
+            inner.is_finite() && outer.is_finite() && inner >= 0.0 && outer > inner && outer <= 0.5,
+            "Gauge renderer radii require 0.0 <= inner < outer <= 0.5"
+        );
         self.inner_radius = inner;
         self.outer_radius = outer;
         self
@@ -277,10 +285,16 @@ impl GpuRenderer for GaugeRenderer {
             &uniforms,
         ));
 
-        let colors = self.get_region_colors();
+        let mut colors = self.get_region_colors();
+        if colors.len() < 256 {
+            colors.resize(256, glam::Vec4::ZERO);
+        }
         self.region_color_buffer = Some(create_storage_buffer(ctx, "Gauge Region Colors", &colors));
 
-        let thresholds = self.get_region_thresholds();
+        let mut thresholds = self.get_region_thresholds();
+        if thresholds.len() < 256 {
+            thresholds.resize(256, 0.0);
+        }
         self.region_threshold_buffer = Some(create_storage_buffer(
             ctx,
             "Gauge Region Thresholds",
@@ -434,7 +448,7 @@ impl ChartRenderer for GaugeRenderer {
     type Data = GaugeData;
     type DataValue = f32;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         self.previous_value = self.data.value;
         self.data = data.clone();
 

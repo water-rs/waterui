@@ -103,21 +103,39 @@ impl BubbleRenderer {
 
     /// Sets the minimum bubble radius in pixels.
     #[must_use]
-    pub const fn min_radius(mut self, radius: f32) -> Self {
+    pub fn min_radius(mut self, radius: f32) -> Self {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "Bubble min radius must be > 0"
+        );
         self.min_radius = radius;
+        if self.max_radius < self.min_radius {
+            self.max_radius = self.min_radius;
+        }
         self
     }
 
     /// Sets the maximum bubble radius in pixels.
     #[must_use]
-    pub const fn max_radius(mut self, radius: f32) -> Self {
+    pub fn max_radius(mut self, radius: f32) -> Self {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "Bubble max radius must be > 0"
+        );
         self.max_radius = radius;
+        if self.max_radius < self.min_radius {
+            self.min_radius = self.max_radius;
+        }
         self
     }
 
     /// Sets the bubble opacity.
     #[must_use]
-    pub const fn opacity(mut self, opacity: f32) -> Self {
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        assert!(
+            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
+            "Bubble opacity must be in [0.0, 1.0]"
+        );
         self.opacity = opacity;
         self
     }
@@ -249,11 +267,14 @@ impl GpuRenderer for BubbleRenderer {
         let uniforms = BubbleUniforms::default();
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Bubble Uniforms", &uniforms));
 
-        let initial_points = if self.data.is_empty() {
-            vec![GpuBubblePoint::default()]
+        let mut initial_points = if self.data.is_empty() {
+            vec![GpuBubblePoint::default(); 16384]
         } else {
             self.to_gpu_points()
         };
+        if initial_points.len() < 16384 {
+            initial_points.resize(16384, GpuBubblePoint::default());
+        }
         self.point_buffer = Some(create_storage_buffer(ctx, "Bubble Points", &initial_points));
 
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
@@ -402,7 +423,7 @@ impl ChartRenderer for BubbleRenderer {
     type Data = Vec<BubblePoint>;
     type DataValue = BubblePoint;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         self.data = data.clone();
         let (bounds, size_bounds) = Self::compute_bounds(data);
         self.bounds = bounds;

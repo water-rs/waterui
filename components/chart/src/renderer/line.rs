@@ -100,11 +100,16 @@ impl LineChartRenderer {
 
     /// Sets the line width in pixels.
     pub fn set_line_width(&mut self, width: f32) {
+        assert!(width.is_finite() && width > 0.0, "Line width must be > 0");
         self.line_width = width;
     }
 
     /// Enables area fill below the line.
     pub fn set_fill(&mut self, show: bool, opacity: f32) {
+        assert!(
+            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
+            "Fill opacity must be in [0.0, 1.0]"
+        );
         self.show_fill = show;
         self.fill_opacity = opacity;
     }
@@ -219,7 +224,7 @@ impl GpuRenderer for LineChartRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Line Chart Uniforms", &uniforms));
 
         // Create data buffers with initial capacity
-        let initial_capacity = self.data.len().max(64);
+        let initial_capacity = self.data.len().max(16384);
         let initial_data: Vec<GpuLinePoint> = self
             .data
             .iter()
@@ -313,7 +318,7 @@ impl GpuRenderer for LineChartRenderer {
         let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
 
         // Update uniforms with transformed bounds
-        let uniforms = LineUniforms {
+        let base_uniforms = LineUniforms {
             chart: ChartUniforms {
                 viewport: glam::Vec4::new(
                     frame.width as f32,
@@ -361,12 +366,8 @@ impl GpuRenderer for LineChartRenderer {
             show_fill: if self.show_fill { 1.0 } else { 0.0 },
             fill_opacity: self.fill_opacity,
             point_count: self.data.len() as f32,
+            render_mode: 0.0,
         };
-        write_uniform_buffer(
-            frame.queue,
-            self.uniform_buffer.as_ref().unwrap(),
-            &uniforms,
-        );
 
         // Render line segments
         let mut encoder = frame
@@ -375,7 +376,88 @@ impl GpuRenderer for LineChartRenderer {
                 label: Some("Line Chart Encoder"),
             });
 
-        {
+        let segment_count = (self.data.len() - 1) as u32;
+        if self.show_fill {
+            let mut fill_uniforms = base_uniforms;
+            fill_uniforms.render_mode = 1.0;
+            write_uniform_buffer(
+                frame.queue,
+                self.uniform_buffer.as_ref().unwrap(),
+                &fill_uniforms,
+            );
+
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+                self.msaa_samples,
+            );
+
+            {
+                let mut fill_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Line Chart Fill Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: color_view,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+
+                fill_pass.set_pipeline(pipeline);
+                fill_pass.set_bind_group(0, bind_group, &[]);
+                fill_pass.draw(0..6, 0..segment_count);
+            }
+
+            let line_uniforms = base_uniforms;
+            write_uniform_buffer(
+                frame.queue,
+                self.uniform_buffer.as_ref().unwrap(),
+                &line_uniforms,
+            );
+
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+                self.msaa_samples,
+            );
+            {
+                let mut line_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Line Chart Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: color_view,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+
+                line_pass.set_pipeline(pipeline);
+                line_pass.set_bind_group(0, bind_group, &[]);
+                line_pass.draw(0..6, 0..segment_count);
+            }
+        } else {
+            write_uniform_buffer(
+                frame.queue,
+                self.uniform_buffer.as_ref().unwrap(),
+                &base_uniforms,
+            );
+
             let (color_view, resolve_target) = msaa_attachment(
                 &mut self.msaa_target,
                 frame.device,
@@ -402,8 +484,6 @@ impl GpuRenderer for LineChartRenderer {
 
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
-            // 6 vertices per segment (2 triangles), one segment per pair of adjacent points
-            let segment_count = (self.data.len() - 1) as u32;
             pass.draw(0..6, 0..segment_count);
         }
 
@@ -415,7 +495,7 @@ impl ChartRenderer for LineChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = DataPoint;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 
@@ -514,4 +594,5 @@ struct LineUniforms {
     show_fill: f32,
     fill_opacity: f32,
     point_count: f32,
+    render_mode: f32,
 }

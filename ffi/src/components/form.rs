@@ -3,6 +3,7 @@ use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{WuiAnyView, WuiStr};
 use alloc::vec::Vec;
+use waterui::text::styled::StyledStr;
 use waterui::{
     Color, Str,
     component::{
@@ -29,7 +30,7 @@ into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
 into_ffi! {TextFieldConfig,
     pub struct WuiTextField {
         label: *mut WuiAnyView,
-        value: *mut WuiBinding<Str>,
+        value: *mut WuiBinding<StyledStr>,
         prompt: WuiText,
         keyboard: WuiKeyboardType,
     }

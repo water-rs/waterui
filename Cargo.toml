@@ -78,6 +78,7 @@ waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
 waterui-text = { version = "0.2.2", path = "components/text" }
 waterui-media = { version = "0.2.1", path = "components/media" }
+waterui-video = { version = "0.2.1", path = "components/video" }
 waterui-form = { version = "0.2.1", path = "components/form" }
 waterui-controls = { version = "0.2.1", path = "components/controls"}
 waterui-graphics = { version = "0.2.1", path = "components/graphics" }
@@ -151,6 +152,7 @@ waterui-str.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media.workspace = true
+waterui-video.workspace = true
 native-executor.workspace = true
 waterui-navigation.workspace = true
 waterui-form.workspace = true
@@ -176,6 +178,18 @@ waterkit-haptic = { workspace = true, optional = true }
 async-fs = "2.2.0"
 robius-open.workspace = true
 pastey.workspace = true
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-md = { version = "0.5.2", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-sequel = { version = "0.3.11", optional = true }
 
 
 
@@ -198,7 +212,21 @@ arboard = "3.6.1"
 [features]
 default = []
 std = ["dep:waterkit-haptic"]
-all = ["std"]
+flow-markdown = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-md",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-swift",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-bash",
+    "dep:tree-sitter-sequel",
+]
+all = ["std", "flow-markdown"]
 
 
 [lints]

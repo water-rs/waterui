@@ -179,7 +179,7 @@ impl GpuRenderer for HeatmapRenderer {
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Heatmap Uniforms", &uniforms));
 
         // Create value buffer
-        let initial_capacity = self.data.cell_count().max(64);
+        let initial_capacity = self.data.cell_count().max(16384);
         let initial_values: Vec<f32> = if self.data.values.is_empty() {
             vec![0.0; initial_capacity]
         } else {
@@ -376,7 +376,7 @@ impl ChartRenderer for HeatmapRenderer {
     type Data = HeatmapData;
     type DataValue = HeatmapHit;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Update data
         self.data = data.clone();
         self.bounds = DataBounds::new(0.0, data.cols as f32, 0.0, data.rows as f32);

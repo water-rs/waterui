@@ -185,7 +185,6 @@ impl GtkRenderer {
     /// Registers handlers for metadata wrapper views.
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
-        use waterui::background::Background;
         use waterui::component::focus::Focused;
         use waterui::gesture::GestureObserver;
         use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
@@ -203,41 +202,6 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Retain>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             renderer.render_any(metadata.content, env)
-        });
-
-        // Metadata<Background> - apply background color/style and render content
-        dispatcher.register::<Metadata<Background>>(|_state, ctx, metadata, env| {
-            use nami::Signal;
-            use waterui::background::Background;
-
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
-            let widget = renderer.render_any(metadata.content, env);
-
-            // Apply background color if it's a color background
-            if let Background::Color(color_signal) = metadata.value {
-                let color = color_signal.get();
-                // Resolve the color to get RGB values
-                let resolved = color.resolve(env).get();
-                let srgb = resolved.to_srgb_with_headroom();
-
-                // Create inline CSS for background color
-                let css = format!(
-                    "* {{ background-color: rgba({}, {}, {}, {}); }}",
-                    (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
-                    (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
-                    (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
-                    resolved.opacity.clamp(0.0, 1.0)
-                );
-
-                let provider = gtk4::CssProvider::new();
-                provider.load_from_data(&css);
-
-                widget
-                    .style_context()
-                    .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            }
-
-            widget
         });
 
         // Metadata<Shadow> - apply shadow and render content

@@ -231,6 +231,10 @@ impl ScatterChartRenderer {
 
     /// Sets the point radius in pixels.
     pub fn set_radius(&mut self, radius: f32) {
+        assert!(
+            radius.is_finite() && radius > 0.0,
+            "Scatter point radius must be > 0"
+        );
         self.point_radius = radius;
         self.needs_redraw = true;
     }
@@ -347,7 +351,7 @@ impl GpuRenderer for ScatterChartRenderer {
         ));
 
         // Create data buffers
-        let initial_capacity = self.data.len().max(64);
+        let initial_capacity = self.data.len().max(16384);
         let initial_data: Vec<GpuDataPoint> = self
             .data
             .iter()
@@ -542,7 +546,7 @@ impl ChartRenderer for ScatterChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = DataPoint;
 
-    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation interpolation
         core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 

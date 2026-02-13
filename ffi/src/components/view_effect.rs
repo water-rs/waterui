@@ -822,11 +822,21 @@ fn import_metal_texture(
         metal_texture.pixel_format()
     );
 
+    let wgpu_format = match metal_texture.pixel_format() {
+        metal::MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+        metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+        other => {
+            tracing::error!("[ViewEffect] Unsupported Metal texture format {:?}", other);
+            return false;
+        }
+    };
+
     // Create HAL texture from the Metal texture
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
             metal_texture.clone(),
-            wgpu::TextureFormat::Rgba16Float,
+            wgpu_format,
             MTLTextureType::D2,
             1, // array_layers
             1, // mip_levels
@@ -849,7 +859,7 @@ fn import_metal_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
+        format: wgpu_format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     };
@@ -863,6 +873,7 @@ fn import_metal_texture(
 
     // Store the imported texture
     state.imported_texture = Some(wgpu_texture);
+    state.imported_format = Some(wgpu_format);
     state.imported_metal_texture = Some(metal_texture);
     state.input_width = width;
     state.input_height = height;

@@ -56,6 +56,30 @@ pub mod window;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
+
+#[cfg(feature = "std")]
+static INIT_ONCE: std::sync::Once = std::sync::Once::new();
+
+#[inline]
+#[doc(hidden)]
+pub fn ffi_boundary<T>(name: &'static str, f: impl FnOnce() -> T) -> Option<T> {
+    #[cfg(feature = "std")]
+    {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                tracing::error!(boundary = name, "panic crossing FFI boundary");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = name;
+        Some(f())
+    }
+}
+
 #[macro_export]
 macro_rules! export {
     () => {
@@ -96,7 +120,21 @@ macro_rules! export {
                 let env: waterui::Environment = unsafe { $crate::IntoRust::into_rust(env) };
 
                 // Call user's app(env: Environment) -> App
-                let app: waterui::app::App = app(env);
+                let app: waterui::app::App = match $crate::ffi_boundary("waterui_app", || app(env))
+                {
+                    Some(app) => app,
+                    None => {
+                        #[cfg(feature = "std")]
+                        {
+                            tracing::error!("waterui_app panicked; aborting process");
+                            std::process::abort();
+                        }
+                        #[cfg(not(feature = "std"))]
+                        unsafe {
+                            core::hint::unreachable_unchecked()
+                        }
+                    }
+                };
 
                 $crate::IntoFFI::into_ffi(app)
             }
@@ -155,6 +193,21 @@ pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __init() {
+    #[cfg(feature = "std")]
+    {
+        INIT_ONCE.call_once(|| unsafe {
+            __init_impl();
+        });
+    }
+    #[cfg(not(feature = "std"))]
+    unsafe {
+        __init_impl();
+    }
+}
+
+/// # Safety
+/// Must run on the platform main thread exactly once.
+unsafe fn __init_impl() {
     #[cfg(target_os = "android")]
     unsafe {
         native_executor::android::register_android_main_thread()
@@ -1294,9 +1347,12 @@ pub unsafe extern "C" fn waterui_call_shared_action(
     action: *const WuiSharedAction,
     env: *const WuiEnv,
 ) {
-    unsafe {
-        (*action).0.call(&*env);
+    if action.is_null() || env.is_null() {
+        return;
     }
+    let _ = ffi_boundary("waterui_call_shared_action", || unsafe {
+        (*action).0.call(&*env);
+    });
 }
 
 /// FFI-safe representation of a menu item.
@@ -1456,3 +1512,64 @@ pub type WuiMetadataHittable = WuiMetadata<WuiHittable>;
 
 // Generate waterui_metadata_hittable_id() and waterui_force_as_metadata_hittable()
 ffi_metadata!(Hittable, WuiMetadataHittable, hittable);
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use waterui_core::handler::SharedAction;
+
+    #[test]
+    fn ffi_boundary_returns_result_on_success() {
+        let value = ffi_boundary("ok_boundary", || 42);
+        assert_eq!(value, Some(42));
+    }
+
+    #[test]
+    fn ffi_boundary_catches_panics() {
+        let value = ffi_boundary::<()>("panic_boundary", || panic!("boom"));
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn shared_action_callback_executes() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_action = Arc::clone(&hits);
+        let action_ptr = SharedAction::new(move |_| {
+            hits_for_action.fetch_add(1, Ordering::SeqCst);
+        })
+        .into_ffi();
+        let env_ptr = waterui::Environment::new().into_ffi();
+
+        unsafe {
+            waterui_call_shared_action(action_ptr, env_ptr);
+        }
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        unsafe {
+            waterui_drop_shared_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
+    }
+
+    #[test]
+    fn shared_action_panic_does_not_unwind_across_ffi() {
+        let action_ptr = SharedAction::new(|_| {
+            panic!("boom");
+        })
+        .into_ffi();
+        let env_ptr = waterui::Environment::new().into_ffi();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            waterui_call_shared_action(action_ptr, env_ptr);
+        }));
+        assert!(result.is_ok(), "panic should not cross FFI boundary");
+
+        unsafe {
+            waterui_drop_shared_action(action_ptr);
+            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+        }
+    }
+}
