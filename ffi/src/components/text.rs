@@ -1,10 +1,10 @@
 use crate::array::WuiArray;
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use crate::{ffi_computed, ffi_computed_ctor, ffi_reactive, IntoFFI, IntoRust, WuiEnv, WuiStr};
+use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
 use alloc::vec::Vec;
-use waterui::view::ConfigurableView;
 use waterui::Str;
+use waterui::view::ConfigurableView;
 pub use waterui_text::font::ResolvedFont;
 use waterui_text::font::{Body, Font, FontWeight};
 use waterui_text::styled::{Style, StyledStr};

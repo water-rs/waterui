@@ -758,8 +758,9 @@ impl View for FilledShape {
             ShapeKind::Rect
             | ShapeKind::Circle
             | ShapeKind::RoundedRect { .. }
-            | ShapeKind::Capsule => GpuSurface::new(SdfShapeRenderer::new(self.kind, resolved))
-                .on_demand(),
+            | ShapeKind::Capsule => {
+                GpuSurface::new(SdfShapeRenderer::new(self.kind, resolved)).on_demand()
+            }
             _ => {
                 // Custom paths and Ellipse use Lyon
                 GpuSurface::new(LyonShapeRenderer::new(self.kind, self.commands, resolved))

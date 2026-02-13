@@ -7,6 +7,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::BubblePoint;
+use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 use crate::renderer::BubbleRenderer;
 
 /// Bubble chart for 3D data visualization.
@@ -59,41 +60,65 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
 
     /// Sets the minimum bubble radius in pixels.
     #[must_use]
-    pub fn min_radius(mut self, radius: f32) -> Self {
-        assert!(
-            radius.is_finite() && radius > 0.0,
-            "BubbleChart::min_radius(radius) requires radius > 0"
-        );
-        self.min_radius = radius;
+    pub fn min_radius(self, radius: f32) -> Self {
+        self.try_min_radius(radius)
+            .expect("BubbleChart::min_radius(radius) requires finite radius > 0")
+    }
+
+    /// Sets minimum radius using a validated strong type.
+    #[must_use]
+    pub fn with_min_radius(mut self, radius: PositiveF32) -> Self {
+        self.min_radius = radius.get();
         if self.max_radius < self.min_radius {
             self.max_radius = self.min_radius;
         }
         self
     }
 
+    /// Fallible variant of [`Self::min_radius`].
+    pub fn try_min_radius(self, radius: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_min_radius(PositiveF32::try_new(radius)?))
+    }
+
     /// Sets the maximum bubble radius in pixels.
     #[must_use]
-    pub fn max_radius(mut self, radius: f32) -> Self {
-        assert!(
-            radius.is_finite() && radius > 0.0,
-            "BubbleChart::max_radius(radius) requires radius > 0"
-        );
-        self.max_radius = radius;
+    pub fn max_radius(self, radius: f32) -> Self {
+        self.try_max_radius(radius)
+            .expect("BubbleChart::max_radius(radius) requires finite radius > 0")
+    }
+
+    /// Sets maximum radius using a validated strong type.
+    #[must_use]
+    pub fn with_max_radius(mut self, radius: PositiveF32) -> Self {
+        self.max_radius = radius.get();
         if self.max_radius < self.min_radius {
             self.min_radius = self.max_radius;
         }
         self
     }
 
+    /// Fallible variant of [`Self::max_radius`].
+    pub fn try_max_radius(self, radius: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_max_radius(PositiveF32::try_new(radius)?))
+    }
+
     /// Sets the bubble opacity.
     #[must_use]
-    pub fn opacity(mut self, opacity: f32) -> Self {
-        assert!(
-            opacity.is_finite() && (0.0..=1.0).contains(&opacity),
-            "BubbleChart::opacity(opacity) requires 0.0 <= opacity <= 1.0"
-        );
-        self.opacity = opacity;
+    pub fn opacity(self, opacity: f32) -> Self {
+        self.try_opacity(opacity)
+            .expect("BubbleChart::opacity(opacity) requires finite 0.0 <= opacity <= 1.0")
+    }
+
+    /// Sets bubble opacity using a validated strong type.
+    #[must_use]
+    pub fn with_opacity(mut self, opacity: UnitInterval) -> Self {
+        self.opacity = opacity.get();
         self
+    }
+
+    /// Fallible variant of [`Self::opacity`].
+    pub fn try_opacity(self, opacity: f32) -> Result<Self, ChartParamError> {
+        Ok(self.with_opacity(UnitInterval::try_new(opacity)?))
     }
 }
 

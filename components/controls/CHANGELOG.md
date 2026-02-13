@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Remove `RichTextField` alias; use `TextField::styled(&Binding<StyledStr>)` for field-style rich text input and keep `RichTextEditor` as the editor API.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/controls-v0.2.0...controls-v0.2.1) - 2025-12-14
 
 ### Fixed

@@ -3,57 +3,79 @@
 use core::ops::Deref;
 use core::str::FromStr;
 
-use icu_locid::LanguageIdentifier;
+use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
 use icu_locid_transform::LocaleFallbacker;
+use icu_provider::DataLocale;
 use nami::impl_constant;
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
-/// A locale identifier wrapper around ICU4X `LanguageIdentifier`.
+/// A locale wrapper around ICU4X `Locale`.
 ///
-/// This wrapper allows us to implement traits like `Extractor` for locale types.
+/// `Locale` (not `LanguageIdentifier`) preserves Unicode extension data like
+/// `u-ca`, `u-hc`, and `u-nu`, enabling full locale preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Locale(pub LanguageIdentifier);
+pub struct Locale(pub IcuLocale);
 
 impl_constant!(Locale);
 
 impl Locale {
-    /// Create a new locale from a language identifier.
+    /// Create a new locale from an ICU locale.
     #[must_use]
-    pub const fn new(id: LanguageIdentifier) -> Self {
+    pub const fn new(id: IcuLocale) -> Self {
         Self(id)
     }
 
-    /// Get the underlying language identifier.
+    /// Get the language identifier portion of this locale.
     #[must_use]
-    pub const fn id(&self) -> &LanguageIdentifier {
-        &self.0
+    pub fn id(&self) -> &LanguageIdentifier {
+        &self.0.id
+    }
+
+    /// Return a canonicalized locale string.
+    #[must_use]
+    pub fn canonical_tag(&self) -> String {
+        self.0.to_string()
     }
 }
 
+/// Keep legacy ergonomics: `locale.language`, `locale.region`, ...
+/// by dereferencing to the language identifier subset.
 impl Deref for Locale {
     type Target = LanguageIdentifier;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.id
     }
 }
 
-impl From<LanguageIdentifier> for Locale {
-    fn from(id: LanguageIdentifier) -> Self {
+impl From<IcuLocale> for Locale {
+    fn from(id: IcuLocale) -> Self {
         Self(id)
     }
 }
 
-impl From<Locale> for LanguageIdentifier {
+impl From<Locale> for IcuLocale {
     fn from(locale: Locale) -> Self {
         locale.0
     }
 }
 
+impl From<LanguageIdentifier> for Locale {
+    fn from(id: LanguageIdentifier) -> Self {
+        Self(id.into())
+    }
+}
+
+impl From<Locale> for LanguageIdentifier {
+    fn from(locale: Locale) -> Self {
+        locale.0.into()
+    }
+}
+
 impl<'a> From<&'a Locale> for &'a LanguageIdentifier {
     fn from(locale: &'a Locale) -> Self {
-        &locale.0
+        &locale.0.id
     }
 }
 
@@ -61,13 +83,13 @@ impl FromStr for Locale {
     type Err = icu_locid::ParserError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        LanguageIdentifier::from_str(s).map(Self)
+        IcuLocale::from_str(s).map(Self)
     }
 }
 
 /// Built-in locale constants using ICU4X.
 pub mod locales {
-    use icu_locid::langid;
+    use icu_locid::locale;
 
     use super::Locale;
 
@@ -76,77 +98,83 @@ pub mod locales {
     // =====================
 
     /// Chinese (Simplified, China)
-    pub const ZH_CN: Locale = Locale(langid!("zh-CN"));
+    pub const ZH_CN: Locale = Locale(locale!("zh-CN"));
 
     /// Chinese (Traditional, Taiwan)
-    pub const ZH_TW: Locale = Locale(langid!("zh-TW"));
+    pub const ZH_TW: Locale = Locale(locale!("zh-TW"));
 
     /// Chinese (Traditional, Hong Kong)
-    pub const ZH_HK: Locale = Locale(langid!("zh-HK"));
+    pub const ZH_HK: Locale = Locale(locale!("zh-HK"));
 
     /// Chinese (Simplified script)
-    pub const ZH_HANS: Locale = Locale(langid!("zh-Hans"));
+    pub const ZH_HANS: Locale = Locale(locale!("zh-Hans"));
 
     /// Chinese (Traditional script)
-    pub const ZH_HANT: Locale = Locale(langid!("zh-Hant"));
+    pub const ZH_HANT: Locale = Locale(locale!("zh-Hant"));
 
     // =====================
     // English variants
     // =====================
 
     /// English
-    pub const EN: Locale = Locale(langid!("en"));
+    pub const EN: Locale = Locale(locale!("en"));
 
     /// English (United States)
-    pub const EN_US: Locale = Locale(langid!("en-US"));
+    pub const EN_US: Locale = Locale(locale!("en-US"));
 
     /// English (United Kingdom)
-    pub const EN_GB: Locale = Locale(langid!("en-GB"));
+    pub const EN_GB: Locale = Locale(locale!("en-GB"));
 
     // =====================
     // Portuguese variants
     // =====================
 
     /// Portuguese (Brazil)
-    pub const PT_BR: Locale = Locale(langid!("pt-BR"));
+    pub const PT_BR: Locale = Locale(locale!("pt-BR"));
 
     /// Portuguese (Portugal)
-    pub const PT_PT: Locale = Locale(langid!("pt-PT"));
+    pub const PT_PT: Locale = Locale(locale!("pt-PT"));
 
     // =====================
     // Serbian variants
     // =====================
 
     /// Serbian (Latin script)
-    pub const SR_LATN: Locale = Locale(langid!("sr-Latn"));
+    pub const SR_LATN: Locale = Locale(locale!("sr-Latn"));
 
     /// Serbian (Cyrillic script)
-    pub const SR_CYRL: Locale = Locale(langid!("sr-Cyrl"));
+    pub const SR_CYRL: Locale = Locale(locale!("sr-Cyrl"));
 
     // =====================
     // Other languages
     // =====================
 
     /// Japanese
-    pub const JA: Locale = Locale(langid!("ja"));
+    pub const JA: Locale = Locale(locale!("ja"));
 
     /// Korean
-    pub const KO: Locale = Locale(langid!("ko"));
+    pub const KO: Locale = Locale(locale!("ko"));
 
     /// French
-    pub const FR: Locale = Locale(langid!("fr"));
+    pub const FR: Locale = Locale(locale!("fr"));
 
     /// German
-    pub const DE: Locale = Locale(langid!("de"));
+    pub const DE: Locale = Locale(locale!("de"));
 
     /// Spanish
-    pub const ES: Locale = Locale(langid!("es"));
+    pub const ES: Locale = Locale(locale!("es"));
 
     /// Russian
-    pub const RU: Locale = Locale(langid!("ru"));
+    pub const RU: Locale = Locale(locale!("ru"));
 
     /// Arabic
-    pub const AR: Locale = Locale(langid!("ar"));
+    pub const AR: Locale = Locale(locale!("ar"));
+
+    /// Hindi
+    pub const HI: Locale = Locale(locale!("hi"));
+
+    /// Portuguese generic
+    pub const PT: Locale = Locale(locale!("pt"));
 }
 
 /// Get the fallback chain for a locale using ICU4X.
@@ -157,20 +185,16 @@ pub mod locales {
 pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
     let fallbacker = LocaleFallbacker::new();
     let config = fallbacker.for_config(Default::default());
-    let id: LanguageIdentifier = locale.0.clone();
-    let mut iterator = config.fallback_for(id.into());
+    let mut iterator = config.fallback_for(DataLocale::from(locale.0.clone()));
     let mut results = Vec::new();
 
-    // Collect up to 10 fallback locales
+    // Collect up to 10 fallback locales.
     for _ in 0..10 {
-        let item = iterator.get();
-        let loc = item.clone().into_locale();
-        // Stop if we've reached the "und" (undefined) locale
-        // Check by comparing language string to empty
-        if loc.id.language.is_empty() && loc.id.script.is_none() && loc.id.region.is_none() {
+        let current = iterator.get();
+        if current.is_und() {
             break;
         }
-        results.push(Locale(loc.id));
+        results.push(Locale(current.clone().into_locale()));
         iterator.step();
     }
 
