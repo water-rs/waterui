@@ -45,10 +45,12 @@ fn main() {
     let meta_cache = out_path.join(format!("mdi-{MDI_VERSION}-meta.json"));
     let js_cache = out_path.join(format!("mdi-{MDI_VERSION}.js"));
 
-    let vendored_meta =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("mdi-{MDI_VERSION}-meta.json"));
-    let vendored_js =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("mdi-{MDI_VERSION}.js"));
+    let vendored_meta = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(format!("mdi-{MDI_VERSION}-meta.json"));
+    let vendored_js = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(format!("mdi-{MDI_VERSION}.js"));
 
     println!("cargo:rerun-if-changed={}", vendored_meta.display());
     println!("cargo:rerun-if-changed={}", vendored_js.display());
@@ -111,8 +113,7 @@ fn load_content(source: &str, cache_path: &Path, desc: &str) -> Result<String, S
         let _ = fs::write(cache_path, &content);
         Ok(content)
     } else {
-        fs::read_to_string(source)
-            .map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
+        fs::read_to_string(source).map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
     }
 }
 

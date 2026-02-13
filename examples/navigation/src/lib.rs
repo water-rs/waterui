@@ -370,3 +370,9 @@ pub fn app(env: Environment) -> App {
 }
 
 waterui_ffi::export!();
+
+// Preview for `water preview --platform {macos,android,ios}`.
+#[preview]
+fn navigation_preview() -> impl View {
+    main_view()
+}

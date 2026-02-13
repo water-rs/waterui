@@ -135,6 +135,8 @@ pub struct WuiGpuSurfaceState {
     pointer_state: PointerState,
     /// Current gesture state (pinch, pan, double-tap)
     gesture_state: GestureState,
+    /// Number of render invocations handled by this state.
+    render_invocations: u64,
 }
 
 /// Initialize a GpuSurface with a native layer.
@@ -306,6 +308,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             current_height: height,
             pointer_state: PointerState::default(),
             gesture_state: GestureState::default(),
+            render_invocations: 0,
         });
 
         Box::into_raw(state)
@@ -351,6 +354,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         let state = unsafe { &mut *state };
 
+        state.render_invocations = state.render_invocations.saturating_add(1);
+        let frame_no = state.render_invocations;
+        let trace_frame = frame_no <= 3;
+        if trace_frame {
+            tracing::info!(
+                "[GpuSurface] render#{frame_no}: begin ({}x{})",
+                width,
+                height
+            );
+        }
+
         // Handle resize if needed
         if width != state.current_width || height != state.current_height {
             // Ensure the queue is idle before reconfiguring the surface.
@@ -372,6 +386,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         // Call setup on first render (await the future synchronously)
         if !state.initialized || state.renderer_format != state.config.format {
+            if trace_frame {
+                tracing::info!("[GpuSurface] render#{frame_no}: setup begin");
+            }
             let format = state.config.format;
             let ctx = GpuContext {
                 adapter: Some(&state.adapter),
@@ -389,6 +406,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             pollster::block_on(setup_future);
             state.initialized = true;
             state.renderer_format = format;
+            if trace_frame {
+                tracing::info!("[GpuSurface] render#{frame_no}: setup done");
+            }
         }
 
         // Get next frame texture (guard against wgpu panics so we don't abort across the FFI boundary).
@@ -429,6 +449,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 return false;
             }
         };
+        if trace_frame {
+            tracing::info!("[GpuSurface] render#{frame_no}: acquired current texture");
+        }
 
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("GpuSurface Frame View"),
@@ -451,9 +474,19 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         // Call user's render callback
         state.gpu_surface.render(&frame);
+        if trace_frame {
+            tracing::info!("[GpuSurface] render#{frame_no}: user render callback complete");
+        }
 
         // Present
         output.present();
+        if trace_frame {
+            tracing::info!("[GpuSurface] render#{frame_no}: present complete");
+        }
+
+        if frame_no == 1 {
+            tracing::info!("[GpuSurface] first frame presented successfully");
+        }
 
         true
     }));

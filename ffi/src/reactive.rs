@@ -594,6 +594,11 @@ ffi_computed!(f32, f32, f32);
 ffi_binding!(f64, f64, double);
 ffi_computed!(f64, f64, f64);
 
+// C-API compatibility aliases used by Apple backend (i32/f32/f64 naming)
+ffi_binding!(i32, i32, i32);
+ffi_binding!(f32, f32, f32);
+ffi_binding!(f64, f64, f64);
+
 // ============================================================================
 // JNI Primitive Reactive Macros
 // ============================================================================

@@ -186,7 +186,7 @@ impl Background {
     /// // Subtle overlay blur
     /// overlay.background(Material::UltraThin);
     /// ```
-    #[must_use] 
+    #[must_use]
     pub const fn material(material: Material) -> Self {
         Self::Material(material)
     }
@@ -270,7 +270,7 @@ impl Background {
     /// * `width` - Number of columns in the vertex grid
     /// * `height` - Number of rows in the vertex grid
     /// * `vertices` - Vertices arranged row by row (width × height total)
-    #[must_use] 
+    #[must_use]
     pub fn mesh_gradient(width: u32, height: u32, vertices: Vec<MeshVertex>) -> Self {
         Self::Gradient(Gradient::Mesh(MeshGradient::new(width, height, vertices)))
     }

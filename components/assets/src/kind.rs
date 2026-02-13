@@ -45,9 +45,7 @@ impl AssetKind {
         // so we use a helper approach
         match ext.as_bytes() {
             // Image extensions
-            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" => {
-                Self::Image
-            }
+            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" => Self::Image,
             // Video extensions
             b"mp4" | b"mov" | b"webm" | b"avi" | b"mkv" => Self::Video,
             // Audio extensions
@@ -110,7 +108,10 @@ mod tests {
     #[test]
     fn test_large_model_extensions() {
         assert_eq!(AssetKind::from_extension("onnx"), AssetKind::LargeModel);
-        assert_eq!(AssetKind::from_extension("safetensors"), AssetKind::LargeModel);
+        assert_eq!(
+            AssetKind::from_extension("safetensors"),
+            AssetKind::LargeModel
+        );
         assert_eq!(AssetKind::from_extension("gguf"), AssetKind::LargeModel);
         assert_eq!(AssetKind::from_extension("bin"), AssetKind::LargeModel);
     }
