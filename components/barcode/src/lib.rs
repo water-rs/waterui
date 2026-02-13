@@ -1,15 +1,14 @@
-//! GPU-accelerated QR code rendering.
+//! GPU-accelerated barcode rendering.
 //!
-//! This crate provides QR code generation and GPU rendering using compute shaders.
-//! The QR matrix is generated using `fast_qr` and rendered directly on the GPU,
-//! avoiding CPU-side pixel generation for optimal performance.
+//! This crate provides barcode generation and GPU rendering.
+//! Encoded module data is packed into a bit buffer and rasterized directly
+//! on GPU each frame.
 //!
 //! # Architecture
 //!
-//! 1. **Matrix Generation**: `fast_qr` generates the QR matrix (which modules are dark/light)
+//! 1. **Matrix Generation**: encoders generate module matrix data
 //! 2. **GPU Upload**: Matrix data is packed into bits and uploaded to a storage buffer
-//! 3. **Compute Shader**: Renders the QR code at any resolution directly on GPU
-//! 4. **Blit**: Result is blitted to the frame
+//! 3. **Fragment Shader**: Renders barcodes at any resolution directly on GPU
 //!
 //! # Example
 //!
@@ -18,14 +17,19 @@
 //!
 //! // Create a QR code view
 //! Barcode::qr("https://waterui.dev")
+//!
+//! // Create a Code128 barcode view
+//! Barcode::code128("HELLO-WATERUI")
 //! ```
 
 #![allow(clippy::multiple_crate_versions)]
 
+mod effect;
 mod qr;
 mod renderer;
 mod view;
 
-pub use qr::{BarcodeSource, QrMatrix};
+pub use effect::BarcodeMaskEffect;
+pub use qr::{BarcodeMatrix, BarcodeSource, BarcodeSymbology, QrMatrix};
 pub use renderer::BarcodeRenderer;
-pub use view::Barcode;
+pub use view::{Barcode, BarcodeFill, BarcodeGpuFill};
