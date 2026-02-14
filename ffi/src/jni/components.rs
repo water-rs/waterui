@@ -805,7 +805,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInR
         return core::ptr::null_mut();
     }
 
-    let start = if start.is_negative() { 0 } else { start as usize };
+    let start = if start.is_negative() {
+        0
+    } else {
+        start as usize
+    };
     let end = if end.is_negative() { 0 } else { end as usize };
 
     let ids = unsafe { crate::views::waterui_anyviews_get_ids_in_range(anyviews, start, end) };
@@ -889,7 +893,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatchRang
     let data = Box::new(AnyViewsWatchData { jvm, callback });
     let data_ptr = Box::into_raw(data) as *mut ();
     let anyviews = handle as *const crate::views::WuiAnyViews;
-    let start = if start.is_negative() { 0 } else { start as usize };
+    let start = if start.is_negative() {
+        0
+    } else {
+        start as usize
+    };
     let end = if end.is_negative() { 0 } else { end as usize };
     unsafe {
         crate::views::waterui_anyviews_watch_range(

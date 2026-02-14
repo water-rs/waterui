@@ -99,9 +99,7 @@ pub unsafe extern "C" fn waterui_anyviews_watch(
     call: unsafe extern "C" fn(*mut (), WuiArray<WuiId>, *mut WuiWatcherMetadata),
     drop: unsafe extern "C" fn(*mut ()),
 ) -> *mut WuiWatcherGuard {
-    unsafe {
-        waterui_anyviews_watch_range(anyviews, 0, usize::MAX, data, call, drop)
-    }
+    unsafe { waterui_anyviews_watch_range(anyviews, 0, usize::MAX, data, call, drop) }
 }
 
 /// Watches for changes in a views collection within `[start, end)` range.
