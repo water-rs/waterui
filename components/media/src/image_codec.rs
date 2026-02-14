@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use ::image::GenericImageView;
+use image::GenericImageView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodePath {
@@ -20,6 +20,8 @@ pub(crate) struct DecodedRgba {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixel_format: waterkit_codec::DecodedPixelFormat,
+    pub(crate) hdr: bool,
+    pub(crate) wide_gamut: bool,
 }
 
 pub(crate) fn decode_progressive_frame(data: &[u8]) -> Option<DecodedRgba> {
@@ -73,13 +75,35 @@ pub(crate) fn decode_to_rgba8_with_path(data: &[u8]) -> Result<(DecodedRgba, Dec
 }
 
 fn detect_decode_route(data: &[u8]) -> DecodeRoute {
+    let platform_available = cfg!(any(target_vendor = "apple", target_os = "android"));
+
     if is_heif_family(data) {
-        return DecodeRoute::Platform;
+        return if platform_available {
+            DecodeRoute::Platform
+        } else {
+            DecodeRoute::Software
+        };
     }
 
     if let Ok(format) = ::image::guess_format(data) {
+        let force_platform_for_color = platform_available
+            && matches!(
+                format,
+                ::image::ImageFormat::Jpeg | ::image::ImageFormat::Png
+            )
+            && has_embedded_color_profile_hint(format, data);
+        if force_platform_for_color {
+            return DecodeRoute::Platform;
+        }
+
         return match format {
-            ::image::ImageFormat::Avif => DecodeRoute::Platform,
+            ::image::ImageFormat::Avif => {
+                if platform_available {
+                    DecodeRoute::Platform
+                } else {
+                    DecodeRoute::Software
+                }
+            }
             ::image::ImageFormat::Jpeg
             | ::image::ImageFormat::Png
             | ::image::ImageFormat::Gif
@@ -92,6 +116,86 @@ fn detect_decode_route(data: &[u8]) -> DecodeRoute {
     }
 
     DecodeRoute::Software
+}
+
+fn has_embedded_color_profile_hint(format: ::image::ImageFormat, data: &[u8]) -> bool {
+    match format {
+        ::image::ImageFormat::Png => png_has_color_profile_hint(data),
+        ::image::ImageFormat::Jpeg => jpeg_has_icc_profile(data),
+        _ => false,
+    }
+}
+
+fn png_has_color_profile_hint(data: &[u8]) -> bool {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 8 || &data[0..8] != PNG_SIG {
+        return false;
+    }
+
+    let mut offset = 8usize;
+    while offset + 12 <= data.len() {
+        let len = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        let chunk_start = offset + 8;
+        let chunk_end = chunk_start.saturating_add(len);
+        if chunk_end + 4 > data.len() {
+            return false;
+        }
+        let chunk_type = &data[offset + 4..offset + 8];
+        if chunk_type == b"iCCP" {
+            return true;
+        }
+        if chunk_type == b"cICP" && len == 4 {
+            let primaries = data[chunk_start];
+            let transfer = data[chunk_start + 1];
+            if primaries != 1 || matches!(transfer, 16 | 18) {
+                return true;
+            }
+        }
+        if chunk_type == b"IEND" {
+            break;
+        }
+        offset = chunk_end + 4;
+    }
+    false
+}
+
+fn jpeg_has_icc_profile(data: &[u8]) -> bool {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return false;
+    }
+    let mut i = 2usize;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+        i += 2;
+        if marker == 0xD9 || marker == 0xDA {
+            break;
+        }
+        if i + 2 > data.len() {
+            break;
+        }
+        let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        if seg_len < 2 || i + seg_len > data.len() {
+            break;
+        }
+        let seg_data_start = i + 2;
+        let seg_data_end = i + seg_len;
+        if marker == 0xE2 {
+            let seg_data = &data[seg_data_start..seg_data_end];
+            if seg_data.starts_with(b"ICC_PROFILE\0") {
+                return true;
+            }
+        }
+        i += seg_len;
+    }
+    false
 }
 
 fn is_heif_family(data: &[u8]) -> bool {
@@ -151,6 +255,8 @@ pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, 
         width,
         height,
         pixel_format: waterkit_codec::DecodedPixelFormat::Rgba8UnormSrgb,
+        hdr: false,
+        wide_gamut: false,
     })
 }
 
@@ -161,6 +267,8 @@ pub(crate) fn decode_with_platform(data: &[u8]) -> Result<DecodedRgba, String> {
         width: decoded.width,
         height: decoded.height,
         pixel_format: decoded.pixel_format,
+        hdr: decoded.hdr,
+        wide_gamut: decoded.wide_gamut,
     })
 }
 
