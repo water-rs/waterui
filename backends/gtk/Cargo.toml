@@ -36,6 +36,7 @@ base64 = "0.22"
 wgpu.workspace = true
 glow = "0.16"
 libloading = "0.9"
+pollster.workspace = true
 
 [features]
 default = []
