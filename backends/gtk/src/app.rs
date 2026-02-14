@@ -1,8 +1,14 @@
 //! GTK Application setup and lifecycle management.
 
 use std::cell::RefCell;
+use std::future::Future;
 
-use executor_core::{try_init_global_executor, try_init_local_executor};
+use executor_core::{
+    LocalExecutor,
+    async_task::{self, AsyncTask, Runnable},
+    try_init_global_executor,
+    try_init_local_executor,
+};
 use gtk4::Application;
 use gtk4::prelude::*;
 use nami::Signal;
@@ -15,11 +21,32 @@ use crate::util::store_watcher_guards;
 use crate::webview::ensure_webview_controller;
 use crate::window::{apply_window_background, create_window};
 
-fn ensure_executors_initialized_for_main_thread() {
+#[derive(Debug, Clone, Copy, Default)]
+struct GtkMainThreadExecutor;
+
+impl LocalExecutor for GtkMainThreadExecutor {
+    type Task<T: 'static> = AsyncTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: Future + 'static,
+    {
+        let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
+            glib::idle_add_local_once(move || {
+                runnable.run();
+            });
+        });
+        runnable.schedule();
+        task
+    }
+}
+
+/// Initialize executors for GTK apps on the main thread.
+pub fn init_main_thread_executors() {
     // GTK apps run UI rendering on the main thread. Initialize executors there so
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
-    let _ = try_init_local_executor(NativeExecutor::new());
+    let _ = try_init_local_executor(GtkMainThreadExecutor);
 }
 
 /// GTK4 application wrapper for WaterUI.
@@ -50,7 +77,7 @@ impl GtkApp {
         let env = env.clone();
 
         self.app.connect_activate(move |app| {
-            ensure_executors_initialized_for_main_thread();
+            init_main_thread_executors();
             let window = create_window(app, "WaterUI App", 800, 600);
 
             let mut renderer = GtkRenderer::new();
@@ -78,7 +105,7 @@ impl GtkApp {
         ensure_webview_controller(&mut env);
 
         self.app.connect_activate(move |app| {
-            ensure_executors_initialized_for_main_thread();
+            init_main_thread_executors();
             // Take the content or use default if already taken (re-activation)
             let content = content.borrow_mut().take().unwrap_or_default();
 
