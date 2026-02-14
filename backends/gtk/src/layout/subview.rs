@@ -106,10 +106,14 @@ impl SubView for GtkSubView {
         // For stretch axes, fill the proposed extent instead of shrinking to
         // intrinsic size. This prevents feedback loops where a transient narrow
         // allocation becomes the next intrinsic width (e.g. GtkGLArea -> 18px lock-in).
-        if self.stretch_axis.stretches_horizontal() && let Some(proposed) = proposal.width {
+        if self.stretch_axis.stretches_horizontal()
+            && let Some(proposed) = proposal.width
+        {
             width = proposed.max(0.0);
         }
-        if self.stretch_axis.stretches_vertical() && let Some(proposed) = proposal.height {
+        if self.stretch_axis.stretches_vertical()
+            && let Some(proposed) = proposal.height
+        {
             height = proposed.max(0.0);
         }
 

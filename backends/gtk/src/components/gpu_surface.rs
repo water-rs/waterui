@@ -418,7 +418,6 @@ fn init_wgpu_if_needed(_area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4
             "[gtk-gpu] init_wgpu_if_needed: device ready format={format:?} msaa={msaa_samples}"
         );
     }
-
 }
 
 fn setup_if_needed(state: &Rc<RefCell<GpuState>>) -> bool {
@@ -539,10 +538,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 
     let size = PixelSize::from_widget(area);
     if gpu_debug_enabled() {
-        eprintln!(
-            "[gtk-gpu] render frame size={}x{}",
-            size.width, size.height
-        );
+        eprintln!("[gtk-gpu] render frame size={}x{}", size.width, size.height);
     }
     gpu_surface.resize(size.width, size.height);
 
@@ -557,9 +553,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let attachment = current_color_attachment(&glow);
 
     let hal_texture = wgpu::hal::gles::Texture {
-        inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer {
-            inner: attachment,
-        },
+        inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer { inner: attachment },
         drop_guard: None,
         mip_level_count: 1,
         array_layer_count: 1,

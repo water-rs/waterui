@@ -1465,7 +1465,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
                 JValue::Int(self.transition as i32),
             ],
         )
-            .expect("Failed to create NavigationStackStruct")
+        .expect("Failed to create NavigationStackStruct")
     }
 }
 
@@ -1700,12 +1700,8 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
         let class = env
             .find_class("dev/waterui/android/runtime/GpuSurfaceStruct")
             .expect("GpuSurfaceStruct class not found");
-        env.new_object(
-            &class,
-            "(J)V",
-            &[JValue::Long(self.surface as jlong)],
-        )
-        .expect("Failed to create GpuSurfaceStruct")
+        env.new_object(&class, "(J)V", &[JValue::Long(self.surface as jlong)])
+            .expect("Failed to create GpuSurfaceStruct")
     }
 }
 

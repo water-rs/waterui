@@ -18,8 +18,7 @@ fn resolve_size_request(widget: &Widget, axis: StretchAxis, req_w: i32, req_h: i
     let is_gl_area = type_name == "GtkGLArea" || widget.is::<gtk4::GLArea>();
     // Content-sized widgets should keep intrinsic height, but layout-driven
     // containers / GPU surfaces must receive explicit height to avoid 0x0 allocations.
-    let keep_layout_height =
-        axis.stretches_vertical() || is_layout_container || is_gl_area;
+    let keep_layout_height = axis.stretches_vertical() || is_layout_container || is_gl_area;
     let height_request = if keep_layout_height { req_h } else { -1 };
     (width_request, height_request)
 }

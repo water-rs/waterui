@@ -57,11 +57,7 @@ impl DispatchTraceGuard {
         if enabled {
             DISPATCH_DEPTH.with(|depth| {
                 let current = depth.get();
-                eprintln!(
-                    "[gtk-dispatch] {}{}",
-                    "  ".repeat(current),
-                    view_name
-                );
+                eprintln!("[gtk-dispatch] {}{}", "  ".repeat(current), view_name);
                 depth.set(current + 1);
             });
         }

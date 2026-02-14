@@ -23,9 +23,7 @@ use {
     wgpu_hal::api::Metal as MetalApi,
 };
 
-use waterui_graphics::gpu_surface::{
-    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState,
-};
+use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
