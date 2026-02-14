@@ -5,8 +5,8 @@
 
 use std::rc::Rc;
 
-use gtk4::Widget;
 use gtk4::prelude::*;
+use gtk4::Widget;
 use nami::{Signal, SignalExt};
 use waterui::component::list::ListConfig;
 use waterui_core::views::Views;
@@ -19,7 +19,7 @@ use crate::util::{store_watcher_guard, store_watcher_guards};
 impl GtkComponent for Native<ListConfig> {
     /// Renders a `WaterUI` `List` as a GTK4 scrollable list.
     ///
-    /// Uses a vertical Box inside a ScrolledWindow for the list layout.
+    /// Uses GTK ListView recycling so rows are created lazily for visible items.
     /// Each ListItem is rendered as a row with optional delete functionality.
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
@@ -34,96 +34,109 @@ impl GtkComponent for Native<ListConfig> {
         scrolled_window.set_vexpand(true);
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
 
-        // Create a vertical box for list items
-        let list_box = gtk4::ListBox::new();
-        list_box.set_selection_mode(gtk4::SelectionMode::None);
-        list_box.add_css_class("boxed-list");
+        // Backing model stores row indices. GTK ListView will only bind visible rows.
+        let store = gtk4::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let reload_model: Rc<dyn Fn()> = {
+            let store = store.clone();
+            let contents = contents.clone();
+            Rc::new(move || {
+                store.remove_all();
+                let len = contents.len().get();
+                for index in 0..len {
+                    store.append(&glib::BoxedAnyObject::new(index));
+                }
+            })
+        };
+        reload_model();
 
-        let rebuild_rows: Rc<dyn Fn()> = {
-            let list_box = list_box.clone();
+        let factory = gtk4::SignalListItemFactory::new();
+        {
             let contents = contents.clone();
             let editing = editing.clone();
             let on_delete = on_delete.clone();
             let env = env.clone();
-            Rc::new(move || {
-                while let Some(child) = list_box.first_child() {
-                    list_box.remove(&child);
-                }
+            factory.connect_bind(move |_, item| {
+                let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() else {
+                    return;
+                };
+                let index = list_item.position() as usize;
+                let Some(item) = contents.get_view(index) else {
+                    list_item.set_child(Option::<&Widget>::None);
+                    return;
+                };
 
-                let len = contents.len();
-                for index in 0..len {
-                    let Some(item) = contents.get_view(index) else {
-                        continue;
-                    };
+                let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                row_box.set_margin_top(8);
+                row_box.set_margin_bottom(8);
+                row_box.set_margin_start(12);
+                row_box.set_margin_end(12);
 
-                    let row = gtk4::ListBoxRow::new();
-                    let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-                    row_box.set_margin_top(8);
-                    row_box.set_margin_bottom(8);
-                    row_box.set_margin_start(12);
-                    row_box.set_margin_end(12);
+                let mut row_renderer = GtkRenderer::new();
+                let content_widget = row_renderer.render_any(item.content, &env);
+                content_widget.set_hexpand(true);
+                row_box.append(&content_widget);
 
-                    let mut row_renderer = GtkRenderer::new();
-                    let content_widget = row_renderer.render_any(item.content, &env);
-                    content_widget.set_hexpand(true);
-                    row_box.append(&content_widget);
+                if let Some(on_delete) = on_delete.as_ref() {
+                    let delete_btn = gtk4::Button::from_icon_name("edit-delete-symbolic");
+                    delete_btn.add_css_class("destructive-action");
+                    delete_btn.add_css_class("flat");
 
-                    if let Some(on_delete) = on_delete.as_ref() {
-                        let delete_btn = gtk4::Button::from_icon_name("edit-delete-symbolic");
-                        delete_btn.add_css_class("destructive-action");
-                        delete_btn.add_css_class("flat");
+                    let env_clone = env.clone();
+                    let on_delete = on_delete.clone();
+                    delete_btn.connect_clicked(move |_| {
+                        on_delete(&env_clone, index);
+                    });
 
-                        let env_clone = env.clone();
-                        let on_delete = on_delete.clone();
-                        delete_btn.connect_clicked(move |_| {
-                            on_delete(&env_clone, index);
-                        });
+                    let show_delete = editing
+                        .clone()
+                        .zip(&item.deletable)
+                        .map(|(is_editing, deletable)| is_editing && deletable)
+                        .computed();
 
-                        let show_delete = editing
-                            .clone()
-                            .zip(&item.deletable)
-                            .map(|(is_editing, deletable)| is_editing && deletable)
-                            .computed();
-
-                        delete_btn.set_visible(show_delete.get());
-                        let visibility_guard = show_delete.watch({
+                    delete_btn.set_visible(show_delete.get());
+                    let visibility_guard = show_delete.watch({
+                        let delete_btn = delete_btn.clone();
+                        move |ctx| {
+                            let visible = ctx.into_value();
                             let delete_btn = delete_btn.clone();
-                            move |ctx| {
-                                let visible = ctx.into_value();
-                                let delete_btn = delete_btn.clone();
-                                glib::idle_add_local_once(move || {
-                                    delete_btn.set_visible(visible);
-                                });
-                            }
-                        });
-                        store_watcher_guard(&delete_btn, visibility_guard);
+                            glib::idle_add_local_once(move || {
+                                delete_btn.set_visible(visible);
+                            });
+                        }
+                    });
+                    store_watcher_guard(&row_box, Box::new(visibility_guard));
 
-                        row_box.append(&delete_btn);
-                    }
-
-                    row.set_child(Some(&row_box));
-                    list_box.append(&row);
+                    row_box.append(&delete_btn);
                 }
-            })
-        };
 
-        // Initial rows.
-        rebuild_rows();
-
-        // Rebuild list on structural content updates.
-        let contents_guard = contents.watch(.., {
-            let rebuild_rows = rebuild_rows.clone();
-            move |_| {
-                let rebuild_rows = rebuild_rows.clone();
-                glib::idle_add_local_once(move || {
-                    rebuild_rows();
-                });
+                list_item.set_child(Some(&row_box));
+            });
+        }
+        factory.connect_unbind(|_, item| {
+            if let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() {
+                list_item.set_child(Option::<&Widget>::None);
             }
         });
 
-        store_watcher_guards(&list_box, vec![contents_guard]);
+        let selection = gtk4::NoSelection::new(Some(store));
+        let list_view = gtk4::ListView::new(Some(selection), Some(factory));
+        list_view.set_hexpand(true);
+        list_view.set_vexpand(true);
+        list_view.add_css_class("boxed-list");
 
-        scrolled_window.set_child(Some(&list_box));
+        // Rebuild index model on structural updates.
+        let contents_guard = contents.watch(.., {
+            let reload_model = reload_model.clone();
+            move |_| {
+                let reload_model = reload_model.clone();
+                glib::idle_add_local_once(move || {
+                    reload_model();
+                });
+            }
+        });
+        store_watcher_guards(&list_view, vec![contents_guard]);
+
+        scrolled_window.set_child(Some(&list_view));
         scrolled_window.upcast()
     }
 }
