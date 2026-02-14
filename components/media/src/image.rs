@@ -85,7 +85,14 @@ impl Image {
             "Pixel data length must be width * height * 4"
         );
         Self {
-            renderer: ImageRenderer::new(pixels, width, height, SourcePixelFormat::Rgba8UnormSrgb),
+            renderer: ImageRenderer::new(
+                pixels,
+                width,
+                height,
+                SourcePixelFormat::Rgba8UnormSrgb,
+                false,
+                false,
+            ),
         }
     }
 
@@ -95,13 +102,31 @@ impl Image {
     /// components) and have exactly `width * height * 8` bytes.
     #[must_use]
     pub fn new_rgba16f(pixels: Vec<u8>, width: u32, height: u32) -> Self {
+        Self::new_rgba16f_with_metadata(pixels, width, height, true, false)
+    }
+
+    #[must_use]
+    fn new_rgba16f_with_metadata(
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        source_is_hdr: bool,
+        source_is_wide_gamut: bool,
+    ) -> Self {
         assert_eq!(
             pixels.len(),
             (width * height * 8) as usize,
             "Pixel data length must be width * height * 8 for RGBA16F"
         );
         Self {
-            renderer: ImageRenderer::new(pixels, width, height, SourcePixelFormat::Rgba16Float),
+            renderer: ImageRenderer::new(
+                pixels,
+                width,
+                height,
+                SourcePixelFormat::Rgba16Float,
+                source_is_hdr,
+                source_is_wide_gamut,
+            ),
         }
     }
 
@@ -166,9 +191,13 @@ impl Image {
             waterkit_codec::DecodedPixelFormat::Rgba8UnormSrgb => {
                 Self::new(decoded.pixels, decoded.width, decoded.height)
             }
-            waterkit_codec::DecodedPixelFormat::Rgba16Float => {
-                Self::new_rgba16f(decoded.pixels, decoded.width, decoded.height)
-            }
+            waterkit_codec::DecodedPixelFormat::Rgba16Float => Self::new_rgba16f_with_metadata(
+                decoded.pixels,
+                decoded.width,
+                decoded.height,
+                decoded.hdr,
+                decoded.wide_gamut,
+            ),
         }
     }
 }
@@ -189,6 +218,10 @@ struct ImageRenderer {
     pending_pixels: Option<Vec<u8>>,
     /// Source pixel format for the pending data
     source_pixel_format: SourcePixelFormat,
+    /// Whether source pixels represent HDR content.
+    source_is_hdr: bool,
+    /// Whether source pixels preserve wide-gamut content.
+    source_is_wide_gamut: bool,
     /// Image width
     width: u32,
     /// Image height
@@ -218,10 +251,14 @@ impl ImageRenderer {
         width: u32,
         height: u32,
         source_pixel_format: SourcePixelFormat,
+        source_is_hdr: bool,
+        source_is_wide_gamut: bool,
     ) -> Self {
         Self {
             pending_pixels: Some(pixels),
             source_pixel_format,
+            source_is_hdr,
+            source_is_wide_gamut,
             width,
             height,
             texture: None,
@@ -331,10 +368,12 @@ impl ImageRenderer {
 impl GpuRenderer for ImageRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
-            "[ImageRenderer] setup() called with format: {:?}, size: {}x{}",
+            "[ImageRenderer] setup() called with format: {:?}, size: {}x{}, source_hdr={}, source_wide_gamut={}",
             ctx.surface_format,
             self.width,
-            self.height
+            self.height,
+            self.source_is_hdr,
+            self.source_is_wide_gamut
         );
 
         // Upload pending pixels to GPU texture
@@ -392,11 +431,11 @@ impl GpuRenderer for ImageRenderer {
         }
 
         // Create render pipeline
-        let hdr_to_sdr_tonemap = matches!(self.source_pixel_format, SourcePixelFormat::Rgba16Float)
-            && !matches!(
-                ctx.surface_format,
-                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-            );
+        let hdr_to_sdr_tonemap = should_tonemap_hdr_to_sdr(
+            self.source_pixel_format,
+            self.source_is_hdr,
+            ctx.surface_format,
+        );
         let (render_pipeline, bind_group_layout, sampler) = Self::create_render_pipeline(
             ctx.device,
             ctx.surface_format,
@@ -476,6 +515,19 @@ impl GpuRenderer for ImageRenderer {
 
         frame.queue.submit([encoder.finish()]);
     }
+}
+
+fn should_tonemap_hdr_to_sdr(
+    source_pixel_format: SourcePixelFormat,
+    source_is_hdr: bool,
+    target_format: wgpu::TextureFormat,
+) -> bool {
+    source_is_hdr
+        && matches!(source_pixel_format, SourcePixelFormat::Rgba16Float)
+        && !matches!(
+            target_format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        )
 }
 
 /// Convenience constructor for building an Image view inline.
@@ -574,6 +626,30 @@ mod tests {
     use std::path::PathBuf;
 
     use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
+
+    #[test]
+    fn tonemap_only_for_hdr_float_source_into_sdr_target() {
+        assert!(should_tonemap_hdr_to_sdr(
+            SourcePixelFormat::Rgba16Float,
+            true,
+            wgpu::TextureFormat::Rgba8Unorm
+        ));
+        assert!(!should_tonemap_hdr_to_sdr(
+            SourcePixelFormat::Rgba16Float,
+            false,
+            wgpu::TextureFormat::Rgba8Unorm
+        ));
+        assert!(!should_tonemap_hdr_to_sdr(
+            SourcePixelFormat::Rgba16Float,
+            true,
+            wgpu::TextureFormat::Rgba16Float
+        ));
+        assert!(!should_tonemap_hdr_to_sdr(
+            SourcePixelFormat::Rgba8UnormSrgb,
+            true,
+            wgpu::TextureFormat::Rgba8Unorm
+        ));
+    }
 
     fn assert_non_empty_offscreen_rgba(rgba: &[u8]) {
         assert!(!rgba.is_empty(), "offscreen output should not be empty");
