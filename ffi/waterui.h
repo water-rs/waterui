@@ -177,6 +177,12 @@ typedef enum WuiNavigationTitleDisplayMode {
   WuiNavigationTitleDisplayMode_Large = 2,
 } WuiNavigationTitleDisplayMode;
 
+typedef enum WuiNavigationTransition {
+  WuiNavigationTransition_PushPop = 0,
+  WuiNavigationTransition_Fade = 1,
+  WuiNavigationTransition_None = 2,
+} WuiNavigationTransition;
+
 /**
  * Position of the tab bar within the tab container.
  */
@@ -2410,6 +2416,10 @@ typedef struct WuiNavigationStack {
    * The root view of the navigation stack.
    */
   struct WuiAnyView *root;
+  /**
+   * Transition style used for push/pop operations.
+   */
+  enum WuiNavigationTransition transition;
 } WuiNavigationStack;
 
 typedef struct WuiTab {
@@ -2683,11 +2693,21 @@ typedef struct WuiGpuSurface {
    * This is consumed during init and should not be used after.
    */
   void *surface;
-  /**
-   * Render mode for the surface (see `GpuSurfaceRenderMode`).
-   */
-  uint32_t render_mode;
 } WuiGpuSurface;
+
+/**
+ * Result returned by a GpuSurface render invocation.
+ */
+typedef struct WuiGpuSurfaceRenderResult {
+  /**
+   * Whether rendering succeeded.
+   */
+  bool ok;
+  /**
+   * Whether another frame should be scheduled immediately.
+   */
+  bool needs_redraw;
+} WuiGpuSurfaceRenderResult;
 
 /**
  * Callback type for async completion notifications.
@@ -4869,13 +4889,15 @@ struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surfac
  *
  * # Returns
  *
- * `true` if rendering succeeded, `false` on error.
+ * Render result containing success + redraw intent.
  *
  * # Safety
  *
  * `state` must be a valid pointer from `waterui_gpu_surface_init`.
  */
-bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
+struct WuiGpuSurfaceRenderResult waterui_gpu_surface_render(struct WuiGpuSurfaceState *state,
+                                                            uint32_t width,
+                                                            uint32_t height);
 
 /**
  * Render a single frame into an external texture.

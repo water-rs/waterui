@@ -1451,13 +1451,20 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
     }
 }
 
-/// WuiNavigationStack -> NavigationStackStruct(rootPtr)
+/// WuiNavigationStack -> NavigationStackStruct(rootPtr, transition)
 impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
             .find_class("dev/waterui/android/runtime/NavigationStackStruct")
             .expect("NavigationStackStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(self.root as jlong)])
+        env.new_object(
+            &class,
+            "(JI)V",
+            &[
+                JValue::Long(self.root as jlong),
+                JValue::Int(self.transition as i32),
+            ],
+        )
             .expect("Failed to create NavigationStackStruct")
     }
 }
@@ -1687,7 +1694,7 @@ impl ToJavaStruct for crate::components::map::WuiMap {
     }
 }
 
-/// WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, renderMode)
+/// WuiGpuSurface -> GpuSurfaceStruct(rendererPtr)
 impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1695,11 +1702,8 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
             .expect("GpuSurfaceStruct class not found");
         env.new_object(
             &class,
-            "(JI)V",
-            &[
-                JValue::Long(self.surface as jlong),
-                JValue::Int(self.render_mode as i32),
-            ],
+            "(J)V",
+            &[JValue::Long(self.surface as jlong)],
         )
         .expect("Failed to create GpuSurfaceStruct")
     }

@@ -6,7 +6,7 @@
 //! The native backend is responsible for:
 //! 1. Creating a native surface layer (CAMetalLayer on Apple, SurfaceView on Android)
 //! 2. Calling `waterui_gpu_surface_init` with the layer pointer
-//! 3. Calling `waterui_gpu_surface_render` each frame from a display-sync callback
+//! 3. Calling `waterui_gpu_surface_render` whenever the surface is dirty
 //! 4. Calling `waterui_gpu_surface_drop` when the view is destroyed
 
 use core::ffi::c_void;
@@ -24,7 +24,7 @@ use {
 };
 
 use waterui_graphics::gpu_surface::{
-    GestureState, GpuContext, GpuFrame, GpuSurface, GpuSurfaceRenderMode, PointerState,
+    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState,
 };
 use waterui_graphics::shared_context::shared_context;
 
@@ -77,25 +77,16 @@ pub struct WuiGpuSurface {
     /// Opaque pointer to the boxed GpuSurface.
     /// This is consumed during init and should not be used after.
     pub surface: *mut c_void,
-    /// Render mode for the surface (see `GpuSurfaceRenderMode`).
-    pub render_mode: u32,
 }
 
 impl IntoFFI for GpuSurface {
     type FFI = WuiGpuSurface;
 
     fn into_ffi(self) -> Self::FFI {
-        let render_mode = match self.get_render_mode() {
-            GpuSurfaceRenderMode::Continuous => 0,
-            GpuSurfaceRenderMode::OnDemand => 1,
-        };
         // Box the GpuSurface for FFI transfer.
         let boxed = Box::new(self);
         let ptr = Box::into_raw(boxed) as *mut c_void;
-        WuiGpuSurface {
-            surface: ptr,
-            render_mode,
-        }
+        WuiGpuSurface { surface: ptr }
     }
 }
 
@@ -137,6 +128,15 @@ pub struct WuiGpuSurfaceState {
     gesture_state: GestureState,
     /// Number of render invocations handled by this state.
     render_invocations: u64,
+}
+
+/// Result returned by a GpuSurface render invocation.
+#[repr(C)]
+pub struct WuiGpuSurfaceRenderResult {
+    /// Whether rendering succeeded.
+    pub ok: bool,
+    /// Whether another frame should be scheduled immediately.
+    pub needs_redraw: bool,
 }
 
 /// Initialize a GpuSurface with a native layer.
@@ -325,8 +325,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
 /// Render a single frame.
 ///
-/// This function should be called from a display-sync callback (CADisplayLink on Apple,
-/// Choreographer on Android) to render at the display's refresh rate.
+/// This function should be called when the surface is dirty (size/input/state changed)
+/// and backend should schedule another frame when `needs_redraw` is true.
 ///
 /// # Arguments
 ///
@@ -336,7 +336,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 ///
 /// # Returns
 ///
-/// `true` if rendering succeeded, `false` on error.
+/// Render result containing success + redraw intent.
 ///
 /// # Safety
 ///
@@ -346,10 +346,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     state: *mut WuiGpuSurfaceState,
     width: u32,
     height: u32,
-) -> bool {
+) -> WuiGpuSurfaceRenderResult {
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if state.is_null() || width == 0 || height == 0 {
-            return false;
+            return WuiGpuSurfaceRenderResult {
+                ok: false,
+                needs_redraw: false,
+            };
         }
 
         let state = unsafe { &mut *state };
@@ -375,7 +378,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
             if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
                 tracing::warn!("[GpuSurface] resize reconfigure failed ({width}x{height})");
-                return false;
+                return WuiGpuSurfaceRenderResult {
+                    ok: false,
+                    needs_redraw: false,
+                };
             }
             state.current_width = width;
             state.current_height = height;
@@ -420,33 +426,51 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
                 if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
                     tracing::warn!("[GpuSurface] reconfigure failed after surface lost/outdated");
-                    return false;
+                    return WuiGpuSurfaceRenderResult {
+                        ok: false,
+                        needs_redraw: true,
+                    };
                 }
                 match state.wgpu_surface.get_current_texture() {
                     Ok(o) => o,
                     Err(wgpu::SurfaceError::Timeout) => {
                         // Surface isn't ready yet (common during window move/resize); skip this frame.
-                        return true;
+                        return WuiGpuSurfaceRenderResult {
+                            ok: true,
+                            needs_redraw: true,
+                        };
                     }
                     Err(e) => {
                         tracing::error!(
                             "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
                         );
-                        return false;
+                        return WuiGpuSurfaceRenderResult {
+                            ok: false,
+                            needs_redraw: true,
+                        };
                     }
                 }
             }
             Ok(Err(wgpu::SurfaceError::Timeout)) => {
                 // Surface isn't ready yet (common during window move/resize); skip this frame.
-                return true;
+                return WuiGpuSurfaceRenderResult {
+                    ok: true,
+                    needs_redraw: true,
+                };
             }
             Ok(Err(e)) => {
                 tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
-                return false;
+                return WuiGpuSurfaceRenderResult {
+                    ok: false,
+                    needs_redraw: true,
+                };
             }
             Err(_) => {
                 tracing::error!("[GpuSurface] render panicked while acquiring swapchain texture");
-                return false;
+                return WuiGpuSurfaceRenderResult {
+                    ok: false,
+                    needs_redraw: false,
+                };
             }
         };
         if trace_frame {
@@ -488,14 +512,20 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             tracing::info!("[GpuSurface] first frame presented successfully");
         }
 
-        true
+        WuiGpuSurfaceRenderResult {
+            ok: true,
+            needs_redraw: state.gpu_surface.needs_redraw(),
+        }
     }));
 
     match render_result {
-        Ok(ok) => ok,
+        Ok(result) => result,
         Err(_) => {
             tracing::error!("[GpuSurface] render panicked");
-            false
+            WuiGpuSurfaceRenderResult {
+                ok: false,
+                needs_redraw: false,
+            }
         }
     }
 }

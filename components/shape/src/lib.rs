@@ -759,12 +759,11 @@ impl View for FilledShape {
             | ShapeKind::Circle
             | ShapeKind::RoundedRect { .. }
             | ShapeKind::Capsule => {
-                GpuSurface::new(SdfShapeRenderer::new(self.kind, resolved)).on_demand()
+                GpuSurface::new(SdfShapeRenderer::new(self.kind, resolved))
             }
             _ => {
                 // Custom paths and Ellipse use Lyon
                 GpuSurface::new(LyonShapeRenderer::new(self.kind, self.commands, resolved))
-                    .on_demand()
             }
         }
     }
@@ -787,7 +786,7 @@ impl View for MorphShape {
             } else {
                 ShapeKind::Rect
             };
-            return GpuSurface::new(SdfShapeRenderer::new(fallback, resolved)).on_demand();
+            return GpuSurface::new(SdfShapeRenderer::new(fallback, resolved));
         };
 
         GpuSurface::new(MorphShapeRenderer::new(
