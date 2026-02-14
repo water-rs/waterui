@@ -1225,8 +1225,9 @@ fn encode_hdr_pq_png(
         png16.extend_from_slice(&a16.to_be_bytes());
     }
 
-    // PNG cICP: BT.709 primaries + PQ transfer + RGB matrix + full-range.
-    let cicp = [1u8, 16u8, 0u8, 1u8];
+    // PNG cICP: BT.2020 primaries + PQ transfer + RGB matrix + full-range.
+    // This is the broadest interoperable HDR signaling baseline for offscreen exports.
+    let cicp = [9u8, 16u8, 0u8, 1u8];
     encode_png16(width, height, &png16, Some(&cicp))
 }
 
