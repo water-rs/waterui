@@ -5,8 +5,8 @@
 
 use std::rc::Rc;
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui::component::list::ListConfig;
 use waterui_core::views::Views;
