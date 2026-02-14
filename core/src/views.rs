@@ -17,6 +17,7 @@ use core::{
 };
 use nami::collection::Collection;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
+use nami::{Computed, Signal};
 
 use crate::id::{Identifiable, SelfId};
 
@@ -35,12 +36,12 @@ pub trait Views {
     type View: View;
     /// Returns the unique identifier for the item at the specified index, or `None` if out of bounds.
     fn get_id(&self, index: usize) -> Option<Self::Id>;
-    /// Returns the number of items in the collection.
-    fn len(&self) -> usize;
+    /// Returns the number of items in the collection as a reactive value.
+    fn len(&self) -> Computed<usize>;
 
     /// Returns `true` if the collection contains no elements.
     fn is_empty(&self) -> bool {
-        self.len() == 0
+        nami::Signal::get(&self.len()) == 0
     }
 
     /// Registers a watcher for changes in the specified range of the collection.
@@ -118,7 +119,7 @@ impl<V: View> Views for SharedAnyViews<V> {
     fn get_view(&self, index: usize) -> Option<Self::View> {
         self.0.get_view(index)
     }
-    fn len(&self) -> usize {
+    fn len(&self) -> Computed<usize> {
         self.0.len()
     }
 
@@ -143,7 +144,7 @@ trait AnyViewsImpl {
 
     fn get_view(&self, index: usize) -> Option<Self::View>;
     fn get_id(&self, index: usize) -> Option<RawId>;
-    fn len(&self) -> usize;
+    fn len(&self) -> Computed<usize>;
     #[allow(clippy::type_complexity)]
     fn watch(
         &self,
@@ -218,7 +219,7 @@ where
         self.contents.get_id(index).map(|item| self.id.to_id(item))
     }
 
-    fn len(&self) -> usize {
+    fn len(&self) -> Computed<usize> {
         self.contents.len()
     }
 
@@ -277,7 +278,7 @@ where
     fn get_view(&self, index: usize) -> Option<Self::View> {
         self.0.get_view(index)
     }
-    fn len(&self) -> usize {
+    fn len(&self) -> Computed<usize> {
         self.0.len()
     }
 
@@ -354,6 +355,28 @@ where
     generator: Rc<F>,
 }
 
+#[derive(Clone)]
+struct CollectionLenSignal<C>(C);
+
+impl<C> Signal for CollectionLenSignal<C>
+where
+    C: Collection + Clone,
+{
+    type Output = usize;
+    type Guard = C::Guard;
+
+    fn get(&self) -> Self::Output {
+        self.0.len()
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        self.0.watch(.., move |ctx| {
+            let len = ctx.clone().into_value().len();
+            watcher(ctx.map(move |_| len));
+        })
+    }
+}
+
 impl<C, F, V> Collection for ForEach<C, F, V>
 where
     C: Collection,
@@ -391,7 +414,7 @@ where
 
 impl<C, F, V> Views for ForEach<C, F, V>
 where
-    C: Collection,
+    C: Collection + Clone,
     C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
@@ -405,8 +428,8 @@ where
     fn get_view(&self, index: usize) -> Option<Self::View> {
         self.data.get(index).map(|item| (self.generator)(item))
     }
-    fn len(&self) -> usize {
-        self.data.len()
+    fn len(&self) -> Computed<usize> {
+        Computed::new(CollectionLenSignal(self.data.clone()))
     }
     fn watch(
         &self,
@@ -494,8 +517,8 @@ where
     type Guard = ();
     type View = V::Item;
 
-    fn len(&self) -> usize {
-        self.value.len()
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.value.len())
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -524,12 +547,12 @@ impl<V: View + Clone> Views for Vec<V> {
     type Guard = ();
     type View = V;
 
-    fn len(&self) -> usize {
-        self.len()
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.as_slice().len())
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        if index < self.len() {
+        if index < self.as_slice().len() {
             Some(SelfId::new(index))
         } else {
             None
@@ -537,7 +560,7 @@ impl<V: View + Clone> Views for Vec<V> {
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
-        self.get(index)
+        self.as_slice().get(index).cloned()
     }
 
     fn watch(
@@ -554,8 +577,8 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     type Guard = ();
     type View = V;
 
-    fn len(&self) -> usize {
-        self.as_ref().len()
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.as_ref().len())
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -619,7 +642,7 @@ where
     type Guard = C::Guard;
     type View = V;
 
-    fn len(&self) -> usize {
+    fn len(&self) -> Computed<usize> {
         self.source.len()
     }
 
@@ -671,3 +694,104 @@ pub trait ViewsExt: Views {
 }
 
 impl<T: Views> ViewsExt for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{rc::Rc, vec, vec::Vec};
+    use core::cell::RefCell;
+    use nami::{Signal, SignalExt, binding, collection::List};
+
+    #[derive(Clone, Debug)]
+    struct TestItem {
+        id: i32,
+    }
+
+    impl Identifiable for TestItem {
+        type Id = i32;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    #[derive(Clone)]
+    struct ReactiveLenViews {
+        len_signal: nami::Binding<usize>,
+    }
+
+    impl Views for ReactiveLenViews {
+        type Id = SelfId<usize>;
+        type Guard = ();
+        type View = ();
+
+        fn get_id(&self, index: usize) -> Option<Self::Id> {
+            (index < self.len_signal.get()).then_some(SelfId::new(index))
+        }
+
+        fn len(&self) -> Computed<usize> {
+            self.len_signal.computed()
+        }
+
+        fn watch(
+            &self,
+            _range: impl RangeBounds<usize>,
+            _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+        ) -> Self::Guard {
+        }
+
+        fn get_view(&self, index: usize) -> Option<Self::View> {
+            (index < self.len_signal.get()).then_some(())
+        }
+    }
+
+    #[test]
+    fn len_tracks_reactive_len_signal() {
+        let len_signal = binding(2usize);
+        let views = ReactiveLenViews {
+            len_signal: len_signal.clone(),
+        };
+
+        assert_eq!(views.len().get(), 2);
+        len_signal.set(5);
+        assert_eq!(views.len().get(), 5);
+    }
+
+    #[test]
+    fn map_preserves_reactive_len() {
+        let len_signal = binding(1usize);
+        let views = ReactiveLenViews {
+            len_signal: len_signal.clone(),
+        };
+        let mapped = views.map(|view| view);
+
+        assert_eq!(mapped.len().get(), 1);
+        len_signal.set(4);
+        assert_eq!(mapped.len().get(), 4);
+    }
+
+    #[test]
+    fn for_each_watch_uses_requested_range() {
+        let list = List::from(vec![
+            TestItem { id: 1 },
+            TestItem { id: 2 },
+            TestItem { id: 3 },
+            TestItem { id: 4 },
+        ]);
+        let views = ForEach::new(list.clone(), |_item| ());
+
+        let snapshots: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(Vec::new()));
+        let snapshots_ref = snapshots.clone();
+
+        let _guard = Views::watch(&views, 1..3, move |ctx: Context<&[i32]>| {
+            snapshots_ref.borrow_mut().push(ctx.into_value().to_vec());
+        });
+
+        assert_eq!(snapshots.borrow().as_slice(), &[vec![2, 3]]);
+
+        list.insert(0, TestItem { id: 9 });
+        let borrowed = snapshots.borrow();
+        let last = borrowed.last().expect("watch should emit after insert");
+        assert_eq!(last.as_slice(), &[1, 2]);
+    }
+}

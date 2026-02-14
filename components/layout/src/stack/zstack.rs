@@ -253,7 +253,7 @@ where
 
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
 where
-    C: Collection,
+    C: Collection + Clone,
     C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
