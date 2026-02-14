@@ -161,7 +161,7 @@ impl core::fmt::Debug for VideoSurface {
 
 impl View for VideoSurface {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(self.renderer).continuous()
+        GpuSurface::new(self.renderer)
     }
 }
 
@@ -661,6 +661,13 @@ impl GpuRenderer for VideoRenderer {
     fn render(&mut self, frame: &GpuFrame) {
         self.step_decoder_if_needed(frame);
         self.render_surface(frame);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        if self.decode.is_none() {
+            return false;
+        }
+        self.pending_frame.is_some() || self.should_play()
     }
 }
 

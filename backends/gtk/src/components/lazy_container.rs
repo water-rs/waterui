@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
+use nami::Signal;
 use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 use waterui_layout::StretchAxis;
@@ -28,7 +29,7 @@ impl GtkComponent for Native<LazyContainer> {
 
         // Create ListStore with placeholder objects (indices)
         let store = gtk4::gio::ListStore::new::<glib::BoxedAnyObject>();
-        for i in 0..contents.len() {
+        for i in 0..contents.len().get() {
             store.append(&glib::BoxedAnyObject::new(i));
         }
 

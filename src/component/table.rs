@@ -14,17 +14,18 @@
 //! ```
 use core::any::type_name;
 
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
     view::{ConfigurableView, Hook, ViewConfiguration},
-    views::SharedAnyViews,
+    views::{ForEach, SharedAnyViews},
 };
 use waterui_text::Text;
 
 use crate::{AnyView, Environment, View, views::Views};
 
-use waterui_core::{Native, NativeView};
+use waterui_core::id::SelfId;
+use waterui_core::NativeView;
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -86,9 +87,8 @@ where
         if let Some(hook) = env.get::<Hook<TableConfig>>() {
             return AnyView::new(hook.apply(env, config));
         }
-        // Native backend can catch TableConfig, otherwise falls back to DefaultTableView
-        let fallback = DefaultTableView::new(config.columns.clone());
-        AnyView::new(Native::new(config).with_fallback(fallback))
+        // Default to virtualized rows through List so all backends share the same lazy behavior.
+        AnyView::new(DefaultTableView::new(config.columns))
     }
 }
 
@@ -166,10 +166,90 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
 // ============================================================================
 
 use crate::ViewExt;
+use crate::component::list::{List as UiList, ListItem};
+use nami::collection::List as ReactiveList;
+use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use waterui_core::dynamic::watch;
 use waterui_graphics::color::Grey;
-use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
+
+#[derive(Clone)]
+struct TableRowCountSignal {
+    columns: Vec<TableColumn>,
+}
+
+impl TableRowCountSignal {
+    const fn new(columns: Vec<TableColumn>) -> Self {
+        Self { columns }
+    }
+
+    fn max_rows(columns: &[TableColumn]) -> usize {
+        columns
+            .iter()
+            .map(|column| column.rows().len().get())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+struct TableRowCountWatchGuard {
+    _guards: Vec<BoxWatcherGuard>,
+}
+
+impl WatcherGuard for TableRowCountWatchGuard {}
+
+impl Signal for TableRowCountSignal {
+    type Output = usize;
+    type Guard = TableRowCountWatchGuard;
+
+    fn get(&self) -> Self::Output {
+        Self::max_rows(&self.columns)
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let mut guards = Vec::with_capacity(self.columns.len());
+        for column in &self.columns {
+            let columns = self.columns.clone();
+            let watcher = watcher.clone();
+            let guard = column.rows().len().watch(move |ctx| {
+                let max_rows = TableRowCountSignal::max_rows(&columns);
+                watcher(Context::new(max_rows, ctx.metadata().clone()));
+            });
+            guards.push(guard);
+        }
+
+        TableRowCountWatchGuard { _guards: guards }
+    }
+}
+
+fn build_table_header(columns: &[TableColumn]) -> impl View {
+    let header_cells = columns
+        .iter()
+        .map(|column| AnyView::new(column.label().bold().max_width(f32::MAX)))
+        .collect::<Vec<_>>();
+
+    hstack(header_cells)
+}
+
+fn build_table_rows(columns: Vec<TableColumn>, max_rows: usize) -> impl View {
+    let indices = ReactiveList::from((0..max_rows).map(SelfId::new).collect::<Vec<_>>());
+    let rows = ForEach::new(indices, move |index: SelfId<usize>| {
+        let row = index.into_inner();
+        let cells = columns
+            .iter()
+            .map(|column| {
+                column.rows().get_view(row).map_or_else(
+                    || AnyView::new(Text::new("").max_width(f32::MAX)),
+                    |text| AnyView::new(text.max_width(f32::MAX)),
+                )
+            })
+            .collect::<Vec<_>>();
+        ListItem::new(hstack(cells))
+    });
+
+    UiList::new(rows)
+}
 
 /// Default table view that renders columns as a grid using stacks.
 ///
@@ -199,52 +279,73 @@ impl View for DefaultTableView {
                 return AnyView::new(());
             }
 
-            // Find the maximum number of rows across all columns
-            let max_rows = cols.iter().map(|c| c.rows().len()).max().unwrap_or(0);
-
-            // Build header row - each cell gets equal flex weight for consistent width
-            let header_views: Vec<AnyView> = cols
-                .iter()
-                .map(|col| AnyView::new(col.label().bold().max_width(f32::MAX)))
-                .collect();
-
-            // Build data rows
-            let mut row_views: Vec<AnyView> = Vec::with_capacity(max_rows + 2);
-
-            // Add header row
-            row_views.push(AnyView::new(hstack(header_views)));
-
-            // Add divider between header and data
-            row_views.push(AnyView::new(Grey.height(1.0).max_width(f32::MAX)));
-
-            // Add data rows
-            for row_idx in 0..max_rows {
-                let row_cells: Vec<AnyView> = cols
-                    .iter()
-                    .map(|col| {
-                        col.rows().get_view(row_idx).map_or_else(
-                            || AnyView::new(Text::new("").max_width(f32::MAX)),
-                            |text| AnyView::new(text.max_width(f32::MAX)),
-                        )
-                    })
-                    .collect();
-
-                // Add row divider between data rows
-                if row_idx > 0 {
-                    row_views.push(AnyView::new(Grey.height(1.0).max_width(f32::MAX)));
-                }
-                row_views.push(AnyView::new(hstack(row_cells)));
-            }
-
-            // Use leading alignment so all content is left-aligned
-            AnyView::new(
-                scroll(
-                    vstack(row_views)
+            let row_count = TableRowCountSignal::new(cols.clone());
+            AnyView::new(watch(row_count, {
+                let cols = cols.clone();
+                move |max_rows| {
+                    AnyView::new(
+                        vstack((
+                            build_table_header(&cols),
+                            Grey.height(1.0).max_width(f32::MAX),
+                            build_table_rows(cols.clone(), max_rows),
+                        ))
                         .alignment(HorizontalAlignment::Leading)
-                        .spacing(4.0),
-                )
-                .padding(),
-            )
+                        .spacing(4.0)
+                        .padding(),
+                    )
+                }
+            }))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{format, rc::Rc, vec, vec::Vec};
+    use core::cell::RefCell;
+    use nami::collection::List;
+    use nami::watcher::Context;
+
+    fn rows_from(list: List<SelfId<usize>>) -> impl Views<View = Text> {
+        ForEach::new(list, |id: SelfId<usize>| Text::new(format!("{}", id.into_inner())))
+    }
+
+    #[test]
+    fn row_count_signal_tracks_max_rows_across_columns() {
+        let col1_rows = List::from(vec![SelfId::new(0usize)]);
+        let col2_rows = List::from(vec![SelfId::new(0usize), SelfId::new(1usize)]);
+
+        let signal = TableRowCountSignal::new(vec![
+            TableColumn::new("A", rows_from(col1_rows.clone())),
+            TableColumn::new("B", rows_from(col2_rows.clone())),
+        ]);
+
+        assert_eq!(signal.get(), 2);
+
+        col1_rows.insert(1, SelfId::new(1usize));
+        col1_rows.insert(2, SelfId::new(2usize));
+        assert_eq!(signal.get(), 3);
+    }
+
+    #[test]
+    fn row_count_signal_watches_column_len_updates() {
+        let col_rows = List::from(vec![SelfId::new(0usize)]);
+        let signal = TableRowCountSignal::new(vec![TableColumn::new(
+            "Only",
+            rows_from(col_rows.clone()),
+        )]);
+
+        let seen: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen_ref = seen.clone();
+        let _guard = signal.watch(move |ctx: Context<usize>| {
+            seen_ref.borrow_mut().push(ctx.into_value());
+        });
+
+        col_rows.insert(1, SelfId::new(1usize));
+
+        let values = seen.borrow();
+        assert!(values.iter().any(|&value| value == 1));
+        assert!(values.iter().any(|&value| value == 2));
     }
 }

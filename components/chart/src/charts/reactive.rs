@@ -167,6 +167,11 @@ where
     fn resize(&mut self, width: u32, height: u32) {
         self.inner.resize(width, height);
     }
+
+    fn needs_redraw(&self) -> bool {
+        let pending = self.pending_update.lock().ok().is_some_and(|guard| *guard);
+        pending || self.animator.is_animating() || self.inner.needs_redraw()
+    }
 }
 
 impl<R, S> core::fmt::Debug for SignalRenderer<R, S>

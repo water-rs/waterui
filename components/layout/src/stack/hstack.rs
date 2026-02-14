@@ -457,7 +457,7 @@ pub const fn hstack<C>(contents: C) -> HStack<(C,)> {
 
 impl<C, F, V> View for HStack<ForEach<C, F, V>>
 where
-    C: Collection,
+    C: Collection + Clone,
     C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,

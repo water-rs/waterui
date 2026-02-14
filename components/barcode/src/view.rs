@@ -150,7 +150,7 @@ impl View for Barcode {
             BarcodeSymbology::Code128 => BarcodeSource::code128(self.content),
         };
         let renderer = BarcodeRenderer::new_with_fill(source, self.fill, self.light_color);
-        GpuSurface::new(renderer).on_demand()
+        GpuSurface::new(renderer)
     }
 }
 

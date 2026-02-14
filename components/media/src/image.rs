@@ -206,7 +206,7 @@ impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
         let width = self.renderer.width as f32;
         let height = self.renderer.height as f32;
-        Frame::new(GpuSurface::new(self.renderer).on_demand())
+        Frame::new(GpuSurface::new(self.renderer))
             .width(width)
             .height(height)
     }

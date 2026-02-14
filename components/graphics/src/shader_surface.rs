@@ -414,4 +414,8 @@ impl GpuRenderer for ShaderRenderer {
 
         frame.queue.submit(std::iter::once(encoder.finish()));
     }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
 }
