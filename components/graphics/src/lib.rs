@@ -40,7 +40,7 @@ pub mod filter_view;
 // Re-export key types for user convenience.
 pub use gpu_surface::{
     GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenSize, PointerState,
+    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState,
 };
 pub use gpu_view::GpuView;
 
