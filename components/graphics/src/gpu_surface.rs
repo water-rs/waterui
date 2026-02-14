@@ -398,7 +398,8 @@ pub struct OffscreenRenderConfig {
     pub size: OffscreenSize,
     /// Render target texture format.
     ///
-    /// For readback this currently supports `Rgba8Unorm` and `Rgba8UnormSrgb`.
+    /// For `render_offscreen`, this supports `Rgba8Unorm` and `Rgba8UnormSrgb`.
+    /// For `render_offscreen_hdr`, this supports `Rgba16Float`.
     pub format: wgpu::TextureFormat,
     /// Optional explicit MSAA sample count. `None` means auto-select.
     pub msaa_samples: Option<NonZeroU32>,
@@ -485,6 +486,92 @@ impl OffscreenRenderOutput {
     /// Saves the rendered image as a PNG file.
     pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
+        std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
+    }
+}
+
+/// Output of an HDR offscreen render pass (`RGBA16F` linear pixels).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffscreenRenderOutputHdr {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// RGBA16F pixel data in row-major order (little-endian half-float components).
+    pub rgba16f: Vec<u8>,
+}
+
+impl OffscreenRenderOutputHdr {
+    /// Returns the maximum linear RGB channel value in the output.
+    #[must_use]
+    pub fn max_rgb_linear(&self) -> f32 {
+        let mut max_rgb = 0.0f32;
+        for px in self.rgba16f.chunks_exact(8) {
+            let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
+            let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
+            let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
+            max_rgb = max_rgb.max(r.max(g).max(b));
+        }
+        max_rgb
+    }
+
+    /// Returns the fraction of pixels whose RGB has HDR headroom (`> 1.0`).
+    #[must_use]
+    pub fn hdr_pixel_ratio(&self) -> f32 {
+        let mut total = 0usize;
+        let mut hdr = 0usize;
+        for px in self.rgba16f.chunks_exact(8) {
+            let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
+            let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
+            let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
+            if r > 1.0 || g > 1.0 || b > 1.0 {
+                hdr += 1;
+            }
+            total += 1;
+        }
+        if total == 0 {
+            0.0
+        } else {
+            hdr as f32 / total as f32
+        }
+    }
+
+    /// Encodes as PNG with automatic dynamic-range handling.
+    ///
+    /// - If HDR headroom is detected (`RGB > 1.0`), emits a standards-based HDR PNG
+    ///   (PQ-coded 16-bit RGBA + `cICP` chunk).
+    /// - Otherwise emits SDR PNG (16-bit sRGB transfer).
+    pub fn to_png(&self) -> Result<Vec<u8>, OffscreenRenderError> {
+        encode_auto_png(self.width, self.height, self.rgba16f.clone())
+    }
+
+    /// Encodes PNG with automatic dynamic-range handling without consuming output.
+    pub fn into_png(self) -> Result<Vec<u8>, OffscreenRenderError> {
+        encode_auto_png(self.width, self.height, self.rgba16f)
+    }
+
+    /// Encodes as SDR PNG using automatic tone mapping.
+    pub fn to_sdr_png(&self) -> Result<Vec<u8>, OffscreenRenderError> {
+        encode_sdr_tonemapped_png(self.width, self.height, self.rgba16f.clone())
+    }
+
+    /// Encodes as SDR PNG without consuming output.
+    pub fn into_sdr_png(self) -> Result<Vec<u8>, OffscreenRenderError> {
+        encode_sdr_tonemapped_png(self.width, self.height, self.rgba16f)
+    }
+
+    /// Saves the rendered image as PNG with automatic dynamic-range handling.
+    pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
+        let png = self.to_png()?;
+        std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
+    }
+
+    /// Saves the rendered image as SDR PNG using automatic tone mapping.
+    pub fn save_sdr_png<P: AsRef<std::path::Path>>(
+        &self,
+        path: P,
+    ) -> Result<(), OffscreenRenderError> {
+        let png = self.to_sdr_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
     }
 }
@@ -785,6 +872,93 @@ impl GpuSurface {
         })
     }
 
+    /// Renders this surface into an HDR offscreen texture and reads back `RGBA16F` pixels.
+    ///
+    /// Use this when you need to preserve HDR headroom during capture/export.
+    pub fn render_offscreen_hdr(
+        mut self,
+        config: OffscreenRenderConfig,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        if config.format != wgpu::TextureFormat::Rgba16Float {
+            return Err(OffscreenRenderError::UnsupportedReadbackFormat(
+                config.format,
+            ));
+        }
+
+        crate::shared_context::init_shared_context()
+            .map_err(|e| OffscreenRenderError::SharedContextInitFailed(e.to_string()))?;
+        let shared = crate::shared_context::shared_context();
+        let guard = shared.read();
+
+        let width = config.size.width();
+        let height = config.size.height();
+        let adapter = &guard.adapter;
+        let max_msaa = config
+            .msaa_samples
+            .map_or(self.msaa_max_samples.get(), NonZeroU32::get)
+            .max(1);
+        let supported_msaa = preferred_msaa_samples(adapter, config.format, max_msaa);
+        let msaa_samples = match config.msaa_samples {
+            Some(requested) if requested.get() != supported_msaa => {
+                return Err(OffscreenRenderError::UnsupportedMsaaSamples {
+                    requested: requested.get(),
+                    format: config.format,
+                });
+            }
+            Some(requested) => requested.get(),
+            None => supported_msaa,
+        };
+
+        let device = guard.device.as_ref();
+        let queue = guard.queue.as_ref();
+
+        let ctx = GpuContext {
+            adapter: Some(adapter),
+            device,
+            queue,
+            surface_format: config.format,
+            msaa_samples,
+            pipeline_cache: guard.pipeline_cache.as_ref(),
+        };
+        crate::pollster::block_on(self.setup(&ctx));
+        self.resize(width, height);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("waterui_offscreen_surface_hdr"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame = GpuFrame {
+            device,
+            queue,
+            texture: &texture,
+            view,
+            format: config.format,
+            width,
+            height,
+            pointer: config.pointer,
+            gesture: config.gesture,
+        };
+        self.render(&frame);
+
+        let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height)?;
+        Ok(OffscreenRenderOutputHdr {
+            width,
+            height,
+            rgba16f,
+        })
+    }
+
     /// Calls `setup` on the renderer, returning a future that completes when ready.
     pub fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a> {
         self.renderer.setup(ctx)
@@ -875,6 +1049,77 @@ fn readback_texture_rgba8(
     Ok(out)
 }
 
+fn readback_texture_rgba16f(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    const BYTES_PER_PIXEL: u32 = 8;
+    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let unpadded_bpr = width * BYTES_PER_PIXEL;
+    let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+    let copy_size = (padded_bpr * height) as u64;
+
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("waterui_offscreen_readback_hdr"),
+        size: copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("waterui_offscreen_readback_hdr_encoder"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bpr),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = buffer.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    let map_result = rx
+        .recv()
+        .map_err(|_| OffscreenRenderError::ReadbackChannelClosed)?;
+    map_result.map_err(|e| OffscreenRenderError::ReadbackMapFailed(e.to_string()))?;
+
+    let mapped = slice.get_mapped_range();
+    let mut out = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
+    for row in 0..height as usize {
+        let src_start = row * padded_bpr as usize;
+        let src_end = src_start + unpadded_bpr as usize;
+        let dst_start = row * unpadded_bpr as usize;
+        let dst_end = dst_start + unpadded_bpr as usize;
+        out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+    }
+    drop(mapped);
+    buffer.unmap();
+    Ok(out)
+}
+
 fn encode_png(
     width: u32,
     height: u32,
@@ -902,4 +1147,236 @@ fn encode_png(
         .write_image(img.as_raw(), width, height, ExtendedColorType::Rgba8)
         .map_err(|e| OffscreenRenderError::PngEncodingFailed(e.to_string()))?;
     Ok(png_bytes)
+}
+
+fn encode_auto_png(
+    width: u32,
+    height: u32,
+    rgba16f: Vec<u8>,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    let (max_rgb, hdr_ratio) = analyze_hdr_headroom(&rgba16f);
+    if max_rgb > 1.0 && hdr_ratio > 0.0 {
+        encode_hdr_pq_png(width, height, rgba16f)
+    } else {
+        encode_sdr_png_linear(width, height, rgba16f)
+    }
+}
+
+fn encode_sdr_tonemapped_png(
+    width: u32,
+    height: u32,
+    rgba16f: Vec<u8>,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
+    let mut frame_max = Vec::with_capacity((width as usize) * (height as usize));
+    for px in rgba16f.chunks_exact(8) {
+        let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
+        let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
+        let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);
+        frame_max.push(r.max(g).max(b));
+    }
+    frame_max.sort_unstable_by(|a, b| a.total_cmp(b));
+    let white_point = {
+        let idx = (((frame_max.len() - 1) as f32) * 0.995).round() as usize;
+        frame_max[idx].max(1.0)
+    };
+    let png16 = rgba16f_to_sdr_srgb16_bytes(&rgba16f, white_point, expected);
+    encode_png16(width, height, &png16, None)
+}
+
+fn encode_sdr_png_linear(
+    width: u32,
+    height: u32,
+    rgba16f: Vec<u8>,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
+    let png16 = rgba16f_to_sdr_srgb16_bytes(&rgba16f, 1.0, expected);
+    encode_png16(width, height, &png16, None)
+}
+
+fn encode_hdr_pq_png(
+    width: u32,
+    height: u32,
+    rgba16f: Vec<u8>,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
+    // Treat linear 1.0 as HDR reference white (203 nits), then encode absolute PQ.
+    // This keeps >1.0 headroom while producing standards-based HDR signaling.
+    const SDR_WHITE_NITS: f32 = 203.0;
+    let mut png16 = Vec::with_capacity(expected);
+    for px in rgba16f.chunks_exact(8) {
+        let r = linear_to_pq(
+            (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0)) * SDR_WHITE_NITS,
+        );
+        let g = linear_to_pq(
+            (f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0)) * SDR_WHITE_NITS,
+        );
+        let b = linear_to_pq(
+            (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0)) * SDR_WHITE_NITS,
+        );
+        let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
+        let r16 = (r * 65535.0).round() as u16;
+        let g16 = (g * 65535.0).round() as u16;
+        let b16 = (b * 65535.0).round() as u16;
+        let a16 = (a * 65535.0).round() as u16;
+        png16.extend_from_slice(&r16.to_be_bytes());
+        png16.extend_from_slice(&g16.to_be_bytes());
+        png16.extend_from_slice(&b16.to_be_bytes());
+        png16.extend_from_slice(&a16.to_be_bytes());
+    }
+
+    // PNG cICP: BT.709 primaries + PQ transfer + RGB matrix + full-range.
+    let cicp = [1u8, 16u8, 0u8, 1u8];
+    encode_png16(width, height, &png16, Some(&cicp))
+}
+
+fn validate_rgba16f_buffer(
+    width: u32,
+    height: u32,
+    rgba16f: &[u8],
+) -> Result<usize, OffscreenRenderError> {
+    if rgba16f.is_empty() || width == 0 || height == 0 {
+        return Ok(0);
+    }
+    let expected = width as usize * height as usize * 8;
+    if rgba16f.len() != expected {
+        return Err(OffscreenRenderError::PngEncodingFailed(format!(
+            "invalid RGBA16F buffer size: expected {expected}, got {}",
+            rgba16f.len()
+        )));
+    }
+    Ok(expected)
+}
+
+fn encode_png16(
+    width: u32,
+    height: u32,
+    rgba16_be: &[u8],
+    cicp: Option<&[u8; 4]>,
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    if rgba16_be.is_empty() || width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut png_bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Sixteen);
+    encoder.set_compression(png::Compression::Fast);
+    encoder.set_filter(png::Filter::Adaptive);
+    {
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| OffscreenRenderError::PngEncodingFailed(e.to_string()))?;
+        if let Some(cicp_bytes) = cicp {
+            writer
+                .write_chunk(png::chunk::cICP, cicp_bytes)
+                .map_err(|e| OffscreenRenderError::PngEncodingFailed(e.to_string()))?;
+        }
+        writer
+            .write_image_data(rgba16_be)
+            .map_err(|e| OffscreenRenderError::PngEncodingFailed(e.to_string()))?;
+    }
+    Ok(png_bytes)
+}
+
+fn rgba16f_to_sdr_srgb16_bytes(rgba16f: &[u8], white_point: f32, capacity: usize) -> Vec<u8> {
+    let white_point = white_point.max(1.0);
+    let mut png16 = Vec::with_capacity(capacity);
+    for px in rgba16f.chunks_exact(8) {
+        let r = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0) / white_point).min(1.0),
+        );
+        let g = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0) / white_point).min(1.0),
+        );
+        let b = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0) / white_point).min(1.0),
+        );
+        let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
+        let r16 = (r * 65535.0).round() as u16;
+        let g16 = (g * 65535.0).round() as u16;
+        let b16 = (b * 65535.0).round() as u16;
+        let a16 = (a * 65535.0).round() as u16;
+        png16.extend_from_slice(&r16.to_be_bytes());
+        png16.extend_from_slice(&g16.to_be_bytes());
+        png16.extend_from_slice(&b16.to_be_bytes());
+        png16.extend_from_slice(&a16.to_be_bytes());
+    }
+    png16
+}
+
+fn analyze_hdr_headroom(rgba16f: &[u8]) -> (f32, f32) {
+    let mut max_rgb = 0.0f32;
+    let mut total = 0usize;
+    let mut hdr = 0usize;
+    for px in rgba16f.chunks_exact(8) {
+        let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
+        let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
+        let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);
+        let m = r.max(g).max(b);
+        max_rgb = max_rgb.max(m);
+        if m > 1.0 {
+            hdr += 1;
+        }
+        total += 1;
+    }
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        hdr as f32 / total as f32
+    };
+    (max_rgb, ratio)
+}
+
+#[inline]
+fn linear_to_srgb(x: f32) -> f32 {
+    if x <= 0.0031308 {
+        x * 12.92
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+#[inline]
+fn linear_to_pq(luminance_nits: f32) -> f32 {
+    // ST-2084 PQ OETF, input in nits (0..10000).
+    let y = (luminance_nits / 10_000.0).clamp(0.0, 1.0);
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let ym1 = y.powf(m1);
+    let num = c1 + c2 * ym1;
+    let den = 1.0 + c3 * ym1;
+    (num / den).powf(m2)
+}
+
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 0x1) as u32;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let frac = (bits & 0x03ff) as u32;
+
+    let f32_bits = if exp == 0 {
+        if frac == 0 {
+            sign << 31
+        } else {
+            let mut frac_norm = frac;
+            let mut e = -14i32;
+            while (frac_norm & 0x0400) == 0 {
+                frac_norm <<= 1;
+                e -= 1;
+            }
+            frac_norm &= 0x03ff;
+            let exp32 = (e + 127) as u32;
+            (sign << 31) | (exp32 << 23) | (frac_norm << 13)
+        }
+    } else if exp == 0x1f {
+        (sign << 31) | 0x7f80_0000 | (frac << 13)
+    } else {
+        let exp32 = (exp as i32 - 15 + 127) as u32;
+        (sign << 31) | (exp32 << 23) | (frac << 13)
+    };
+    f32::from_bits(f32_bits)
 }
