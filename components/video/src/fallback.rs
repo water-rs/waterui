@@ -3,17 +3,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nami::Signal;
 use waterkit_audio::{MediaMetadata, MediaSession, PlaybackState};
 use waterkit_codec::{CodecType, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
-use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, wgpu};
-use waterui_layout::{hstack, overlay, stack::Alignment, vstack};
+use waterui_core::{dynamic::Dynamic, AnyView, Binding, Environment, View};
+use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_layout::{
+    overlay,
+    stack::{hstack, vstack, Alignment},
+};
 
-use crate::Url;
 use crate::video::{AspectRatio, Event, VideoConfig, VideoPlayerConfig, Volume};
+use crate::Url;
 
 const SEEK_EPSILON: f64 = 0.005;
 const PRESENT_TOLERANCE: Duration = Duration::from_millis(3);
@@ -513,9 +515,9 @@ impl VideoRenderer {
         self.update_playing_state(should_play);
         self.maybe_seek_from_ui(should_play);
 
-        let Some(decode) = self.decode.as_mut() else {
+        if self.decode.is_none() {
             return;
-        };
+        }
 
         if !should_play && self.pending_frame.is_none() && self.rgba_texture.is_some() {
             self.sync_media_session(false);
@@ -523,7 +525,12 @@ impl VideoRenderer {
         }
 
         if self.pending_frame.is_none() {
-            match decode.next_frame() {
+            let next_frame = {
+                let decode = self.decode.as_mut().expect("decode checked above");
+                decode.next_frame()
+            };
+
+            match next_frame {
                 Ok(Some(decoded)) => {
                     self.pending_frame = Some(decoded);
                     self.ended_sent = false;
@@ -534,7 +541,11 @@ impl VideoRenderer {
                         self.ended_sent = true;
                     }
                     if self.loops {
-                        if let Err(message) = decode.reopen() {
+                        let reopen_result = {
+                            let decode = self.decode.as_mut().expect("decode checked above");
+                            decode.reopen()
+                        };
+                        if let Err(message) = reopen_result {
                             (self.on_event)(Event::Error { message });
                             self.decode = None;
                             self.pending_frame = None;
@@ -543,10 +554,14 @@ impl VideoRenderer {
                         self.set_playback_position(Duration::ZERO, should_play);
                         self.update_ui_progress();
                     } else {
+                        let duration = self
+                            .decode
+                            .as_ref()
+                            .map_or(Duration::ZERO, DecodeState::duration);
                         if let Some(player) = self.player.as_ref() {
                             player.is_playing.set(false);
                         }
-                        self.set_playback_position(decode.duration(), false);
+                        self.set_playback_position(duration, false);
                         self.sync_media_session(false);
                     }
                     return;
@@ -563,13 +578,14 @@ impl VideoRenderer {
         let Some(pending) = self.pending_frame.as_ref() else {
             return;
         };
+        let pending_pts = pending.pts;
 
         let present_immediately = self.rgba_texture.is_none();
         let due = should_play
             && self
                 .playback_position(Instant::now())
                 .saturating_add(PRESENT_TOLERANCE)
-                >= pending.pts;
+                >= pending_pts;
 
         if !(present_immediately || due) {
             return;
@@ -583,7 +599,12 @@ impl VideoRenderer {
         self.set_playback_position(decoded.pts, should_play);
 
         if let Some(player) = self.player.as_ref() {
-            let progress = decode.progress_for_sample(decoded.sample_index);
+            let progress = self
+                .decode
+                .as_ref()
+                .map_or(self.last_reported_progress, |decode| {
+                    decode.progress_for_sample(decoded.sample_index)
+                });
             player.progress.set(progress);
             self.last_reported_progress = progress;
         }
