@@ -24,8 +24,8 @@ use waterui_text::Text;
 
 use crate::{AnyView, Environment, View, views::Views};
 
-use waterui_core::id::SelfId;
 use waterui_core::NativeView;
+use waterui_core::id::SelfId;
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -308,7 +308,9 @@ mod tests {
     use nami::watcher::Context;
 
     fn rows_from(list: List<SelfId<usize>>) -> impl Views<View = Text> {
-        ForEach::new(list, |id: SelfId<usize>| Text::new(format!("{}", id.into_inner())))
+        ForEach::new(list, |id: SelfId<usize>| {
+            Text::new(format!("{}", id.into_inner()))
+        })
     }
 
     #[test]
@@ -331,10 +333,8 @@ mod tests {
     #[test]
     fn row_count_signal_watches_column_len_updates() {
         let col_rows = List::from(vec![SelfId::new(0usize)]);
-        let signal = TableRowCountSignal::new(vec![TableColumn::new(
-            "Only",
-            rows_from(col_rows.clone()),
-        )]);
+        let signal =
+            TableRowCountSignal::new(vec![TableColumn::new("Only", rows_from(col_rows.clone()))]);
 
         let seen: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
         let seen_ref = seen.clone();

@@ -6,8 +6,7 @@ use std::future::Future;
 use executor_core::{
     LocalExecutor,
     async_task::{self, AsyncTask, Runnable},
-    try_init_global_executor,
-    try_init_local_executor,
+    try_init_global_executor, try_init_local_executor,
 };
 use gtk4::Application;
 use gtk4::prelude::*;
