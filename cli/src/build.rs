@@ -263,6 +263,41 @@ impl RustBuild {
 
     /// Return target directory path
     async fn build_inner(&self, release: bool) -> Result<PathBuf, RustBuildError> {
+        let mut output = self.cargo_build_output(release).await?;
+
+        if !output.status.success() {
+            let first_combined = combined_build_output(&output);
+            if should_auto_install_meson(&first_combined) {
+                match ensure_meson_installed_for_build().await {
+                    Ok(()) => {
+                        output = self.cargo_build_output(release).await?;
+                    }
+                    Err(install_err) => {
+                        return Err(RustBuildError::FailToBuildRustLibrary(
+                            std::io::Error::other(format!(
+                                "Cargo build failed and meson appears missing for dav1d-sys.\n\
+Automatic meson installation failed: {install_err}\n\n{first_combined}"
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !output.status.success() {
+            let combined = combined_build_output(&output);
+            return Err(RustBuildError::FailToBuildRustLibrary(
+                std::io::Error::other(format!("Cargo build failed:\n{combined}")),
+            ));
+        }
+
+        self.lib_output_dir(release).await
+    }
+
+    async fn cargo_build_output(
+        &self,
+        release: bool,
+    ) -> Result<std::process::Output, RustBuildError> {
         let mut cmd = Command::new("cargo");
         let mut cmd = command(&mut cmd)
             .arg("build")
@@ -308,21 +343,7 @@ impl RustBuild {
             .output()
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let combined = if !stderr.is_empty() {
-                stderr.to_string()
-            } else {
-                stdout.to_string()
-            };
-            return Err(RustBuildError::FailToBuildRustLibrary(
-                std::io::Error::other(format!("Cargo build failed:\n{combined}")),
-            ));
-        }
-
-        self.lib_output_dir(release).await
+        Ok(output)
     }
 
     async fn lib_output_dir(&self, release: bool) -> Result<PathBuf, RustBuildError> {
@@ -387,4 +408,38 @@ impl RustBuild {
             "--target={arch}-apple-{target_os}{min_version}-simulator -isysroot {sdk_path}"
         ))
     }
+}
+
+fn combined_build_output(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stderr.is_empty() {
+        stderr.to_string()
+    } else {
+        stdout.to_string()
+    }
+}
+
+fn should_auto_install_meson(build_output: &str) -> bool {
+    let lower = build_output.to_ascii_lowercase();
+    lower.contains("dav1d-sys") && lower.contains("meson")
+}
+
+#[cfg(target_os = "macos")]
+async fn ensure_meson_installed_for_build() -> Result<(), String> {
+    use crate::toolchain::meson::Meson;
+    use crate::toolchain::{Installation as _, Toolchain as _, ToolchainError};
+
+    match Meson.check().await {
+        Ok(()) => Ok(()),
+        Err(ToolchainError::Fixable(installation)) => {
+            installation.install().await.map_err(|e| e.to_string())
+        }
+        Err(ToolchainError::Unfixable(e)) => Err(e.to_string()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn ensure_meson_installed_for_build() -> Result<(), String> {
+    Err("automatic meson installation is only supported on macOS".to_string())
 }

@@ -7,15 +7,15 @@ use waterkit_audio::{MediaMetadata, MediaSession, PlaybackState};
 use waterkit_codec::{CodecType, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
-use waterui_core::{dynamic::Dynamic, AnyView, Binding, Environment, View};
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, wgpu};
 use waterui_layout::{
     overlay,
-    stack::{hstack, vstack, Alignment},
+    stack::{Alignment, hstack, vstack},
 };
 
-use crate::video::{AspectRatio, Event, VideoConfig, VideoPlayerConfig, Volume};
 use crate::Url;
+use crate::video::{AspectRatio, Event, VideoConfig, VideoPlayerConfig, Volume};
 
 const SEEK_EPSILON: f64 = 0.005;
 const PRESENT_TOLERANCE: Duration = Duration::from_millis(3);
