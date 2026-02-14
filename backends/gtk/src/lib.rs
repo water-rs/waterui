@@ -41,6 +41,8 @@ pub mod window;
 #[cfg(target_os = "linux")]
 pub use app::GtkApp;
 #[cfg(target_os = "linux")]
+pub use app::init_main_thread_executors;
+#[cfg(target_os = "linux")]
 pub use renderer::GtkRenderer;
 
 // Re-export types needed by generated GTK entry points
