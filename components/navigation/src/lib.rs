@@ -106,6 +106,19 @@ pub enum NavigationTitleDisplayMode {
     Large = 2,
 }
 
+/// The transition style used by `NavigationStack` push/pop operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum NavigationTransition {
+    /// Platform-style push/pop transition (default).
+    #[default]
+    PushPop = 0,
+    /// Fade between screens.
+    Fade = 1,
+    /// Disable transition animation.
+    None = 2,
+}
+
 /// Configuration for a navigation bar.
 ///
 /// Represents the appearance and behavior of a navigation bar, including
@@ -170,6 +183,7 @@ pub struct NavigationStack<T, F> {
     root: AnyView, // Renderer requires to inject `NavigationController` to the root view's environment
     path: T,
     destination: F,
+    transition: NavigationTransition,
 }
 
 impl NavigationStack<(), ()> {
@@ -182,12 +196,28 @@ impl NavigationStack<(), ()> {
             root: AnyView::new(root),
             path: (),
             destination: (),
+            transition: NavigationTransition::PushPop,
         }
     }
 
     /// Consumes the navigation stack and returns its root view.
     pub fn into_inner(self) -> AnyView {
         self.root
+    }
+}
+
+impl<T, F> NavigationStack<T, F> {
+    /// Returns the configured transition style.
+    #[must_use]
+    pub const fn transition_style(&self) -> NavigationTransition {
+        self.transition
+    }
+
+    /// Sets the transition style for push/pop operations.
+    #[must_use]
+    pub const fn transition(mut self, transition: NavigationTransition) -> Self {
+        self.transition = transition;
+        self
     }
 }
 
@@ -202,6 +232,7 @@ impl<T> NavigationStack<NavigationPath<T>, ()> {
             root: AnyView::new(root),
             path,
             destination: (),
+            transition: NavigationTransition::PushPop,
         }
     }
 
@@ -217,6 +248,7 @@ impl<T> NavigationStack<NavigationPath<T>, ()> {
             root: self.root,
             path: self.path,
             destination,
+            transition: self.transition,
         }
     }
 }
@@ -232,6 +264,7 @@ where
         let path: NavigationPath<T> = self.path;
         let destination = self.destination;
         let root = self.root;
+        let transition = self.transition;
         NavigationStack::new(use_env(move |receiver: NavigationController| {
             let path = path.inner;
             for component in &path {
@@ -264,6 +297,7 @@ where
 
             Metadata::new(root, Retain::new(guard))
         }))
+        .transition(transition)
     }
 }
 

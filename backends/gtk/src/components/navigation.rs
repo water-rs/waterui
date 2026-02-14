@@ -8,7 +8,8 @@ use gtk4::prelude::*;
 use nami::Signal;
 use waterui_core::Environment;
 use waterui_navigation::{
-    CustomNavigationController, NavigationController, NavigationStack, NavigationView,
+    CustomNavigationController, NavigationController, NavigationStack, NavigationTransition,
+    NavigationView,
 };
 
 use crate::component::GtkComponent;
@@ -108,6 +109,7 @@ impl GtkComponent for NavigationView {
 impl GtkComponent for NavigationStack<(), ()> {
     /// Renders a `WaterUI` `NavigationStack` as a GTK4 Stack with navigation.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+        let transition = self.transition_style();
         let root = self.into_inner();
 
         // Create the main container
@@ -132,8 +134,20 @@ impl GtkComponent for NavigationStack<(), ()> {
         let gtk_stack = gtk4::Stack::new();
         gtk_stack.set_hexpand(true);
         gtk_stack.set_vexpand(true);
-        gtk_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
-        gtk_stack.set_transition_duration(250);
+        match transition {
+            NavigationTransition::PushPop => {
+                gtk_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
+                gtk_stack.set_transition_duration(250);
+            }
+            NavigationTransition::Fade => {
+                gtk_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+                gtk_stack.set_transition_duration(250);
+            }
+            NavigationTransition::None => {
+                gtk_stack.set_transition_type(gtk4::StackTransitionType::None);
+                gtk_stack.set_transition_duration(0);
+            }
+        }
 
         container.append(&gtk_stack);
 

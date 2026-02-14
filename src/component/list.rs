@@ -123,7 +123,7 @@ where
 
 impl<C, F> List<ForEach<C, F, ListItem>>
 where
-    C: Collection,
+    C: Collection + Clone,
     C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> ListItem,
 {

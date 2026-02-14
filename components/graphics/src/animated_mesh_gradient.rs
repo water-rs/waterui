@@ -380,6 +380,10 @@ impl GpuRenderer for AnimatedMeshRenderer {
 
         frame.queue.submit(core::iter::once(encoder.finish()));
     }
+
+    fn needs_redraw(&self) -> bool {
+        self.config.speed > 0.0
+    }
 }
 
 /// GPU-animated mesh gradient view.

@@ -12,6 +12,10 @@ use waterui_core::layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubVie
 
 use crate::layout::{GtkSubView, place_children, update_positions};
 
+fn layout_debug_enabled() -> bool {
+    std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
+}
+
 mod imp {
     use super::*;
 
@@ -20,6 +24,7 @@ mod imp {
         pub layout: RefCell<Option<Box<dyn Layout>>>,
         pub children: RefCell<Vec<(Widget, StretchAxis)>>,
         pub last_rects: RefCell<Vec<Rect>>,
+        pub last_size: RefCell<Option<(i32, i32)>>,
     }
 
     #[glib::object_subclass]
@@ -66,6 +71,14 @@ mod imp {
             let size = layout.size_that_fits(proposal, &refs);
             let w = size.width.max(0.0).round() as i32;
             let h = size.height.max(0.0).round() as i32;
+            if layout_debug_enabled() {
+                eprintln!(
+                    "[gtk-layout] fixed.measure orientation={orientation:?} for_size={for_size} proposal=({:?},{:?}) -> size=({w},{h}) children={}",
+                    proposal.width,
+                    proposal.height,
+                    refs.len()
+                );
+            }
             match orientation {
                 gtk4::Orientation::Horizontal => (w, w, -1, -1),
                 gtk4::Orientation::Vertical => (h, h, -1, -1),
@@ -102,14 +115,29 @@ mod imp {
             let _ = layout.size_that_fits(proposal, &refs);
 
             let rects = layout.place(bounds, &refs);
-            let widgets: Vec<Widget> = children.iter().map(|(w, _)| w.clone()).collect();
+            if layout_debug_enabled() {
+                eprintln!(
+                    "[gtk-layout] fixed.allocate width={width} height={height} children={} rects={}",
+                    children.len(),
+                    rects.len()
+                );
+                for (idx, rect) in rects.iter().enumerate().take(8) {
+                    eprintln!(
+                        "[gtk-layout]   rect[{idx}] = x={} y={} w={} h={}",
+                        rect.x(),
+                        rect.y(),
+                        rect.width(),
+                        rect.height()
+                    );
+                }
+            }
 
             // First placement adds children; subsequent placements only move/resize.
             let mut last_rects = self.last_rects.borrow_mut();
             if last_rects.is_empty() {
-                place_children(self.obj().upcast_ref::<Fixed>(), &rects, &widgets);
+                place_children(self.obj().upcast_ref::<Fixed>(), &rects, &children);
             } else {
-                update_positions(self.obj().upcast_ref::<Fixed>(), &rects, &widgets);
+                update_positions(self.obj().upcast_ref::<Fixed>(), &rects, &children);
             }
             *last_rects = rects;
         }
@@ -122,10 +150,105 @@ glib::wrapper! {
 }
 
 impl WuiFixedContainer {
+    pub(crate) fn layout_size_that_fits(&self, proposal: ProposalSize) -> Size {
+        let imp = self.imp();
+        let layout_borrow = imp.layout.borrow();
+        let Some(layout) = layout_borrow.as_ref() else {
+            panic!("WuiFixedContainer: missing layout (internal error)");
+        };
+
+        let children = imp.children.borrow();
+        if children.is_empty() {
+            return Size::zero();
+        }
+
+        let subviews: Vec<GtkSubView> = children
+            .iter()
+            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
+
+        let size = layout.size_that_fits(proposal, &refs);
+        Size::new(size.width.max(0.0), size.height.max(0.0))
+    }
+
+    fn relayout(&self) {
+        let width = self.width();
+        let height = self.height();
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        let imp = self.imp();
+        {
+            let mut last_size = imp.last_size.borrow_mut();
+            if *last_size == Some((width, height)) {
+                return;
+            }
+            *last_size = Some((width, height));
+        }
+
+        let layout_borrow = imp.layout.borrow();
+        let Some(layout) = layout_borrow.as_ref() else {
+            panic!("WuiFixedContainer: missing layout (internal error)");
+        };
+
+        let children = imp.children.borrow();
+        if children.is_empty() {
+            return;
+        }
+
+        let subviews: Vec<GtkSubView> = children
+            .iter()
+            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
+
+        let bounds = Rect::from_size(Size {
+            width: (width.max(0)) as f32,
+            height: (height.max(0)) as f32,
+        });
+
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let _ = layout.size_that_fits(proposal, &refs);
+        let rects = layout.place(bounds, &refs);
+        if layout_debug_enabled() {
+            eprintln!(
+                "[gtk-layout] fixed.relayout width={width} height={height} children={} rects={}",
+                children.len(),
+                rects.len()
+            );
+            for (idx, rect) in rects.iter().enumerate().take(8) {
+                eprintln!(
+                    "[gtk-layout]   rect[{idx}] = x={} y={} w={} h={}",
+                    rect.x(),
+                    rect.y(),
+                    rect.width(),
+                    rect.height()
+                );
+            }
+        }
+
+        let mut last_rects = imp.last_rects.borrow_mut();
+        if last_rects.is_empty() {
+            place_children(self.upcast_ref::<Fixed>(), &rects, &children);
+        } else {
+            update_positions(self.upcast_ref::<Fixed>(), &rects, &children);
+        }
+        *last_rects = rects;
+    }
+
     #[must_use]
     pub fn new(layout: Box<dyn Layout>, children: Vec<(Widget, StretchAxis)>) -> Self {
         let obj: Self = glib::Object::new();
         let imp = obj.imp();
+        if layout_debug_enabled() {
+            eprintln!(
+                "[gtk-layout] fixed.new type={} children={}",
+                obj.type_().name(),
+                children.len()
+            );
+        }
 
         *imp.layout.borrow_mut() = Some(layout);
         *imp.children.borrow_mut() = children;
@@ -134,6 +257,14 @@ impl WuiFixedContainer {
         for (child, _) in imp.children.borrow().iter() {
             obj.put(child, 0.0, 0.0);
         }
+
+        // In GTK4, subclassing Fixed does not provide reliable measure/allocate hooks for
+        // custom layout logic. Reflow on each frame while mapped so nested containers pick
+        // up parent allocation changes deterministically.
+        obj.add_tick_callback(|widget, _| {
+            widget.relayout();
+            glib::ControlFlow::Continue
+        });
 
         obj
     }

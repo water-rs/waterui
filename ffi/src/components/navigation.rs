@@ -10,7 +10,7 @@ use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
 use waterui_navigation::{
     Bar, CustomNavigationController, NavigationController, NavigationStack,
-    NavigationTitleDisplayMode, NavigationView,
+    NavigationTitleDisplayMode, NavigationTransition, NavigationView,
 };
 
 into_ffi! {
@@ -63,16 +63,41 @@ ffi_view!(NavigationView, WuiNavigationView, navigation_view);
 
 /// FFI struct for NavigationStack<(),()>
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiNavigationTransition {
+    PushPop = 0,
+    Fade = 1,
+    None = 2,
+}
+
+impl IntoFFI for NavigationTransition {
+    type FFI = WuiNavigationTransition;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            NavigationTransition::PushPop => WuiNavigationTransition::PushPop,
+            NavigationTransition::Fade => WuiNavigationTransition::Fade,
+            NavigationTransition::None => WuiNavigationTransition::None,
+        }
+    }
+}
+
+/// FFI struct for NavigationStack<(),()>
+#[repr(C)]
 pub struct WuiNavigationStack {
     /// The root view of the navigation stack.
     pub root: *mut WuiAnyView,
+    /// Transition style used for push/pop operations.
+    pub transition: WuiNavigationTransition,
 }
 
 impl IntoFFI for NavigationStack<(), ()> {
     type FFI = WuiNavigationStack;
     fn into_ffi(self) -> Self::FFI {
+        let transition = self.transition_style().into_ffi();
         WuiNavigationStack {
             root: self.into_inner().into_ffi(),
+            transition,
         }
     }
 }

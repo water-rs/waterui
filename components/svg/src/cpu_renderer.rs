@@ -358,4 +358,8 @@ impl GpuRenderer for SvgRenderer {
             self.needs_redraw = true;
         }
     }
+
+    fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
 }

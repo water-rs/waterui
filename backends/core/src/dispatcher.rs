@@ -4,6 +4,7 @@
 //! backend-specific handlers based on their concrete types.
 
 use core::{any::TypeId, fmt::Debug};
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use waterui_core::{AnyView, Environment, View};
@@ -41,6 +42,44 @@ type HandlerFn<T, C, R> = Box<dyn Fn(&mut T, C, AnyView, &Environment) -> R>;
 pub struct ViewDispatcher<T, C, R> {
     state: T,
     handlers: HashMap<TypeId, HandlerFn<T, C, R>>,
+}
+
+thread_local! {
+    static DISPATCH_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct DispatchTraceGuard {
+    enabled: bool,
+}
+
+impl DispatchTraceGuard {
+    fn enter(enabled: bool, view_name: &str) -> Self {
+        if enabled {
+            DISPATCH_DEPTH.with(|depth| {
+                let current = depth.get();
+                eprintln!(
+                    "[gtk-dispatch] {}{}",
+                    "  ".repeat(current),
+                    view_name
+                );
+                depth.set(current + 1);
+            });
+        }
+        Self { enabled }
+    }
+}
+
+impl Drop for DispatchTraceGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            DISPATCH_DEPTH.with(|depth| {
+                let current = depth.get();
+                if current > 0 {
+                    depth.set(current - 1);
+                }
+            });
+        }
+    }
 }
 
 impl<T: Default, C, R> ViewDispatcher<T, C, R> {
@@ -124,6 +163,9 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
     /// If no handler is registered for the view's concrete type, the dispatcher
     /// calls `body()` on the view and tries again with the result.
     pub fn dispatch_any(&mut self, view: AnyView, env: &Environment, context: C) -> R {
+        let debug_enabled = std::env::var_os("WATERUI_DISPATCH_DEBUG").is_some();
+        let view_name = view.name();
+        let _trace_guard = DispatchTraceGuard::enter(debug_enabled, view_name);
         let type_id = view.type_id();
 
         // Handle nested AnyView (unwrap and recurse)

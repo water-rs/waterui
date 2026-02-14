@@ -17,7 +17,7 @@ use core::ffi::c_void;
 
 use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jboolean, jfloat, jint, jlong, jobject, jobjectArray};
+use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use nami::SignalExt;
 use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
@@ -793,6 +793,37 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'loca
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    start: jint,
+    end: jint,
+) -> jintArray {
+    let anyviews = handle as *const crate::views::WuiAnyViews;
+    if anyviews.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    let start = if start.is_negative() { 0 } else { start as usize };
+    let end = if end.is_negative() { 0 } else { end as usize };
+
+    let ids = unsafe { crate::views::waterui_anyviews_get_ids_in_range(anyviews, start, end) };
+    let rust_ids: Vec<crate::id::WuiId> = unsafe { crate::IntoRust::into_rust(ids) };
+    let values: Vec<jint> = rust_ids.into_iter().map(|id| id.inner).collect();
+
+    let Ok(array) = env.new_int_array(values.len() as jint) else {
+        return core::ptr::null_mut();
+    };
+
+    if env.set_int_array_region(&array, 0, &values).is_err() {
+        return core::ptr::null_mut();
+    }
+
+    array.into_raw()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
@@ -819,8 +850,27 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetId<'lo
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'local>(
     env: JNIEnv<'local>,
+    class: JClass<'local>,
+    handle: jlong,
+    callback: JObject<'local>,
+) -> jlong {
+    Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatchRange(
+        env,
+        class,
+        handle,
+        0,
+        jint::MAX,
+        callback,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatchRange<'local>(
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
+    start: jint,
+    end: jint,
     callback: JObject<'local>,
 ) -> jlong {
     if handle == 0 || callback.is_null() {
@@ -839,9 +889,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'lo
     let data = Box::new(AnyViewsWatchData { jvm, callback });
     let data_ptr = Box::into_raw(data) as *mut ();
     let anyviews = handle as *const crate::views::WuiAnyViews;
+    let start = if start.is_negative() { 0 } else { start as usize };
+    let end = if end.is_negative() { 0 } else { end as usize };
     unsafe {
-        crate::views::waterui_anyviews_watch(
+        crate::views::waterui_anyviews_watch_range(
             anyviews,
+            start,
+            end,
             data_ptr,
             anyviews_watch_call,
             anyviews_watch_drop,
@@ -1304,7 +1358,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
 
     let mut wui_surface = crate::components::gpu_surface::WuiGpuSurface {
         surface: renderer_ptr as *mut c_void,
-        render_mode: 0,
     };
 
     let state = unsafe {
@@ -1355,19 +1408,26 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
     state_ptr: jlong,
     width: jint,
     height: jint,
-) -> jboolean {
+) -> jlong {
     if state_ptr == 0 {
         return 0;
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
-    let ok = unsafe {
+    let result = unsafe {
         crate::components::gpu_surface::waterui_gpu_surface_render(
             wrapper.state,
             width as u32,
             height as u32,
         )
     };
-    if ok { 1 } else { 0 }
+    let mut packed: u64 = 0;
+    if result.ok {
+        packed |= 1;
+    }
+    if result.needs_redraw {
+        packed |= 1 << 1;
+    }
+    packed as jlong
 }
 
 #[cfg(target_os = "android")]

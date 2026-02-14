@@ -716,7 +716,7 @@ waterui_core::raw_view!(ResolvedColor, waterui_core::layout::StretchAxis::Both);
 #[cfg(not(target_os = "android"))]
 impl View for ResolvedColor {
     fn body(self, _env: &Environment) -> impl View {
-        crate::GpuSurface::new(SolidColorRenderer::new(self)).on_demand()
+        crate::GpuSurface::new(SolidColorRenderer::new(self))
     }
 }
 
