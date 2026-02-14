@@ -437,11 +437,14 @@ async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
             continue;
         }
 
-        if file_name == ".gitkeep" {
+        if is_placeholder_file_name(file_name.as_str()) {
             continue;
         }
 
         if path.is_file() {
+            if is_placeholder_file_name(file_name.as_str()) {
+                continue;
+            }
             scanned.scanned_files += 1;
             scanned.errors.push(DoctorIssue {
                 path: path.clone(),
@@ -643,6 +646,13 @@ async fn collect_apple_catalog_set(
 
     let mut has_contents_json = false;
     for file in files {
+        if file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(is_placeholder_file_name)
+        {
+            continue;
+        }
         scanned.scanned_files += 1;
         let rel = file
             .strip_prefix(set_dir)
@@ -741,6 +751,13 @@ async fn collect_apple_imageset(
     let mut slot_guard = BTreeSet::new();
     let mut has_1x = false;
     for file in files {
+        if file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(is_placeholder_file_name)
+        {
+            continue;
+        }
         let rel = file
             .strip_prefix(imageset_dir)
             .wrap_err_with(|| format!("Failed to relativize {}", file.display()))?;
@@ -863,6 +880,9 @@ async fn collect_android_drawables(
         }
 
         if qualifier_path.is_file() {
+            if is_placeholder_file_name(qualifier.as_str()) {
+                continue;
+            }
             scanned.errors.push(DoctorIssue {
                 path: qualifier_path.clone(),
                 message: "Files are not allowed directly under images/android/".to_string(),
@@ -884,6 +904,13 @@ async fn collect_android_drawables(
 
         let files = list_files_recursive(&qualifier_path).await?;
         for file in files {
+            if file
+                .file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(is_placeholder_file_name)
+            {
+                continue;
+            }
             if file
                 .strip_prefix(&qualifier_path)
                 .ok()
@@ -952,6 +979,13 @@ async fn collect_gtk_images(
 
     let files = list_files_recursive(gtk_root).await?;
     for file in files {
+        if file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(is_placeholder_file_name)
+        {
+            continue;
+        }
         if !is_image_file(&file) {
             scanned.errors.push(DoctorIssue {
                 path: file.clone(),
@@ -979,7 +1013,7 @@ async fn collect_gtk_images(
 }
 
 fn is_path_compliant(relative: &Path, absolute: &Path) -> bool {
-    if relative == Path::new(".gitkeep") {
+    if is_placeholder_path(relative) {
         return true;
     }
 
@@ -995,6 +1029,16 @@ fn is_path_compliant(relative: &Path, absolute: &Path) -> bool {
         "images" | "images-lossy" => is_valid_image_path(relative, absolute),
         _ => false,
     }
+}
+
+fn is_placeholder_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(is_placeholder_file_name)
+}
+
+fn is_placeholder_file_name(name: &str) -> bool {
+    name == ".gitkeep"
 }
 
 fn is_valid_image_path(relative: &Path, absolute: &Path) -> bool {
