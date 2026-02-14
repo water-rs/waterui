@@ -1,7 +1,7 @@
 //! High-performance GPU rendering surface using wgpu.
 //!
 //! This module provides `GpuSurface`, a raw view that enables direct wgpu access
-//! for custom GPU rendering at up to 120fps+.
+//! for custom GPU rendering.
 
 extern crate alloc;
 
@@ -326,23 +326,13 @@ pub trait GpuRenderer: 'static {
     /// Default implementation does nothing. Override if you need to
     /// recreate resources when the surface size changes.
     fn resize(&mut self, _width: u32, _height: u32) {}
-}
 
-/// Rendering mode for a `GpuSurface`.
-///
-/// - `Continuous`: render at display refresh rate (for time-based animations like flames).
-/// - `OnDemand`: render only when inputs change (pointer/gesture/size or explicit invalidation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuSurfaceRenderMode {
-    /// Render continuously (vsync-driven).
-    Continuous = 0,
-    /// Render only when the surface is marked dirty by the native backend.
-    OnDemand = 1,
-}
-
-impl Default for GpuSurfaceRenderMode {
-    fn default() -> Self {
-        Self::Continuous
+    /// Returns whether another frame should be scheduled immediately.
+    ///
+    /// This powers on-demand rendering loops for time-based or stateful GPU
+    /// animations. Default is `false`.
+    fn needs_redraw(&self) -> bool {
+        false
     }
 }
 
@@ -640,6 +630,7 @@ trait GpuRendererImpl: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a>;
     fn render(&mut self, frame: &GpuFrame);
     fn resize(&mut self, width: u32, height: u32);
+    fn needs_redraw(&self) -> bool;
 }
 
 impl<T: GpuRenderer> GpuRendererImpl for T {
@@ -654,13 +645,21 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
     fn resize(&mut self, width: u32, height: u32) {
         GpuRenderer::resize(self, width, height);
     }
+
+    fn needs_redraw(&self) -> bool {
+        GpuRenderer::needs_redraw(self)
+    }
 }
 
 /// A raw view for high-performance GPU rendering.
 ///
-/// `GpuSurface` provides direct access to wgpu for custom rendering at
-/// display refresh rates (60-120fps+). It stretches to fill available
-/// space by default, similar to `SwiftUI`'s `Color`.
+/// `GpuSurface` provides direct access to wgpu for custom rendering and uses
+/// on-demand scheduling by default.
+///
+/// Native backends render when the surface is dirty (size/input updates) and
+/// keep rendering while [`GpuRenderer::needs_redraw`] returns `true`.
+/// It stretches to fill available space by default, similar to `SwiftUI`'s
+/// `Color`.
 ///
 /// # Layout Behavior
 ///
@@ -681,8 +680,6 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
 pub struct GpuSurface {
     /// The renderer that handles GPU drawing (type-erased).
     renderer: Box<dyn GpuRendererImpl>,
-    /// Whether this surface should render continuously or only on demand.
-    render_mode: GpuSurfaceRenderMode,
     /// Preferred maximum MSAA sample count for this surface.
     ///
     /// Backends use this as the cap when selecting a supported sample count.
@@ -727,7 +724,6 @@ impl GpuSurface {
     pub fn new<R: GpuRenderer>(renderer: R) -> Self {
         Self {
             renderer: Box::new(renderer),
-            render_mode: GpuSurfaceRenderMode::Continuous,
             msaa_max_samples: Self::default_msaa_max_samples(),
         }
     }
@@ -739,31 +735,6 @@ impl GpuSurface {
     pub fn from_gpu_view<V: GpuView>(view: V, env: &waterui_core::Environment) -> Self {
         let mut env = env.clone();
         Self::new(view.gpu_body(&mut env))
-    }
-
-    /// Sets the render mode for this surface.
-    #[must_use]
-    pub const fn render_mode(mut self, mode: GpuSurfaceRenderMode) -> Self {
-        self.render_mode = mode;
-        self
-    }
-
-    /// Render at display refresh rate (use for time-based animations).
-    #[must_use]
-    pub const fn continuous(self) -> Self {
-        self.render_mode(GpuSurfaceRenderMode::Continuous)
-    }
-
-    /// Render only when the native backend marks the surface dirty.
-    #[must_use]
-    pub const fn on_demand(self) -> Self {
-        self.render_mode(GpuSurfaceRenderMode::OnDemand)
-    }
-
-    /// Returns the current render mode.
-    #[must_use]
-    pub const fn get_render_mode(&self) -> GpuSurfaceRenderMode {
-        self.render_mode
     }
 
     /// Sets the preferred maximum MSAA sample count for this surface.
@@ -967,6 +938,12 @@ impl GpuSurface {
     /// Calls `render` on the renderer.
     pub fn render(&mut self, frame: &GpuFrame) {
         self.renderer.render(frame);
+    }
+
+    /// Returns whether another frame should be scheduled immediately.
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        self.renderer.needs_redraw()
     }
 
     /// Calls `resize` on the renderer.
