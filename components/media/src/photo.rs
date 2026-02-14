@@ -185,9 +185,14 @@ pub fn photo(source: impl Into<Url>) -> Photo {
 
 #[cfg(test)]
 mod tests {
-    use super::fetch_and_decode_streaming;
+    use std::io::Cursor;
+    use std::path::PathBuf;
+
+    use super::{fetch_and_decode_streaming, png_contains_cicp_pq};
     use crate::Url;
     use crate::image::{DecodePath, Image};
+    use image::ImageDecoder;
+    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
 
     #[test]
     fn png_decode_path_smoke() {
@@ -397,4 +402,117 @@ mod tests {
             assert_eq!(path, DecodePath::Platform);
         });
     }
+
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[test]
+    #[ignore = "manual: network HDR Photo decode, HDR offscreen render, and PNG HDR verification"]
+    fn photo_network_hdr_offscreen_png_is_hdr() {
+        futures::executor::block_on(async {
+            let candidates = [
+                "https://www.bandisoft.com/bandiview/help/hdr-samples/hdr_cosmos01650_cicp9-16-9_yuv420_limited_qp10.avif",
+                "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.10bpc.yuv420.avif",
+                "https://raw.githubusercontent.com/link-u/avif-sample-images/master/hato.profile0.10bpc.yuv420.avif",
+            ];
+
+            let export_dir = PathBuf::from("/tmp/waterui-photo-offscreen-hdr");
+            std::fs::create_dir_all(&export_dir).expect("export directory should be creatable");
+
+            for raw_url in candidates {
+                let url: Url = raw_url.parse().expect("url should parse");
+                let mut last_frame: Option<Image> = None;
+                if let Err(e) = fetch_and_decode_streaming(url, |image| {
+                    last_frame = Some(image);
+                })
+                .await
+                {
+                    eprintln!("[photo_network_hdr_offscreen_png_is_hdr] skip {raw_url}: {e}");
+                    continue;
+                }
+
+                let Some(image) = last_frame else {
+                    continue;
+                };
+                let (width, height) = image.dimensions();
+                let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
+                    .expect("offscreen size must be valid");
+                let config =
+                    OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
+                let Ok(output) = image.render_offscreen_hdr(config) else {
+                    continue;
+                };
+
+                let max_rgb = output.max_rgb_linear();
+                let hdr_ratio = output.hdr_pixel_ratio();
+                if max_rgb <= 1.0 || hdr_ratio <= 0.0 {
+                    eprintln!(
+                        "[photo_network_hdr_offscreen_png_is_hdr] sample lacks HDR headroom: url={raw_url}, max_rgb={max_rgb:.6}, hdr_ratio={hdr_ratio:.6}"
+                    );
+                    continue;
+                }
+
+                let png_path = export_dir.join("photo_hdr_network_offscreen.png");
+                output
+                    .save_png(&png_path)
+                    .expect("HDR PNG should be writable");
+
+                let png_bytes = std::fs::read(&png_path).expect("HDR PNG should be readable");
+                let decoder = image::codecs::png::PngDecoder::new(Cursor::new(&png_bytes))
+                    .expect("exported PNG should decode");
+                assert_eq!(
+                    decoder.color_type(),
+                    image::ColorType::Rgba16,
+                    "HDR offscreen export must be 16-bit PNG"
+                );
+                let has_hdr_cicp = png_contains_cicp_pq(&png_bytes);
+                assert!(
+                    has_hdr_cicp,
+                    "HDR offscreen export must carry cICP PQ metadata"
+                );
+
+                eprintln!(
+                    "[photo_network_hdr_offscreen_png_is_hdr] exported={}, url={}, max_rgb={max_rgb:.6}, hdr_ratio={hdr_ratio:.6}",
+                    png_path.display(),
+                    raw_url
+                );
+                return;
+            }
+
+            panic!("no HDR network sample produced a valid HDR PNG export");
+        });
+    }
+}
+
+#[cfg(test)]
+fn png_contains_cicp_pq(bytes: &[u8]) -> bool {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 8 || &bytes[0..8] != PNG_SIG {
+        return false;
+    }
+    let mut offset = 8usize;
+    while offset + 12 <= bytes.len() {
+        let len = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
+        let chunk_start = offset + 8;
+        let chunk_end = chunk_start.saturating_add(len);
+        if chunk_end + 4 > bytes.len() {
+            return false;
+        }
+        let chunk_type = &bytes[offset + 4..offset + 8];
+        if chunk_type == b"cICP" {
+            if len != 4 {
+                return false;
+            }
+            let data = &bytes[chunk_start..chunk_end];
+            return data[1] == 16; // PQ transfer
+        }
+        if chunk_type == b"IEND" {
+            break;
+        }
+        offset = chunk_end + 4;
+    }
+    false
 }
