@@ -18,7 +18,10 @@ use alloc::vec::Vec;
 
 use crate::image_codec::{self, DecodedRgba};
 use waterui_core::{Environment, View};
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_graphics::{
+    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
+    OffscreenRenderOutput, OffscreenRenderOutputHdr,
+};
 use waterui_layout::frame::Frame;
 
 pub use crate::image_codec::DecodePath;
@@ -140,6 +143,22 @@ impl Image {
     #[must_use]
     pub fn stream_decoder(content_type: Option<&str>) -> ImageStreamDecoder {
         ImageStreamDecoder::new(content_type)
+    }
+
+    /// Renders this image into an offscreen RGBA8 target.
+    pub fn render_offscreen(
+        self,
+        config: OffscreenRenderConfig,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        GpuSurface::new(self.renderer).render_offscreen(config)
+    }
+
+    /// Renders this image into an HDR offscreen target and reads back `RGBA16F`.
+    pub fn render_offscreen_hdr(
+        self,
+        config: OffscreenRenderConfig,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        GpuSurface::new(self.renderer).render_offscreen_hdr(config)
     }
 
     fn from_decoded(decoded: DecodedRgba) -> Self {
@@ -553,9 +572,8 @@ fn frame_fingerprint(decoded: &DecodedRgba) -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::mpsc;
 
-    use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu};
+    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
 
     fn assert_non_empty_offscreen_rgba(rgba: &[u8]) {
         assert!(!rgba.is_empty(), "offscreen output should not be empty");
@@ -578,125 +596,19 @@ mod tests {
         let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
             .expect("offscreen size must be valid");
         let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
-        GpuSurface::new(image.renderer)
+        image
             .render_offscreen(config)
             .expect("offscreen image render should succeed")
     }
 
-    fn render_image_offscreen_rgba16f(image: Image) -> (u32, u32, Vec<u8>) {
-        use waterui_graphics::shared_context::{init_shared_context, shared_context};
-
+    fn render_image_offscreen_hdr(image: Image) -> waterui_graphics::OffscreenRenderOutputHdr {
         let (width, height) = image.dimensions();
-        let width = width.min(1024);
-        let height = height.min(1024);
-
-        init_shared_context().expect("shared GPU context should initialize");
-        let shared = shared_context();
-        let guard = shared.read();
-        let device = guard.device.as_ref();
-        let queue = guard.queue.as_ref();
-        let adapter = &guard.adapter;
-
-        let mut surface = GpuSurface::new(image.renderer);
-        let ctx = waterui_graphics::GpuContext {
-            adapter: Some(adapter),
-            device,
-            queue,
-            surface_format: wgpu::TextureFormat::Rgba16Float,
-            msaa_samples: 1,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-        };
-        waterui_graphics::pollster::block_on(surface.setup(&ctx));
-        surface.resize(width, height);
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("waterui_image_hdr_probe"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame = waterui_graphics::GpuFrame {
-            device,
-            queue,
-            texture: &texture,
-            view,
-            format: wgpu::TextureFormat::Rgba16Float,
-            width,
-            height,
-            pointer: waterui_graphics::gpu_surface::PointerState::default(),
-            gesture: waterui_graphics::gpu_surface::GestureState::default(),
-        };
-        surface.render(&frame);
-
-        let bytes_per_pixel = 8u32;
-        let copy_alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let unpadded_bpr = width * bytes_per_pixel;
-        let padded_bpr = unpadded_bpr.div_ceil(copy_alignment) * copy_alignment;
-        let copy_size = (padded_bpr * height) as u64;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("waterui_image_hdr_probe_readback"),
-            size: copy_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("waterui_image_hdr_probe_encoder"),
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bpr),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([encoder.finish()]);
-
-        let slice = buffer.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        let map_result = rx
-            .recv()
-            .expect("readback completion channel should stay open");
-        map_result.expect("readback mapping should succeed");
-
-        let mapped = slice.get_mapped_range();
-        let mut out = vec![0u8; (width * height * bytes_per_pixel) as usize];
-        for row in 0..height as usize {
-            let src_start = row * padded_bpr as usize;
-            let src_end = src_start + unpadded_bpr as usize;
-            let dst_start = row * unpadded_bpr as usize;
-            let dst_end = dst_start + unpadded_bpr as usize;
-            out[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-        }
-        drop(mapped);
-        buffer.unmap();
-        (width, height, out)
+        let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
+            .expect("offscreen size must be valid");
+        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
+        image
+            .render_offscreen_hdr(config)
+            .expect("offscreen HDR image render should succeed")
     }
 
     async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -828,12 +740,12 @@ mod tests {
                 .await
                 .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
             let image = Image::from_encoded(&bytes).expect("hdr image decode should succeed");
-            let (_width, _height, pixels) = render_image_offscreen_rgba16f(image);
+            let output = render_image_offscreen_hdr(image);
 
             let mut max_rgb = 0.0f32;
             let mut gt_one = 0usize;
             let mut total = 0usize;
-            for px in pixels.chunks_exact(8) {
+            for px in output.rgba16f.chunks_exact(8) {
                 let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
                 let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
                 let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));
@@ -881,12 +793,16 @@ mod tests {
                     .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
                 let (hdr_image, hdr_path) = Image::from_encoded_with_path(&hdr_bytes)
                     .expect("hdr avif should decode successfully");
-                let hdr_output = render_image_offscreen(hdr_image);
+                let hdr_output = render_image_offscreen_hdr(hdr_image);
+                assert!(hdr_output.max_rgb_linear() > 1.0);
+                assert!(hdr_output.hdr_pixel_ratio() > 0.0);
                 hdr_output
-                    .save_png(dir.join("02_hdr_avif_offscreen.png"))
+                    .save_png(dir.join("02_hdr_avif_offscreen_hdr16.png"))
                     .expect("hdr avif output should be writable");
                 manifest.push_str(&alloc::format!(
-                    "02_hdr_avif_offscreen.png source={hdr_url} decode_path={hdr_path:?}\n"
+                    "02_hdr_avif_offscreen_hdr16.png source={hdr_url} decode_path={hdr_path:?} max_rgb={:.6} hdr_ratio={:.6}\n",
+                    hdr_output.max_rgb_linear(),
+                    hdr_output.hdr_pixel_ratio()
                 ));
             }
 
@@ -898,12 +814,14 @@ mod tests {
                     .expect("should fetch heic bytes");
                 let (heic_image, heic_path) = Image::from_encoded_with_path(&heic_bytes)
                     .expect("heic/h265 should decode on Apple");
-                let heic_output = render_image_offscreen(heic_image);
+                let heic_output = render_image_offscreen_hdr(heic_image);
                 heic_output
-                    .save_png(dir.join("03_heic_h265_offscreen.png"))
+                    .save_png(dir.join("03_heic_h265_offscreen_hdr16.png"))
                     .expect("heic output should be writable");
                 manifest.push_str(&alloc::format!(
-                    "03_heic_h265_offscreen.png source={heic_url} decode_path={heic_path:?}\n"
+                    "03_heic_h265_offscreen_hdr16.png source={heic_url} decode_path={heic_path:?} max_rgb={:.6} hdr_ratio={:.6}\n",
+                    heic_output.max_rgb_linear(),
+                    heic_output.hdr_pixel_ratio()
                 ));
             }
 

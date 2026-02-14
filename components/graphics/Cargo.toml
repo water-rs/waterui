@@ -25,6 +25,7 @@ encase.workspace = true
 glam = "0.29"
 tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
+png = "0.18"
 parking_lot = "0.12"
 pollster = "0.4"
 inventory = "0.3"
