@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use executor_core::is_local_executor_initialized;
 use nami::Binding;
 use waterkit_regional::ListenerHandle;
 
@@ -48,10 +47,6 @@ fn maybe_register_runtime_locale_listener(binding: &Binding<Locale>) {
     if RUNTIME_LOCALE_LISTENER.get().is_some() {
         return;
     }
-    if !is_local_executor_initialized() {
-        return;
-    }
-
     waterkit_regional::start_auto_refresh_default();
     let listener = catch_unwind(AssertUnwindSafe(|| {
         let mailbox = binding.mailbox();
