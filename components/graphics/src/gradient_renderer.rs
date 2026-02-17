@@ -15,7 +15,10 @@
 
 extern crate alloc;
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::any::Any;
+use std::sync::Mutex;
 
 use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
@@ -313,13 +316,8 @@ impl GpuRenderer for GradientRenderer {
             ctx.surface_format
         );
 
-        // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(GRADIENT_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
-            });
+        let shader =
+            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &GRADIENT_SHADER);
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -431,13 +429,13 @@ impl GpuRenderer for GradientRenderer {
                 label: Some("Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
@@ -766,6 +764,8 @@ struct ReactiveMeshRenderer<C> {
     height: u32,
     colors: C,
     smooths_colors: bool,
+    pending_update: Arc<Mutex<bool>>,
+    _watcher_guard: Option<Box<dyn Any>>,
     // GPU resources
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
@@ -783,6 +783,8 @@ impl<C> ReactiveMeshRenderer<C> {
             height,
             colors,
             smooths_colors,
+            pending_update: Arc::new(Mutex::new(false)),
+            _watcher_guard: None,
             pipeline: None,
             uniform_buffer: None,
             stops_buffer: None,
@@ -800,13 +802,19 @@ where
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
-        // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(GRADIENT_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
+        if self._watcher_guard.is_none() {
+            let pending_update = Arc::clone(&self.pending_update);
+            let guard = self.colors.watch(move |_context| {
+                if let Ok(mut pending) = pending_update.lock() {
+                    *pending = true;
+                }
             });
+            self._watcher_guard = Some(Box::new(guard));
+        }
+
+        // Create shader directly (no more shared context cache - compile on-demand)
+        let shader =
+            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &GRADIENT_SHADER);
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -915,13 +923,13 @@ where
                 label: Some("Mesh Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
@@ -1018,82 +1026,94 @@ where
             return;
         };
 
-        // Read current colors from Signal
-        let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
+        let pending_update = self
+            .pending_update
+            .lock()
+            .ok()
+            .map_or(false, |mut pending| {
+                let value = *pending;
+                *pending = false;
+                value
+            });
 
-        // Check if colors changed
-        let colors_changed = match &self.last_colors {
-            Some(last) => {
-                last.len() != colors.len()
-                    || last.iter().zip(&colors).any(|(a, b)| {
-                        a.red != b.red
-                            || a.green != b.green
-                            || a.blue != b.blue
-                            || a.opacity != b.opacity
-                    })
-            }
-            None => true,
-        };
+        if pending_update || self.last_colors.is_none() {
+            // Read current colors from signal only when first drawing or when a watcher
+            // reports a data update.
+            let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
 
-        if colors_changed {
-            // Update cache
-            self.last_colors = Some(colors.clone());
-
-            // Prepare uniforms using encase
-            let uniforms = GradientUniforms {
-                gradient_type: GradientType::Mesh as u32,
-                num_stops: 0,
-                mesh_width: self.width,
-                mesh_height: self.height,
-                start_point: glam::Vec2::new(0.0, 0.0),
-                end_point: glam::Vec2::new(1.0, 1.0),
-                start_value: 0.0,
-                end_value: 1.0,
-                smooths_colors: u32::from(self.smooths_colors),
+            let colors_changed = match &self.last_colors {
+                Some(last) => {
+                    last.len() != colors.len()
+                        || last.iter().zip(&colors).any(|(a, b)| {
+                            a.red != b.red
+                                || a.green != b.green
+                                || a.blue != b.blue
+                                || a.opacity != b.opacity
+                        })
+                }
+                None => true,
             };
-            let mut uniform_data = UniformBuffer::new(Vec::new());
-            uniform_data
-                .write(&uniforms)
-                .expect("Failed to write uniform buffer");
-            frame
-                .queue
-                .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
-            // Prepare empty stops (mesh gradient doesn't use stops)
-            let stops: Vec<GpuColorStop> = (0..MAX_COLOR_STOPS)
-                .map(|_| GpuColorStop::default())
-                .collect();
-            let mut stops_data = StorageBuffer::new(Vec::new());
-            stops_data
-                .write(&stops)
-                .expect("Failed to write storage buffer");
-            frame
-                .queue
-                .write_buffer(stops_buffer, 0, stops_data.as_ref());
+            if colors_changed {
+                // Update cache
+                self.last_colors = Some(colors.clone());
 
-            // Prepare mesh vertices from colors
-            // Generate grid positions and map colors
-            let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
-            let w = self.width as usize;
-            let h = self.height as usize;
+                // Prepare uniforms using encase
+                let uniforms = GradientUniforms {
+                    gradient_type: GradientType::Mesh as u32,
+                    num_stops: 0,
+                    mesh_width: self.width,
+                    mesh_height: self.height,
+                    start_point: glam::Vec2::new(0.0, 0.0),
+                    end_point: glam::Vec2::new(1.0, 1.0),
+                    start_value: 0.0,
+                    end_value: 1.0,
+                    smooths_colors: u32::from(self.smooths_colors),
+                };
+                let mut uniform_data = UniformBuffer::new(Vec::new());
+                uniform_data
+                    .write(&uniforms)
+                    .expect("Failed to write uniform buffer");
+                frame
+                    .queue
+                    .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
-            for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
-                let x = (i % w) as f32 / (w - 1).max(1) as f32;
-                let y = (i / w) as f32 / (h - 1).max(1) as f32;
-                vertices.push(GpuMeshVertex {
-                    position: glam::Vec2::new(x, y),
-                    color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
-                });
+                // Prepare empty stops (mesh gradient doesn't use stops)
+                let stops: Vec<GpuColorStop> = (0..MAX_COLOR_STOPS)
+                    .map(|_| GpuColorStop::default())
+                    .collect();
+                let mut stops_data = StorageBuffer::new(Vec::new());
+                stops_data
+                    .write(&stops)
+                    .expect("Failed to write storage buffer");
+                frame
+                    .queue
+                    .write_buffer(stops_buffer, 0, stops_data.as_ref());
+
+                // Prepare mesh vertices from colors
+                // Generate grid positions and map colors
+                let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
+                let w = self.width as usize;
+                let h = self.height as usize;
+
+                for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
+                    let x = (i % w) as f32 / (w - 1).max(1) as f32;
+                    let y = (i / w) as f32 / (h - 1).max(1) as f32;
+                    vertices.push(GpuMeshVertex {
+                        position: glam::Vec2::new(x, y),
+                        color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
+                    });
+                }
+                // Pad to MAX_MESH_VERTICES
+                while vertices.len() < MAX_MESH_VERTICES {
+                    vertices.push(GpuMeshVertex::default());
+                }
+                let mut mesh_data = StorageBuffer::new(Vec::new());
+                mesh_data
+                    .write(&vertices)
+                    .expect("Failed to write storage buffer");
+                frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
             }
-            // Pad to MAX_MESH_VERTICES
-            while vertices.len() < MAX_MESH_VERTICES {
-                vertices.push(GpuMeshVertex::default());
-            }
-            let mut mesh_data = StorageBuffer::new(Vec::new());
-            mesh_data
-                .write(&vertices)
-                .expect("Failed to write storage buffer");
-            frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
         }
 
         // Render
@@ -1126,6 +1146,17 @@ where
         }
 
         frame.queue.submit(core::iter::once(encoder.finish()));
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.pending_update
+            .lock()
+            .ok()
+            .is_some_and(|pending| *pending)
+    }
+
+    fn requires_redraw_poll(&self) -> bool {
+        true
     }
 }
 

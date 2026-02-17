@@ -118,9 +118,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize MediaPickerManager for this activity
-        dev.waterui.android.runtime.MediaPickerManager.initialize(this)
-
         // Register custom fonts from dependencies
         WaterUIFonts.register(this)
 
