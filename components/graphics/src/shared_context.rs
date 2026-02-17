@@ -22,7 +22,9 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -68,13 +70,20 @@ pub struct SharedGpuContext {
     pub queue: Arc<wgpu::Queue>,
     /// Optional pipeline cache for shader pre-warming.
     pub pipeline_cache: Option<wgpu::PipelineCache>,
-    /// Cached shader modules keyed by label.
-    shader_cache: parking_lot::Mutex<HashMap<&'static str, Arc<wgpu::ShaderModule>>>,
+    /// Pipeline cache persistence path resolved for current adapter/build.
+    pipeline_cache_path: Option<PathBuf>,
+    /// Cached shader modules keyed by WGSL source hash with collision buckets.
+    shader_cache: parking_lot::Mutex<HashMap<u64, Vec<CachedShaderEntry>>>,
 }
 
 impl std::fmt::Debug for SharedGpuContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cache_size = self.shader_cache.lock().len();
+        let cache_size = self
+            .shader_cache
+            .lock()
+            .values()
+            .map(std::vec::Vec::len)
+            .sum::<usize>();
         f.debug_struct("SharedGpuContext")
             .field("adapter", &self.adapter.get_info().name)
             .field("has_pipeline_cache", &self.pipeline_cache.is_some())
@@ -83,21 +92,72 @@ impl std::fmt::Debug for SharedGpuContext {
     }
 }
 
+#[derive(Debug)]
+struct CachedShaderEntry {
+    source: CachedShaderSource,
+    module: Arc<wgpu::ShaderModule>,
+}
+
+#[derive(Debug)]
+enum CachedShaderSource {
+    Static(&'static str),
+    Owned(Box<str>),
+}
+
+impl CachedShaderSource {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Static(source) => source,
+            Self::Owned(source) => source.as_ref(),
+        }
+    }
+}
+
+fn shader_source_hash(source: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
 impl SharedGpuContext {
     /// Get a shader module from cache, or create and cache it.
     ///
     /// This method is used by the pre-warm system and renderers to get shader modules
     /// without redundant compilation.
-    pub fn get_or_create_shader(
-        &self,
-        label: &'static str,
-        source: &str,
-    ) -> Arc<wgpu::ShaderModule> {
-        let mut cache = self.shader_cache.lock();
+    pub fn get_or_create_shader(&self, label: &str, source: &str) -> Arc<wgpu::ShaderModule> {
+        self.get_or_create_shader_with_hash(label, source, shader_source_hash(source), None)
+    }
 
-        if let Some(module) = cache.get(label) {
+    /// Get a static prewarmed shader from cache (or create it).
+    pub fn get_or_create_static_shader(
+        &self,
+        shader: &'static crate::prewarm::ShaderSource,
+    ) -> Arc<wgpu::ShaderModule> {
+        self.get_or_create_shader_with_hash(
+            shader.label,
+            shader.source,
+            shader.source_hash,
+            Some(shader.source),
+        )
+    }
+
+    /// Get shader cache statistics.
+    pub fn shader_cache_stats(&self) -> (usize, usize) {
+        let cache = self.shader_cache.lock();
+        let cached_count = cache.values().map(std::vec::Vec::len).sum::<usize>();
+        (cached_count, cached_count) // (cached_count, hit would require tracking)
+    }
+
+    fn get_or_create_shader_with_hash(
+        &self,
+        label: &str,
+        source: &str,
+        source_hash: u64,
+        static_source: Option<&'static str>,
+    ) -> Arc<wgpu::ShaderModule> {
+        if let Some(module) = self.cached_shader_module(source_hash, source) {
             tracing::trace!("[ShaderCache] Cache HIT: {}", label);
-            return module.clone();
+            return module;
         }
 
         tracing::trace!("[ShaderCache] Cache MISS: {} - compiling", label);
@@ -109,15 +169,89 @@ impl SharedGpuContext {
                 }),
         );
 
-        cache.insert(label, module.clone());
+        let mut cache = self.shader_cache.lock();
+        if let Some(existing) = cache
+            .get(&source_hash)
+            .and_then(|bucket| {
+                bucket
+                    .iter()
+                    .find(|entry| entry.source.as_str() == source)
+                    .map(|entry| entry.module.clone())
+            })
+        {
+            return existing;
+        }
+
+        cache
+            .entry(source_hash)
+            .or_default()
+            .push(CachedShaderEntry {
+                source: match static_source {
+                    Some(value) => CachedShaderSource::Static(value),
+                    None => CachedShaderSource::Owned(source.to_owned().into_boxed_str()),
+                },
+                module: module.clone(),
+            });
+
         module
     }
 
-    /// Get shader cache statistics.
-    pub fn shader_cache_stats(&self) -> (usize, usize) {
+    fn cached_shader_module(&self, source_hash: u64, source: &str) -> Option<Arc<wgpu::ShaderModule>> {
         let cache = self.shader_cache.lock();
-        (cache.len(), cache.len()) // (cached_count, hit would require tracking)
+        cache.get(&source_hash).and_then(|bucket| {
+            bucket
+                .iter()
+                .find(|entry| entry.source.as_str() == source)
+                .map(|entry| entry.module.clone())
+        })
     }
+}
+
+/// Creates a shader module with shared-source caching when the provided device
+/// matches the global shared context device.
+///
+/// Falls back to direct module creation when no shared context is initialized
+/// or when the device is not the shared device (for example, isolated tests).
+pub fn create_cached_shader_module(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+) -> Arc<wgpu::ShaderModule> {
+    if let Some(ctx) = try_shared_context() {
+        let guard = ctx.read();
+        if core::ptr::eq(Arc::as_ptr(&guard.device), device as *const wgpu::Device) {
+            return guard.get_or_create_shader(label, source);
+        }
+    }
+
+    Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: if label.is_empty() { None } else { Some(label) },
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    }))
+}
+
+/// Creates a shader module from compile-time `ShaderSource` with precomputed hash.
+///
+/// Uses shared shader cache when `device` is the global shared device.
+pub fn create_cached_shader_module_prewarmed(
+    device: &wgpu::Device,
+    shader: &'static crate::prewarm::ShaderSource,
+) -> Arc<wgpu::ShaderModule> {
+    if let Some(ctx) = try_shared_context() {
+        let guard = ctx.read();
+        if core::ptr::eq(Arc::as_ptr(&guard.device), device as *const wgpu::Device) {
+            return guard.get_or_create_static_shader(shader);
+        }
+    }
+
+    Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: if shader.label.is_empty() {
+            None
+        } else {
+            Some(shader.label)
+        },
+        source: wgpu::ShaderSource::Wgsl(shader.source.into()),
+    }))
 }
 
 static SHARED_CONTEXT: OnceLock<Arc<RwLock<SharedGpuContext>>> = OnceLock::new();
@@ -198,45 +332,80 @@ pub fn save_pipeline_cache() {
     };
     let guard = ctx.read();
 
-    if let Some(cache) = &guard.pipeline_cache {
-        if let Some(data) = cache.get_data() {
-            if let Some(path) = get_cache_path() {
-                if let Some(parent) = path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
+    if let Some(cache) = &guard.pipeline_cache
+        && let Some(data) = cache.get_data()
+        && let Some(path) = &guard.pipeline_cache_path
+    {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
 
-                match fs::write(&path, &data) {
-                    Ok(_) => {
-                        tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path)
-                    }
-                    Err(e) => {
-                        tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e)
-                    }
-                }
-            }
+        match fs::write(path, &data) {
+            Ok(_) => tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path),
+            Err(e) => tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e),
         }
     }
 }
 
 /// Delete the pipeline cache file (useful when cache is corrupted).
 pub fn clear_pipeline_cache() {
-    if let Some(path) = get_cache_path() {
-        if path.exists() {
-            match fs::remove_file(&path) {
-                Ok(_) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
-                Err(e) => {
-                    tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e)
-                }
-            }
+    let path = try_shared_context().and_then(|ctx| {
+        let guard = ctx.read();
+        guard.pipeline_cache_path.clone()
+    });
+
+    if let Some(path) = path
+        && path.exists()
+    {
+        match fs::remove_file(&path) {
+            Ok(_) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
+            Err(e) => tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e),
         }
     }
 }
 
-fn get_cache_path() -> Option<PathBuf> {
+fn cache_root_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|mut p| {
         p.push("waterui");
-        p.push("gpu_cache.bin");
         p
+    })
+}
+
+fn sanitize_cache_token(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut previous_was_underscore = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            let _ = out.write_char(ch.to_ascii_lowercase());
+            previous_was_underscore = false;
+        } else {
+            if !previous_was_underscore {
+                out.push('_');
+                previous_was_underscore = true;
+            }
+        }
+    }
+
+    let trimmed = out.trim_matches('_').to_owned();
+    if trimmed.is_empty() {
+        "unknown".to_owned()
+    } else {
+        trimmed
+    }
+}
+
+fn pipeline_cache_path_for_adapter(info: &wgpu::AdapterInfo) -> Option<PathBuf> {
+    let backend = sanitize_cache_token(&format!("{:?}", info.backend));
+    let adapter_name = sanitize_cache_token(&info.name);
+    let vendor = format!("{:04x}", info.vendor);
+    let device = format!("{:04x}", info.device);
+    let build = option_env!("WATERUI_GRAPHICS_COMMIT").unwrap_or("unknown");
+
+    cache_root_dir().map(|mut root| {
+        root.push("pipeline");
+        root.push(build);
+        root.push(format!("{backend}_{vendor}_{device}_{adapter_name}.bin"));
+        root
     })
 }
 
@@ -373,6 +542,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         adapter_info.name,
         adapter_info.backend
     );
+    let pipeline_cache_path = pipeline_cache_path_for_adapter(&adapter_info);
 
     // Determine appropriate limits
     let adapter_limits = adapter.limits();
@@ -423,7 +593,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     // Create pipeline cache only if the feature is available
     let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         // Try to load cache from disk, but don't fail if it's corrupted
-        let cache_data = get_cache_path().and_then(|path| match fs::read(&path) {
+        let cache_data = pipeline_cache_path.as_ref().and_then(|path| match fs::read(path) {
             Ok(data) => {
                 tracing::info!(
                     "[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)",
@@ -462,6 +632,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         device: Arc::new(device),
         queue: Arc::new(queue),
         pipeline_cache,
+        pipeline_cache_path,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
 }
@@ -486,18 +657,18 @@ mod tests {
         // Only run if we can initialize context
         if init_shared_context().is_ok() || is_initialized() {
             save_pipeline_cache();
+            let path = try_shared_context().and_then(|ctx| {
+                let guard = ctx.read();
+                guard.pipeline_cache_path.clone()
+            });
 
-            if let Some(path) = get_cache_path() {
-                if path.exists() {
-                    let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
-                    println!(
-                        "Cache saved to: {:?} (size: {} bytes)",
-                        path,
-                        metadata.len()
-                    );
-                    // Cleanup
-                    let _ = fs::remove_file(path);
-                }
+            if let Some(path) = path
+                && path.exists()
+            {
+                let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
+                assert!(metadata.is_file());
+                // Cleanup
+                let _ = fs::remove_file(path);
             }
         }
     }

@@ -813,8 +813,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInR
     let end = if end.is_negative() { 0 } else { end as usize };
 
     let ids = unsafe { crate::views::waterui_anyviews_get_ids_in_range(anyviews, start, end) };
-    let rust_ids: Vec<crate::id::WuiId> = unsafe { crate::IntoRust::into_rust(ids) };
-    let values: Vec<jint> = rust_ids.into_iter().map(|id| id.inner).collect();
+    let rust_ids: Vec<waterui_core::id::Id> = unsafe { crate::IntoRust::into_rust(ids) };
+    let values: Vec<jint> = rust_ids.into_iter().map(i32::from).collect();
 
     let Ok(array) = env.new_int_array(values.len() as jint) else {
         return core::ptr::null_mut();
@@ -1438,6 +1438,63 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
     packed as jlong
 }
 
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceNeedsRedraw<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _state_ptr: jlong,
+) -> jboolean {
+    0
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceNeedsRedraw<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jboolean {
+    if state_ptr == 0 {
+        return 0;
+    }
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
+    let needs_redraw =
+        unsafe { crate::components::gpu_surface::waterui_gpu_surface_needs_redraw(wrapper.state) };
+    if needs_redraw { 1 } else { 0 }
+}
+
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRequiresRedrawPoll<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _state_ptr: jlong,
+) -> jboolean {
+    0
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRequiresRedrawPoll<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jboolean {
+    if state_ptr == 0 {
+        return 0;
+    }
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
+    let requires_poll = unsafe {
+        crate::components::gpu_surface::waterui_gpu_surface_requires_redraw_poll(wrapper.state)
+    };
+    if requires_poll { 1 } else { 0 }
+}
+
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
@@ -1616,6 +1673,57 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetu
             user_data,
         );
     }
+}
+
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSyncTargets<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _state_ptr: jlong,
+) -> jboolean {
+    0
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSyncTargets<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jboolean {
+    if state_ptr == 0 {
+        return 0;
+    }
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
+    let ok = unsafe { crate::components::applied_filter::waterui_applied_filter_sync_targets(wrapper.state) };
+    if ok { 1 } else { 0 }
+}
+
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterPollRedraw<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _state_ptr: jlong,
+) -> jboolean {
+    0
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterPollRedraw<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jboolean {
+    if state_ptr == 0 {
+        return 0;
+    }
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
+    let should_redraw =
+        unsafe { crate::components::applied_filter::waterui_applied_filter_poll_redraw(wrapper.state) };
+    if should_redraw { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1803,23 +1911,37 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectRender<
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
     _state_ptr: jlong,
-) -> jboolean {
-    0
+) -> jobject {
+    core::ptr::null_mut()
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectRender<'local>(
-    _env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
-) -> jboolean {
+) -> jobject {
     if state_ptr == 0 {
-        return 0;
+        return core::ptr::null_mut();
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-    let ok = unsafe { crate::components::view_effect::waterui_view_effect_render(wrapper.state) };
-    if ok { 1 } else { 0 }
+    let result =
+        unsafe { crate::components::view_effect::waterui_view_effect_render(wrapper.state) };
+
+    let class = env
+        .find_class("dev/waterui/android/runtime/ViewEffectRenderResultStruct")
+        .expect("ViewEffectRenderResultStruct class not found");
+    env.new_object(
+        &class,
+        "(ZZ)V",
+        &[
+            JValue::Bool(if result.success { 1 } else { 0 }),
+            JValue::Bool(if result.needs_redraw { 1 } else { 0 }),
+        ],
+    )
+    .expect("Failed to create ViewEffectRenderResultStruct")
+    .into_raw()
 }
 
 #[cfg(not(target_os = "android"))]

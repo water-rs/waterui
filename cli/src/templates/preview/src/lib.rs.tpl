@@ -3,7 +3,7 @@ use waterui::prelude::*;
 use waterui_preview::Preview;
 
 fn main() -> impl View {
-    Preview::new()
+    Preview::with_runtime_fingerprint("{{waterui_core_fingerprint}}")
 }
 
 pub fn app(env: Environment) -> App {

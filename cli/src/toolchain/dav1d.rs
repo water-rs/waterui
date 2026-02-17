@@ -42,15 +42,17 @@ pub const WATERUI_DAV1D_TARGETS: &[&str] = &[
 /// Prefers prebuilt binaries for supported targets. If unavailable, falls back
 /// to source build using `system-deps` build-internal mode.
 pub async fn cargo_env_for_target(target: &str) -> Vec<(String, OsString)> {
+    let force_no_pkg_config = target.contains("android");
+
     if env_bool("WATERUI_DAV1D_FORCE_BUILD_INTERNAL", false) {
         debug!("dav1d: forced build-internal mode for target {target}");
-        return build_internal_env();
+        return build_internal_env(force_no_pkg_config);
     }
 
     let prebuilt_target_supported = WATERUI_DAV1D_TARGETS.contains(&target);
     if !prebuilt_target_supported {
         debug!("dav1d: target {target} not in prebuilt matrix; using build-internal fallback");
-        return build_internal_env();
+        return build_internal_env(force_no_pkg_config);
     }
 
     match resolve_prebuilt_root(target).await {
@@ -63,18 +65,34 @@ pub async fn cargo_env_for_target(target: &str) -> Vec<(String, OsString)> {
             prebuilt_env(&root)
         }
         Ok(None) => {
+            if is_apple_ios_target(target) {
+                warn!(
+                    "dav1d: prebuilt binary unavailable for iOS target {}; internal build is disabled because dav1d-sys cannot cross-build iOS correctly",
+                    target
+                );
+                return build_internal_disabled_env(force_no_pkg_config);
+            }
+
             warn!(
                 "dav1d: prebuilt binary unavailable for target {}; using build-internal fallback",
                 target
             );
-            build_internal_env()
+            build_internal_env(force_no_pkg_config)
         }
         Err(error) => {
+            if is_apple_ios_target(target) {
+                warn!(
+                    "dav1d: failed to provision prebuilt for iOS target {}: {}; internal build is disabled because dav1d-sys cannot cross-build iOS correctly",
+                    target, error
+                );
+                return build_internal_disabled_env(force_no_pkg_config);
+            }
+
             warn!(
                 "dav1d: failed to provision prebuilt for target {}: {}; falling back to build-internal",
                 target, error
             );
-            build_internal_env()
+            build_internal_env(force_no_pkg_config)
         }
     }
 }
@@ -117,12 +135,28 @@ async fn resolve_prebuilt_root(target: &str) -> eyre::Result<Option<PathBuf>> {
             "dav1d: download disabled via WATERUI_DAV1D_PREBUILT_DOWNLOAD for target {}",
             target
         );
-        return Ok(None);
+    } else {
+        if let Err(error) = download_prebuilt_to_cache(target, &cache_root).await {
+            warn!(
+                "dav1d: failed to download prebuilt for target {}: {}",
+                target, error
+            );
+        }
+
+        if is_valid_prebuilt_root(&cache_root).await? {
+            return Ok(Some(cache_root));
+        }
     }
 
-    download_prebuilt_to_cache(target, &cache_root).await?;
-    if is_valid_prebuilt_root(&cache_root).await? {
-        return Ok(Some(cache_root));
+    if is_apple_ios_target(target) {
+        if let Err(error) = build_apple_ios_prebuilt(target, &cache_root).await {
+            warn!(
+                "dav1d: failed to build local Apple prebuilt for target {}: {}",
+                target, error
+            );
+        } else if is_valid_prebuilt_root(&cache_root).await? {
+            return Ok(Some(cache_root));
+        }
     }
 
     Ok(None)
@@ -267,8 +301,8 @@ async fn is_valid_prebuilt_root(root: &Path) -> eyre::Result<bool> {
     Ok(false)
 }
 
-fn build_internal_env() -> Vec<(String, OsString)> {
-    vec![
+fn build_internal_env(no_pkg_config: bool) -> Vec<(String, OsString)> {
+    let mut envs = vec![
         (
             "SYSTEM_DEPS_DAV1D_BUILD_INTERNAL".to_string(),
             OsString::from("always"),
@@ -277,7 +311,300 @@ fn build_internal_env() -> Vec<(String, OsString)> {
             "SYSTEM_DEPS_DAV1D_LINK".to_string(),
             OsString::from("static"),
         ),
-    ]
+    ];
+
+    if no_pkg_config {
+        envs.push((
+            "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG".to_string(),
+            OsString::from("1"),
+        ));
+    }
+
+    envs
+}
+
+fn build_internal_disabled_env(no_pkg_config: bool) -> Vec<(String, OsString)> {
+    let mut envs = vec![
+        (
+            "SYSTEM_DEPS_DAV1D_BUILD_INTERNAL".to_string(),
+            OsString::from("never"),
+        ),
+        (
+            "SYSTEM_DEPS_DAV1D_LINK".to_string(),
+            OsString::from("static"),
+        ),
+    ];
+
+    if no_pkg_config {
+        envs.push((
+            "SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG".to_string(),
+            OsString::from("1"),
+        ));
+    }
+
+    envs
+}
+
+fn is_apple_ios_target(target: &str) -> bool {
+    matches!(
+        target,
+        "aarch64-apple-ios" | "aarch64-apple-ios-sim" | "x86_64-apple-ios"
+    )
+}
+
+#[derive(Clone, Copy)]
+struct AppleTargetSpec {
+    sdk: &'static str,
+    clang_target: &'static str,
+    min_version: &'static str,
+    cpu_family: &'static str,
+    cpu: &'static str,
+}
+
+fn apple_target_spec(target: &str) -> Option<AppleTargetSpec> {
+    match target {
+        "aarch64-apple-ios" => Some(AppleTargetSpec {
+            sdk: "iphoneos",
+            clang_target: "arm64-apple-ios14.0",
+            min_version: "14.0",
+            cpu_family: "aarch64",
+            cpu: "aarch64",
+        }),
+        "aarch64-apple-ios-sim" => Some(AppleTargetSpec {
+            sdk: "iphonesimulator",
+            clang_target: "arm64-apple-ios14.0-simulator",
+            min_version: "14.0",
+            cpu_family: "aarch64",
+            cpu: "aarch64",
+        }),
+        "x86_64-apple-ios" => Some(AppleTargetSpec {
+            sdk: "iphonesimulator",
+            clang_target: "x86_64-apple-ios14.0-simulator",
+            min_version: "14.0",
+            cpu_family: "x86_64",
+            cpu: "x86_64",
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn build_apple_ios_prebuilt(target: &str, cache_root: &Path) -> eyre::Result<()> {
+    let Some(spec) = apple_target_spec(target) else {
+        return Ok(());
+    };
+
+    info!(
+        "dav1d: building local Apple prebuilt for target {} (sdk: {})",
+        target, spec.sdk
+    );
+
+    let work_root = cache_root.with_extension(format!("build-{}", std::process::id()));
+    if work_root.exists() {
+        let _ = fs::remove_dir_all(&work_root).await;
+    }
+    fs::create_dir_all(&work_root).await?;
+
+    let source_dir = work_root.join("source");
+    let build_dir = work_root.join("build");
+    let install_dir = work_root.join("install");
+    let cross_file = work_root.join("cross.ini");
+
+    run_command_checked(
+        "git",
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "-b",
+            PREBUILT_VERSION,
+            "https://code.videolan.org/videolan/dav1d.git",
+            source_dir
+                .to_str()
+                .ok_or_eyre("Invalid source path for dav1d build")?,
+        ],
+        None,
+    )
+    .await?;
+
+    let sdk_path =
+        run_command_stdout("xcrun", &["--sdk", spec.sdk, "--show-sdk-path"], None).await?;
+    let clang = run_command_stdout("xcrun", &["--sdk", spec.sdk, "--find", "clang"], None).await?;
+    let clangxx =
+        run_command_stdout("xcrun", &["--sdk", spec.sdk, "--find", "clang++"], None).await?;
+    let ar = run_command_stdout("xcrun", &["--sdk", spec.sdk, "--find", "ar"], None).await?;
+
+    let apple_min_flag = if spec.sdk == "iphonesimulator" {
+        format!("-mios-simulator-version-min={}", spec.min_version)
+    } else {
+        format!("-miphoneos-version-min={}", spec.min_version)
+    };
+
+    let compile_args = vec![
+        "-target".to_string(),
+        spec.clang_target.to_string(),
+        "-isysroot".to_string(),
+        sdk_path.clone(),
+        apple_min_flag.clone(),
+    ];
+
+    let cross_content = format!(
+        "[binaries]\n\
+         c = {clang}\n\
+         cpp = {clangxx}\n\
+         ar = {ar}\n\
+         \n\
+         [host_machine]\n\
+         system = 'darwin'\n\
+         cpu_family = '{cpu_family}'\n\
+         cpu = '{cpu}'\n\
+         endian = 'little'\n\
+         \n\
+         [properties]\n\
+         needs_exe_wrapper = true\n\
+         c_args = {compile_args}\n\
+         c_link_args = {compile_args}\n\
+         cpp_args = {compile_args}\n\
+         cpp_link_args = {compile_args}\n",
+        clang = meson_quote(&clang),
+        clangxx = meson_quote(&clangxx),
+        ar = meson_quote(&ar),
+        cpu_family = spec.cpu_family,
+        cpu = spec.cpu,
+        compile_args = meson_array(&compile_args),
+    );
+    fs::write(&cross_file, cross_content).await?;
+
+    run_command_checked(
+        "meson",
+        &[
+            "setup",
+            "--cross-file",
+            cross_file
+                .to_str()
+                .ok_or_eyre("Invalid cross file path for dav1d build")?,
+            "-Ddefault_library=static",
+            "-Denable_tools=false",
+            "-Denable_tests=false",
+            "-Denable_examples=false",
+            "--prefix",
+            install_dir
+                .to_str()
+                .ok_or_eyre("Invalid install path for dav1d build")?,
+            build_dir
+                .to_str()
+                .ok_or_eyre("Invalid build path for dav1d build")?,
+            source_dir
+                .to_str()
+                .ok_or_eyre("Invalid source path for dav1d build")?,
+        ],
+        None,
+    )
+    .await?;
+
+    run_command_checked(
+        "ninja",
+        &[
+            "-C",
+            build_dir
+                .to_str()
+                .ok_or_eyre("Invalid build path for ninja")?,
+        ],
+        None,
+    )
+    .await?;
+
+    run_command_checked(
+        "meson",
+        &[
+            "install",
+            "-C",
+            build_dir
+                .to_str()
+                .ok_or_eyre("Invalid build path for meson install")?,
+        ],
+        None,
+    )
+    .await?;
+
+    if !is_valid_prebuilt_root(&install_dir).await? {
+        eyre::bail!(
+            "dav1d local build completed but output is invalid at {}",
+            install_dir.display()
+        );
+    }
+
+    if cache_root.exists() {
+        fs::remove_dir_all(cache_root).await?;
+    }
+    if let Some(parent) = cache_root.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::rename(&install_dir, cache_root).await?;
+    fs::write(cache_root.join(".ready"), PREBUILT_VERSION.as_bytes()).await?;
+
+    if work_root.exists() {
+        let _ = fs::remove_dir_all(&work_root).await;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn build_apple_ios_prebuilt(target: &str, _cache_root: &Path) -> eyre::Result<()> {
+    let _ = target;
+    eyre::bail!("Apple dav1d local prebuild is only supported on macOS hosts")
+}
+
+fn meson_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "\\'"))
+}
+
+fn meson_array(values: &[String]) -> String {
+    let rendered = values
+        .iter()
+        .map(|v| meson_quote(v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{rendered}]")
+}
+
+async fn run_command_stdout(cmd: &str, args: &[&str], cwd: Option<&Path>) -> eyre::Result<String> {
+    let mut command = smol::process::Command::new(cmd);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .await
+        .wrap_err_with(|| format!("Failed to execute `{cmd}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Command `{cmd} {}` failed: {stderr}", args.join(" "));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn run_command_checked(cmd: &str, args: &[&str], cwd: Option<&Path>) -> eyre::Result<()> {
+    let mut command = smol::process::Command::new(cmd);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .await
+        .wrap_err_with(|| format!("Failed to execute `{cmd}`"))?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!(
+            "Command `{cmd} {}` failed.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            args.join(" ")
+        );
+    }
+    Ok(())
 }
 
 fn prebuilt_env(root: &Path) -> Vec<(String, OsString)> {
