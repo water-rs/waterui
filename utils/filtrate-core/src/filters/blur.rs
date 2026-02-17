@@ -27,12 +27,14 @@ impl<T: Signal<Output = f32> + 'static> Filter for Blur<T> {
     /// Blur samples neighboring pixels, so it cannot be fused.
     const COLOR_ONLY: bool = false;
 
-    type Params = [f32; 1];
+    // Separable two-pass blur uses the same radius in both passes.
+    type Params = [f32; 2];
     type Fragments = &'static str;
 
     #[inline]
-    fn params(&self) -> [f32; 1] {
-        [self.0.get()]
+    fn params(&self) -> [f32; 2] {
+        let radius = self.0.get();
+        [radius, radius]
     }
 
     #[inline]
@@ -50,7 +52,7 @@ mod tests {
     #[test]
     fn test_blur_params() {
         let filter = Blur(10.0f32);
-        assert_eq!(filter.params(), [10.0]);
+        assert_eq!(filter.params(), [10.0, 10.0]);
     }
 
     #[test]
