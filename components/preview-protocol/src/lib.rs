@@ -2,6 +2,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Build commit hash for protocol compatibility checks.
+pub const PREVIEW_PROTOCOL_COMMIT: &str = env!("WATERUI_PREVIEW_PROTOCOL_COMMIT");
+
+#[must_use]
+/// Return protocol metadata for handshake responses.
+pub fn protocol_info(waterui_core_fingerprint: impl Into<String>) -> PreviewProtocolInfo {
+    PreviewProtocolInfo {
+        build_commit: PREVIEW_PROTOCOL_COMMIT.to_string(),
+        waterui_core_fingerprint: waterui_core_fingerprint.into(),
+    }
+}
+
+/// Protocol metadata exchanged during ping/pong handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewProtocolInfo {
+    /// Build commit hash of the preview support app.
+    pub build_commit: String,
+    /// Fingerprint of the `waterui-core` package used by this preview app build.
+    pub waterui_core_fingerprint: String,
+}
+
 pub mod transport {
     //! Framed binary transport helpers.
     //!
@@ -368,7 +389,10 @@ pub enum PreviewError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreviewResponse {
     /// Response to [`PreviewRequest::Ping`].
-    Pong,
+    Pong {
+        /// Protocol metadata for compatibility handshake.
+        protocol: PreviewProtocolInfo,
+    },
     /// Response to [`PreviewRequest::HasDylib`].
     HasDylib {
         /// Whether the dylib id is present.

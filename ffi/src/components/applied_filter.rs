@@ -9,7 +9,7 @@
 //! 3. Calling `waterui_applied_filter_init` with the output layer
 //! 4. Calling `waterui_applied_filter_setup` with a callback
 //! 5. Waiting for the callback before rendering
-//! 6. Calling `waterui_applied_filter_render` each frame (with width/height)
+//! 6. Calling `waterui_applied_filter_render` when rendering is scheduled (with width/height)
 //! 7. Calling `waterui_applied_filter_drop` when the view is destroyed
 
 use core::ffi::c_void;
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
 
         // Initialize shared context if needed
         if !waterui_graphics::shared_context::is_initialized() {
-            tracing::info!("[AppliedFilter] Shared context not initialized, initializing now...");
+            tracing::debug!("[AppliedFilter] Shared context not initialized, initializing now...");
             if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
                 tracing::error!("[AppliedFilter] Init failed: {}", e);
                 return core::ptr::null_mut();
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             desired_maximum_frame_latency: 2,
         };
 
-        tracing::info!(
+        tracing::debug!(
             "[AppliedFilter] Configuring output: {}x{} {:?}",
             output_width,
             output_height,
@@ -310,7 +310,7 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             }
         };
         if capture_format != format {
-            tracing::info!(
+            tracing::debug!(
                 "[AppliedFilter] Using capture format {:?} (output {:?})",
                 capture_format,
                 format
@@ -600,9 +600,81 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     }
 }
 
+/// Snapshot reactive filter targets on the caller thread.
+///
+/// This must be called before scheduling render work on background queues so
+/// filter parameter reads stay on the UI/reactive thread.
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_applied_filter_init`
+/// - Caller must ensure no concurrent `waterui_applied_filter_render` is running
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_sync_targets(
+    state: *mut WuiAppliedFilterState,
+) -> bool {
+    let sync_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() {
+            return false;
+        }
+
+        let state = unsafe { &mut *state };
+        if !state.initialized {
+            return true;
+        }
+
+        state.filter.sync_targets();
+        true
+    }));
+
+    match sync_result {
+        Ok(ok) => ok,
+        Err(_) => {
+            tracing::error!("[AppliedFilter] sync_targets panicked");
+            false
+        }
+    }
+}
+
+/// Poll whether the filter requires a new frame.
+///
+/// This synchronizes reactive targets and returns the filter's redraw hint.
+/// Native backends use this to keep on-demand loops responsive without
+/// continuously rendering when nothing changed.
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_applied_filter_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_poll_redraw(
+    state: *mut WuiAppliedFilterState,
+) -> bool {
+    let poll_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() {
+            return false;
+        }
+
+        let state = unsafe { &mut *state };
+        if !state.initialized {
+            return false;
+        }
+
+        state.filter.sync_targets();
+        state.filter.redraw_hint()
+    }));
+
+    match poll_result {
+        Ok(should_redraw) => should_redraw,
+        Err(_) => {
+            tracing::error!("[AppliedFilter] poll_redraw panicked");
+            false
+        }
+    }
+}
+
 /// Provide input texture from child view.
 ///
-/// Call this each frame before `waterui_applied_filter_render` to provide
+/// Call this before each scheduled `waterui_applied_filter_render` to provide
 /// the captured child view's texture.
 ///
 /// # Arguments

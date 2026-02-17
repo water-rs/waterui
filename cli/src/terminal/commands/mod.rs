@@ -1,6 +1,5 @@
 //! CLI command implementations.
 
-pub mod assets;
 pub mod build;
 pub mod clean;
 pub mod create;

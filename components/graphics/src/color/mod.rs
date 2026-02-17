@@ -790,12 +790,10 @@ impl crate::GpuRenderer for SolidColorRenderer {
             let mut cache = cache.lock();
 
             let shared = cache.entry(device_key).or_insert_with(|| {
-                let shader = device.create_shader_module(crate::wgpu::ShaderModuleDescriptor {
-                    label: Some(SOLID_COLOR_SHADER.label),
-                    source: crate::wgpu::ShaderSource::Wgsl(
-                        SOLID_COLOR_SHADER.source.clone().into(),
-                    ),
-                });
+                let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+                    device,
+                    &SOLID_COLOR_SHADER,
+                );
 
                 let bind_group_layout =
                     device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
@@ -820,7 +818,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                     });
 
                 SolidColorSharedDeviceState {
-                    shader,
+                    shader: (*shader).clone(),
                     bind_group_layout,
                     pipeline_layout,
                     pipelines: HashMap::new(),

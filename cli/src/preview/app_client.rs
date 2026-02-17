@@ -34,10 +34,15 @@ impl PreviewAppClient {
     ///
     /// # Errors
     /// Returns an error if no preview app is found.
-    pub async fn connect(config: PreviewTcpConfig) -> Result<Self> {
+    pub async fn connect(
+        config: PreviewTcpConfig,
+        expected_waterui_core_fingerprint: &str,
+    ) -> Result<Self> {
         let preferred = preferred_port(config);
         if let Some(port) = preferred {
-            if let Some(client) = Self::connect_on_port(config, port).await {
+            if let Some(client) =
+                Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
+            {
                 LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
                 return Ok(client);
             }
@@ -48,7 +53,9 @@ impl PreviewAppClient {
                 continue;
             }
 
-            if let Some(client) = Self::connect_on_port(config, port).await {
+            if let Some(client) =
+                Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
+            {
                 LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
                 return Ok(client);
             }
@@ -61,7 +68,11 @@ impl PreviewAppClient {
         )
     }
 
-    async fn connect_on_port(config: PreviewTcpConfig, port: u16) -> Option<Self> {
+    async fn connect_on_port(
+        config: PreviewTcpConfig,
+        port: u16,
+        expected_waterui_core_fingerprint: &str,
+    ) -> Option<Self> {
         let addr = SocketAddr::new(config.host, port);
         let stream = connect_with_timeout(addr, connect_timeout()).await.ok()?;
 
@@ -78,11 +89,28 @@ impl PreviewAppClient {
         // Some failure modes leave the TCP listener alive while the single render worker
         // is wedged, causing all requests to hang. A short Ping roundtrip detects this.
         let handshake = AppRequest::Ping;
-        if let Ok(waterui_preview_protocol::PreviewResponse::Pong) = client
+        match client
             .request_with_timeout(handshake, handshake_timeout())
             .await
         {
-            return Some(client);
+            Ok(AppResponse::Pong { protocol }) => {
+                if protocol.waterui_core_fingerprint == expected_waterui_core_fingerprint {
+                    return Some(client);
+                }
+
+                tracing::warn!(
+                    "Preview runtime mismatch on {addr}: app waterui_core='{}' (build {}), expected='{}'",
+                    protocol.waterui_core_fingerprint,
+                    protocol.build_commit,
+                    expected_waterui_core_fingerprint
+                );
+            }
+            Ok(other) => {
+                tracing::warn!("Preview handshake got unexpected response from {addr}: {other:?}");
+            }
+            Err(err) => {
+                tracing::warn!("Preview handshake failed on {addr}: {err}");
+            }
         }
 
         None
