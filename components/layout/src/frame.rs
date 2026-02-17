@@ -28,21 +28,21 @@ pub struct FrameLayout {
 impl Layout for FrameLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         // A Frame proposes a modified size to its single child.
-        // It uses its own ideal dimensions if they exist, otherwise parent's proposal.
-        // This is then clamped by the frame's min/max constraints.
-
-        let proposed_width = self.ideal_width.or(proposal.width);
-        let proposed_height = self.ideal_height.or(proposal.height);
-
+        // It uses its own ideal dimensions if they exist, otherwise parent's proposal,
+        // then clamps that proposal by the frame's min/max constraints.
         let child_proposal = ProposalSize {
-            width: proposed_width.map(|w| {
-                w.max(self.min_width.unwrap_or(f32::NEG_INFINITY))
-                    .min(self.max_width.unwrap_or(f32::INFINITY))
-            }),
-            height: proposed_height.map(|h| {
-                h.max(self.min_height.unwrap_or(f32::NEG_INFINITY))
-                    .min(self.max_height.unwrap_or(f32::INFINITY))
-            }),
+            width: frame_child_proposal_axis(
+                proposal.width,
+                self.min_width,
+                self.ideal_width,
+                self.max_width,
+            ),
+            height: frame_child_proposal_axis(
+                proposal.height,
+                self.min_height,
+                self.ideal_height,
+                self.max_height,
+            ),
         };
 
         // Measure the child with our constrained proposal
@@ -50,24 +50,26 @@ impl Layout for FrameLayout {
             .first()
             .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
 
-        // 1. Determine the frame's ideal width based on its own properties and its child.
-        let mut target_width = self.ideal_width.unwrap_or(child_size.width);
-        target_width = target_width
-            .max(self.min_width.unwrap_or(f32::NEG_INFINITY))
-            .min(self.max_width.unwrap_or(f32::INFINITY));
+        // Resolve the frame size on each axis.
+        //
+        // If parent proposes a concrete size, we respect it but clamp through frame constraints.
+        // If parent leaves axis unspecified, use frame ideal or measured child size, then clamp.
+        let final_width = frame_resolved_axis(
+            proposal.width,
+            child_size.width,
+            self.min_width,
+            self.ideal_width,
+            self.max_width,
+        );
+        let final_height = frame_resolved_axis(
+            proposal.height,
+            child_size.height,
+            self.min_height,
+            self.ideal_height,
+            self.max_height,
+        );
 
-        // 2. Determine the frame's ideal height.
-        let mut target_height = self.ideal_height.unwrap_or(child_size.height);
-        target_height = target_height
-            .max(self.min_height.unwrap_or(f32::NEG_INFINITY))
-            .min(self.max_height.unwrap_or(f32::INFINITY));
-
-        // 3. The final size is the target size, but it must also respect the parent's proposal.
-        // If the parent proposed a fixed size, we must take it.
-        Size::new(
-            proposal.width.unwrap_or(target_width),
-            proposal.height.unwrap_or(target_height),
-        )
+        Size::new(final_width, final_height)
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
@@ -80,18 +82,16 @@ impl Layout for FrameLayout {
         let proposed_height = self.ideal_height.unwrap_or_else(|| bounds.height());
 
         let child_proposal = ProposalSize {
-            width: Some(
-                proposed_width
-                    .max(self.min_width.unwrap_or(0.0))
-                    .min(self.max_width.unwrap_or(f32::INFINITY))
-                    .min(bounds.width()),
-            ),
-            height: Some(
-                proposed_height
-                    .max(self.min_height.unwrap_or(0.0))
-                    .min(self.max_height.unwrap_or(f32::INFINITY))
-                    .min(bounds.height()),
-            ),
+            width: Some(clamp_frame_axis(
+                proposed_width.min(bounds.width()),
+                self.min_width,
+                self.max_width,
+            )),
+            height: Some(clamp_frame_axis(
+                proposed_height.min(bounds.height()),
+                self.min_height,
+                self.max_height,
+            )),
         };
 
         let child_size = children
@@ -134,6 +134,39 @@ impl Layout for FrameLayout {
     }
 }
 
+#[inline]
+fn clamp_frame_axis(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
+    value
+        .max(min.unwrap_or(f32::NEG_INFINITY))
+        .min(max.unwrap_or(f32::INFINITY))
+}
+
+#[inline]
+fn frame_child_proposal_axis(
+    parent_proposal: Option<f32>,
+    min: Option<f32>,
+    ideal: Option<f32>,
+    max: Option<f32>,
+) -> Option<f32> {
+    ideal
+        .or(parent_proposal)
+        .map(|value| clamp_frame_axis(value, min, max))
+}
+
+#[inline]
+fn frame_resolved_axis(
+    parent_proposal: Option<f32>,
+    child_size: f32,
+    min: Option<f32>,
+    ideal: Option<f32>,
+    max: Option<f32>,
+) -> f32 {
+    match parent_proposal {
+        Some(value) => clamp_frame_axis(value, min, max),
+        None => clamp_frame_axis(ideal.unwrap_or(child_size), min, max),
+    }
+}
+
 /// A view that provides a frame with optional size constraints and alignment for its child.
 ///
 /// The Frame view allows you to specify minimum, ideal, and maximum dimensions
@@ -171,14 +204,18 @@ impl Frame {
     /// Sets the ideal width of the frame.
     #[must_use]
     pub const fn width(mut self, width: f32) -> Self {
+        self.layout.min_width = Some(width);
         self.layout.ideal_width = Some(width);
+        self.layout.max_width = Some(width);
         self
     }
 
     /// Sets the ideal height of the frame.
     #[must_use]
     pub const fn height(mut self, height: f32) -> Self {
+        self.layout.min_height = Some(height);
         self.layout.ideal_height = Some(height);
+        self.layout.max_height = Some(height);
         self
     }
 
@@ -277,5 +314,39 @@ mod tests {
         // Child should be at bottom-trailing corner
         assert!((rects[0].x() - 70.0).abs() < f32::EPSILON); // 100 - 30
         assert!((rects[0].y() - 80.0).abs() < f32::EPSILON); // 100 - 20
+    }
+
+    #[test]
+    fn test_fixed_width_resists_zero_min_query() {
+        let layout = FrameLayout {
+            min_width: Some(120.0),
+            ideal_width: Some(120.0),
+            max_width: Some(120.0),
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &children);
+        assert!((size.width - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_min_width_clamps_zero_min_query() {
+        let layout = FrameLayout {
+            min_width: Some(64.0),
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(10.0, 10.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &children);
+        assert!((size.width - 64.0).abs() < f32::EPSILON);
     }
 }

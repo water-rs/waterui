@@ -20,7 +20,6 @@ use tracing::{debug, info, warn};
 use crate::project::Project;
 
 mod pipeline;
-pub use pipeline::{DoctorIssue, DoctorReport, MigrateReport};
 
 /// Built-in font registry mapping font names to download URLs.
 ///
@@ -690,16 +689,6 @@ fn sha256_hex(s: &str) -> String {
     hasher.update(s.as_bytes());
     let result = hasher.finalize();
     hex::encode(result)
-}
-
-/// Validate asset layout and report migration/build issues.
-pub async fn doctor_assets(project: &Project) -> eyre::Result<DoctorReport> {
-    pipeline::doctor(project).await
-}
-
-/// Migrate legacy assets layout to the strict directory convention.
-pub async fn migrate_assets(project: &Project) -> eyre::Result<MigrateReport> {
-    pipeline::migrate(project).await
 }
 
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).

@@ -9,8 +9,8 @@ use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
 use crate::{error, header, success, warn};
-use waterui_cli::preview::protocol::{AppError, function_path_symbol_candidates};
-use waterui_cli::preview::{PreviewPlatform, launch_preview_session};
+use waterui_cli::preview::protocol::{AppError, DylibId, function_path_symbol_candidates};
+use waterui_cli::preview::{PreviewPlatform, PreviewSession, launch_preview_session};
 use waterui_cli::toolchain::sccache::Sccache;
 
 /// Target platform for preview.
@@ -95,7 +95,8 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
-    let mut session = launch_preview_session(args.platform.into(), sccache_path.clone()).await?;
+    let platform: PreviewPlatform = args.platform.into();
+    let mut session = launch_preview_session(&project_path, platform, sccache_path.clone()).await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
@@ -108,71 +109,20 @@ pub async fn run(args: Args) -> Result<()> {
             s.finish_and_clear();
         }
 
-        // Render preview (retry once if preview app connection drops)
         let spinner = shell::spinner("Rendering view...");
-        let mut last_err: Option<AppError> = None;
-        let mut png_data: Option<Vec<u8>> = None;
-
-        for symbol in &symbols {
-            match session
-                .client
-                .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
-                .await
-            {
-                Ok(data) => {
-                    png_data = Some(data);
-                    break;
-                }
-                Err(AppError::SymbolNotFound(_)) => {
-                    last_err = Some(AppError::SymbolNotFound(symbol.clone()));
-                    continue;
-                }
-                Err(err) => {
-                    if should_retry_render_error(&err) {
-                        warn!("Preview app connection dropped, relaunching and retrying once...");
-                        let _ = session.shutdown().await;
-                        session =
-                            launch_preview_session(args.platform.into(), sccache_path.clone())
-                                .await?;
-                        match session
-                            .client
-                            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
-                            .await
-                        {
-                            Ok(data) => {
-                                png_data = Some(data);
-                                break;
-                            }
-                            Err(AppError::SymbolNotFound(_)) => {
-                                last_err = Some(AppError::SymbolNotFound(symbol.clone()));
-                                continue;
-                            }
-                            Err(retry_err) => {
-                                return Err(color_eyre::eyre::eyre!(
-                                    "Preview app error: {retry_err}"
-                                ));
-                            }
-                        }
-                    } else {
-                        return Err(color_eyre::eyre::eyre!("Preview app error: {err}"));
-                    }
-                }
-            }
-        }
-
-        let png_data = match png_data {
-            Some(data) => data,
-            None => {
-                if matches!(last_err, Some(AppError::SymbolNotFound(_))) {
-                    bail!(
-                        "{}",
-                        missing_preview_symbol_message(&args.function_path, &symbols)
-                    );
-                }
-                bail!("Preview app error: no symbol candidates resolved")
-            }
-        };
-
+        let (_symbol, png_data) = render_with_symbol_fallback(
+            &mut session,
+            &args.function_path,
+            &project_path,
+            platform,
+            &sccache_path,
+            &symbols,
+            dylib.id,
+            &dylib.path,
+            width,
+            height,
+        )
+        .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
@@ -201,6 +151,64 @@ pub async fn run(args: Args) -> Result<()> {
             Err(err)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_with_symbol_fallback(
+    session: &mut PreviewSession,
+    function_path: &str,
+    project_path: &std::path::Path,
+    platform: PreviewPlatform,
+    sccache_path: &Option<PathBuf>,
+    symbols: &[String],
+    dylib_id: DylibId,
+    dylib_path: &std::path::Path,
+    width: f32,
+    height: f32,
+) -> Result<(String, Vec<u8>)> {
+    let mut last_err: Option<AppError> = None;
+
+    for symbol in symbols {
+        match session
+            .client
+            .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
+            .await
+        {
+            Ok(data) => return Ok((symbol.clone(), data)),
+            Err(AppError::SymbolNotFound(_)) => {
+                last_err = Some(AppError::SymbolNotFound(symbol.clone()));
+            }
+            Err(err) => {
+                if should_retry_render_error(&err) {
+                    warn!("Preview app connection dropped, relaunching and retrying once...");
+                    let _ = session.shutdown().await;
+                    *session = launch_preview_session(project_path, platform, sccache_path.clone())
+                        .await?;
+                    match session
+                        .client
+                        .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
+                        .await
+                    {
+                        Ok(data) => return Ok((symbol.clone(), data)),
+                        Err(AppError::SymbolNotFound(_)) => {
+                            last_err = Some(AppError::SymbolNotFound(symbol.clone()));
+                        }
+                        Err(retry_err) => {
+                            bail!("Preview app error: {retry_err}");
+                        }
+                    }
+                } else {
+                    bail!("Preview app error: {err}");
+                }
+            }
+        }
+    }
+
+    if matches!(last_err, Some(AppError::SymbolNotFound(_))) {
+        bail!("{}", missing_preview_symbol_message(function_path, symbols));
+    }
+
+    bail!("Preview app error: no symbol candidates resolved")
 }
 
 /// Parse frame size from "WIDTHxHEIGHT" string.
