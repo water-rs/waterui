@@ -20,11 +20,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::future::Future;
 use core::time::Duration;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::time::Instant;
 
 use filtrate_core::{Chain, Filter, ParamArray};
 use nami::Signal;
@@ -145,12 +145,28 @@ pub trait GpuFilter: 'static {
     ///
     /// Returns `true` if another frame is needed (animation in progress).
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+
+    /// Snapshot reactive target values before render dispatch.
+    ///
+    /// Native backends call this on the UI thread before scheduling render on a
+    /// background queue. Filters without reactive sources can keep the default.
+    fn sync_targets(&mut self) {}
+
+    /// Whether the filter has pending state that requires another render pass.
+    ///
+    /// This is used by native backends to keep on-demand rendering responsive
+    /// when reactive parameters change without layout updates.
+    fn redraw_hint(&self) -> bool {
+        false
+    }
 }
 
 /// Object-safe trait for type-erased GPU filters.
 pub(crate) trait GpuFilterImpl: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a>;
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+    fn sync_targets(&mut self);
+    fn redraw_hint(&self) -> bool;
 }
 
 impl<T: GpuFilter> GpuFilterImpl for T {
@@ -160,6 +176,14 @@ impl<T: GpuFilter> GpuFilterImpl for T {
 
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
         GpuFilter::render(self, input, output)
+    }
+
+    fn sync_targets(&mut self) {
+        GpuFilter::sync_targets(self);
+    }
+
+    fn redraw_hint(&self) -> bool {
+        GpuFilter::redraw_hint(self)
     }
 }
 
@@ -197,6 +221,17 @@ impl AppliedFilter {
     /// Returns `true` if another frame is needed (animation in progress).
     pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
         self.filter.render(input, output)
+    }
+
+    /// Snapshot reactive target values before render dispatch.
+    pub fn sync_targets(&mut self) {
+        self.filter.sync_targets();
+    }
+
+    /// Query whether this filter needs a redraw even without layout changes.
+    #[must_use]
+    pub fn redraw_hint(&self) -> bool {
+        self.filter.redraw_hint()
     }
 }
 
@@ -399,7 +434,7 @@ trait FilterGraph: Filter {
     fn bind_animation_watchers(
         &self,
         _param_base: usize,
-        _animation_state: Rc<RefCell<SharedAnimationState>>,
+        _animation_events: Sender<ParamAnimationEvent>,
         _guards: &mut Vec<Box<dyn core::any::Any>>,
     ) {
     }
@@ -422,7 +457,7 @@ fn push_spatial_stage(stages: &mut Vec<AtomicStage>, shader: &'static str, param
 fn bind_param_watcher<S>(
     signal: &S,
     param_index: usize,
-    animation_state: Rc<RefCell<SharedAnimationState>>,
+    animation_events: Sender<ParamAnimationEvent>,
     guards: &mut Vec<Box<dyn core::any::Any>>,
 ) where
     S: Signal<Output = f32> + 'static,
@@ -432,12 +467,11 @@ fn bind_param_watcher<S>(
         let animation = context.metadata().try_get::<Animation>();
         if let Some(animation) = animation {
             let target = context.into_value();
-            let mut state = animation_state.borrow_mut();
-            if param_index < state.current_values.len() {
-                let start = state.current_values[param_index];
-                state.animations[param_index] = Some(ParamAnimation::new(start, target, animation));
-                state.has_active_animation = true;
-            }
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index,
+                target_value: target,
+                animation,
+            });
         }
     });
     guards.push(Box::new(guard));
@@ -457,10 +491,10 @@ macro_rules! impl_filter_graph_one_param {
             fn bind_animation_watchers(
                 &self,
                 param_base: usize,
-                animation_state: Rc<RefCell<SharedAnimationState>>,
+                animation_events: Sender<ParamAnimationEvent>,
                 guards: &mut Vec<Box<dyn core::any::Any>>,
             ) {
-                bind_param_watcher(&self.0, param_base, animation_state, guards);
+                bind_param_watcher(&self.0, param_base, animation_events, guards);
             }
         }
     };
@@ -477,10 +511,10 @@ macro_rules! impl_filter_graph_one_param {
             fn bind_animation_watchers(
                 &self,
                 param_base: usize,
-                animation_state: Rc<RefCell<SharedAnimationState>>,
+                animation_events: Sender<ParamAnimationEvent>,
                 guards: &mut Vec<Box<dyn core::any::Any>>,
             ) {
-                bind_param_watcher(&self.0, param_base, animation_state, guards);
+                bind_param_watcher(&self.0, param_base, animation_events, guards);
             }
         }
     };
@@ -522,15 +556,55 @@ impl_filter_graph_one_param!(
     include_str!("../../../utils/filtrate-core/src/shaders/fragments/sepia.wgsl")
 );
 impl_filter_graph_one_param!(
-    Blur,
-    spatial,
-    include_str!("../../../utils/filtrate-core/src/shaders/blur.wgsl")
-);
-impl_filter_graph_one_param!(
     Sharpen,
     spatial,
     include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl")
 );
+
+impl<S> FilterGraph for filtrate_core::filters::Blur<S>
+where
+    S: Signal<Output = f32> + 'static,
+    S::Guard: 'static,
+{
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        // Separable blur: horizontal then vertical, both driven by the same radius.
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/blur_horizontal.wgsl"),
+            1,
+        );
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/blur_vertical.wgsl"),
+            1,
+        );
+    }
+
+    fn bind_animation_watchers(
+        &self,
+        param_base: usize,
+        animation_events: Sender<ParamAnimationEvent>,
+        guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+        let guard = self.0.watch(move |context| {
+            let Some(animation) = context.metadata().try_get::<Animation>() else {
+                return;
+            };
+            let target = context.into_value();
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base,
+                target_value: target,
+                animation: animation.clone(),
+            });
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base + 1,
+                target_value: target,
+                animation,
+            });
+        });
+        guards.push(Box::new(guard));
+    }
+}
 
 impl FilterGraph for filtrate_core::filters::Invert {
     fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
@@ -560,11 +634,11 @@ where
     fn bind_animation_watchers(
         &self,
         param_base: usize,
-        animation_state: Rc<RefCell<SharedAnimationState>>,
+        animation_events: Sender<ParamAnimationEvent>,
         guards: &mut Vec<Box<dyn core::any::Any>>,
     ) {
-        bind_param_watcher(&self.0, param_base, animation_state.clone(), guards);
-        bind_param_watcher(&self.1, param_base + 1, animation_state, guards);
+        bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
+        bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
     }
 }
 
@@ -581,14 +655,14 @@ where
     fn bind_animation_watchers(
         &self,
         param_base: usize,
-        animation_state: Rc<RefCell<SharedAnimationState>>,
+        animation_events: Sender<ParamAnimationEvent>,
         guards: &mut Vec<Box<dyn core::any::Any>>,
     ) {
         self.first
-            .bind_animation_watchers(param_base, animation_state.clone(), guards);
+            .bind_animation_watchers(param_base, animation_events.clone(), guards);
         self.second.bind_animation_watchers(
             param_base + <A::Params as ParamArray>::LEN,
-            animation_state,
+            animation_events,
             guards,
         );
     }
@@ -672,8 +746,8 @@ struct ParamAnimation {
     start_value: f32,
     /// The target value to animate towards.
     target_value: f32,
-    /// When the animation started (as duration since program start).
-    start_time: Duration,
+    /// When the animation started.
+    start_time: Instant,
     /// The animation configuration.
     animation: Animation,
     /// Current interpolated value.
@@ -688,7 +762,7 @@ impl ParamAnimation {
         Self {
             start_value,
             target_value,
-            start_time: current_time(),
+            start_time: Instant::now(),
             animation,
             current_value: start_value,
             velocity: 0.0,
@@ -697,7 +771,7 @@ impl ParamAnimation {
 
     /// Update the animation and return (current_value, is_complete).
     fn update(&mut self) -> (f32, bool) {
-        let elapsed = current_time().saturating_sub(self.start_time);
+        let elapsed = self.start_time.elapsed();
 
         match &self.animation {
             Animation::Default => {
@@ -776,15 +850,6 @@ impl ParamAnimation {
     }
 }
 
-/// Get current time as Duration since program start.
-fn current_time() -> Duration {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static START: OnceLock<Instant> = OnceLock::new();
-    let start = START.get_or_init(Instant::now);
-    start.elapsed()
-}
-
 /// Shared animation state that can be updated from watcher callbacks.
 #[derive(Debug, Default)]
 struct SharedAnimationState {
@@ -794,6 +859,13 @@ struct SharedAnimationState {
     current_values: Vec<f32>,
     /// Whether any animation is active.
     has_active_animation: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ParamAnimationEvent {
+    param_index: usize,
+    target_value: f32,
+    animation: Animation,
 }
 
 // ============================================================================
@@ -816,6 +888,10 @@ pub struct FilterAdapter<F: Filter> {
     filter: F,
     /// Reused parameter buffer to avoid per-frame heap allocations.
     target_params: Vec<f32>,
+    /// Scratch buffer used to snapshot signal values before diffing.
+    staged_params: Vec<f32>,
+    /// True when target parameters changed since the last successful render.
+    target_params_dirty: bool,
     passes: Vec<CompiledPass>,
     /// Whether render should use scratch ping-pong textures.
     requires_scratch: bool,
@@ -827,8 +903,10 @@ pub struct FilterAdapter<F: Filter> {
     setup_error: Option<&'static str>,
     // Shared resources
     sampler: Option<wgpu::Sampler>,
-    /// Shared animation state (updated by watchers, read during render).
-    animation_state: Rc<RefCell<SharedAnimationState>>,
+    /// Animation state owned by the render thread.
+    animation_state: SharedAnimationState,
+    /// Animation events produced by signal watchers.
+    animation_events: Receiver<ParamAnimationEvent>,
     /// Watcher guards to keep animation watchers alive.
     _watcher_guards: Vec<Box<dyn core::any::Any>>,
     // Scratch ping-pong textures for multi-pass.
@@ -852,18 +930,24 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     #[must_use]
     pub fn new(filter: F) -> Self {
         let param_count = <F::Params as ParamArray>::LEN;
-        let animation_state = Rc::new(RefCell::new(SharedAnimationState {
+        let animation_state = SharedAnimationState {
             animations: alloc::vec![None; param_count],
             current_values: alloc::vec![0.0; param_count],
             has_active_animation: false,
-        }));
+        };
+        let mut target_params = alloc::vec![0.0; param_count];
+        filter.params().write_to(&mut target_params);
+        let staged_params = target_params.clone();
+        let (animation_events_tx, animation_events) = mpsc::channel();
 
         let mut watcher_guards: Vec<Box<dyn core::any::Any>> = Vec::new();
-        filter.bind_animation_watchers(0, animation_state.clone(), &mut watcher_guards);
+        filter.bind_animation_watchers(0, animation_events_tx, &mut watcher_guards);
 
         Self {
             filter,
-            target_params: alloc::vec![0.0; param_count],
+            target_params,
+            staged_params,
+            target_params_dirty: true,
             passes: Vec::new(),
             requires_scratch: false,
             hdr_policy: HdrPolicy::default(),
@@ -871,6 +955,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             setup_error: None,
             sampler: None,
             animation_state,
+            animation_events,
             _watcher_guards: watcher_guards,
             scratch_textures: [None, None],
             scratch_views: [None, None],
@@ -919,47 +1004,72 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.hdr_policy(HdrPolicy::ForceLdr)
     }
 
+    fn apply_target_params_to_current_values(&mut self) {
+        let param_count = self.target_params.len();
+        for i in 0..param_count {
+            self.animation_state.current_values[i] = self.target_params[i];
+        }
+        self.target_params_dirty = false;
+    }
+
+    fn consume_animation_events(&mut self) {
+        loop {
+            match self.animation_events.try_recv() {
+                Ok(event) => {
+                    if event.param_index >= self.animation_state.current_values.len() {
+                        continue;
+                    }
+                    let start = self.animation_state.current_values[event.param_index];
+                    self.animation_state.animations[event.param_index] = Some(ParamAnimation::new(
+                        start,
+                        event.target_value,
+                        event.animation,
+                    ));
+                    self.animation_state.has_active_animation = true;
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
     /// Update interpolated parameters in-place; returns whether another frame is needed.
     fn update_interpolated_params(&mut self) -> bool {
-        let mut state = self.animation_state.borrow_mut();
         let param_count = self.target_params.len();
         if param_count > MAX_FILTER_PARAMS {
             return false;
         }
-
-        // Update target values from the filter into reusable storage.
-        self.filter.params().write_to(&mut self.target_params);
+        self.consume_animation_events();
 
         let mut needs_redraw = false;
 
         for i in 0..param_count {
             let target = self.target_params[i];
 
-            if let Some(ref mut anim) = state.animations[i] {
+            if let Some(ref mut anim) = self.animation_state.animations[i] {
                 // Check if target changed during animation
                 if (anim.target_value - target).abs() > f32::EPSILON {
                     // Retarget: start new animation from current position
                     anim.start_value = anim.current_value;
                     anim.target_value = target;
-                    anim.start_time = current_time();
+                    anim.start_time = Instant::now();
                     anim.velocity = 0.0; // Reset velocity for spring
                 }
 
                 let (value, complete) = anim.update();
-                state.current_values[i] = value;
+                self.animation_state.current_values[i] = value;
 
                 if complete {
-                    state.animations[i] = None;
+                    self.animation_state.animations[i] = None;
                 } else {
                     needs_redraw = true;
                 }
             } else {
                 // No animation, use target directly
-                state.current_values[i] = target;
+                self.animation_state.current_values[i] = target;
             }
         }
 
-        state.has_active_animation = needs_redraw;
+        self.animation_state.has_active_animation = needs_redraw;
         needs_redraw
     }
 
@@ -1201,14 +1311,8 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             return core::future::ready(());
         }
 
-        // Initialize current values from filter
-        {
-            let mut state = self.animation_state.borrow_mut();
-            self.filter.params().write_to(&mut self.target_params);
-            for i in 0..param_count {
-                state.current_values[i] = self.target_params[i];
-            }
-        }
+        // Initialize current values from the latest snapped targets.
+        self.apply_target_params_to_current_values();
 
         core::future::ready(())
     }
@@ -1226,8 +1330,8 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         }
 
         let needs_redraw = self.update_interpolated_params();
-        let current_values = self.animation_state.borrow();
-        if current_values.current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
+        let current_values = &self.animation_state.current_values;
+        if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
             return false;
         }
 
@@ -1250,7 +1354,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             let is_last = idx + 1 == self.passes.len();
             let param_start = pass.param_offset;
             let param_end = param_start + pass.param_count;
-            let params = &current_values.current_values[param_start..param_end];
+            let params = &current_values[param_start..param_end];
 
             match &pass.kind {
                 CompiledPassKind::Color {
@@ -1440,7 +1544,20 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         }
 
         input.queue.submit([encoder.finish()]);
+        self.target_params_dirty = false;
         needs_redraw
+    }
+
+    fn sync_targets(&mut self) {
+        self.filter.params().write_to(&mut self.staged_params);
+        if self.staged_params != self.target_params {
+            self.target_params.copy_from_slice(&self.staged_params);
+            self.target_params_dirty = true;
+        }
+    }
+
+    fn redraw_hint(&self) -> bool {
+        self.target_params_dirty || self.animation_state.has_active_animation
     }
 }
 #[allow(private_bounds)]
@@ -1460,12 +1577,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         shader_source.push_str(fragments);
         shader_source.push_str(postamble);
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filter color shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
+        let shader = crate::shared_context::create_cached_shader_module(
+            ctx.device,
+            "filter color shader",
+            &shader_source,
+        );
 
         let bind_group_layout =
             ctx.device
@@ -1515,13 +1631,13 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 label: Some("filter color pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target_format,
@@ -1550,12 +1666,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         storage_format: wgpu::TextureFormat,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filter spatial shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
+        let shader = crate::shared_context::create_cached_shader_module(
+            ctx.device,
+            "filter spatial shader",
+            &shader_source,
+        );
 
         let bind_group_layout =
             ctx.device
@@ -1608,7 +1723,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("filter spatial pipeline"),
                 layout: Some(&pipeline_layout),
-                module: &shader,
+                module: shader.as_ref(),
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: ctx.pipeline_cache,
@@ -1621,12 +1736,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         &self,
         ctx: &FilterContext,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filter blit shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit.wgsl").into()),
-            });
+        let shader = crate::shared_context::create_cached_shader_module(
+            ctx.device,
+            "filter blit shader",
+            include_str!("shaders/blit.wgsl"),
+        );
 
         let bind_group_layout =
             ctx.device
@@ -1666,13 +1780,13 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 label: Some("filter blit pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.output_format,
@@ -2085,10 +2199,11 @@ mod tests {
         filter.collect_stages(&mut stages);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
-        assert_eq!(passes.len(), 3);
+        assert_eq!(passes.len(), 4);
         assert!(matches!(passes[0].kind, PlannedPassKind::Spatial { .. }));
-        assert!(matches!(passes[1].kind, PlannedPassKind::Color { .. }));
-        assert!(matches!(passes[2].kind, PlannedPassKind::Spatial { .. }));
+        assert!(matches!(passes[1].kind, PlannedPassKind::Spatial { .. }));
+        assert!(matches!(passes[2].kind, PlannedPassKind::Color { .. }));
+        assert!(matches!(passes[3].kind, PlannedPassKind::Spatial { .. }));
     }
 
     #[test]
@@ -2108,13 +2223,15 @@ mod tests {
         filter.collect_stages(&mut stages);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
-        assert_eq!(passes.len(), 3);
+        assert_eq!(passes.len(), 4);
         assert_eq!(passes[0].param_offset, 0);
         assert_eq!(passes[0].param_count, 2);
         assert_eq!(passes[1].param_offset, 2);
         assert_eq!(passes[1].param_count, 1);
         assert_eq!(passes[2].param_offset, 3);
         assert_eq!(passes[2].param_count, 1);
+        assert_eq!(passes[3].param_offset, 4);
+        assert_eq!(passes[3].param_count, 1);
     }
 
     type HugeParams = (

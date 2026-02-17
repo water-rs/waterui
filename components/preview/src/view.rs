@@ -22,18 +22,35 @@ use waterui_preview_protocol::tcp::PreviewTcpConfig;
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
+    protocol_info,
 };
 
 use crate::cache::{preview_dylib_cache_dir, preview_dylib_cache_path};
 /// The main preview view - hosts the TCP server for CLI preview requests.
-#[derive(Debug, Default)]
-pub struct Preview;
+#[derive(Debug)]
+pub struct Preview {
+    waterui_core_fingerprint: &'static str,
+}
 
 impl Preview {
     #[must_use]
     /// Create the preview server view.
     pub const fn new() -> Self {
-        Self
+        Self::with_runtime_fingerprint("unknown")
+    }
+
+    #[must_use]
+    /// Create the preview server view with the runtime `waterui-core` fingerprint.
+    pub const fn with_runtime_fingerprint(waterui_core_fingerprint: &'static str) -> Self {
+        Self {
+            waterui_core_fingerprint,
+        }
+    }
+}
+
+impl Default for Preview {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -42,7 +59,7 @@ impl View for Preview {
         use waterui_layout::spacer::Spacer;
 
         let env = env.clone();
-        let server = PreviewServer::start(env);
+        let server = PreviewServer::start(env, self.waterui_core_fingerprint);
 
         Metadata::new(Spacer::new(0.0), Retain::new(server))
     }
@@ -54,9 +71,10 @@ struct PreviewServer {
 }
 
 impl PreviewServer {
-    fn start(env: Environment) -> Self {
+    fn start(env: Environment, waterui_core_fingerprint: &'static str) -> Self {
+        let waterui_core_fingerprint = waterui_core_fingerprint.to_string();
         let task = spawn_local(async move {
-            if let Err(e) = run_tcp_server(env).await {
+            if let Err(e) = run_tcp_server(env, waterui_core_fingerprint).await {
                 tracing::error!("Preview TCP server stopped: {e}");
             }
         });
@@ -71,7 +89,7 @@ struct WorkerMessage {
     respond_to: Sender<PreviewResponse>,
 }
 
-async fn run_tcp_server(env: Environment) -> io::Result<()> {
+async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> io::Result<()> {
     env.get::<ViewRenderer>()
         .expect("Preview support app must provide a ViewRenderer in Environment");
 
@@ -88,7 +106,7 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
 
     let (worker_tx, worker_rx) = async_channel::unbounded::<WorkerMessage>();
 
-    let _worker_task = spawn_local(render_worker(env, worker_rx));
+    let _worker_task = spawn_local(render_worker(env, worker_rx, waterui_core_fingerprint));
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -283,13 +301,18 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
 }
 
-async fn render_worker(env: Environment, worker_rx: Receiver<WorkerMessage>) {
+async fn render_worker(
+    env: Environment,
+    worker_rx: Receiver<WorkerMessage>,
+    waterui_core_fingerprint: String,
+) {
     let mut cache = DylibCache::load()
         .await
         .expect("failed to initialize preview dylib cache");
 
     while let Ok(msg) = worker_rx.recv().await {
-        let response = handle_request(&env, &mut cache, msg.request).await;
+        let response =
+            handle_request(&env, &mut cache, msg.request, &waterui_core_fingerprint).await;
         let _ = msg.respond_to.send(response).await;
     }
 }
@@ -298,9 +321,12 @@ async fn handle_request(
     env: &Environment,
     cache: &mut DylibCache,
     request: PreviewRequest,
+    waterui_core_fingerprint: &str,
 ) -> PreviewResponse {
     match request {
-        PreviewRequest::Ping => PreviewResponse::Pong,
+        PreviewRequest::Ping => PreviewResponse::Pong {
+            protocol: protocol_info(waterui_core_fingerprint),
+        },
         PreviewRequest::HasDylib { id } => PreviewResponse::HasDylib {
             present: cache.contains(&id),
         },
@@ -315,13 +341,10 @@ async fn handle_request(
     }
 }
 
-async fn handle_render(
-    env: &Environment,
+async fn ensure_dylib_cached(
     cache: &mut DylibCache,
     dylib: DylibSource,
-    symbol: &str,
-    frame: Size,
-) -> Result<PreviewOutput, PreviewError> {
+) -> Result<DylibId, PreviewError> {
     let id = match dylib {
         DylibSource::Bytes { id, bytes } => {
             if !cache.contains(&id) {
@@ -345,19 +368,32 @@ async fn handle_render(
         DylibSource::Cached { id } => id,
     };
 
-    let view = {
-        if let Err(e) = cache.ensure_loaded(id).await {
-            return Err(e);
-        }
-        let library = cache.get(&id).ok_or(PreviewError::UnknownDylibId(id))?;
+    cache.ensure_loaded(id).await?;
+    Ok(id)
+}
 
-        if !library.has_symbol(symbol) {
-            return Err(PreviewError::SymbolNotFound(symbol.to_string()));
-        }
+fn load_preview_view(
+    cache: &mut DylibCache,
+    id: DylibId,
+    symbol: &str,
+) -> Result<waterui_core::AnyView, PreviewError> {
+    let library = cache.get(&id).ok_or(PreviewError::UnknownDylibId(id))?;
+    if !library.has_symbol(symbol) {
+        return Err(PreviewError::SymbolNotFound(symbol.to_string()));
+    }
 
-        unsafe { library.load_view(symbol) }
-            .map_err(|e| PreviewError::RenderFailed(e.to_string()))?
-    };
+    unsafe { library.load_view(symbol) }.map_err(|e| PreviewError::RenderFailed(e.to_string()))
+}
+
+async fn handle_render(
+    env: &Environment,
+    cache: &mut DylibCache,
+    dylib: DylibSource,
+    symbol: &str,
+    frame: Size,
+) -> Result<PreviewOutput, PreviewError> {
+    let id = ensure_dylib_cached(cache, dylib).await?;
+    let view = load_preview_view(cache, id, symbol)?;
 
     let renderer = env
         .get::<ViewRenderer>()

@@ -170,7 +170,11 @@ where
 
     fn needs_redraw(&self) -> bool {
         let pending = self.pending_update.lock().ok().is_some_and(|guard| *guard);
-        pending || self.animator.is_animating() || self.inner.needs_redraw()
+        pending || self.animator.is_animating() || ChartRenderer::needs_redraw(&self.inner)
+    }
+
+    fn requires_redraw_poll(&self) -> bool {
+        true
     }
 }
 

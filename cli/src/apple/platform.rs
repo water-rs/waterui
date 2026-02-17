@@ -41,10 +41,16 @@ pub async fn build_rust_lib(
         .target_triple()
         .cloned()
         .unwrap_or_else(|| platform.triple());
+    let target = triple.to_string();
+    let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::new(project.root(), triple.clone());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
+    build = build
+        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
     let lib_dir = build.build_lib(options.is_release()).await?;
 
     // If output_dir is specified, copy the library there
@@ -125,6 +131,7 @@ async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
 }
 
 async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
+    const FLAG: &str = "-framework VideoToolbox";
     let pbxproj_path = xcodeproj.join("project.pbxproj");
     if !pbxproj_path.exists() {
         return Ok(());
@@ -133,7 +140,7 @@ async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
     let content = fs::read_to_string(&pbxproj_path)
         .await
         .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
-    let (updated, changed) = inject_video_toolbox_linker_flag(&content);
+    let (updated, changed) = inject_other_ldflags(&content, &[FLAG]);
     if changed {
         fs::write(&pbxproj_path, updated)
             .await
@@ -147,25 +154,73 @@ async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn inject_video_toolbox_linker_flag(content: &str) -> (String, bool) {
-    const FLAG: &str = "-framework VideoToolbox";
-    if content.contains(FLAG) {
-        return (content.to_string(), false);
+async fn ensure_dav1d_linking(xcodeproj: &Path, platform: TargetPlatform) -> eyre::Result<()> {
+    let target = platform.triple().to_string();
+    let envs = crate::toolchain::dav1d::cargo_env_for_target(&target).await;
+    let mut lib_name: Option<String> = None;
+    let mut lib_dir: Option<String> = None;
+    for (key, value) in envs {
+        match key.as_str() {
+            "SYSTEM_DEPS_DAV1D_LIB" => lib_name = Some(value.to_string_lossy().into_owned()),
+            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE" => {
+                lib_dir = Some(value.to_string_lossy().into_owned());
+            }
+            _ => {}
+        }
     }
 
+    let (Some(lib_name), Some(lib_dir)) = (lib_name, lib_dir) else {
+        return Ok(());
+    };
+    let ld_search = format!("-L{lib_dir}");
+    let ld_lib = format!("-l{lib_name}");
+    let flags = [ld_search.as_str(), ld_lib.as_str()];
+
+    let pbxproj_path = xcodeproj.join("project.pbxproj");
+    if !pbxproj_path.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&pbxproj_path)
+        .await
+        .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
+    let (updated, changed) = inject_other_ldflags(&content, &flags);
+    if changed {
+        fs::write(&pbxproj_path, updated)
+            .await
+            .wrap_err_with(|| format!("Failed to write {}", pbxproj_path.display()))?;
+        info!(
+            "Updated {} to link dav1d from {}",
+            pbxproj_path.display(),
+            lib_dir
+        );
+    }
+    Ok(())
+}
+
+fn inject_other_ldflags(content: &str, required_flags: &[&str]) -> (String, bool) {
     let mut changed = false;
     let mut lines = Vec::new();
     for line in content.lines() {
         if line.contains("OTHER_LDFLAGS = \"")
             && line.contains("-lwaterui_app")
-            && !line.contains(FLAG)
             && let Some((prefix, rest)) = line.split_once("OTHER_LDFLAGS = \"")
             && let Some((flags, suffix)) = rest.split_once("\";")
         {
-            lines.push(format!(
-                "{prefix}OTHER_LDFLAGS = \"{flags} {FLAG}\";{suffix}"
-            ));
-            changed = true;
+            let mut merged = flags.to_string();
+            let mut line_changed = false;
+            for required in required_flags {
+                if !flags.contains(required) {
+                    if !merged.is_empty() {
+                        merged.push(' ');
+                    }
+                    merged.push_str(required);
+                    line_changed = true;
+                }
+            }
+            if line_changed {
+                changed = true;
+            }
+            lines.push(format!("{prefix}OTHER_LDFLAGS = \"{merged}\";{suffix}"));
             continue;
         }
         lines.push(line.to_string());
@@ -237,6 +292,7 @@ pub async fn package_apple(
     }
 
     ensure_video_toolbox_linking(&xcodeproj).await?;
+    ensure_dav1d_linking(&xcodeproj, platform).await?;
     validate_local_apple_backend(project).await?;
 
     // Copy project assets and fonts
@@ -420,13 +476,13 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::inject_video_toolbox_linker_flag;
+    use super::inject_other_ldflags;
 
     #[test]
     fn injects_video_toolbox_into_other_ldflags() {
         let input =
             "OTHER_LDFLAGS = \"-lwaterui_app -lc++\";\nOTHER_LDFLAGS = \"-lwaterui_app -lc++\";\n";
-        let (output, changed) = inject_video_toolbox_linker_flag(input);
+        let (output, changed) = inject_other_ldflags(input, &["-framework VideoToolbox"]);
         assert!(changed);
         assert_eq!(output.matches("-framework VideoToolbox").count(), 2);
     }
@@ -434,7 +490,7 @@ mod tests {
     #[test]
     fn linker_flag_injection_is_idempotent() {
         let input = "OTHER_LDFLAGS = \"-lwaterui_app -lc++ -framework VideoToolbox\";\n";
-        let (output, changed) = inject_video_toolbox_linker_flag(input);
+        let (output, changed) = inject_other_ldflags(input, &["-framework VideoToolbox"]);
         assert!(!changed);
         assert_eq!(output, input);
     }

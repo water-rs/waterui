@@ -230,12 +230,11 @@ impl PieChartRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(PIE_SHADER);
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Pie Chart Shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            "Pie Chart Shader",
+            &shader_source,
+        );
 
         let bind_group_layout =
             ctx.device
@@ -278,13 +277,13 @@ impl PieChartRenderer {
                 label: Some("Pie Chart Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,

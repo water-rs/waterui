@@ -199,12 +199,22 @@ pub trait EffectRenderer: 'static {
     /// Read from `input.texture`/`input.view` and write to `output.texture`/`output.view`.
     /// Input and output dimensions are available via the respective structs.
     fn render(&mut self, input: &EffectInput, output: &EffectOutput);
+
+    /// Returns whether the effect needs another frame immediately.
+    ///
+    /// Effects with internal animations should return `true` while animation is active.
+    /// Static effects can use the default `false`.
+    #[must_use]
+    fn needs_redraw(&self) -> bool {
+        false
+    }
 }
 
 /// Object-safe trait for type-erased effect renderers.
 pub(crate) trait EffectRendererImpl: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> SetupFuture<'a>;
     fn render(&mut self, input: &EffectInput, output: &EffectOutput);
+    fn needs_redraw(&self) -> bool;
 }
 
 impl<T: EffectRenderer> EffectRendererImpl for T {
@@ -214,6 +224,10 @@ impl<T: EffectRenderer> EffectRendererImpl for T {
 
     fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
         EffectRenderer::render(self, input, output);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        EffectRenderer::needs_redraw(self)
     }
 }
 
@@ -380,6 +394,12 @@ impl ViewEffectErased {
     /// Calls `render` on the effect.
     pub fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
         self.effect.render(input, output);
+    }
+
+    /// Returns whether the effect requests another immediate frame.
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        self.effect.needs_redraw()
     }
 
     /// Returns the output size configuration.

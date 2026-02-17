@@ -266,8 +266,18 @@ impl RustBuild {
         let mut output = self.cargo_build_output(release).await?;
 
         if !output.status.success() {
-            let first_combined = combined_build_output(&output);
-            if should_auto_install_meson(&first_combined) {
+            let mut combined = combined_build_output(&output);
+
+            // Handle stale CMake generator caches (e.g. Unix Makefiles vs Ninja)
+            // by cleaning crate-local CMake build dirs and retrying once.
+            if should_retry_after_cmake_generator_mismatch(&combined)
+                && self.clean_stale_cmake_build_dirs().await?
+            {
+                output = self.cargo_build_output(release).await?;
+                combined = combined_build_output(&output);
+            }
+
+            if !output.status.success() && should_auto_install_meson(&combined) {
                 match ensure_meson_installed_for_build().await {
                     Ok(()) => {
                         output = self.cargo_build_output(release).await?;
@@ -276,7 +286,7 @@ impl RustBuild {
                         return Err(RustBuildError::FailToBuildRustLibrary(
                             std::io::Error::other(format!(
                                 "Cargo build failed and meson appears missing for dav1d-sys.\n\
-Automatic meson installation failed: {install_err}\n\n{first_combined}"
+Automatic meson installation failed: {install_err}\n\n{combined}"
                             )),
                         ));
                     }
@@ -292,6 +302,29 @@ Automatic meson installation failed: {install_err}\n\n{first_combined}"
         }
 
         self.lib_output_dir(release).await
+    }
+
+    async fn clean_stale_cmake_build_dirs(&self) -> Result<bool, RustBuildError> {
+        let target_dir = self.target_directory().await?;
+        let triple = self.triple.to_string();
+
+        let removed = unblock(move || {
+            let mut removed = 0usize;
+            removed +=
+                remove_cmake_build_dirs_in(&target_dir.join(&triple).join("debug").join("build"))?;
+            removed += remove_cmake_build_dirs_in(
+                &target_dir.join(&triple).join("release").join("build"),
+            )?;
+            Ok::<usize, std::io::Error>(removed)
+        })
+        .await
+        .map_err(|error| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::other(format!(
+                "Failed to clean stale CMake cache: {error}"
+            )))
+        })?;
+
+        Ok(removed > 0)
     }
 
     async fn cargo_build_output(
@@ -423,6 +456,34 @@ fn combined_build_output(output: &std::process::Output) -> String {
 fn should_auto_install_meson(build_output: &str) -> bool {
     let lower = build_output.to_ascii_lowercase();
     lower.contains("dav1d-sys") && lower.contains("meson")
+}
+
+fn should_retry_after_cmake_generator_mismatch(build_output: &str) -> bool {
+    let lower = build_output.to_ascii_lowercase();
+    lower.contains("cmake error") && lower.contains("does not match the generator used previously")
+}
+
+fn remove_cmake_build_dirs_in(build_root: &Path) -> std::io::Result<usize> {
+    if !build_root.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0usize;
+    for entry in std::fs::read_dir(build_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let cmake_build_dir = path.join("out").join("build");
+        if cmake_build_dir.join("CMakeCache.txt").exists() {
+            std::fs::remove_dir_all(cmake_build_dir)?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
 }
 
 #[cfg(target_os = "macos")]

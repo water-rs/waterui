@@ -6,6 +6,7 @@
 //! - Text transitions with cross-fade effects
 //! - Toggle state animations
 //! - Different animation curves (linear, ease-in, ease-out, spring)
+//! - Framework-driven GPU morph animation (not expressible as a simple native property transform)
 //!
 //! Animations in WaterUI are reactive - they automatically apply
 //! when reactive values change, using the `.animated()` or
@@ -16,6 +17,7 @@ use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::Binding;
+use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
 
 /// Demo: Scale animation - visual transform on colored boxes
 fn scale_animation_section(scale: &Binding<f32>) -> impl View {
@@ -383,6 +385,30 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
     .padding()
 }
 
+/// Demo: Framework-side custom animation rendered by WaterUI GPU pipeline.
+///
+/// This is intentionally not a simple native transform animation (scale/rotation/offset).
+/// Geometry morphing is produced by WaterUI's renderer-side interpolation pipeline.
+fn custom_gpu_animation_section() -> impl View {
+    vstack((
+        text("Framework GPU Animation").headline(),
+        text("Shape geometry morphing (renderer-side, not plain Core Animation transform)").body(),
+        hstack((
+            Circle
+                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+                .duration(Duration::from_millis(1100))
+                .size(90.0, 90.0),
+            Rectangle
+                .morph_to(Capsule, Color::srgb_hex("#10B981"))
+                .duration(Duration::from_millis(900))
+                .autoreverse(true)
+                .size(128.0, 72.0),
+        ))
+        .spacing(16.0),
+    ))
+    .padding()
+}
+
 fn main() -> impl View {
     // State for transform sections
     let scale = Binding::f32(1.0);
@@ -415,6 +441,8 @@ fn main() -> impl View {
                 translation_animation_section(&offset_x, &offset_y),
                 Divider,
                 combined_transform_section(&combined_scale, &combined_rotation),
+                Divider,
+                custom_gpu_animation_section(),
             )),
             // Progress and value animations
             vstack((

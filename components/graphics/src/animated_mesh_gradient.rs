@@ -219,12 +219,8 @@ impl AnimatedMeshRenderer {
 
 impl GpuRenderer for AnimatedMeshRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(ANIMATED_MESH_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(ANIMATED_MESH_SHADER.source.into()),
-            });
+        let shader =
+            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &ANIMATED_MESH_SHADER);
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -279,13 +275,13 @@ impl GpuRenderer for AnimatedMeshRenderer {
                 label: Some("Animated Mesh Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,

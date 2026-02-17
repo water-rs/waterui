@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use smol::fs;
 use smol::stream::StreamExt;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::project::Project;
 use crate::utils::{command, copy_file, which};
@@ -96,64 +96,26 @@ struct AndroidGeneratedManifest {
     files: Vec<String>,
 }
 
-/// A single validation issue produced by the assets pipeline.
-#[derive(Debug, Clone, Serialize)]
-pub struct DoctorIssue {
-    /// Absolute file-system path for the issue.
-    pub path: PathBuf,
-    /// Human-readable issue message.
-    pub message: String,
-    /// Optional automated fix hint.
-    pub suggestion: Option<String>,
-}
-
-/// Validation report for project assets.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DoctorReport {
-    /// Absolute project assets directory.
-    pub assets_root: PathBuf,
-    /// Number of files inspected while scanning.
-    pub scanned_files: usize,
-    /// Hard errors that block packaging.
-    pub errors: Vec<DoctorIssue>,
-    /// Non-blocking warnings.
-    pub warnings: Vec<DoctorIssue>,
-}
-
-/// Migration report for converting legacy assets layout.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct MigrateReport {
-    /// Absolute project assets directory.
-    pub assets_root: PathBuf,
-    /// Files moved during migration as `(from, to)`.
-    pub moved: Vec<(PathBuf, PathBuf)>,
-    /// Files already compliant and left unchanged.
-    pub skipped: Vec<PathBuf>,
+/// A single validation issue found during asset scanning.
+#[derive(Debug, Clone)]
+struct ValidationIssue {
+    path: PathBuf,
+    message: String,
+    suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct ScannedAssets {
-    assets_root: PathBuf,
-    scanned_files: usize,
     raw_assets: Vec<RawAsset>,
     apple_imagesets: Vec<AppleImageSet>,
     apple_catalog_sets: Vec<AppleCatalogSet>,
     android_drawables: Vec<AndroidDrawable>,
     gtk_images: Vec<GtkImage>,
-    errors: Vec<DoctorIssue>,
-    warnings: Vec<DoctorIssue>,
+    errors: Vec<ValidationIssue>,
+    warnings: Vec<ValidationIssue>,
 }
 
 impl ScannedAssets {
-    fn into_doctor_report(self) -> DoctorReport {
-        DoctorReport {
-            assets_root: self.assets_root,
-            scanned_files: self.scanned_files,
-            errors: self.errors,
-            warnings: self.warnings,
-        }
-    }
-
     fn ensure_valid(self) -> eyre::Result<Self> {
         if self.errors.is_empty() {
             return Ok(self);
@@ -168,68 +130,6 @@ impl ScannedAssets {
         }
         eyre::bail!(message);
     }
-}
-
-pub async fn doctor(project: &Project) -> eyre::Result<DoctorReport> {
-    let assets_dir = project.assets_dir();
-    let scanned = scan_assets(&assets_dir).await?;
-    Ok(scanned.into_doctor_report())
-}
-
-pub async fn migrate(project: &Project) -> eyre::Result<MigrateReport> {
-    let assets_dir = project.assets_dir();
-    fs::create_dir_all(&assets_dir).await?;
-
-    let mut report = MigrateReport {
-        assets_root: assets_dir.clone(),
-        moved: Vec::new(),
-        skipped: Vec::new(),
-    };
-
-    let all_files = list_files_recursive(&assets_dir).await?;
-    for source in all_files {
-        let rel = source
-            .strip_prefix(&assets_dir)
-            .wrap_err_with(|| format!("Failed to relativize {}", source.display()))?;
-
-        if rel == Path::new(".gitkeep") {
-            report.skipped.push(source);
-            continue;
-        }
-
-        if is_path_compliant(rel, &source) {
-            report.skipped.push(source);
-            continue;
-        }
-
-        let destination = if is_image_file(&source) {
-            suggested_imageset_destination(&assets_dir, rel)?
-        } else {
-            assets_dir.join("raw").join(rel)
-        };
-
-        if destination.exists() {
-            eyre::bail!(
-                "Migration conflict: destination already exists: {}",
-                destination.display()
-            );
-        }
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        fs::rename(&source, &destination).await?;
-        info!(
-            "Migrated asset {} -> {}",
-            source.display(),
-            destination.display()
-        );
-        report.moved.push((source, destination));
-    }
-
-    cleanup_empty_dirs(&assets_dir).await?;
-
-    Ok(report)
 }
 
 pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result<()> {
@@ -414,10 +314,7 @@ pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Res
 }
 
 async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
-    let mut scanned = ScannedAssets {
-        assets_root: assets_dir.to_path_buf(),
-        ..ScannedAssets::default()
-    };
+    let mut scanned = ScannedAssets::default();
 
     if !assets_dir.exists() {
         return Ok(scanned);
@@ -429,7 +326,7 @@ async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
         let path = entry.path();
         let file_name = file_name(&path)?;
         if is_symlink(&path)? {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Symlinks are not allowed in assets root".to_string(),
                 suggestion: Some("Replace symlink with regular files/directories".to_string()),
@@ -445,8 +342,8 @@ async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
             if is_placeholder_file_name(file_name.as_str()) {
                 continue;
             }
-            scanned.scanned_files += 1;
-            scanned.errors.push(DoctorIssue {
+
+            scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Top-level files are not allowed in assets root".to_string(),
                 suggestion: Some(
@@ -465,7 +362,7 @@ async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
                 collect_images(&path, ImageRules { lossy: true }, &mut scanned).await?
             }
             _ => {
-                scanned.errors.push(DoctorIssue {
+                scanned.errors.push(ValidationIssue {
                     path: path.clone(),
                     message: format!("Unknown assets top-level directory '{file_name}'"),
                     suggestion: Some(
@@ -487,7 +384,7 @@ async fn collect_raw_assets(
     lossy: bool,
 ) -> eyre::Result<()> {
     if is_symlink(root)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: root.to_path_buf(),
             message: "Symlinks are not allowed for raw/fonts asset directories".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -497,9 +394,8 @@ async fn collect_raw_assets(
 
     let files = list_files_recursive(root).await?;
     for file in files {
-        scanned.scanned_files += 1;
         if is_image_file(&file) {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: "Image files are not allowed in raw/fonts directories".to_string(),
                 suggestion: Some(
@@ -520,7 +416,7 @@ async fn collect_raw_assets(
     }
 
     if lossy {
-        scanned.warnings.push(DoctorIssue {
+        scanned.warnings.push(ValidationIssue {
             path: root.to_path_buf(),
             message: "lossy optimization flag ignored for raw resources".to_string(),
             suggestion: None,
@@ -536,7 +432,7 @@ async fn collect_images(
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
     if is_symlink(root)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: root.to_path_buf(),
             message: "Symlinks are not allowed for images directories".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -550,7 +446,7 @@ async fn collect_images(
         let path = entry.path();
         let name = file_name(&path)?;
         if is_symlink(&path)? {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Symlinks are not allowed under assets/images".to_string(),
                 suggestion: Some("Replace symlink with a regular directory or file".to_string()),
@@ -559,8 +455,11 @@ async fn collect_images(
         }
 
         if path.is_file() {
-            scanned.scanned_files += 1;
-            scanned.errors.push(DoctorIssue {
+            if is_placeholder_file_name(name.as_str()) {
+                continue;
+            }
+
+            scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Image files cannot live directly under assets/images/".to_string(),
                 suggestion: Some(
@@ -588,7 +487,7 @@ async fn collect_images(
         match name.as_str() {
             "android" => collect_android_drawables(&path, rules, scanned).await?,
             "gtk" => collect_gtk_images(&path, rules, scanned).await?,
-            _ => scanned.errors.push(DoctorIssue {
+            _ => scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: format!("Unknown images directory '{name}'"),
                 suggestion: Some(
@@ -608,7 +507,7 @@ async fn collect_apple_catalog_set(
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
     if is_symlink(set_dir)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: set_dir.to_path_buf(),
             message: "Symlinks are not allowed for Apple catalog set directories".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -622,7 +521,7 @@ async fn collect_apple_catalog_set(
         AppleCatalogSetKind::ColorSet => "AccentColor.colorset",
     };
     if output_dir_name != expected_name {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: set_dir.to_path_buf(),
             message: format!(
                 "Unsupported Apple catalog set name '{output_dir_name}' for this asset type"
@@ -636,7 +535,7 @@ async fn collect_apple_catalog_set(
 
     let files = list_files_recursive(set_dir).await?;
     if files.is_empty() {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: set_dir.to_path_buf(),
             message: "Empty Apple catalog set directory".to_string(),
             suggestion: Some("Add Contents.json and required catalog files".to_string()),
@@ -653,12 +552,12 @@ async fn collect_apple_catalog_set(
         {
             continue;
         }
-        scanned.scanned_files += 1;
+
         let rel = file
             .strip_prefix(set_dir)
             .wrap_err_with(|| format!("Failed to relativize {}", file.display()))?;
         if rel.components().count() != 1 {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: "Nested subdirectories are not supported in Apple catalog sets"
                     .to_string(),
@@ -680,7 +579,7 @@ async fn collect_apple_catalog_set(
     }
 
     if !has_contents_json {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: set_dir.to_path_buf(),
             message: "Apple catalog set must include Contents.json".to_string(),
             suggestion: Some("Add Contents.json generated by Xcode".to_string()),
@@ -707,7 +606,7 @@ async fn collect_apple_imageset(
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
     if is_symlink(imageset_dir)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: "Symlinks are not allowed for .imageset directories".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -719,7 +618,7 @@ async fn collect_apple_imageset(
         .trim_end_matches(".imageset")
         .to_string();
     if set_name.is_empty() {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: "Invalid imageset name".to_string(),
             suggestion: Some("Use a non-empty directory name like icon.imageset".to_string()),
@@ -727,7 +626,7 @@ async fn collect_apple_imageset(
         return Ok(());
     }
     if APPLE_RESERVED_ASSET_NAMES.contains(&set_name.as_str()) {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: format!("Imageset name '{set_name}' is reserved for Apple asset catalogs"),
             suggestion: Some(
@@ -739,7 +638,7 @@ async fn collect_apple_imageset(
 
     let files = list_files_recursive(imageset_dir).await?;
     if files.is_empty() {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: "Empty imageset".to_string(),
             suggestion: Some("Add files like icon@1x.png, icon@2x.png, icon@3x.png".to_string()),
@@ -767,7 +666,7 @@ async fn collect_apple_imageset(
             .is_some_and(|c| matches!(c, Component::Normal(name) if name == OsStr::new("dark")))
             && rel.components().count() > 2
         {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: "Nested paths under dark/ are not supported".to_string(),
                 suggestion: Some("Use dark/<name>@2x.png".to_string()),
@@ -776,14 +675,13 @@ async fn collect_apple_imageset(
         }
 
         if !is_image_file(&file) {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: "Non-image file inside imageset".to_string(),
                 suggestion: Some("Keep only image files inside .imageset directories".to_string()),
             });
             continue;
         }
-        scanned.scanned_files += 1;
 
         let dark = rel
             .components()
@@ -796,7 +694,7 @@ async fn collect_apple_imageset(
         let (output_name, scale) = match parse_imageset_file_name(file_name) {
             Ok(parsed) => parsed,
             Err(error) => {
-                scanned.errors.push(DoctorIssue {
+                scanned.errors.push(ValidationIssue {
                     path: file.clone(),
                     message: format!("Invalid imageset filename: {error}"),
                     suggestion: Some(
@@ -813,7 +711,7 @@ async fn collect_apple_imageset(
 
         let slot = format!("{}:{}", if dark { "dark" } else { "any" }, scale);
         if !slot_guard.insert(slot.clone()) {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: format!("Duplicate imageset variant slot '{slot}'"),
                 suggestion: Some("Keep a single file per appearance+scale slot".to_string()),
@@ -835,7 +733,7 @@ async fn collect_apple_imageset(
     }
 
     if !has_1x {
-        scanned.warnings.push(DoctorIssue {
+        scanned.warnings.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: "No 1x image variant found in imageset".to_string(),
             suggestion: Some("Add at least one @1x image for broad platform coverage".to_string()),
@@ -857,7 +755,7 @@ async fn collect_android_drawables(
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
     if is_symlink(android_root)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: android_root.to_path_buf(),
             message: "Symlinks are not allowed for images/android".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -871,7 +769,7 @@ async fn collect_android_drawables(
         let qualifier_path = entry.path();
         let qualifier = file_name(&qualifier_path)?;
         if is_symlink(&qualifier_path)? {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: qualifier_path.clone(),
                 message: "Symlinks are not allowed under images/android".to_string(),
                 suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -883,7 +781,7 @@ async fn collect_android_drawables(
             if is_placeholder_file_name(qualifier.as_str()) {
                 continue;
             }
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: qualifier_path.clone(),
                 message: "Files are not allowed directly under images/android/".to_string(),
                 suggestion: Some("Use images/android/drawable-*/<name>.png".to_string()),
@@ -892,7 +790,7 @@ async fn collect_android_drawables(
         }
 
         if !qualifier.starts_with("drawable") {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: qualifier_path.clone(),
                 message: format!("Invalid Android qualifier '{qualifier}'"),
                 suggestion: Some(
@@ -916,7 +814,7 @@ async fn collect_android_drawables(
                 .ok()
                 .is_some_and(|rel| rel.components().count() != 1)
             {
-                scanned.errors.push(DoctorIssue {
+                scanned.errors.push(ValidationIssue {
                     path: file.clone(),
                     message: "Nested subdirectories are not allowed inside drawable-*".to_string(),
                     suggestion: Some("Flatten files directly under drawable-*".to_string()),
@@ -925,7 +823,7 @@ async fn collect_android_drawables(
             }
 
             if !is_android_drawable_file(&file) {
-                scanned.errors.push(DoctorIssue {
+                scanned.errors.push(ValidationIssue {
                     path: file.clone(),
                     message: "Unsupported file inside Android drawable directory".to_string(),
                     suggestion: Some(
@@ -935,7 +833,6 @@ async fn collect_android_drawables(
                 });
                 continue;
             }
-            scanned.scanned_files += 1;
 
             let stem = file
                 .file_stem()
@@ -969,7 +866,7 @@ async fn collect_gtk_images(
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
     if is_symlink(gtk_root)? {
-        scanned.errors.push(DoctorIssue {
+        scanned.errors.push(ValidationIssue {
             path: gtk_root.to_path_buf(),
             message: "Symlinks are not allowed for images/gtk".to_string(),
             suggestion: Some("Replace symlink with a regular directory".to_string()),
@@ -987,14 +884,14 @@ async fn collect_gtk_images(
             continue;
         }
         if !is_image_file(&file) {
-            scanned.errors.push(DoctorIssue {
+            scanned.errors.push(ValidationIssue {
                 path: file.clone(),
                 message: "Non-image file inside images/gtk".to_string(),
                 suggestion: Some("Keep only image files inside images/gtk".to_string()),
             });
             continue;
         }
-        scanned.scanned_files += 1;
+
         let relative = file
             .strip_prefix(gtk_root)
             .wrap_err_with(|| format!("Failed to relativize {}", file.display()))?
@@ -1012,81 +909,12 @@ async fn collect_gtk_images(
     Ok(())
 }
 
-fn is_path_compliant(relative: &Path, absolute: &Path) -> bool {
-    if is_placeholder_path(relative) {
-        return true;
-    }
-
-    let mut components = relative.components();
-    let Some(Component::Normal(first)) = components.next() else {
-        return false;
-    };
-    let first = first.to_string_lossy();
-
-    match first.as_ref() {
-        "raw" => !is_image_file(absolute),
-        "fonts" => !is_image_file(absolute),
-        "images" | "images-lossy" => is_valid_image_path(relative, absolute),
-        _ => false,
-    }
-}
-
-fn is_placeholder_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(OsStr::to_str)
-        .is_some_and(is_placeholder_file_name)
-}
-
 fn is_placeholder_file_name(name: &str) -> bool {
-    name == ".gitkeep"
-}
-
-fn is_valid_image_path(relative: &Path, absolute: &Path) -> bool {
-    let mut components = relative.components();
-    let _root = components.next();
-    let Some(Component::Normal(second)) = components.next() else {
-        return false;
-    };
-    let second = second.to_string_lossy();
-
-    if second.ends_with(".imageset") {
-        if !is_image_file(absolute) {
-            return false;
-        }
-        let rest: Vec<_> = components.collect();
-        if rest.len() == 1 {
-            return true;
-        }
-        if rest.len() == 2 {
-            return matches!(rest[0], Component::Normal(name) if name == OsStr::new("dark"));
-        }
-        return false;
-    }
-    if second.ends_with(".appiconset") || second.ends_with(".colorset") {
-        return components.count() == 1;
-    }
-
-    if second == "android" {
-        let Some(Component::Normal(qualifier)) = components.next() else {
-            return false;
-        };
-        if !qualifier.to_string_lossy().starts_with("drawable") {
-            return false;
-        }
-        if !is_android_drawable_file(absolute) {
-            return false;
-        }
-        return components.count() == 1;
-    }
-
-    if second == "gtk" {
-        if !is_image_file(absolute) {
-            return false;
-        }
-        return components.count() >= 1;
-    }
-
-    false
+    // Ignore editor/OS metadata files so asset scanning remains robust
+    // across different environments and VCS conventions.
+    name.starts_with('.')
+        || name.eq_ignore_ascii_case("thumbs.db")
+        || name.eq_ignore_ascii_case("desktop.ini")
 }
 
 fn parse_imageset_file_name(file_name: &str) -> eyre::Result<(String, String)> {
@@ -1170,39 +998,6 @@ fn file_name(path: &Path) -> eyre::Result<String> {
         .and_then(OsStr::to_str)
         .ok_or_eyre(format!("Path has no UTF-8 filename: {}", path.display()))?
         .to_string())
-}
-
-fn suggested_imageset_destination(
-    assets_root: &Path,
-    legacy_relative: &Path,
-) -> eyre::Result<PathBuf> {
-    let stem = legacy_relative
-        .file_stem()
-        .and_then(OsStr::to_str)
-        .ok_or_eyre("Legacy image has invalid UTF-8 stem")?;
-    let ext = legacy_relative
-        .extension()
-        .and_then(OsStr::to_str)
-        .ok_or_eyre("Legacy image has no extension")?
-        .to_ascii_lowercase();
-
-    let normalized = normalize_android_resource_name(stem);
-    let mut target = assets_root
-        .join("images")
-        .join(format!("{normalized}.imageset"))
-        .join(format!("{normalized}@1x.{ext}"));
-
-    if target.exists() {
-        let mut hasher = Sha256::new();
-        hasher.update(legacy_relative.to_string_lossy().as_bytes());
-        let suffix = hex::encode(hasher.finalize())[..8].to_string();
-        target = assets_root
-            .join("images")
-            .join(format!("{normalized}_{suffix}.imageset"))
-            .join(format!("{normalized}_{suffix}@1x.{ext}"));
-    }
-
-    Ok(target)
 }
 
 async fn write_apple_placeholder_app_icon(xcassets_dest: &Path) -> eyre::Result<()> {
@@ -1807,37 +1602,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_compliant_paths() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("assets/raw/config.json");
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&path, "{}").expect("write");
-        assert!(is_path_compliant(Path::new("raw/config.json"), &path));
-    }
-
-    #[test]
-    fn detects_compliant_apple_catalog_set_paths() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp
-            .path()
-            .join("assets/images/AppIcon.appiconset/Contents.json");
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&path, "{}").expect("write");
-        assert!(is_path_compliant(
-            Path::new("images/AppIcon.appiconset/Contents.json"),
-            &path
-        ));
-    }
-
-    #[test]
-    fn suggests_imageset_destination() {
-        let tmp = tempdir().expect("tempdir");
-        let dest =
-            suggested_imageset_destination(tmp.path(), Path::new("legacy/logo.png")).expect("dest");
-        assert!(dest.ends_with("images/logo.imageset/logo@1x.png"));
-    }
-
-    #[test]
     fn writes_apple_placeholder_assets() {
         let tmp = tempdir().expect("tempdir");
         smol::block_on(async {
@@ -1975,6 +1739,38 @@ mod tests {
             report.errors[0]
                 .message
                 .contains("must include Contents.json")
+        );
+    }
+
+    #[test]
+    fn doctor_ignores_gitkeep_under_images_root() {
+        let tmp = tempdir().expect("tempdir");
+        let assets_root = tmp.path().join("assets/images");
+        fs::create_dir_all(&assets_root).expect("mkdir");
+        fs::write(assets_root.join(".gitkeep"), b"").expect("write gitkeep");
+
+        let report = smol::block_on(scan_assets(&tmp.path().join("assets"))).expect("scan");
+        assert!(
+            report.errors.is_empty(),
+            "expected no errors, got: {:#?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn doctor_ignores_os_metadata_under_images_root() {
+        let tmp = tempdir().expect("tempdir");
+        let assets_root = tmp.path().join("assets/images");
+        fs::create_dir_all(&assets_root).expect("mkdir");
+        fs::write(assets_root.join(".DS_Store"), b"").expect("write ds store");
+        fs::write(assets_root.join("Thumbs.db"), b"").expect("write thumbs");
+        fs::write(assets_root.join("desktop.ini"), b"").expect("write desktop ini");
+
+        let report = smol::block_on(scan_assets(&tmp.path().join("assets"))).expect("scan");
+        assert!(
+            report.errors.is_empty(),
+            "expected no errors, got: {:#?}",
+            report.errors
         );
     }
 

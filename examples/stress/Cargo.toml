@@ -1,0 +1,22 @@
+[package]
+name = "stress-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "High-pressure stress test app for WaterUI rendering and animation pipelines"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "stress", "performance"]
+categories = ["gui"]
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
+
+[lints]
+workspace = true

@@ -226,10 +226,10 @@ unsafe fn __init_impl() {
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .or_else(|_| {
                 tracing_subscriber::EnvFilter::try_new(
-                    "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,jni=warn",
+                    "error,wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
                 )
             })
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
 
         tracing_subscriber::registry()
             .with(env_filter)
@@ -239,7 +239,16 @@ unsafe fn __init_impl() {
 
     #[cfg(target_vendor = "apple")]
     {
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .or_else(|_| {
+                tracing_subscriber::EnvFilter::try_new(
+                    "error,wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+                )
+            })
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+
         tracing_subscriber::registry()
+            .with(env_filter)
             .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
             .init();
     }
@@ -254,10 +263,11 @@ unsafe fn __init_impl() {
     // Initialize shared GPU context (if GPU feature enabled)
     #[cfg(feature = "gpu")]
     {
-        waterui_graphics::shared_context::init_shared_context().ok();
-        // Note: prewarm_all_shaders() removed - shader compilation now happens
-        // on-demand in GpuRenderer::setup(), naturally parallelized when multiple
-        // GpuSurfaces are initialized together.
+        if let Err(error) = waterui_graphics::shared_context::init_shared_context() {
+            tracing::warn!("Failed to initialize shared GPU context during startup: {error}");
+        } else {
+            waterui_graphics::prewarm::spawn_builtin_shader_prewarm();
+        }
     }
 
     init_global_executor(native_executor::NativeExecutor::new());

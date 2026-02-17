@@ -125,12 +125,11 @@ impl LineChartRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/line.wgsl"));
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Line Chart Shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            "Line Chart Shader",
+            &shader_source,
+        );
 
         let bind_group_layout =
             ctx.device
@@ -186,13 +185,13 @@ impl LineChartRenderer {
                 label: Some("Line Chart Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,

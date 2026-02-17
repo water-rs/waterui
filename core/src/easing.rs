@@ -121,21 +121,50 @@ fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
         return t;
     }
 
-    // Newton-Raphson iteration to find the bezier t for input x
+    const EPSILON: f32 = 0.0001;
+
+    // First try Newton-Raphson for fast convergence.
     let mut guess = t;
+    let mut converged = false;
     for _ in 0..8 {
         let x = bezier_sample(guess, x1, x2) - t;
-        if x.abs() < 0.0001 {
+        if x.abs() < EPSILON {
+            converged = true;
             break;
         }
         let dx = bezier_derivative(guess, x1, x2);
-        if dx.abs() < 0.0001 {
+        if dx.abs() < 0.000001 {
             break;
         }
-        guess -= x / dx;
+        let next = guess - x / dx;
+        if !(0.0..=1.0).contains(&next) {
+            break;
+        }
+        guess = next;
     }
 
-    // Clamp guess to valid range
+    // Fall back to binary subdivision when Newton stalls (flat derivative,
+    // poor initial guess, or highly skewed control points).
+    if !converged {
+        let mut low = 0.0;
+        let mut high = 1.0;
+        guess = t.clamp(0.0, 1.0);
+        for _ in 0..16 {
+            let sample = bezier_sample(guess, x1, x2);
+            let delta = sample - t;
+            if delta.abs() < EPSILON {
+                break;
+            }
+            if delta > 0.0 {
+                high = guess;
+            } else {
+                low = guess;
+            }
+            guess = (low + high) * 0.5;
+        }
+    }
+
+    // Clamp to valid range before sampling y.
     guess = guess.clamp(0.0, 1.0);
 
     // Return y value at the found t
@@ -325,6 +354,20 @@ mod tests {
         let curve = EasingCurve::spring(100.0, 10.0);
         assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
         assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_bezier_solver_handles_extreme_control_points() {
+        let curve = EasingCurve::bezier(0.0, 1.0, 1.0, 0.0);
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let eased = curve.ease(t);
+            assert!(eased.is_finite(), "eased must be finite at t={t}");
+            assert!(
+                (0.0..=1.0).contains(&eased),
+                "eased out of range at t={t}: {eased}"
+            );
+        }
     }
 
     #[test]
