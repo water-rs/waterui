@@ -1,11 +1,7 @@
 //! GPU-animated flowing gradient using ShaderSurface.
 
-use crate::include_fragment_shader;
 use crate::shader_surface::ShaderSurface;
 use waterui_core::View;
-
-static FLOWING_GRADIENT_SHADER: crate::prewarm::PrewarmedShader =
-    include_fragment_shader!("shaders/flowing_gradient.wgsl");
 
 /// A GPU-animated, smooth flowing gradient.
 pub struct FlowingGradient {
@@ -23,9 +19,8 @@ impl FlowingGradient {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: ShaderSurface::with_label(
-                FLOWING_GRADIENT_SHADER.label,
-                FLOWING_GRADIENT_SHADER.source,
+            inner: ShaderSurface::with_prewarmed_source(
+                crate::prewarm::flowing_gradient_shader_surface_source(),
             ),
         }
     }

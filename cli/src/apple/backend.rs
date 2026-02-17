@@ -97,6 +97,7 @@ impl Backend for AppleBackend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
+        let effective_waterui_path = manifest.waterui_path.clone();
 
         // For playground projects, use fixed scheme name "WaterUIApp"
         // For regular projects, scheme name must match the Xcode target name (crate name)
@@ -139,8 +140,8 @@ impl Backend for AppleBackend {
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             android_backend_path: None,
-            use_remote_dev_backend: manifest.waterui_path.is_none(),
-            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            use_remote_dev_backend: effective_waterui_path.is_none(),
+            waterui_path: effective_waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: Some(backend_relative_path),
             android_permissions: Vec::new(),
             ios_permissions: manifest
@@ -161,7 +162,7 @@ impl Backend for AppleBackend {
             scheme,
             branch: None,
             revision: None,
-            backend_path: manifest.waterui_path.clone(),
+            backend_path: effective_waterui_path,
         })
     }
 

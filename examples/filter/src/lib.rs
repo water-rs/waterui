@@ -15,19 +15,27 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 
 /// Sample content for demonstrating filters
 fn sample_content() -> impl View {
-    zstack((
-        Blue,
-        vstack((
-            text("WaterUI").title().foreground(Srgb::WHITE),
-            text("Filters").body().foreground(Srgb::WHITE),
-        )),
+    vstack((
+        hstack((
+            Red.size(40.0, 40.0),
+            Green.size(40.0, 40.0),
+            Blue.size(40.0, 40.0),
+        ))
+        .spacing(0.0),
+        hstack((
+            Yellow.size(40.0, 40.0),
+            Purple.size(40.0, 40.0),
+            Cyan.size(40.0, 40.0),
+        ))
+        .spacing(0.0),
     ))
+    .spacing(0.0)
     .size(120.0, 80.0)
 }
 
@@ -303,6 +311,20 @@ fn main() -> impl View {
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+}
+
+#[preview]
+fn filter_preview() -> impl View {
+    vstack((
+        text("Filter Smoke").headline(),
+        sample_content()
+            .blur(4.0)
+            .saturation(1.3)
+            .hue_rotation(36.0)
+            .contrast(1.1)
+            .size(220.0, 140.0),
+    ))
+    .padding()
 }
 
 pub fn app(env: Environment) -> App {

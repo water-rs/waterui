@@ -202,12 +202,11 @@ impl GpuRenderer for ChoroplethRenderer {
         self.msaa_samples = ctx.msaa_samples;
         // Create shader
         let shader_source = shader_with_common(include_str!("../shaders/choropleth.wgsl"));
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("choropleth_shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            "choropleth_shader",
+            &shader_source,
+        );
 
         // Bind group layout
         let bind_group_layout =
@@ -278,13 +277,13 @@ impl GpuRenderer for ChoroplethRenderer {
                     label: Some("choropleth_pipeline"),
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
-                        module: &shader,
+                        module: shader.as_ref(),
                         entry_point: Some("vs_main"),
                         buffers: &[],
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
-                        module: &shader,
+                        module: shader.as_ref(),
                         entry_point: Some("fs_main"),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: ctx.surface_format,

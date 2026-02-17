@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Shared TCP protocol for WaterUI preview"
 keywords.workspace = true
 categories.workspace = true
+build = "build.rs"
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
