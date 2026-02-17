@@ -233,6 +233,20 @@ fn resolve_backend(
     Ok(backend)
 }
 
+fn sccache_allowed() -> bool {
+    if let Some(value) = std::env::var_os("WATERUI_DISABLE_SCCACHE") {
+        let value = value.to_string_lossy().trim().to_ascii_lowercase();
+        if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
+            return false;
+        }
+    }
+    // Respect explicit wrapper from caller (e.g. passthrough wrapper in constrained envs).
+    if std::env::var_os("RUSTC_WRAPPER").is_some() {
+        return false;
+    }
+    true
+}
+
 /// Run the run command.
 pub async fn run(args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
@@ -290,16 +304,21 @@ pub async fn run(args: Args) -> Result<()> {
     let log_level = args.logs.map(LogLevel::from);
     let native_logs = args.native_logs;
 
-    // Detect sccache for compilation caching
-    let sccache = Sccache;
-    let sccache_path = match sccache.path().await {
-        Ok(path) => Some(path),
-        Err(_) => {
-            warn!(
-                "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
-            );
-            None
+    // Detect sccache for compilation caching unless explicitly disabled.
+    let sccache_path = if sccache_allowed() {
+        let sccache = Sccache;
+        match sccache.path().await {
+            Ok(path) => Some(path),
+            Err(_) => {
+                warn!(
+                    "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
+                );
+                None
+            }
         }
+    } else {
+        note!("Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)");
+        None
     };
 
     #[cfg(target_os = "macos")]

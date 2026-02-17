@@ -8,7 +8,7 @@
 //! 2. Creating an output layer for the effect result
 //! 3. Calling `waterui_view_effect_init` with both layer pointers
 //! 4. Rendering the child view to the capture layer
-//! 5. Calling `waterui_view_effect_render` each frame with the captured texture
+//! 5. Calling `waterui_view_effect_render` for each scheduled render with the captured texture
 //! 6. Calling `waterui_view_effect_drop` when the view is destroyed
 
 use core::ffi::c_void;
@@ -77,7 +77,7 @@ impl From<WuiOutputSize> for OutputSize {
 /// 1. Create capture and output layers
 /// 2. Call `waterui_view_effect_init` to initialize GPU resources
 /// 3. Render the child view to the capture layer
-/// 4. Call `waterui_view_effect_render` each frame
+/// 4. Call `waterui_view_effect_render` when rendering is scheduled
 #[repr(C)]
 pub struct WuiViewEffect {
     /// The child view to capture (pointer to WuiAnyView).
@@ -158,6 +158,15 @@ pub struct WuiViewEffectState {
     output_size: OutputSize,
 }
 
+/// Result returned by a ViewEffect render invocation.
+#[repr(C)]
+pub struct WuiViewEffectRenderResult {
+    /// Whether rendering succeeded.
+    pub success: bool,
+    /// Whether another frame should be scheduled immediately.
+    pub needs_redraw: bool,
+}
+
 /// Initialize a ViewEffect with native layers.
 ///
 /// This function creates wgpu resources for the effect rendering pipeline.
@@ -217,7 +226,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
 
         // Initialize shared context if needed
         if !waterui_graphics::shared_context::is_initialized() {
-            tracing::info!("[ViewEffect] Shared context not initialized, initializing now...");
+            tracing::debug!("[ViewEffect] Shared context not initialized, initializing now...");
             if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
                 tracing::error!("[ViewEffect] Init failed: {}", e);
                 return core::ptr::null_mut();
@@ -289,7 +298,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             desired_maximum_frame_latency: 2,
         };
 
-        tracing::info!(
+        tracing::debug!(
             "[ViewEffect] Configuring output: {}x{} {:?}",
             output_width,
             output_height,
@@ -371,7 +380,7 @@ pub enum WuiInputType {
 
 /// Provide input texture from child view.
 ///
-/// Call this each frame before `waterui_view_effect_render` to provide
+/// Call this before each scheduled `waterui_view_effect_render` to provide
 /// the captured child view's texture.
 ///
 /// # Arguments
@@ -545,16 +554,21 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
 ///
 /// # Returns
 ///
-/// `true` if rendering succeeded, `false` on error.
+/// Render result containing success + redraw intent.
 ///
 /// # Safety
 ///
 /// `state` must be a valid pointer from `waterui_view_effect_init`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectState) -> bool {
+pub unsafe extern "C" fn waterui_view_effect_render(
+    state: *mut WuiViewEffectState,
+) -> WuiViewEffectRenderResult {
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if state.is_null() {
-            return false;
+            return WuiViewEffectRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         }
 
         let state = unsafe { &mut *state };
@@ -590,17 +604,33 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
                     &state.device,
                     &state.output_config,
                 ) {
-                    return false;
+                    return WuiViewEffectRenderResult {
+                        success: false,
+                        needs_redraw: true,
+                    };
                 }
                 match state.output_surface.get_current_texture() {
                     Ok(o) => o,
-                    Err(_) => return false,
+                    Err(_) => {
+                        return WuiViewEffectRenderResult {
+                            success: false,
+                            needs_redraw: true,
+                        };
+                    }
                 }
             }
-            Err(wgpu::SurfaceError::Timeout) => return true, // Skip frame
+            Err(wgpu::SurfaceError::Timeout) => {
+                return WuiViewEffectRenderResult {
+                    success: true,
+                    needs_redraw: true,
+                };
+            }
             Err(e) => {
                 tracing::error!("[ViewEffect] render failed: {e}");
-                return false;
+                return WuiViewEffectRenderResult {
+                    success: false,
+                    needs_redraw: true,
+                };
             }
         };
 
@@ -611,7 +641,10 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
             capture
         } else {
             tracing::error!("[ViewEffect] no input texture available");
-            return false;
+            return WuiViewEffectRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         };
 
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -648,18 +681,25 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 
         // Call effect render
         state.effect_wrapper.erased.render(&input, &effect_output);
+        let needs_redraw = state.effect_wrapper.erased.needs_redraw();
 
         // Present
         output.present();
 
-        true
+        WuiViewEffectRenderResult {
+            success: true,
+            needs_redraw,
+        }
     }));
 
     match render_result {
-        Ok(ok) => ok,
+        Ok(result) => result,
         Err(_) => {
             tracing::error!("[ViewEffect] render panicked");
-            false
+            WuiViewEffectRenderResult {
+                success: false,
+                needs_redraw: false,
+            }
         }
     }
 }

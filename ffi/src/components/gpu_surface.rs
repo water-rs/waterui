@@ -11,6 +11,8 @@
 
 use core::ffi::c_void;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use alloc::borrow::ToOwned;
@@ -28,6 +30,175 @@ use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
 
+struct GpuSurfaceDiagnostics {
+    enabled: bool,
+    interval_ms: u64,
+    start: Instant,
+    next_surface_id: AtomicU64,
+    active_surfaces: AtomicU64,
+    total_inits: AtomicU64,
+    total_drops: AtomicU64,
+    total_renders: AtomicU64,
+    total_redraw_requests: AtomicU64,
+    total_failures: AtomicU64,
+    last_report_ms: AtomicU64,
+    last_report_renders: AtomicU64,
+}
+
+impl GpuSurfaceDiagnostics {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            interval_ms: 1_000,
+            start: Instant::now(),
+            next_surface_id: AtomicU64::new(1),
+            active_surfaces: AtomicU64::new(0),
+            total_inits: AtomicU64::new(0),
+            total_drops: AtomicU64::new(0),
+            total_renders: AtomicU64::new(0),
+            total_redraw_requests: AtomicU64::new(0),
+            total_failures: AtomicU64::new(0),
+            last_report_ms: AtomicU64::new(0),
+            last_report_renders: AtomicU64::new(0),
+        }
+    }
+
+    fn new_from_env() -> Self {
+        let enabled = std::env::var("WATERUI_GPU_SURFACE_DIAG")
+            .ok()
+            .is_some_and(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            });
+        if !enabled {
+            return Self::disabled();
+        }
+
+        let interval_ms = std::env::var("WATERUI_GPU_SURFACE_DIAG_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|ms| ms.max(100))
+            .unwrap_or(1_000);
+
+        Self {
+            enabled,
+            interval_ms,
+            start: Instant::now(),
+            next_surface_id: AtomicU64::new(1),
+            active_surfaces: AtomicU64::new(0),
+            total_inits: AtomicU64::new(0),
+            total_drops: AtomicU64::new(0),
+            total_renders: AtomicU64::new(0),
+            total_redraw_requests: AtomicU64::new(0),
+            total_failures: AtomicU64::new(0),
+            last_report_ms: AtomicU64::new(0),
+            last_report_renders: AtomicU64::new(0),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    fn on_surface_init(
+        &self,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        present_mode: wgpu::PresentMode,
+    ) -> u64 {
+        let active = self.active_surfaces.fetch_add(1, Ordering::Relaxed) + 1;
+        if !self.enabled {
+            return 0;
+        }
+
+        let id = self.next_surface_id.fetch_add(1, Ordering::Relaxed);
+        let total = self.total_inits.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::debug!(
+            "[GpuSurfaceDiag] surface#{id} init {}x{} format={:?} present={:?} active={} total_inits={}",
+            width,
+            height,
+            format,
+            present_mode,
+            active,
+            total
+        );
+        id
+    }
+
+    fn on_surface_drop(&self, id: u64, renders: u64) -> u64 {
+        let active = self.active_surfaces.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+        if !self.enabled {
+            return active;
+        }
+        let dropped = self.total_drops.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::debug!(
+            "[GpuSurfaceDiag] surface#{id} drop renders={} active={} total_drops={}",
+            renders,
+            active,
+            dropped
+        );
+        active
+    }
+
+    fn on_render_result(&self, ok: bool, needs_redraw: bool) {
+        if !self.enabled {
+            return;
+        }
+        self.total_renders.fetch_add(1, Ordering::Relaxed);
+        if !ok {
+            self.total_failures.fetch_add(1, Ordering::Relaxed);
+        }
+        if needs_redraw {
+            self.total_redraw_requests.fetch_add(1, Ordering::Relaxed);
+        }
+        self.maybe_emit_report();
+    }
+
+    fn maybe_emit_report(&self) {
+        if !self.enabled {
+            return;
+        }
+
+        let now_ms = self.elapsed_ms();
+        let last_ms = self.last_report_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_ms) < self.interval_ms {
+            return;
+        }
+
+        if self
+            .last_report_ms
+            .compare_exchange(last_ms, now_ms, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let total_renders = self.total_renders.load(Ordering::Relaxed);
+        let prev_renders = self
+            .last_report_renders
+            .swap(total_renders, Ordering::AcqRel);
+        let delta = total_renders.saturating_sub(prev_renders);
+        let elapsed = now_ms.saturating_sub(last_ms).max(1);
+        let fps = delta as f64 * 1_000.0 / elapsed as f64;
+
+        tracing::debug!(
+            "[GpuSurfaceDiag] report active={} renders_total={} renders_delta={} approx_fps={:.1} redraw_total={} failures_total={}",
+            self.active_surfaces.load(Ordering::Relaxed),
+            total_renders,
+            delta,
+            fps,
+            self.total_redraw_requests.load(Ordering::Relaxed),
+            self.total_failures.load(Ordering::Relaxed)
+        );
+    }
+}
+
+fn gpu_surface_diagnostics() -> &'static GpuSurfaceDiagnostics {
+    static DIAGNOSTICS: OnceLock<GpuSurfaceDiagnostics> = OnceLock::new();
+    DIAGNOSTICS.get_or_init(GpuSurfaceDiagnostics::new_from_env)
+}
+
 fn gpu_capture_poll_timeout() -> Option<Duration> {
     const DEFAULT_MS: u64 = 2_000;
     let ms = std::env::var("WATERUI_GPU_CAPTURE_POLL_TIMEOUT_MS")
@@ -39,15 +210,6 @@ fn gpu_capture_poll_timeout() -> Option<Duration> {
     } else {
         Some(Duration::from_millis(ms))
     }
-}
-
-fn gpu_await_ready_timeout() -> Duration {
-    const DEFAULT_MS: u64 = 500;
-    let ms = std::env::var("WATERUI_GPU_AWAIT_READY_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_MS);
-    Duration::from_millis(ms.max(1))
 }
 
 fn poll_capture_completion(device: &wgpu::Device) -> bool {
@@ -126,6 +288,8 @@ pub struct WuiGpuSurfaceState {
     gesture_state: GestureState,
     /// Number of render invocations handled by this state.
     render_invocations: u64,
+    /// Stable id for diagnostics output.
+    diagnostic_id: u64,
 }
 
 /// Result returned by a GpuSurface render invocation.
@@ -194,7 +358,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         // 1. Get/Init Shared Context
         // This ensures we have a valid Instance, Adapter, Device, and Queue
         if !waterui_graphics::shared_context::is_initialized() {
-            tracing::info!("[GpuSurface] Shared context not initialized, initializing now...");
+            tracing::debug!("[GpuSurface] Shared context not initialized, initializing now...");
             if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
                 tracing::error!("[GpuSurface] Init failed: {}", e);
                 return core::ptr::null_mut();
@@ -277,7 +441,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             desired_maximum_frame_latency: 2,
         };
 
-        tracing::info!(
+        tracing::debug!(
             "[GpuSurface] Configuring surface: {}x{} {:?} {:?}",
             width,
             height,
@@ -307,6 +471,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             pointer_state: PointerState::default(),
             gesture_state: GestureState::default(),
             render_invocations: 0,
+            diagnostic_id: gpu_surface_diagnostics().on_surface_init(
+                width,
+                height,
+                format,
+                present_mode,
+            ),
         });
 
         Box::into_raw(state)
@@ -359,7 +529,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         let frame_no = state.render_invocations;
         let trace_frame = frame_no <= 3;
         if trace_frame {
-            tracing::info!(
+            tracing::debug!(
                 "[GpuSurface] render#{frame_no}: begin ({}x{})",
                 width,
                 height
@@ -368,8 +538,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         // Handle resize if needed
         if width != state.current_width || height != state.current_height {
-            // Ensure the queue is idle before reconfiguring the surface.
-            let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
+            // Avoid blocking the UI thread during live resize; perform a non-blocking poll
+            // and keep retrying on transient reconfigure failures.
+            let _ = state.device.poll(wgpu::PollType::Poll);
 
             state.config.width = width;
             state.config.height = height;
@@ -378,7 +549,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 tracing::warn!("[GpuSurface] resize reconfigure failed ({width}x{height})");
                 return WuiGpuSurfaceRenderResult {
                     ok: false,
-                    needs_redraw: false,
+                    needs_redraw: true,
                 };
             }
             state.current_width = width;
@@ -391,7 +562,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         // Call setup on first render (await the future synchronously)
         if !state.initialized || state.renderer_format != state.config.format {
             if trace_frame {
-                tracing::info!("[GpuSurface] render#{frame_no}: setup begin");
+                tracing::debug!("[GpuSurface] render#{frame_no}: setup begin");
             }
             let format = state.config.format;
             let ctx = GpuContext {
@@ -411,7 +582,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             state.initialized = true;
             state.renderer_format = format;
             if trace_frame {
-                tracing::info!("[GpuSurface] render#{frame_no}: setup done");
+                tracing::debug!("[GpuSurface] render#{frame_no}: setup done");
             }
         }
 
@@ -472,7 +643,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             }
         };
         if trace_frame {
-            tracing::info!("[GpuSurface] render#{frame_no}: acquired current texture");
+            tracing::debug!("[GpuSurface] render#{frame_no}: acquired current texture");
         }
 
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
@@ -497,17 +668,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         // Call user's render callback
         state.gpu_surface.render(&frame);
         if trace_frame {
-            tracing::info!("[GpuSurface] render#{frame_no}: user render callback complete");
+            tracing::debug!("[GpuSurface] render#{frame_no}: user render callback complete");
         }
 
         // Present
         output.present();
         if trace_frame {
-            tracing::info!("[GpuSurface] render#{frame_no}: present complete");
+            tracing::debug!("[GpuSurface] render#{frame_no}: present complete");
         }
 
         if frame_no == 1 {
-            tracing::info!("[GpuSurface] first frame presented successfully");
+            tracing::debug!("[GpuSurface] first frame presented successfully");
         }
 
         WuiGpuSurfaceRenderResult {
@@ -516,7 +687,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         }
     }));
 
-    match render_result {
+    let result = match render_result {
         Ok(result) => result,
         Err(_) => {
             tracing::error!("[GpuSurface] render panicked");
@@ -524,6 +695,65 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 ok: false,
                 needs_redraw: false,
             }
+        }
+    };
+
+    gpu_surface_diagnostics().on_render_result(result.ok, result.needs_redraw);
+    result
+}
+
+/// Query whether the renderer currently requests another frame.
+///
+/// This is a lightweight probe used by strict on-demand backends before they
+/// schedule a render. It must not render or mutate GPU resources.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_needs_redraw(state: *mut WuiGpuSurfaceState) -> bool {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() {
+            return false;
+        }
+        let state = unsafe { &mut *state };
+        state.gpu_surface.needs_redraw()
+    }));
+
+    match result {
+        Ok(value) => value,
+        Err(_) => {
+            tracing::error!("[GpuSurface] needs_redraw probe panicked");
+            false
+        }
+    }
+}
+
+/// Query whether backend should keep redraw polling active while idle.
+///
+/// This hint is intended for renderers that rely on async signal watchers and
+/// cannot wake the native backend directly.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_requires_redraw_poll(
+    state: *mut WuiGpuSurfaceState,
+) -> bool {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() {
+            return false;
+        }
+        let state = unsafe { &mut *state };
+        state.gpu_surface.requires_redraw_poll()
+    }));
+
+    match result {
+        Ok(value) => value,
+        Err(_) => {
+            tracing::error!("[GpuSurface] requires_redraw_poll probe panicked");
+            false
         }
     }
 }
@@ -773,36 +1003,24 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     false
 }
 
-/// Callback type for async completion notifications.
-pub type WuiGpuCallback = unsafe extern "C" fn(user_data: *mut c_void);
-
-/// Setup the GpuSurface and render the first frame, then call callback.
+/// Setup the GpuSurface and render the first frame.
 ///
 /// This function performs async setup (awaited synchronously via `block_on`),
 /// then renders the first frame. Native code should call this before showing
-/// the window to ensure all GpuSurfaces are ready.
+/// the window to ensure all visible GpuSurfaces are ready.
 ///
 /// # Arguments
 ///
 /// * `state` - Pointer to initialized state from `waterui_gpu_surface_init`
-/// * `callback` - Function to call when ready
-/// * `user_data` - Opaque pointer passed to callback
 ///
 /// # Safety
 ///
 /// - `state` must be a valid pointer from `waterui_gpu_surface_init`
-/// - `callback` must be a valid function pointer
-/// - `user_data` must remain valid until callback is invoked
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
-    state: *mut WuiGpuSurfaceState,
-    callback: WuiGpuCallback,
-    user_data: *mut c_void,
-) {
+pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfaceState) -> bool {
     if state.is_null() {
         tracing::error!("[GpuSurface] await_ready: null state");
-        unsafe { callback(user_data) };
-        return;
+        return false;
     }
 
     let state = unsafe { &mut *state };
@@ -828,39 +1046,26 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
         state.renderer_format = format;
     }
 
-    // Render first frame.
-    //
-    // On macOS, CAMetalLayer may not produce a drawable immediately after becoming visible,
-    // and wgpu can report `Timeout`. Since this function is explicitly used to prevent
-    // "pop-in", retry briefly before giving up.
-    let deadline = Instant::now() + gpu_await_ready_timeout();
-    let output = loop {
-        match state.wgpu_surface.get_current_texture() {
-            Ok(o) => break o,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                tracing::debug!("[GpuSurface] await_ready: surface lost/outdated, reconfiguring");
-                if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
-                    tracing::warn!("[GpuSurface] await_ready: reconfigure failed");
-                    unsafe { callback(user_data) };
-                    return;
+    // Render first frame with a fast, non-blocking probe.
+    let output = match state.wgpu_surface.get_current_texture() {
+        Ok(o) => o,
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            tracing::debug!("[GpuSurface] await_ready: surface lost/outdated, reconfiguring");
+            if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
+                tracing::warn!("[GpuSurface] await_ready: reconfigure failed");
+                return false;
+            }
+            match state.wgpu_surface.get_current_texture() {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::debug!("[GpuSurface] await_ready: retry acquire failed: {e}");
+                    return false;
                 }
-                continue;
             }
-            Err(wgpu::SurfaceError::Timeout) => {
-                if Instant::now() >= deadline {
-                    tracing::warn!("[GpuSurface] await_ready: timed out waiting for drawable");
-                    unsafe { callback(user_data) };
-                    return;
-                }
-                // Small sleep to avoid busy-looping; we're on a backend render thread.
-                std::thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!("[GpuSurface] await_ready: failed to get texture: {e}");
-                unsafe { callback(user_data) };
-                return;
-            }
+        }
+        Err(e) => {
+            tracing::debug!("[GpuSurface] await_ready: acquire failed: {e}");
+            return false;
         }
     };
 
@@ -885,8 +1090,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
     state.gpu_surface.render(&frame);
     output.present();
 
-    // Call completion callback
-    unsafe { callback(user_data) };
+    true
 }
 
 /// Clean up GPU resources.
@@ -901,7 +1105,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
 pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState) {
     if !state.is_null() {
         unsafe {
-            let _ = Box::from_raw(state);
+            let state = Box::from_raw(state);
+            let remaining = gpu_surface_diagnostics()
+                .on_surface_drop(state.diagnostic_id, state.render_invocations);
+            if remaining == 0 {
+                waterui_graphics::shared_context::save_pipeline_cache();
+            }
         }
     }
 }

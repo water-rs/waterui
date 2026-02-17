@@ -186,6 +186,7 @@ async fn create_android_toolchain_wrapper(
         abi = abi.as_str(),
         api_level = ANDROID_MIN_API_LEVEL,
         ndk_toolchain = ndk_toolchain.display(),
+        asm_compiler = ndk_clang_path(ndk_path, abi, false).display(),
     );
     fs::write(&wrapper_path, content).await?;
 
@@ -440,6 +441,11 @@ impl AndroidPlatform {
             .with_env(format!("CC_{target_underscore}"), linker.as_os_str())
             .with_env(format!("CXX_{target_underscore}"), cxx.as_os_str())
             .with_env(format!("AR_{target_underscore}"), ar.as_os_str())
+            // Generic compiler envs for CMake crates that ignore target-scoped variants.
+            .with_env("CC", linker.as_os_str())
+            .with_env("CXX", cxx.as_os_str())
+            .with_env("AR", ar.as_os_str())
+            .with_env("ASM", linker.as_os_str())
             // For CMake-based builds (aws-lc-sys, etc.)
             .with_env("ANDROID_NDK", ndk_path.as_os_str())
             .with_env("ANDROID_NDK_HOME", ndk_path.as_os_str())
@@ -454,23 +460,26 @@ impl AndroidPlatform {
                 format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
                 wrapper_toolchain.as_os_str(),
             )
+            .with_env("CMAKE_ASM_COMPILER", linker.as_os_str())
             .with_env("ANDROID_ABI", abi.as_str())
-            .with_env("ANDROID_PLATFORM", android_platform);
+            .with_env("ANDROID_PLATFORM", android_platform)
+            // Allow pkg-config probes that are intentionally scoped to cross targets.
+            // This is required by some build scripts (e.g. dav1d-sys internal build flow).
+            .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
+            .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
+            .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{}", triple), "1");
 
-        // Add kotlinc to PATH (needed by waterkit and other crates that compile Kotlin)
+        // Add required toolchains to PATH for transitive native builds (CMake/asm/Kotlin).
+        let current_path = std::env::var_os("PATH")
+            .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
+        let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+        paths.insert(0, ndk_bin_dir(&ndk_path));
         if let Some(kotlin_bin) = &kotlin_bin_dir {
-            let current_path = std::env::var_os("PATH")
-                .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
-            let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
             paths.insert(0, kotlin_bin.clone());
-            let new_path = std::env::join_paths(paths)
-                .map_err(|e| eyre::eyre!("Failed to construct PATH for Kotlin: {e}"))?;
-            build = build.with_env("PATH", new_path);
         }
-
-        if crate::utils::which("ninja").await.is_ok() {
-            build = build.with_env("CMAKE_GENERATOR", "Ninja");
-        }
+        let new_path = std::env::join_paths(paths)
+            .map_err(|e| eyre::eyre!("Failed to construct PATH for Android build tools: {e}"))?;
+        build = build.with_env("PATH", new_path);
 
         let lib_dir = build.build_lib(options.is_release()).await?;
 

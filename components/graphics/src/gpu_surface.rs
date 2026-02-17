@@ -334,6 +334,16 @@ pub trait GpuRenderer: 'static {
     fn needs_redraw(&self) -> bool {
         false
     }
+
+    /// Returns whether backend should keep lightweight redraw polling active.
+    ///
+    /// Some renderers receive async data updates through signal watchers, which may
+    /// happen while no frame is currently in-flight. In strict on-demand mode this
+    /// hint lets native backends poll [`GpuRenderer::needs_redraw`] without forcing
+    /// continuous rendering.
+    fn requires_redraw_poll(&self) -> bool {
+        false
+    }
 }
 
 /// Strongly-typed non-zero dimensions for offscreen rendering.
@@ -631,6 +641,7 @@ trait GpuRendererImpl: 'static {
     fn render(&mut self, frame: &GpuFrame);
     fn resize(&mut self, width: u32, height: u32);
     fn needs_redraw(&self) -> bool;
+    fn requires_redraw_poll(&self) -> bool;
 }
 
 impl<T: GpuRenderer> GpuRendererImpl for T {
@@ -648,6 +659,10 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
 
     fn needs_redraw(&self) -> bool {
         GpuRenderer::needs_redraw(self)
+    }
+
+    fn requires_redraw_poll(&self) -> bool {
+        GpuRenderer::requires_redraw_poll(self)
     }
 }
 
@@ -944,6 +959,12 @@ impl GpuSurface {
     #[must_use]
     pub fn needs_redraw(&self) -> bool {
         self.renderer.needs_redraw()
+    }
+
+    /// Returns whether backend should keep lightweight redraw polling enabled.
+    #[must_use]
+    pub fn requires_redraw_poll(&self) -> bool {
+        self.renderer.requires_redraw_poll()
     }
 
     /// Calls `resize` on the renderer.

@@ -378,6 +378,7 @@ pub struct PanicInfo {
 fn start_log_stream(
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
+    pid: u32,
 ) -> Receiver<PanicInfo> {
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
@@ -385,11 +386,13 @@ fn start_log_stream(
     // Always stream at default level to capture errors/faults, even if user didn't request logs
     let stream_level = log_level.map_or("default", |l| l.to_apple_level());
 
+    let predicate = format!("processID == {pid} AND subsystem == \"dev.waterui\"");
+
     let mut log_cmd = smol::process::Command::new("log");
     log_cmd
         .arg("stream")
         .arg("--predicate")
-        .arg("subsystem == \"dev.waterui\"")
+        .arg(&predicate)
         .arg("--level")
         .arg(stream_level)
         .arg("--style")
@@ -638,6 +641,128 @@ impl Device for Local {
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32>, FailToRun> {
+    let executable = executable_path.to_string_lossy();
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .await
+        .map_err(|e| FailToRun::Launch(eyre::eyre!("Failed to list local processes: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(FailToRun::Launch(eyre::eyre!(
+            "Failed to list local processes with ps: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut pids = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut fields = trimmed.splitn(2, char::is_whitespace);
+        let Some(pid_str) = fields.next() else {
+            continue;
+        };
+        let Some(command) = fields.next() else {
+            continue;
+        };
+        let command = command.trim_start();
+        if command == executable || command.starts_with(&format!("{executable} ")) {
+            let pid = pid_str.parse::<u32>().map_err(|e| {
+                FailToRun::Launch(eyre::eyre!(
+                    "Failed to parse process id '{pid_str}' from ps output: {e}"
+                ))
+            })?;
+            pids.push(pid);
+        }
+    }
+
+    Ok(pids)
+}
+
+#[cfg(target_os = "macos")]
+async fn is_pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "macos")]
+async fn terminate_pids(pids: &[u32]) -> Result<(), FailToRun> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+
+    for &pid in pids {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .await
+            .map_err(|e| {
+                FailToRun::Launch(eyre::eyre!("Failed to terminate existing app process {pid}: {e}"))
+            })?;
+        if !status.success() {
+            return Err(FailToRun::Launch(eyre::eyre!(
+                "Failed to terminate existing app process {pid} before relaunch"
+            )));
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let mut alive = false;
+        for &pid in pids {
+            if is_pid_alive(pid).await {
+                alive = true;
+                break;
+            }
+        }
+        if !alive {
+            return Ok(());
+        }
+        Timer::after(Duration::from_millis(80)).await;
+    }
+
+    Err(FailToRun::Launch(eyre::eyre!(
+        "Timed out waiting for previous app instance(s) to terminate before relaunch"
+    )))
+}
+
+#[cfg(target_os = "macos")]
+async fn detect_new_pid(
+    executable_path: &std::path::Path,
+    existing_pids: &[u32],
+) -> Result<u32, FailToRun> {
+    let existing: std::collections::HashSet<u32> = existing_pids.iter().copied().collect();
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        let candidates = list_matching_pids(executable_path).await?;
+        if let Some(pid) = candidates.into_iter().find(|pid| !existing.contains(pid)) {
+            return Ok(pid);
+        }
+
+        if Instant::now() >= deadline {
+            return Err(FailToRun::Launch(eyre::eyre!(
+                "Failed to determine launched PID for app executable '{}'",
+                executable_path.display()
+            )));
+        }
+
+        Timer::after(Duration::from_millis(100)).await;
+    }
+}
+
 /// Run a macOS .app bundle using the `open` command.
 ///
 /// On macOS, this includes crash detection via .ips files and panic log fetching.
@@ -655,6 +780,10 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
         .and_then(|n| n.to_str())
         .ok_or(FailToRun::InvalidArtifact)?
         .to_string();
+    let executable_path = artifact_path.join("Contents").join("MacOS").join(&app_name);
+
+    let existing_pids = list_matching_pids(&executable_path).await?;
+    terminate_pids(&existing_pids).await?;
 
     info!("Launching app on macOS: {}", artifact_path.display());
 
@@ -681,36 +810,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
     // Give the app a moment to start, then get its PID
     Timer::after(Duration::from_millis(500)).await;
 
-    let app_pid = {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let output = Command::new("pgrep")
-                .arg("-n") // Newest matching process
-                .arg("-x") // Exact match
-                .arg(&app_name)
-                .output()
-                .await
-                .map_err(|e| FailToRun::Launch(eyre::eyre!("Failed to execute pgrep: {e}")))?;
-
-            if output.status.success() {
-                let pid_str = String::from_utf8_lossy(&output.stdout);
-                let pid = pid_str.trim().parse::<u32>().map_err(|e| {
-                    FailToRun::Launch(eyre::eyre!(
-                        "Failed to parse PID from pgrep output '{pid_str}': {e}"
-                    ))
-                })?;
-                break pid;
-            }
-
-            if Instant::now() >= deadline {
-                return Err(FailToRun::Launch(eyre::eyre!(
-                    "Failed to determine PID for process '{app_name}'. Ensure the app launched successfully."
-                )));
-            }
-
-            Timer::after(Duration::from_millis(200)).await;
-        }
-    };
+    let app_pid = detect_new_pid(&executable_path, &existing_pids).await?;
 
     trace_debug!(
         "App launched: name={}, bundle_id={}, pid={:?}",
@@ -729,7 +829,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
     });
 
     // Start log streaming and get panic info receiver
-    let panic_rx = start_log_stream(sender.clone(), options.log_level());
+    let panic_rx = start_log_stream(sender.clone(), options.log_level(), app_pid);
 
     // Monitor for exit and crash detection
     let app_name_for_crash = app_name.clone();

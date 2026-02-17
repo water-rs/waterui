@@ -12,6 +12,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     For any code that involves CLI commands, ALWAYS use the water CLI (water run, water build, etc.) to build and run the project.
     
     If you have to use adb/xcodebuild/other build tools directly, please propose adding a new command to the water CLI instead.
+
+    Never hand-create or manually scaffold project/app structure. Always use `water create` (or existing generated project files) as the source of truth.
+    For monorepo examples/playgrounds in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
 </important>
 
 <important>

@@ -913,12 +913,11 @@ impl MorphShapeRenderer {
 
 impl GpuRenderer for MorphShapeRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(MORPH_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(MORPH_SHADER.source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            MORPH_SHADER.label,
+            MORPH_SHADER.source,
+        );
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Morph Shape Uniforms"),
@@ -972,13 +971,13 @@ impl GpuRenderer for MorphShapeRenderer {
                 label: Some("Morph Shape Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
@@ -1080,6 +1079,22 @@ impl GpuRenderer for MorphShapeRenderer {
         }
 
         frame.queue.submit(core::iter::once(encoder.finish()));
+    }
+
+    fn needs_redraw(&self) -> bool {
+        if self.progress.is_some() {
+            // Explicit progress is driven by external reactive updates. Keep redraws
+            // active so we continuously sample the signal while it changes.
+            return true;
+        }
+        if self.animation.repeat {
+            return true;
+        }
+        self.start_time.elapsed() < self.animation.duration
+    }
+
+    fn requires_redraw_poll(&self) -> bool {
+        self.progress.is_some()
     }
 }
 
@@ -1286,13 +1301,11 @@ impl GpuRenderer for LyonShapeRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!("[Shape] setup called, format: {:?}", ctx.surface_format);
 
-        // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(SHAPE_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            SHAPE_SHADER.label,
+            SHAPE_SHADER.source,
+        );
 
         // Create uniform buffer for color using encase size calculation
         let uniform_size = <ShapeUniforms as encase::ShaderSize>::SHADER_SIZE.get() as u64;
@@ -1351,7 +1364,7 @@ impl GpuRenderer for LyonShapeRenderer {
                 label: Some("Shape Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<ShapeVertex>() as wgpu::BufferAddress,
@@ -1365,7 +1378,7 @@ impl GpuRenderer for LyonShapeRenderer {
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
@@ -1633,13 +1646,11 @@ impl GpuRenderer for SdfShapeRenderer {
             self.kind
         );
 
-        // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(SDF_SHADER.label),
-                source: wgpu::ShaderSource::Wgsl(SDF_SHADER.source.into()),
-            });
+        let shader = waterui_graphics::shared_context::create_cached_shader_module(
+            ctx.device,
+            SDF_SHADER.label,
+            SDF_SHADER.source,
+        );
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SDF Shape Uniforms"),
@@ -1696,13 +1707,13 @@ impl GpuRenderer for SdfShapeRenderer {
                 label: Some("SDF Shape Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader.as_ref(),
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,

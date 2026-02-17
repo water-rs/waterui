@@ -16,7 +16,7 @@ use smol::{
     stream::StreamExt,
 };
 use time::OffsetDateTime;
-use tracing::{debug as trace_debug, info};
+use tracing::{debug as trace_debug, info, warn};
 
 use std::path::Path;
 
@@ -60,7 +60,7 @@ fn start_log_stream(
     let predicate = if native_logs {
         format!("processID == {pid}")
     } else {
-        "subsystem == \"dev.waterui\"".to_string()
+        format!("processID == {pid} AND subsystem == \"dev.waterui\"")
     };
 
     let mut log_cmd = Command::new("log");
@@ -632,14 +632,88 @@ impl Device for AppleSimulator {
 impl AppleSimulator {
     /// Scan iOS simulators only.
     pub async fn scan_ios() -> eyre::Result<Vec<Self>> {
-        let simulators = Self::scan().await?;
-        Ok(simulators
-            .into_iter()
-            .filter(|s| {
-                s.runtime_identifier
+        let ios_filter = |s: &Self| {
+            s.is_available
+                && s.runtime_identifier
                     .as_deref()
                     .is_some_and(|r| r.contains("SimRuntime.iOS-"))
-            })
+        };
+
+        let simulators = Self::scan().await?;
+        let mut ios_sims: Vec<Self> = simulators.into_iter().filter(ios_filter).collect();
+        let mut healthy: Vec<Self> = ios_sims
+            .iter()
+            .filter(|s| s.data_path.exists())
+            .cloned()
+            .collect();
+        if !healthy.is_empty() {
+            return Ok(healthy);
+        }
+
+        if ios_sims.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        warn!(
+            "No healthy iOS simulators found (missing data paths). Attempting automatic simulator repair."
+        );
+
+        // Best-effort cleanup first: remove stale entries from unavailable runtimes.
+        if let Err(error) = run_command("xcrun", ["simctl", "delete", "unavailable"]).await {
+            warn!("Failed to delete unavailable simulators: {error}");
+        }
+
+        // Re-scan after cleanup.
+        ios_sims = Self::scan().await?.into_iter().filter(ios_filter).collect();
+        healthy = ios_sims
+            .iter()
+            .filter(|s| s.data_path.exists())
+            .cloned()
+            .collect();
+        if !healthy.is_empty() {
+            return Ok(healthy);
+        }
+
+        // If still broken, create a fresh simulator from a template.
+        if let Some(template) = ios_sims
+            .iter()
+            .find(|s| s.device_type_identifier.contains("iPhone"))
+            .or_else(|| ios_sims.first())
+            .cloned()
+            && let Some(runtime) = template.runtime_identifier.as_deref()
+        {
+            let generated_name = format!("{} (WaterUI)", template.name);
+            match run_command(
+                "xcrun",
+                [
+                    "simctl",
+                    "create",
+                    &generated_name,
+                    &template.device_type_identifier,
+                    runtime,
+                ],
+            )
+            .await
+            {
+                Ok(udid) => {
+                    info!(
+                        "Created replacement iOS simulator: {} ({})",
+                        generated_name,
+                        udid.trim()
+                    );
+                }
+                Err(error) => {
+                    warn!("Failed to create replacement iOS simulator: {error}");
+                }
+            }
+        }
+
+        // Final re-scan: return only healthy simulators.
+        Ok(Self::scan()
+            .await?
+            .into_iter()
+            .filter(ios_filter)
+            .filter(|s| s.data_path.exists())
             .collect())
     }
 }
