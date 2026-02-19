@@ -1,0 +1,116 @@
+use waterui::app::App;
+use waterui::prelude::*;
+
+#[derive(Clone, Copy)]
+struct Sample {
+    title: &'static str,
+    profile: &'static str,
+    url: &'static str,
+}
+
+fn main() -> impl View {
+    let selected = Binding::usize(2);
+    let status = Binding::container(String::from("Loading fallback video pipeline..."));
+    let is_buffering = Binding::bool(true);
+
+    let samples = [
+        Sample {
+            title: "Big Buck Bunny (SDR)",
+            profile: "SDR / BT.709",
+            url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        },
+        Sample {
+            title: "Sintel (SDR)",
+            profile: "SDR / BT.709",
+            url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
+        },
+        Sample {
+            title: "Jellyfin HDR10 1080p 3M",
+            profile: "HDR10 / BT.2020 + PQ",
+            url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%203M.mp4",
+        },
+        Sample {
+            title: "Jellyfin HDR10 1080p 10M",
+            profile: "HDR10 / BT.2020 + PQ",
+            url: "https://repo.jellyfin.org/test-videos/HDR/HDR10/HEVC/Test%20Jellyfin%201080p%20HEVC%20HDR10%2010M.mp4",
+        },
+    ];
+
+    let title = selected.clone().map(move |index| samples[index].title);
+    let source_profile = selected.clone().map(move |index| samples[index].profile);
+    let source = selected.clone().map(move |index| {
+        Url::parse(samples[index].url).expect("sample URL should be valid")
+    });
+
+    let player = VideoPlayer::new(source)
+        .show_controls(true)
+        .aspect_ratio(AspectRatio::Fit)
+        .on_event({
+            let status = status.clone();
+            let is_buffering = is_buffering.clone();
+            move |event| match event {
+                video::Event::ReadyToPlay => {
+                    is_buffering.set(false);
+                    status.set(String::from("Ready"));
+                }
+                video::Event::Buffering => {
+                    is_buffering.set(true);
+                    status.set(String::from("Buffering..."));
+                }
+                video::Event::BufferingEnded => {
+                    is_buffering.set(false);
+                    status.set(String::from("Playing"));
+                }
+                video::Event::Ended => {
+                    is_buffering.set(false);
+                    status.set(String::from("Ended"));
+                }
+                video::Event::Error { message } => {
+                    is_buffering.set(false);
+                    status.set(format!("Error: {message}"));
+                }
+            }
+        });
+
+    let status_overlay = text("Buffering...")
+        .body()
+        .foreground(Srgb::WHITE)
+        .padding_with(EdgeInsets::all(10.0))
+        .background(Srgb::BLACK.with_opacity(0.7))
+        .visable(is_buffering.clone());
+
+    vstack((
+        text("WaterUI Rust Fallback VideoPlayer").headline(),
+        text("Self-rendered VideoPlayer (GpuSurface + waterkit-codec) with real HDR test sources.")
+            .caption(),
+        text!("Now Playing: {title}").body(),
+        text!("Expected Source Profile: {source_profile}").footnote(),
+        text("Tip: check logs for [VideoFallback] color profile ... hdr=true on HDR sources.")
+            .footnote(),
+        overlay(player, status_overlay).height(360.0),
+        text!("Status: {status}").footnote(),
+        hstack((
+            button("SDR: BBB")
+                .with_state(&selected)
+                .action(|selected| selected.set(0)),
+            button("SDR: Sintel")
+                .with_state(&selected)
+                .action(|selected| selected.set(1)),
+            button("HDR10: 1080p 3M")
+                .with_state(&selected)
+                .action(|selected| selected.set(2)),
+            button("HDR10: 1080p 10M")
+                .with_state(&selected)
+                .action(|selected| selected.set(3)),
+        ))
+        .spacing(12.0),
+    ))
+    .spacing(12.0)
+    .padding()
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
+}
+
+waterui_ffi::export!();
