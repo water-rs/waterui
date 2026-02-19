@@ -1,0 +1,19 @@
+[package]
+name = "rust-fallback-video-player-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Rust fallback video player demo for WaterUI"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "video", "fallback"]
+categories = ["gui"]
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui = { workspace = true, features = ["video-rust-fallback"] }
+waterui-ffi.workspace = true
