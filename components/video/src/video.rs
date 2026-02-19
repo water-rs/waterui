@@ -34,7 +34,7 @@
 //! ```
 
 use waterui_core::{
-    Binding, Computed, binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed,
+    binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed, Binding, Computed,
 };
 
 use crate::Url;
@@ -99,6 +99,10 @@ pub struct VideoConfig {
     pub source: Computed<Url>,
     /// The volume of the video.
     pub volume: Binding<Volume>,
+    /// Playback speed (1.0 = normal speed).
+    pub playback_rate: Binding<f32>,
+    /// Whether to preserve pitch when changing playback speed.
+    pub preserve_pitch: Binding<bool>,
     /// The aspect ratio mode for video playback.
     pub aspect_ratio: AspectRatio,
     /// Whether the video should loop when it ends.
@@ -125,8 +129,9 @@ configurable!(
     ///
     /// # Platform Implementation
     ///
-    /// - **iOS/macOS**: currently native-backed raw surface
-    /// - **Android**: currently runtime-managed raw surface
+    /// - **iOS/macOS**: native-backed raw surface by default
+    /// - **Android**: runtime-managed raw surface (Rust fallback)
+    /// - **Any platform**: Rust fallback when `waterui-video/rust-fallback-player` is enabled
     Video,
     VideoConfig,
     |config| match config.aspect_ratio {
@@ -141,6 +146,8 @@ impl Video {
         Self(VideoConfig {
             source: source.into_computed(),
             volume: binding(0.5),
+            playback_rate: binding(1.0),
+            preserve_pitch: binding(true),
             aspect_ratio: AspectRatio::default(),
             loops: true,
             on_event: Box::new(|_| {}),
@@ -198,6 +205,20 @@ impl Video {
         self.0.volume = volume.clone();
         self
     }
+
+    /// Sets playback speed binding for the video.
+    #[must_use]
+    pub fn playback_rate(mut self, playback_rate: &Binding<f32>) -> Self {
+        self.0.playback_rate = playback_rate.clone();
+        self
+    }
+
+    /// Enables/disables pitch preservation when playback rate is not 1x.
+    #[must_use]
+    pub fn preserve_pitch(mut self, preserve_pitch: &Binding<bool>) -> Self {
+        self.0.preserve_pitch = preserve_pitch.clone();
+        self
+    }
 }
 
 // =============================================================================
@@ -212,6 +233,10 @@ pub struct VideoPlayerConfig {
     pub source: Computed<Url>,
     /// The volume of the video player.
     pub volume: Binding<Volume>,
+    /// Playback speed (1.0 = normal speed).
+    pub playback_rate: Binding<f32>,
+    /// Whether to preserve pitch when changing playback speed.
+    pub preserve_pitch: Binding<bool>,
     /// The aspect ratio mode for video playback.
     pub aspect_ratio: AspectRatio,
     /// Whether to show native playback controls.
@@ -239,8 +264,10 @@ configurable!(
     ///
     /// # Platform Implementation
     ///
-    /// - **Apple platforms**: native player controls
+    /// - **Apple platforms**: native player controls by default
     /// - **Android**: WaterUI/Rust player controls
+    /// - **Any platform**: WaterUI/Rust player controls when
+    ///   `waterui-video/rust-fallback-player` is enabled
     VideoPlayer,
     VideoPlayerConfig,
     |config| match config.aspect_ratio {
@@ -255,6 +282,8 @@ impl VideoPlayer {
         Self(VideoPlayerConfig {
             source: source.into_computed(),
             volume: binding(0.5),
+            playback_rate: binding(1.0),
+            preserve_pitch: binding(true),
             aspect_ratio: AspectRatio::default(),
             show_controls: true,
             on_event: Box::new(|_| {}),
@@ -310,6 +339,20 @@ impl VideoPlayer {
     #[must_use]
     pub fn volume(mut self, volume: &Binding<Volume>) -> Self {
         self.0.volume = volume.clone();
+        self
+    }
+
+    /// Sets playback speed binding for the video player.
+    #[must_use]
+    pub fn playback_rate(mut self, playback_rate: &Binding<f32>) -> Self {
+        self.0.playback_rate = playback_rate.clone();
+        self
+    }
+
+    /// Enables/disables pitch preservation when playback rate is not 1x.
+    #[must_use]
+    pub fn preserve_pitch(mut self, preserve_pitch: &Binding<bool>) -> Self {
+        self.0.preserve_pitch = preserve_pitch.clone();
         self
     }
 }
