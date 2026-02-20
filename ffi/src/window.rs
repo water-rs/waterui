@@ -90,8 +90,13 @@ impl crate::jni::JniPrimitive for WindowState {
         WuiWindowState::from(self) as Self::Jni
     }
     fn from_jni(val: Self::Jni) -> Self {
-        let ffi: WuiWindowState = unsafe { core::mem::transmute(val) };
-        unsafe { IntoRust::into_rust(ffi) }
+        match val {
+            x if x == WuiWindowState::Normal as Self::Jni => WindowState::Normal,
+            x if x == WuiWindowState::Closed as Self::Jni => WindowState::Closed,
+            x if x == WuiWindowState::Minimized as Self::Jni => WindowState::Minimized,
+            x if x == WuiWindowState::Fullscreen as Self::Jni => WindowState::Fullscreen,
+            _ => panic!("invalid WindowState JNI value: {val}"),
+        }
     }
 }
 

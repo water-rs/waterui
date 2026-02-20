@@ -13,7 +13,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui_visualizer::{Waveform, WaveformTheme};
+use waterui_visualizer::{AudioCapture, Waveform, WaveformTheme};
 
 fn main() -> impl View {
     // State for theme (directly as Binding<WaveformTheme>)
@@ -26,7 +26,8 @@ fn main() -> impl View {
     let sensitivity = Binding::f64(1.2);
 
     // Waveform visualizer with reactive bindings
-    let waveform = Waveform::new()
+    let capture = AudioCapture::new();
+    let waveform = Waveform::new(capture)
         .theme(theme.clone())
         .sensitivity(sensitivity.clone());
 

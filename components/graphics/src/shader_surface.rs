@@ -207,8 +207,9 @@ impl ShaderRenderer {
 
     fn build_full_shader(&self) -> String {
         // Prepend the uniform struct and vertex shader to user's fragment shader
-        let mut full =
-            String::with_capacity(crate::prewarm::SHADER_SURFACE_PRELUDE.len() + self.fragment_source.len());
+        let mut full = String::with_capacity(
+            crate::prewarm::SHADER_SURFACE_PRELUDE.len() + self.fragment_source.len(),
+        );
         full.push_str(PRELUDE);
         full.push_str(&self.fragment_source);
         full
@@ -233,8 +234,9 @@ struct ShaderPipelineCacheEntry {
     pipeline: wgpu::RenderPipeline,
 }
 
-static SHADER_PIPELINE_CACHE: OnceLock<parking_lot::Mutex<HashMap<ShaderPipelineKey, ShaderPipelineCacheEntry>>> =
-    OnceLock::new();
+static SHADER_PIPELINE_CACHE: OnceLock<
+    parking_lot::Mutex<HashMap<ShaderPipelineKey, ShaderPipelineCacheEntry>>,
+> = OnceLock::new();
 
 fn shader_source_hash(source: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -275,7 +277,8 @@ impl GpuRenderer for ShaderRenderer {
         };
 
         let cached_entry = {
-            let cache = SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+            let cache =
+                SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
             let cache = cache.lock();
             cache.get(&pipeline_key).cloned()
         };
@@ -299,13 +302,13 @@ impl GpuRenderer for ShaderRenderer {
                         }],
                     });
 
-            let pipeline_layout = ctx
-                .device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("ShaderSurface Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
+            let pipeline_layout =
+                ctx.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("ShaderSurface Pipeline Layout"),
+                        bind_group_layouts: &[&bind_group_layout],
+                        immediate_size: 0,
+                    });
 
             let blend = if ctx.is_hdr() {
                 None
@@ -340,11 +343,12 @@ impl GpuRenderer for ShaderRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: ctx.pipeline_cache,
                 });
 
-            let cache = SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+            let cache =
+                SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
             let mut cache = cache.lock();
             cache
                 .entry(pipeline_key)
@@ -456,6 +460,7 @@ impl GpuRenderer for ShaderRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);
