@@ -217,7 +217,7 @@ impl GpuRenderer for SvgRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         self.sampler = Some(sampler);
@@ -254,7 +254,7 @@ impl GpuRenderer for SvgRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("SVG Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -296,7 +296,7 @@ impl GpuRenderer for SvgRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
         self.pipeline = Some(pipeline);
@@ -343,6 +343,7 @@ impl GpuRenderer for SvgRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             pass.set_pipeline(pipeline);

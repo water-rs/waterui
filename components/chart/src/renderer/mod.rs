@@ -363,6 +363,38 @@ pub mod base {
         queue.write_buffer(buffer, 0, storage.as_ref());
     }
 
+    /// Writes data to a storage buffer and grows it when capacity is insufficient.
+    ///
+    /// Returns `true` when the buffer handle was replaced (bind groups must be rebuilt),
+    /// otherwise writes in-place and returns `false`.
+    #[must_use]
+    pub fn write_storage_buffer_with_growth<
+        T: ShaderType + encase::ShaderSize + encase::internal::WriteInto,
+    >(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &mut wgpu::Buffer,
+        label: &str,
+        data: &[T],
+    ) -> bool {
+        use wgpu::util::DeviceExt;
+
+        let mut storage = StorageBuffer::new(Vec::new());
+        storage.write(data).expect("Failed to write storage buffer");
+        let required_bytes = storage.as_ref();
+        if (required_bytes.len() as u64) > buffer.size() {
+            *buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: required_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            true
+        } else {
+            queue.write_buffer(buffer, 0, required_bytes);
+            false
+        }
+    }
+
     /// Writes data to a uniform buffer using encase for proper alignment.
     pub fn write_uniform_buffer<T: ShaderType + encase::internal::WriteInto>(
         queue: &wgpu::Queue,

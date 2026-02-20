@@ -132,6 +132,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewId<'local>(
     _class: JClass<'local>,
     view_ptr: jlong,
 ) -> jobject {
+    debug_assert!(view_ptr != 0, "WatcherJni.viewId received null view pointer");
     let view = unsafe { &*(view_ptr as *const crate::WuiAnyView) };
     let type_id = unsafe { crate::waterui_view_id(view) };
     type_id_to_java(&mut env, type_id).into_raw()
@@ -145,6 +146,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewBody<'local>(
     view_ptr: jlong,
     env_ptr: jlong,
 ) -> jlong {
+    debug_assert!(view_ptr != 0, "WatcherJni.viewBody received null view pointer");
+    debug_assert!(env_ptr != 0, "WatcherJni.viewBody received null env pointer");
     let view = view_ptr as *mut crate::WuiAnyView;
     let wui_env = env_ptr as *mut crate::WuiEnv;
     unsafe { crate::waterui_view_body(view, wui_env) as jlong }
@@ -157,6 +160,10 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewStretchAxis<'
     _class: JClass<'local>,
     view_ptr: jlong,
 ) -> jint {
+    debug_assert!(
+        view_ptr != 0,
+        "WatcherJni.viewStretchAxis received null view pointer"
+    );
     let view = view_ptr as *const crate::WuiAnyView;
     unsafe { crate::waterui_view_stretch_axis(view) as jint }
 }
@@ -168,6 +175,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_cloneEnv<'local>(
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jlong {
+    debug_assert!(env_ptr != 0, "WatcherJni.cloneEnv received null env pointer");
     let wui_env = env_ptr as *const crate::WuiEnv;
     unsafe { crate::waterui_clone_env(wui_env) as jlong }
 }

@@ -1047,18 +1047,18 @@ fn try_configure_surface(
 ) -> bool {
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
 
-    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    device.push_error_scope(wgpu::ErrorFilter::Internal);
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let configure_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         surface.configure(device, config);
     }))
     .is_err();
 
-    let validation_err = pollster::block_on(device.pop_error_scope());
-    let internal_err = pollster::block_on(device.pop_error_scope());
-    let oom_err = pollster::block_on(device.pop_error_scope());
+    let validation_err = pollster::block_on(validation_scope.pop());
+    let internal_err = pollster::block_on(internal_scope.pop());
+    let oom_err = pollster::block_on(oom_scope.pop());
 
     if configure_panicked {
         tracing::warn!("[AppliedFilter] Surface::configure panicked");

@@ -12,9 +12,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use waterui_visualizer::Waveform;
+//! use waterui_visualizer::{AudioCapture, Waveform};
 //!
-//! Waveform::new()
+//! let capture = AudioCapture::new();
+//! Waveform::new(capture)
 //!     .sensitivity(1.5)
 //!     .glow(true)
 //! ```
@@ -29,6 +30,7 @@ mod waveform;
 // mod phase;
 
 pub use theme::{SpectrumTheme, WaveformTheme};
+pub use audio::AudioCapture;
 pub use waveform::Waveform;
 // pub use spectrum::Spectrum;
 // pub use spectrogram::Spectrogram;

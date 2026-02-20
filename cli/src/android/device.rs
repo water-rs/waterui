@@ -301,7 +301,7 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = run_command_os(
+    let crash_info = match run_command_os(
         adb,
         [
             "-s",
@@ -317,7 +317,10 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
         ],
     )
     .await
-    .unwrap_or_default();
+    {
+        Ok(output) => output,
+        Err(err) => format!("(failed to collect logcat crash info: {err})"),
+    };
 
     let mut error_msg = format!("App {bundle_id} crashed on startup (process not found).\n\n");
 
@@ -432,14 +435,19 @@ async fn monitor_android_process(
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
         // when the shell user doesn't have permission to send signals to the app process
-        let result = run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await;
+        let output = match run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        {
+            Ok(output) => output,
+            Err(err) => {
+                debug!(
+                    "Failed to query process state via pidof for {bundle_id} on {device_id}: {err}"
+                );
+                continue;
+            }
+        };
 
-        // Check if the process with the same PID is still running
-        let still_running = result
-            .as_ref()
-            .ok()
-            .map(|output| parse_whitespace_separated_u32s(output))
-            .is_some_and(|pids| pids.contains(&pid));
+        // Check if the process with the same PID is still running.
+        let still_running = parse_whitespace_separated_u32s(&output).contains(&pid);
 
         if !still_running {
             // Give crash reporting a brief moment to flush logs.
@@ -466,10 +474,23 @@ async fn monitor_android_process(
                     .map(|s| std::ffi::OsStr::new(s.as_str())),
             )
             .await
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
+            .map_or_else(
+                |err| {
+                    debug!("Failed to fetch PID-filtered logcat: {err}");
+                    String::new()
+                },
+                |output| {
+                    if output.status.success() {
+                        String::from_utf8_lossy(&output.stdout).to_string()
+                    } else {
+                        debug!(
+                            "PID-filtered logcat exited with status {}",
+                            output.status
+                        );
+                        String::new()
+                    }
+                },
+            );
 
             // Fallback for older logcat versions that don't support --pid.
             let fallback_log = if pid_log.trim().is_empty() {
@@ -494,10 +515,23 @@ async fn monitor_android_process(
                         .map(|s| std::ffi::OsStr::new(s.as_str())),
                 )
                 .await
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default()
+                .map_or_else(
+                    |err| {
+                        debug!("Failed to fetch fallback logcat: {err}");
+                        String::new()
+                    },
+                    |output| {
+                        if output.status.success() {
+                            String::from_utf8_lossy(&output.stdout).to_string()
+                        } else {
+                            debug!(
+                                "Fallback logcat exited with status {}",
+                                output.status
+                            );
+                            String::new()
+                        }
+                    },
+                )
             } else {
                 String::new()
             };
@@ -882,7 +916,10 @@ impl Device for AndroidEmulator {
                 );
             }
 
-            last_emulator_states = adb_emulator_states(&adb_path).await.unwrap_or_default();
+            last_emulator_states = match adb_emulator_states(&adb_path).await {
+                Ok(states) => states,
+                Err(err) => format!("failed to query emulator state via adb: {err}"),
+            };
 
             if let Some(device) =
                 try_find_running_emulator_for_avd(&adb_path, &self.avd_name).await?

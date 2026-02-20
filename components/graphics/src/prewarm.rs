@@ -76,7 +76,10 @@ pub static BUILTIN_SHADER_SOURCES: &[ShaderSource] = &[
         "shaders/animated_mesh_gradient.wgsl",
         include_str!("shaders/animated_mesh_gradient.wgsl"),
     ),
-    ShaderSource::new("shaders/gradient.wgsl", include_str!("shaders/gradient.wgsl")),
+    ShaderSource::new(
+        "shaders/gradient.wgsl",
+        include_str!("shaders/gradient.wgsl"),
+    ),
     ShaderSource::new("shaders/blit.wgsl", include_str!("shaders/blit.wgsl")),
     ShaderSource::new(
         "shaders/solid_color.wgsl",

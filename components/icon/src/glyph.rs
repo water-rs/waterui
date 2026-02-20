@@ -27,6 +27,12 @@ use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
+fn codepoint_to_string(codepoint: char) -> alloc::string::String {
+    let mut text = alloc::string::String::with_capacity(codepoint.len_utf8());
+    text.push(codepoint);
+    text
+}
+
 /// A const-constructible icon glyph that renders as styled text with an icon font.
 ///
 /// This type uses webfonts (icon fonts) to render icons as text glyphs.
@@ -98,15 +104,22 @@ impl IconGlyph {
         ColoredIcon {
             glyph: self,
             color: color.into(),
+            styled: self.styled_body(),
         }
+    }
+
+    fn font(self) -> Font {
+        Font::default().size(self.size).family(self.font_family)
+    }
+
+    fn styled_body(self) -> StyledStr {
+        StyledStr::plain(codepoint_to_string(self.codepoint)).font(self.font())
     }
 }
 
 impl View for IconGlyph {
     fn body(self, _env: &Environment) -> impl View {
-        // Encode the codepoint to UTF-8 and convert to owned String
-        let text = alloc::string::String::from(self.codepoint);
-        StyledStr::plain(text).font(Font::default().size(self.size).family(self.font_family))
+        self.styled_body()
     }
 }
 
@@ -117,6 +130,7 @@ impl View for IconGlyph {
 pub struct ColoredIcon {
     glyph: IconGlyph,
     color: Color,
+    styled: StyledStr,
 }
 
 impl ColoredIcon {
@@ -124,6 +138,7 @@ impl ColoredIcon {
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.glyph.size = size;
+        self.styled = self.glyph.styled_body();
         self
     }
 
@@ -137,13 +152,6 @@ impl ColoredIcon {
 
 impl View for ColoredIcon {
     fn body(self, _env: &Environment) -> impl View {
-        let text = alloc::string::String::from(self.glyph.codepoint);
-        StyledStr::plain(text)
-            .font(
-                Font::default()
-                    .size(self.glyph.size)
-                    .family(self.glyph.font_family),
-            )
-            .foreground(self.color)
+        self.styled.foreground(self.color)
     }
 }

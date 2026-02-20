@@ -11,6 +11,9 @@ use waterkit_audio::AudioRecorderBuilder;
 pub const SAMPLES_COUNT: usize = 1024;
 
 /// Shared audio state between capture thread and renderer.
+///
+/// Creating an `AudioCapture` starts one recorder thread. Clone the handle to
+/// share that same capture session across multiple visualizers.
 #[derive(Clone)]
 pub struct AudioCapture {
     /// Raw audio samples.

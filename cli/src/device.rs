@@ -687,10 +687,20 @@ async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32
 }
 
 #[cfg(target_os = "macos")]
+fn quiet_kill_command(signal: &str, pid: &str) -> Command {
+    let mut command = Command::new("kill");
+    command
+        .arg(signal)
+        .arg(pid)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+#[cfg(target_os = "macos")]
 async fn is_pid_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
+    let pid = pid.to_string();
+    quiet_kill_command("-0", &pid)
         .status()
         .await
         .is_ok_and(|status| status.success())
@@ -703,13 +713,14 @@ async fn terminate_pids(pids: &[u32]) -> Result<(), FailToRun> {
     }
 
     for &pid in pids {
-        let status = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
+        let pid = pid.to_string();
+        let status = quiet_kill_command("-TERM", &pid)
             .status()
             .await
             .map_err(|e| {
-                FailToRun::Launch(eyre::eyre!("Failed to terminate existing app process {pid}: {e}"))
+                FailToRun::Launch(eyre::eyre!(
+                    "Failed to terminate existing app process {pid}: {e}"
+                ))
             })?;
         if !status.success() {
             return Err(FailToRun::Launch(eyre::eyre!(
@@ -822,10 +833,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
     // Create Running instance - kill the app process on drop
     let pid_for_termination = app_pid.to_string();
     let (running, sender) = Running::new(move || {
-        let _ = Command::new("kill")
-            .arg("-TERM")
-            .arg(&pid_for_termination)
-            .spawn();
+        let _ = quiet_kill_command("-TERM", &pid_for_termination).spawn();
     });
 
     // Start log streaming and get panic info receiver
@@ -917,10 +925,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
             }
             // Crash report appeared first - kill the app and report
             futures::future::Either::Right((Some(report), _)) => {
-                let _ = Command::new("kill")
-                    .arg("-9")
-                    .arg(&pid_for_crash_kill)
-                    .spawn();
+                let _ = quiet_kill_command("-9", &pid_for_crash_kill).spawn();
                 // Check if we have panic info from log stream
                 if let Ok(info) = panic_rx.try_recv() {
                     let mut msg = format!("Panic: {}", info.payload);

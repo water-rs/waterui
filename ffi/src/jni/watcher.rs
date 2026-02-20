@@ -76,7 +76,7 @@ impl<T> JavaWatcher<T> {
             // Signature: void onUpdate(Object value, long metadataPtr)
             // SAFETY: JNI call with valid method ID and callback
             unsafe {
-                let result = env.call_method_unchecked(
+                env.call_method_unchecked(
                     &self.callback,
                     JMethodID::from_raw(self.method_id),
                     ReturnType::Primitive(Primitive::Void),
@@ -84,15 +84,8 @@ impl<T> JavaWatcher<T> {
                         JValue::Object(&jni::objects::JObject::null()).as_jni(),
                         JValue::Long(_metadata_ptr).as_jni(),
                     ],
-                );
-
-                if let Err(e) = result {
-                    tracing::error!("JavaWatcher callback failed: {:?}", e);
-                    // Clear any pending exception
-                    if env.exception_check().unwrap_or(false) {
-                        env.exception_clear().ok();
-                    }
-                }
+                )
+                .expect("JavaWatcher callback failed");
             }
         });
     }

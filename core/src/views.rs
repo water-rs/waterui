@@ -175,13 +175,21 @@ impl<Id: Hash + Ord> IdGenerator<Id> {
     pub fn to_id(&self, value: Id) -> RawId {
         let mut this = self.map.borrow_mut();
         if let Some(&id) = this.get(&value) {
-            return RawId::from(unsafe { NonZeroI32::new_unchecked(id) });
+            return RawId::from(NonZeroI32::new(id).expect("stored raw id must never be zero"));
         }
-        let id = self.counter.get();
-        self.counter
-            .set(id.checked_add(1).expect("id counter should not overflow"));
+        let mut id = self.counter.get();
+        if id == 0 {
+            id = 1;
+        }
+
+        let mut next = id.checked_add(1).expect("id counter exhausted");
+        if next == 0 {
+            next = next.checked_add(1).expect("id counter exhausted");
+        }
+        self.counter.set(next);
+
         this.insert(value, id);
-        RawId::from(unsafe { NonZeroI32::new_unchecked(id) })
+        RawId::from(NonZeroI32::new(id).expect("generated raw id must never be zero"))
     }
 }
 

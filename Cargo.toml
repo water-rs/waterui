@@ -69,6 +69,7 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 [workspace.dependencies]
 executor-core = { version = "0.7.0", features = ["std"]}
 futures = "0.3"
+# Local sibling-path overrides. Release workflow validates these paths explicitly.
 nami = { version = "0.10.1", path = "../nami" }
 nami-core = { version = "0.3.2", path = "../nami/core" }
 tracing = "0.1.41"
@@ -99,6 +100,7 @@ waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 waterkit-regional = { version = "0.1.0", path = "kit/regional" }
+waterkit-screen = { version = "0.1.0", path = "kit/screen" }
 waterkit-audio = { version = "0.1.0", path = "kit/audio" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
 waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
@@ -114,16 +116,17 @@ waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-chart = { version = "0.1.0", path = "components/chart" }
 waterui-assets = { version = "0.1.0", path = "components/assets" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets-macros" }
+waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
-wgpu = "27.0.1"
+wgpu = "28.0.0"
 encase = { version = "0.10", features = ["glam"] }
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
 lyon = "1.0"
-wgpu-hal = { version = "27.0", features = ["gles", "metal"] }
+wgpu-hal = { version = "28.0.0", features = ["gles", "metal"] }
 glow = "0.16"
 time = "0.3"
 tiny-skia = "0.11"
@@ -139,13 +142,15 @@ cairo-rs = { version = "0.20", features = ["v1_18"] }
 pollster = "0.4"
 jiff = "0.2"
 async-channel = "2.3"
-rodio = "0.19"
+rodio = { version = "0.19", features = ["symphonia-isomp4", "symphonia-aac"] }
 cpal = "0.15"
 swift-bridge = "0.1"
 swift-bridge-build = "0.1"
 jni = "0.21"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
+minstant = "0.1"
+cpu-time = "1.0"
 
 
 [dependencies]
@@ -163,10 +168,13 @@ waterui-controls.workspace = true
 waterui-webview.workspace = true
 waterui-locale.workspace = true
 waterkit-regional.workspace = true
+waterkit-screen.workspace = true
 executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
+minstant.workspace = true
+cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
@@ -177,6 +185,7 @@ waterui-shape.workspace = true
 waterui-svg.workspace = true
 waterui-assets.workspace = true
 waterui-assets-macros.workspace = true
+waterui-inspector-protocol.workspace = true
 waterkit-haptic = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
@@ -216,6 +225,7 @@ arboard = "3.6.1"
 [features]
 default = []
 std = ["dep:waterkit-haptic"]
+video-rust-fallback = ["waterui-video/rust-fallback-player"]
 all = ["std"]
 
 
