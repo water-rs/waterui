@@ -17,7 +17,7 @@ use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
-    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+    multisample_state, shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 const PLOT_PADDING: f32 = 0.1;
@@ -181,7 +181,7 @@ impl DepthRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Depth Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -210,9 +210,61 @@ impl DepthRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
+    }
+
+    fn to_gpu_levels(levels: &[DepthLevel]) -> Vec<GpuDepthLevel> {
+        levels
+            .iter()
+            .map(|l| GpuDepthLevel {
+                price: l.price,
+                cumulative_volume: l.cumulative_volume,
+            })
+            .collect()
+    }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(color_buffer) = &self.color_buffer else {
+            return;
+        };
+        let Some(bid_buffer) = &self.bid_buffer else {
+            return;
+        };
+        let Some(ask_buffer) = &self.ask_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Depth Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: color_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bid_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: ask_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }
 
@@ -245,25 +297,8 @@ impl GpuRenderer for DepthRenderer {
 
         // Create bid/ask buffers
         let initial_capacity = 16384;
-        let bid_data: Vec<GpuDepthLevel> = self
-            .data
-            .bids
-            .iter()
-            .map(|l| GpuDepthLevel {
-                price: l.price,
-                cumulative_volume: l.cumulative_volume,
-            })
-            .collect();
-
-        let ask_data: Vec<GpuDepthLevel> = self
-            .data
-            .asks
-            .iter()
-            .map(|l| GpuDepthLevel {
-                price: l.price,
-                cumulative_volume: l.cumulative_volume,
-            })
-            .collect();
+        let bid_data = Self::to_gpu_levels(&self.data.bids);
+        let ask_data = Self::to_gpu_levels(&self.data.asks);
 
         self.bid_buffer = Some(if bid_data.is_empty() {
             create_storage_buffer(
@@ -285,30 +320,7 @@ impl GpuRenderer for DepthRenderer {
             create_storage_buffer(ctx, "Depth Asks", &ask_data)
         });
 
-        // Create bind group
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Depth Chart Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.color_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.bid_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.ask_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -468,39 +480,43 @@ impl ChartRenderer for DepthRenderer {
     type Data = DepthData;
     type DataValue = DepthLevel;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Update data
         self.data = data.clone();
         self.bounds = data.bounds().with_padding(0.05);
 
+        let mut needs_rebind = false;
+
         // Upload bids to GPU
-        if let Some(buffer) = &self.bid_buffer {
-            let gpu_data: Vec<GpuDepthLevel> = data
-                .bids
-                .iter()
-                .map(|l| GpuDepthLevel {
-                    price: l.price,
-                    cumulative_volume: l.cumulative_volume,
-                })
-                .collect();
+        if let Some(buffer) = self.bid_buffer.as_mut() {
+            let gpu_data = Self::to_gpu_levels(&data.bids);
             if !gpu_data.is_empty() {
-                write_storage_buffer(queue, buffer, &gpu_data);
+                needs_rebind |= write_storage_buffer_with_growth(
+                    device,
+                    queue,
+                    buffer,
+                    "Depth Bids",
+                    &gpu_data,
+                );
             }
         }
 
         // Upload asks to GPU
-        if let Some(buffer) = &self.ask_buffer {
-            let gpu_data: Vec<GpuDepthLevel> = data
-                .asks
-                .iter()
-                .map(|l| GpuDepthLevel {
-                    price: l.price,
-                    cumulative_volume: l.cumulative_volume,
-                })
-                .collect();
+        if let Some(buffer) = self.ask_buffer.as_mut() {
+            let gpu_data = Self::to_gpu_levels(&data.asks);
             if !gpu_data.is_empty() {
-                write_storage_buffer(queue, buffer, &gpu_data);
+                needs_rebind |= write_storage_buffer_with_growth(
+                    device,
+                    queue,
+                    buffer,
+                    "Depth Asks",
+                    &gpu_data,
+                );
             }
+        }
+
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

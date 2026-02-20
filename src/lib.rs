@@ -151,10 +151,10 @@ pub use reactive::{Binding, Computed, Signal, signal};
 pub use reactive_ext::AnimationExt;
 
 /// Task management utilities and async support.
-pub mod task {
-    pub use executor_core::{spawn, spawn_local};
-    pub use native_executor::sleep;
-}
+pub mod task;
+
+/// Inspector runtime endpoint and diagnostics streaming.
+pub mod inspector;
 
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;

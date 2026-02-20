@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use bytemuck::cast_slice;
-use encase::{ShaderType, StorageBuffer};
+use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
@@ -17,7 +17,7 @@ use wgpu::util::DeviceExt;
 use super::ChartRenderer;
 use super::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 use crate::animation::ChartAnimation;
 use crate::data::{ChoroplethData, DataBounds};
@@ -189,6 +189,48 @@ impl ChoroplethRenderer {
             })
             .collect()
     }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(vertex_buffer) = &self.vertex_buffer else {
+            return;
+        };
+        let Some(prev_vertex_buffer) = &self.prev_vertex_buffer else {
+            return;
+        };
+        let Some(color_stop_buffer) = &self.color_stop_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("choropleth_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: prev_vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: color_stop_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
 }
 
 impl Default for ChoroplethRenderer {
@@ -267,7 +309,7 @@ impl GpuRenderer for ChoroplethRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("choropleth_pipeline_layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         // Render pipeline
@@ -303,7 +345,7 @@ impl GpuRenderer for ChoroplethRenderer {
                     },
                     depth_stencil: None,
                     multisample: multisample_state(ctx.msaa_samples),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 }),
         );
@@ -384,44 +426,12 @@ impl GpuRenderer for ChoroplethRenderer {
         self.color_stop_capacity = stops.len();
         self.color_stop_buffer = Some(create_storage_buffer(ctx, "choropleth_color_stops", &stops));
 
-        // Create bind group
-        self.bind_group = Some(
-            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("choropleth_bind_group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self
-                            .prev_vertex_buffer
-                            .as_ref()
-                            .unwrap()
-                            .as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                ],
-            }),
-        );
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-
         // Update zoom/pan state from gesture input
         self.zoom_pan
             .update(&frame.gesture, frame.width as f32, frame.height as f32);
@@ -465,22 +475,17 @@ impl GpuRenderer for ChoroplethRenderer {
             if prev_vertices.is_empty() {
                 prev_vertices.push(default_vertex);
             }
+            if let Some(buffer) = self.prev_vertex_buffer.as_mut() {
+                needs_rebind |= write_storage_buffer_with_growth(
+                    frame.device,
+                    frame.queue,
+                    buffer,
+                    "choropleth_prev_vertices",
+                    &prev_vertices,
+                );
+            }
             if prev_vertices.len() > self.vertex_capacity {
-                let mut storage = StorageBuffer::new(Vec::new());
-                storage
-                    .write(&prev_vertices)
-                    .expect("Failed to write choropleth previous vertices");
-                self.prev_vertex_buffer = Some(frame.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("choropleth_prev_vertices"),
-                        contents: storage.as_ref(),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    },
-                ));
                 self.vertex_capacity = prev_vertices.len();
-                needs_rebind = true;
-            } else if let Some(buffer) = &self.prev_vertex_buffer {
-                write_storage_buffer(frame.queue, buffer, &prev_vertices);
             }
         }
 
@@ -488,22 +493,17 @@ impl GpuRenderer for ChoroplethRenderer {
             if vertices.is_empty() {
                 vertices.push(default_vertex);
             }
+            if let Some(buffer) = self.vertex_buffer.as_mut() {
+                needs_rebind |= write_storage_buffer_with_growth(
+                    frame.device,
+                    frame.queue,
+                    buffer,
+                    "choropleth_vertices",
+                    &vertices,
+                );
+            }
             if vertices.len() > self.vertex_capacity {
-                let mut storage = StorageBuffer::new(Vec::new());
-                storage
-                    .write(&vertices)
-                    .expect("Failed to write choropleth vertices");
-                self.vertex_buffer = Some(frame.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("choropleth_vertices"),
-                        contents: storage.as_ref(),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    },
-                ));
                 self.vertex_capacity = vertices.len();
-                needs_rebind = true;
-            } else if let Some(buffer) = &self.vertex_buffer {
-                write_storage_buffer(frame.queue, buffer, &vertices);
             }
         }
 
@@ -531,57 +531,27 @@ impl GpuRenderer for ChoroplethRenderer {
             } else {
                 stops
             };
+            if let Some(buffer) = self.color_stop_buffer.as_mut() {
+                needs_rebind |= write_storage_buffer_with_growth(
+                    frame.device,
+                    frame.queue,
+                    buffer,
+                    "choropleth_color_stops",
+                    &stops,
+                );
+            }
             if stops.len() > self.color_stop_capacity {
-                let mut storage = StorageBuffer::new(Vec::new());
-                storage
-                    .write(&stops)
-                    .expect("Failed to write choropleth color stops");
-                self.color_stop_buffer = Some(frame.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("choropleth_color_stops"),
-                        contents: storage.as_ref(),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    },
-                ));
                 self.color_stop_capacity = stops.len();
-                needs_rebind = true;
-            } else if let Some(buffer) = &self.color_stop_buffer {
-                write_storage_buffer(frame.queue, buffer, &stops);
             }
         }
 
         if needs_rebind {
-            let bind_group_layout = pipeline.get_bind_group_layout(0);
-            self.bind_group = Some(
-                frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("choropleth_bind_group"),
-                    layout: &bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: self
-                                .prev_vertex_buffer
-                                .as_ref()
-                                .unwrap()
-                                .as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
-                        },
-                    ],
-                }),
-            );
+            self.rebuild_bind_group(frame.device);
         }
 
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
         let Some(bind_group) = &self.bind_group else {
             return;
         };
