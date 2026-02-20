@@ -217,9 +217,9 @@ impl Project {
         };
 
         // Clean Rust target directory
-        let target_dir = self.root.join("target");
+        let target_dir = self.target_dir();
         if target_dir.exists() {
-            smol::fs::remove_dir_all(&target_dir).await?;
+            smol::fs::remove_dir_all(target_dir).await?;
         }
 
         // Clean Apple backend if configured
@@ -309,6 +309,9 @@ pub enum FailToCreateProject {
     /// Failed to initialize git repository.
     #[error("Failed to initialize git repository: {0}")]
     GitInit(std::io::Error),
+    /// Failed to check git repository status.
+    #[error("Failed to check git repository status: {0}")]
+    GitStatus(std::io::Error),
 }
 
 /// Options for creating a new `WaterUI` project.
@@ -384,6 +387,7 @@ impl Project {
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
+            preview_runtime_fingerprint: None,
         };
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
@@ -446,8 +450,9 @@ impl Project {
             .current_dir(path)
             .output()
             .await
-            .map(|output| output.status.success())
-            .unwrap_or(false);
+            .map_err(FailToCreateProject::GitStatus)?
+            .status
+            .success();
 
         if !is_in_git {
             // Initialize a new git repository

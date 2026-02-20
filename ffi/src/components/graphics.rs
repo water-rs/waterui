@@ -37,7 +37,7 @@ ffi_view!(RendererView, *mut WuiRendererView, renderer_view);
 /// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererView) -> f32 {
-    assert!(
+    debug_assert!(
         !view.is_null(),
         "waterui_renderer_view_width: received null pointer"
     );
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererVie
 /// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_height(view: *const WuiRendererView) -> f32 {
-    assert!(
+    debug_assert!(
         !view.is_null(),
         "waterui_renderer_view_height: received null pointer"
     );
@@ -82,24 +82,32 @@ pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     stride: usize,
     format: WuiRendererBufferFormat,
 ) -> bool {
-    assert!(
+    debug_assert!(
         !view.is_null(),
         "waterui_renderer_view_render_cpu: received null view pointer"
     );
-    assert!(
+    debug_assert!(
         !pixels.is_null(),
         "waterui_renderer_view_render_cpu: received null pixel pointer"
     );
 
-    let expected = match stride.checked_mul(height as usize) {
-        Some(value) => value,
-        None => return false,
-    };
+    let expected = stride * (height as usize);
 
     let format = RendererBufferFormat::from(format);
-    if format != RendererBufferFormat::Rgba8888 {
-        return false;
-    }
+    debug_assert!(
+        format == RendererBufferFormat::Rgba8888,
+        "waterui_renderer_view_render_cpu: unsupported format {:?}",
+        format
+    );
+    let bytes_per_pixel = 4usize;
+    let min_row_bytes = (width as usize) * bytes_per_pixel;
+    debug_assert!(
+        stride >= min_row_bytes,
+        "waterui_renderer_view_render_cpu: stride {} < min row bytes {} for width {}",
+        stride,
+        min_row_bytes,
+        width
+    );
 
     let buffer = unsafe { slice::from_raw_parts_mut(pixels, expected) };
     let surface = RendererCpuSurface::new(buffer, width, height, stride, format);

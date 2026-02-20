@@ -199,14 +199,45 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
     }
 }
 
+fn normalized_search_query(search: &Str) -> Option<String> {
+    let query = search.as_str().trim();
+    if query.is_empty() {
+        None
+    } else {
+        Some(query.to_ascii_lowercase())
+    }
+}
+
+fn reminder_matches_query(reminder: &ReminderRow, query: &str) -> bool {
+    let title = reminder.title.to_ascii_lowercase();
+    let title_matches = title.as_str().contains(query);
+
+    let subtitle_matches = reminder.subtitle.is_some_and(|subtitle| {
+        let subtitle = subtitle.to_ascii_lowercase();
+        subtitle.as_str().contains(query)
+    });
+
+    title_matches || subtitle_matches
+}
+
+fn filter_reminders(rows: Vec<ReminderRow>, normalized_query: Option<&str>) -> Vec<ReminderRow> {
+    match normalized_query {
+        Some(query) => rows
+            .into_iter()
+            .filter(|row| reminder_matches_query(row, query))
+            .collect(),
+        None => rows,
+    }
+}
+
 fn main_view() -> impl View {
     let selection = binding(SidebarDestination::Today);
     let search = Binding::container(Str::default());
 
     hstack((
-        sidebar(selection.clone(), search),
+        sidebar(selection.clone(), search.clone()),
         Divider,
-        content(selection),
+        content(selection, search),
     ))
 }
 
@@ -259,9 +290,12 @@ fn sidebar(selection: Binding<SidebarDestination>, search: Binding<Str>) -> impl
     .background(Material::Thick)
 }
 
-fn content(selection: Binding<SidebarDestination>) -> impl View {
-    Dynamic::watch(selection, move |dest| {
+fn content(selection: Binding<SidebarDestination>, search: Binding<Str>) -> impl View {
+    Dynamic::watch(selection.zip(&search), move |(dest, query)| {
+        let normalized_query = normalized_search_query(&query);
         let (today_rows, upcoming_rows) = reminders_for(dest);
+        let today_rows = filter_reminders(today_rows, normalized_query.as_deref());
+        let upcoming_rows = filter_reminders(upcoming_rows, normalized_query.as_deref());
 
         AnyView::new(
             vstack((

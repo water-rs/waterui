@@ -29,6 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - No simplify, no stub, no fallback, no patch.
 - Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For intance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
 - Do not clean cache blindly
+- Never disable `sccache` under any circumstance (do not set `WATERUI_DISABLE_SCCACHE=1`, and do not bypass `sccache` via `RUSTC_WRAPPER=`), because disabling cache causes storage usage to explode.
 - Do not use `git checkout` to back out changes, as it can lead to loss of work
 - Import third-party crates instead of writing your own implementation. Less code is better.
 - Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.

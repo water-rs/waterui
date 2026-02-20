@@ -9,8 +9,10 @@ use crate::window::Window;
 /// Represents a `WaterUI` application.
 #[derive(Debug)]
 pub struct App {
-    /// Application windows. The first window is the main window.
-    pub windows: Vec<Window>,
+    /// Main application window.
+    main_window: Window,
+    /// Additional application windows.
+    windows: Vec<Window>,
     /// The application environment containing injected services.
     pub env: Environment,
 }
@@ -22,9 +24,18 @@ impl App {
     }
 
     /// Create a new application with the given windows and environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no windows are provided.
     pub fn new_with_windows(windows: impl Into<Vec<Window>>, env: Environment) -> Self {
+        let mut iter = windows.into().into_iter();
+        let main_window = iter
+            .next()
+            .expect("App::new_with_windows requires at least one window");
         Self {
-            windows: windows.into(),
+            main_window,
+            windows: iter.collect(),
             env,
         }
     }
@@ -32,13 +43,25 @@ impl App {
     /// Get a reference to the main (first) window.
     #[must_use]
     pub fn main_window(&self) -> &Window {
-        &self.windows[0]
+        &self.main_window
     }
 
     /// Get a mutable reference to the main (first) window.
     #[must_use]
     pub fn main_window_mut(&mut self) -> &mut Window {
-        &mut self.windows[0]
+        &mut self.main_window
+    }
+
+    /// Get an iterator over all windows (main window first).
+    pub fn windows(&self) -> impl Iterator<Item = &Window> + DoubleEndedIterator {
+        std::iter::once(&self.main_window).chain(self.windows.iter())
+    }
+
+    /// Get a mutable iterator over all windows (main window first).
+    pub fn windows_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut Window> + DoubleEndedIterator {
+        std::iter::once(&mut self.main_window).chain(self.windows.iter_mut())
     }
 
     /// Add an additional window to the application.
@@ -50,10 +73,25 @@ impl App {
         self
     }
 
+    /// Consume the app and return all windows with the main window first.
+    #[must_use]
+    pub fn into_windows(self) -> Vec<Window> {
+        self.into_parts().0
+    }
+
+    /// Consume the app and return `(windows, env)`.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Window>, Environment) {
+        let mut windows = Vec::with_capacity(1 + self.windows.len());
+        windows.push(self.main_window);
+        windows.extend(self.windows);
+        (windows, self.env)
+    }
+
     /// Set the title of the main application window.
     #[must_use]
     pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
-        self.windows[0].title = title.into_computed();
+        self.main_window.title = title.into_computed();
         self
     }
 }

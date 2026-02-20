@@ -52,11 +52,16 @@ jobs:
 
       - name: Boot iOS Simulator
         run: |
-          # Find available iPhone simulator
-          DEVICE=$(xcrun simctl list devices available | grep "iPhone" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
-          echo "SIMULATOR_UDID=$DEVICE" >> $GITHUB_ENV
-          xcrun simctl boot "$DEVICE" || true
-          echo "Booted simulator: $DEVICE"
+          set -euo pipefail
+          DEVICE="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [ -z "${DEVICE}" ]; then
+            echo "::error::No available iPhone simulator found."
+            exit 1
+          fi
+          echo "SIMULATOR_UDID=${DEVICE}" >> "${GITHUB_ENV}"
+          xcrun simctl boot "${DEVICE}" || true
+          xcrun simctl bootstatus "${DEVICE}" -b
+          echo "Booted simulator: ${DEVICE}"
 
       - name: Discover Examples
         id: examples
@@ -73,7 +78,9 @@ jobs:
 
       - name: Generate Screenshots
         run: |
+          set -euo pipefail
           mkdir -p screenshots
+          FAILED_EXAMPLES=()
 
           IFS=',' read -ra EXAMPLE_LIST <<< "${{ steps.examples.outputs.examples }}"
           for example in "${EXAMPLE_LIST[@]}"; do
@@ -84,7 +91,8 @@ jobs:
 
             EXAMPLE_PATH="examples/$example"
             if [ ! -d "$EXAMPLE_PATH" ]; then
-              echo "Warning: Example $example not found, skipping"
+              echo "::error::Example $example not found."
+              FAILED_EXAMPLES+=("$example")
               echo "::endgroup::"
               continue
             fi
@@ -92,32 +100,67 @@ jobs:
             # Build and run on iOS Simulator
             echo "Building $example for iOS..."
             water build --platform ios --path "$EXAMPLE_PATH" || {
-              echo "Warning: Failed to build $example, skipping"
+              echo "::error::Failed to build $example."
+              FAILED_EXAMPLES+=("$example")
               echo "::endgroup::"
               continue
             }
 
             echo "Running $example on simulator..."
-            water run --platform ios --path "$EXAMPLE_PATH" --device "$SIMULATOR_UDID" &
+            RUN_LOG="screenshots/${example}-run.log"
+            : > "$RUN_LOG"
+            water run --platform ios --path "$EXAMPLE_PATH" --device "$SIMULATOR_UDID" > "$RUN_LOG" 2>&1 &
             APP_PID=$!
 
-            # Wait for app to start
-            sleep 10
+            # Poll for app readiness signal from `water run` output instead of fixed sleep.
+            READY=0
+            MAX_ATTEMPTS=45
+            for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+              if ! kill -0 "$APP_PID" 2>/dev/null; then
+                echo "::error::water run exited before readiness for $example."
+                tail -n 120 "$RUN_LOG" || true
+                break
+              fi
+
+              if grep -q "Application started" "$RUN_LOG"; then
+                READY=1
+                break
+              fi
+
+              sleep 2
+            done
+
+            if [ "$READY" -ne 1 ]; then
+              echo "::error::Timed out waiting for app readiness for $example."
+              tail -n 120 "$RUN_LOG" || true
+              FAILED_EXAMPLES+=("$example")
+              kill "$APP_PID" 2>/dev/null || true
+              wait "$APP_PID" 2>/dev/null || true
+              echo "::endgroup::"
+              continue
+            fi
 
             # Capture screenshot
             echo "Capturing screenshot..."
             water device capture --id "$SIMULATOR_UDID" --output "screenshots/${example}-ios.png" || {
-              echo "Warning: Failed to capture screenshot for $example"
+              echo "::error::Failed to capture screenshot for $example."
+              FAILED_EXAMPLES+=("$example")
             }
 
             # Terminate app
-            kill $APP_PID 2>/dev/null || true
+            kill "$APP_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
 
             echo "::endgroup::"
           done
 
           echo "Generated screenshots:"
           ls -la screenshots/
+
+          if [ "${#FAILED_EXAMPLES[@]}" -ne 0 ]; then
+            echo "::error::Screenshot generation failed for: ${FAILED_EXAMPLES[*]}"
+            exit 1
+          fi
 
       - name: Setup Node.js (for wrangler)
         uses: actions/setup-node@v4

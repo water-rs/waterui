@@ -1,0 +1,10 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Waterkit Camera Filters"
+bundle_identifier = "com.waterui.example.waterkit_camera_filters"
+
+[permissions.camera]
+enable = true
+description = "Camera access is required to preview live filters."

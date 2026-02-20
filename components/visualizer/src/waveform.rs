@@ -2,20 +2,8 @@ use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
-use std::sync::OnceLock;
-use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface,
-    color::Color,
-    wgpu::{self, util::DeviceExt},
-};
-
-// Singleton audio capture shared across all visualizers
-static AUDIO_CAPTURE: OnceLock<AudioCapture> = OnceLock::new();
-
-fn get_audio_capture() -> &'static AudioCapture {
-    AUDIO_CAPTURE.get_or_init(AudioCapture::new)
-}
+use waterui_core::{binding, env::Environment, view::View, Binding, Signal};
+use waterui_graphics::{color::Color, wgpu, GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
@@ -57,9 +45,10 @@ struct Uniforms {
 /// ```rust
 /// use waterui_core::Binding;
 /// use waterui_graphics::color::Color;
-/// use waterui_visualizer::Waveform;
+/// use waterui_visualizer::{AudioCapture, Waveform};
 ///
-/// let _waveform = Waveform::new()
+/// let capture = AudioCapture::new();
+/// let _waveform = Waveform::new(capture)
 ///     .line_color(Color::cyan())
 ///     .bg_color(Color::srgb(0, 0, 0))
 ///     .glow(0.8)
@@ -69,15 +58,25 @@ struct Uniforms {
 pub struct Waveform {
     theme: Binding<WaveformTheme>,
     sensitivity: Binding<f64>,
+    capture: AudioCapture,
 }
 
 impl Waveform {
     /// Create a new Waveform visualizer.
-    pub fn new() -> Self {
+    pub fn new(capture: AudioCapture) -> Self {
         Self {
             theme: binding(WaveformTheme::default()),
             sensitivity: binding(1.0),
+            capture,
         }
+    }
+
+    /// Replace the audio capture source.
+    ///
+    /// Prefer constructing one `AudioCapture` and cloning it into multiple
+    /// waveform views when you need to share microphone input.
+    pub fn audio_capture(self, capture: AudioCapture) -> Self {
+        Self { capture, ..self }
     }
 
     /// Set the visual theme.
@@ -140,12 +139,6 @@ impl Waveform {
     }
 }
 
-impl Default for Waveform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl View for Waveform {
     fn body(self, env: &Environment) -> impl View {
         let theme = self.theme.get();
@@ -165,7 +158,7 @@ impl View for Waveform {
             sensitivity,
         };
 
-        GpuSurface::new(WaveformRenderer::new(resolved))
+        GpuSurface::new(WaveformRenderer::new(resolved, self.capture))
     }
 }
 
@@ -175,6 +168,7 @@ impl View for Waveform {
 
 struct WaveformRenderer {
     config: ResolvedWaveform,
+    capture: AudioCapture,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     samples_buffer: Option<wgpu::Buffer>,
@@ -184,9 +178,10 @@ struct WaveformRenderer {
 }
 
 impl WaveformRenderer {
-    fn new(config: ResolvedWaveform) -> Self {
+    fn new(config: ResolvedWaveform, capture: AudioCapture) -> Self {
         Self {
             config,
+            capture,
             pipeline: None,
             uniform_buffer: None,
             samples_buffer: None,
@@ -256,7 +251,7 @@ impl GpuRenderer for WaveformRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Waveform Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let blend = if ctx.is_hdr() {
@@ -290,7 +285,7 @@ impl GpuRenderer for WaveformRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -330,8 +325,7 @@ impl GpuRenderer for WaveformRenderer {
 
         // 1. Update Audio Samples with Smoothing
         {
-            let capture = get_audio_capture();
-            if let Ok(audio_samples) = capture.samples.lock() {
+            if let Ok(audio_samples) = self.capture.samples.lock() {
                 let smoothing_factor = 0.3;
                 for (i, &sample) in audio_samples.iter().enumerate() {
                     if i < SAMPLES_COUNT {
@@ -396,6 +390,7 @@ impl GpuRenderer for WaveformRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             rpass.set_pipeline(pipeline);

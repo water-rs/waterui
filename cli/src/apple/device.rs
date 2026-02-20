@@ -9,7 +9,6 @@ use serde::Deserialize;
 use smol::{
     Timer,
     channel::Sender,
-    future::block_on,
     io::{AsyncBufReadExt, BufReader},
     process::{Command, Stdio},
     spawn,
@@ -295,6 +294,8 @@ async fn is_pid_alive(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .await
         .is_ok_and(|s| s.success())
@@ -548,13 +549,31 @@ impl Device for AppleSimulator {
         let udid = self.udid.clone();
         let bundle_id_for_termination = bundle_id.clone();
         let (running, sender) = Running::new(move || {
-            // Terminate the app when Running is dropped
-            let fut = run_command(
-                "xcrun",
-                ["simctl", "terminate", &udid, &bundle_id_for_termination],
-            );
-            if let Err(err) = block_on(fut) {
-                tracing::error!("Failed to terminate app on simulator: {err}");
+            // Run termination in a dedicated thread so drop never re-enters the smol runtime.
+            let spawn_result = std::thread::Builder::new()
+                .name("waterui-simctl-terminate".to_string())
+                .spawn(move || {
+                    match std::process::Command::new("xcrun")
+                        .args(["simctl", "terminate", &udid, &bundle_id_for_termination])
+                        .output()
+                    {
+                        Ok(output) if output.status.success() => {}
+                        Ok(output) => {
+                            tracing::error!(
+                                "Failed to terminate app on simulator: status={}, stdout={}, stderr={}",
+                                output.status,
+                                String::from_utf8_lossy(&output.stdout).trim(),
+                                String::from_utf8_lossy(&output.stderr).trim()
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!("Failed to terminate app on simulator: {err}");
+                        }
+                    }
+                });
+
+            if let Err(err) = spawn_result {
+                tracing::error!("Failed to spawn simulator termination thread: {err}");
             }
         });
 

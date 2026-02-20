@@ -32,6 +32,7 @@ use waterui_cli::{
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
     toolchain::sccache::Sccache,
+    utils::sccache_install_hint,
 };
 
 #[cfg(target_os = "macos")]
@@ -311,7 +312,8 @@ pub async fn run(args: Args) -> Result<()> {
             Ok(path) => Some(path),
             Err(_) => {
                 warn!(
-                    "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
+                    "sccache not found. Build efficiency may be reduced. Install with: {}",
+                    sccache_install_hint()
                 );
                 None
             }

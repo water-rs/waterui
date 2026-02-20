@@ -56,14 +56,16 @@ fn java_string<'local>(env: &mut JNIEnv<'local>, s: &str) -> JString<'local> {
 unsafe extern "C" fn webview_go_back(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(&handle.wrapper, "goBack", "()V", &[]);
+        env.call_method(&handle.wrapper, "goBack", "()V", &[])
+            .expect("webview_go_back: failed to call WebViewWrapper.goBack()");
     });
 }
 
 unsafe extern "C" fn webview_go_forward(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(&handle.wrapper, "goForward", "()V", &[]);
+        env.call_method(&handle.wrapper, "goForward", "()V", &[])
+            .expect("webview_go_forward: failed to call WebViewWrapper.goForward()");
     });
 }
 
@@ -72,26 +74,29 @@ unsafe extern "C" fn webview_go_to(data: *mut (), url: WuiStr) {
     let url = wui_str_to_string(url);
     crate::jni::with_jni_env(|env| {
         let jurl = java_string(env, &url);
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "goTo",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&jurl)],
-        );
+        )
+        .expect("webview_go_to: failed to call WebViewWrapper.goTo(String)");
     });
 }
 
 unsafe extern "C" fn webview_stop(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(&handle.wrapper, "stop", "()V", &[]);
+        env.call_method(&handle.wrapper, "stop", "()V", &[])
+            .expect("webview_stop: failed to call WebViewWrapper.stop()");
     });
 }
 
 unsafe extern "C" fn webview_refresh(data: *mut ()) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(&handle.wrapper, "refresh", "()V", &[]);
+        env.call_method(&handle.wrapper, "refresh", "()V", &[])
+            .expect("webview_refresh: failed to call WebViewWrapper.refresh()");
     });
 }
 
@@ -99,9 +104,9 @@ unsafe extern "C" fn webview_can_go_back(data: *const ()) -> bool {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
         env.call_method(&handle.wrapper, "canGoBack", "()Z", &[])
-            .ok()
-            .and_then(|v| v.z().ok())
-            .unwrap_or(false)
+            .expect("webview_can_go_back: failed to call WebViewWrapper.canGoBack()")
+            .z()
+            .expect("webview_can_go_back: canGoBack() did not return boolean")
     })
 }
 
@@ -109,9 +114,9 @@ unsafe extern "C" fn webview_can_go_forward(data: *const ()) -> bool {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
         env.call_method(&handle.wrapper, "canGoForward", "()Z", &[])
-            .ok()
-            .and_then(|v| v.z().ok())
-            .unwrap_or(false)
+            .expect("webview_can_go_forward: failed to call WebViewWrapper.canGoForward()")
+            .z()
+            .expect("webview_can_go_forward: canGoForward() did not return boolean")
     })
 }
 
@@ -120,23 +125,27 @@ unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
     let ua = wui_str_to_string(user_agent);
     crate::jni::with_jni_env(|env| {
         let jua = java_string(env, &ua);
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "setUserAgent",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&jua)],
-        );
+        )
+        .expect("webview_set_user_agent: failed to call WebViewWrapper.setUserAgent(String)");
     });
 }
 
 unsafe extern "C" fn webview_set_redirects_enabled(data: *mut (), enabled: bool) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "setRedirectsEnabled",
             "(Z)V",
             &[JValue::Bool(if enabled { 1 } else { 0 })],
+        )
+        .expect(
+            "webview_set_redirects_enabled: failed to call WebViewWrapper.setRedirectsEnabled(boolean)",
         );
     });
 }
@@ -150,12 +159,13 @@ unsafe extern "C" fn webview_inject_script(
     let script = wui_str_to_string(script);
     crate::jni::with_jni_env(|env| {
         let jscript = java_string(env, &script);
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "injectScript",
             "(Ljava/lang/String;I)V",
             &[JValue::Object(&jscript), JValue::Int(time as jint)],
-        );
+        )
+        .expect("webview_inject_script: failed to call WebViewWrapper.injectScript(String, int)");
     });
 }
 
@@ -173,12 +183,13 @@ unsafe extern "C" fn webview_watch(data: *mut (), callback: WuiFn<WuiWebViewEven
             .new_object(cb_class, "(J)V", &[JValue::Long(handle_ptr)])
             .expect("Failed to create NativeWebViewEventCallback");
 
-        let _ = env.call_method(
+        env.call_method(
             &wrapper,
             "setEventCallback",
             "(Ldev/waterui/android/components/WebViewEventCallback;)V",
             &[JValue::Object(&cb_obj)],
-        );
+        )
+        .expect("webview_watch: failed to call WebViewWrapper.setEventCallback(callback)");
     });
 }
 
@@ -195,12 +206,13 @@ unsafe extern "C" fn webview_add_handler(
 
     crate::jni::with_jni_env(|env| {
         let jname = java_string(env, &name);
-        let _ = env.call_method(
+        env.call_method(
             &wrapper,
             "addHandler",
             "(Ljava/lang/String;J)V",
             &[JValue::Object(&jname), JValue::Long(handle_ptr)],
-        );
+        )
+        .expect("webview_add_handler: failed to call WebViewWrapper.addHandler(String, long)");
     });
 }
 
@@ -210,12 +222,13 @@ unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
 
     crate::jni::with_jni_env(|env| {
         let jname = java_string(env, &name);
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "removeHandler",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&jname)],
-        );
+        )
+        .expect("webview_remove_handler: failed to call WebViewWrapper.removeHandler(String)");
     });
 
     handle.handlers.remove(&name);
@@ -226,27 +239,30 @@ unsafe extern "C" fn webview_set_cookie(data: *mut (), cookie: WuiStr) {
     let cookie = wui_str_to_string(cookie);
     crate::jni::with_jni_env(|env| {
         let jcookie = java_string(env, &cookie);
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "setCookie",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&jcookie)],
-        );
+        )
+        .expect("webview_set_cookie: failed to call WebViewWrapper.setCookie(String)");
     });
 }
 
 unsafe extern "C" fn webview_get_cookies(data: *const ()) -> WuiStr {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
     crate::jni::with_jni_env(|env| {
-        let Ok(ret) = env.call_method(&handle.wrapper, "getCookies", "()Ljava/lang/String;", &[])
-        else {
-            return "".into_ffi();
-        };
-        let Ok(obj) = ret.l() else {
-            return "".into_ffi();
-        };
+        let ret = env
+            .call_method(&handle.wrapper, "getCookies", "()Ljava/lang/String;", &[])
+            .expect("webview_get_cookies: failed to call getCookies()");
+        let obj = ret
+            .l()
+            .expect("webview_get_cookies: Java getCookies() did not return a String object");
         let jstr = JString::from(obj);
-        let text: std::string::String = env.get_string(&jstr).map(|s| s.into()).unwrap_or_default();
+        let text: std::string::String = env
+            .get_string(&jstr)
+            .expect("webview_get_cookies: failed to read returned String")
+            .into();
         waterui::Str::from(text).into_ffi()
     })
 }
@@ -285,15 +301,16 @@ unsafe extern "C" fn webview_drop(data: *mut ()) {
     }
     let mut handle = unsafe { Box::from_raw(data as *mut AndroidWebViewHandle) };
 
-    // Best-effort cleanup on the Java side.
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(
+        env.call_method(
             &handle.wrapper,
             "setEventCallback",
             "(Ldev/waterui/android/components/WebViewEventCallback;)V",
             &[JValue::Object(&JObject::null())],
-        );
-        let _ = env.call_method(&handle.wrapper, "release", "()V", &[]);
+        )
+        .expect("webview_drop: failed to clear WebViewWrapper event callback");
+        env.call_method(&handle.wrapper, "release", "()V", &[])
+            .expect("webview_drop: failed to call WebViewWrapper.release()");
     });
 
     // Drop callbacks.
@@ -357,15 +374,11 @@ pub fn webview_native_view<'local>(env: &mut JNIEnv<'local>, handle_ptr: jlong) 
         return core::ptr::null_mut();
     }
     let handle = unsafe { &*(jlong_as_ptr::<AndroidWebViewHandle>(handle_ptr)) };
-    match env.call_method(
-        &handle.wrapper,
-        "getWebView",
-        "()Landroid/webkit/WebView;",
-        &[],
-    ) {
-        Ok(v) => v.l().map(|o| o.into_raw()).unwrap_or(core::ptr::null_mut()),
-        Err(_) => core::ptr::null_mut(),
-    }
+    env.call_method(&handle.wrapper, "getWebView", "()Landroid/webkit/WebView;", &[])
+        .expect("webview_native_view: failed to call WebViewWrapper.getWebView()")
+        .l()
+        .expect("webview_native_view: getWebView() did not return an object")
+        .into_raw()
 }
 
 // =============================================================================
@@ -416,7 +429,7 @@ unsafe extern "C" fn reply_call(data: *mut (), success: bool, payload_b64: WuiSt
     crate::jni::with_jni_env(|env| {
         let jreq = java_string(env, &ctx.request_id);
         let jpayload = java_string(env, &payload);
-        let _ = env.call_method(
+        env.call_method(
             &ctx.wrapper,
             "resolveMessage",
             "(Ljava/lang/String;ZLjava/lang/String;)V",
@@ -425,7 +438,8 @@ unsafe extern "C" fn reply_call(data: *mut (), success: bool, payload_b64: WuiSt
                 JValue::Bool(if success { 1 } else { 0 }),
                 JValue::Object(&jpayload),
             ],
-        );
+        )
+        .expect("reply_call: failed to call WebViewWrapper.resolveMessage(String, boolean, String)");
     });
 }
 
@@ -499,12 +513,18 @@ pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCal
         return;
     };
 
-    let url: std::string::String = env.get_string(&url).map(|s| s.into()).unwrap_or_default();
-    let url2: std::string::String = env.get_string(&url2).map(|s| s.into()).unwrap_or_default();
+    let url: std::string::String = env
+        .get_string(&url)
+        .expect("webview.nativeOnEvent: failed to read url")
+        .into();
+    let url2: std::string::String = env
+        .get_string(&url2)
+        .expect("webview.nativeOnEvent: failed to read url2")
+        .into();
     let message: std::string::String = env
         .get_string(&message)
-        .map(|s| s.into())
-        .unwrap_or_default();
+        .expect("webview.nativeOnEvent: failed to read message")
+        .into();
 
     let event_type = match event_type {
         1 => WuiWebViewEventType::WillNavigate,
@@ -514,7 +534,7 @@ pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCal
         5 => WuiWebViewEventType::SslError,
         6 => WuiWebViewEventType::Error,
         7 => WuiWebViewEventType::StateChanged,
-        _ => WuiWebViewEventType::None,
+        _ => panic!("webview.nativeOnEvent: unknown event_type {}", event_type),
     };
 
     let event = WuiWebViewEvent {

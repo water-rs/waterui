@@ -2610,3 +2610,27 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
         "Unknown codec (only H.264 and H.265 are supported)",
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ShaderTargetMode, shader_target_mode};
+    use waterui_graphics::wgpu;
+
+    #[test]
+    fn hdr_source_maps_to_sdr_on_srgb_surface() {
+        let mode = shader_target_mode(wgpu::TextureFormat::Bgra8UnormSrgb, true);
+        assert_eq!(mode, ShaderTargetMode::LinearSdr);
+    }
+
+    #[test]
+    fn hdr_source_maps_to_hdr_on_float_surface() {
+        let mode = shader_target_mode(wgpu::TextureFormat::Rgba16Float, true);
+        assert_eq!(mode, ShaderTargetMode::LinearHdr);
+    }
+
+    #[test]
+    fn sdr_source_stays_sdr_even_on_float_surface() {
+        let mode = shader_target_mode(wgpu::TextureFormat::Rgba16Float, false);
+        assert_eq!(mode, ShaderTargetMode::LinearSdr);
+    }
+}

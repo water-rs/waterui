@@ -1,8 +1,7 @@
 //! # WaterUI FFI
 //!
 //! This crate provides a set of traits and utilities for safely converting between
-//! Rust types and FFI-compatible representations. It is designed to work in `no_std`
-//! environments and provides a clean, type-safe interface for FFI operations.
+//! Rust types and FFI-compatible representations with a clean, type-safe interface.
 //!
 //! The core functionality includes:
 //! - `IntoFFI` trait for converting Rust types to FFI-compatible representations
@@ -13,7 +12,9 @@
 //! This library aims to minimize the unsafe code needed when working with FFI while
 //! maintaining performance and flexibility.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+#[cfg(not(feature = "std"))]
+compile_error!("waterui-ffi requires the `std` feature.");
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
@@ -35,8 +36,6 @@ pub mod drag_drop;
 pub mod event;
 pub mod gesture;
 mod type_id;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 pub use type_id::WuiTypeId;
 pub mod id;
 pub mod locale;
@@ -57,6 +56,10 @@ pub mod window;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
+#[cfg(feature = "std")]
+use tracing_subscriber::layer::SubscriberExt;
+#[cfg(feature = "std")]
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[cfg(feature = "std")]
 static INIT_ONCE: std::sync::Once = std::sync::Once::new();
@@ -215,49 +218,52 @@ unsafe fn __init_impl() {
         native_executor::android::register_android_main_thread()
             .expect("Failed to register Android main thread");
     }
-    // Forwards panics to tracing
-    std::panic::set_hook(Box::new(|info| {
-        tracing_panic::panic_hook(info);
-    }));
-
-    // Forwards tracing to platform's logging system
-    #[cfg(target_os = "android")]
+    #[cfg(feature = "std")]
     {
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .or_else(|_| {
-                tracing_subscriber::EnvFilter::try_new(
-                    "error,wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
-                )
-            })
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        // Forwards panics to tracing
+        std::panic::set_hook(Box::new(|info| {
+            tracing_panic::panic_hook(info);
+        }));
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
-            .init();
-    }
+        // Forwards tracing to platform's logging system
+        #[cfg(target_os = "android")]
+        {
+            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .or_else(|_| {
+                    tracing_subscriber::EnvFilter::try_new(
+                        "error,wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
+                    )
+                })
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
 
-    #[cfg(target_vendor = "apple")]
-    {
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .or_else(|_| {
-                tracing_subscriber::EnvFilter::try_new(
-                    "error,wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
-                )
-            })
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+                .init();
+        }
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
-            .init();
-    }
+        #[cfg(target_vendor = "apple")]
+        {
+            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .or_else(|_| {
+                    tracing_subscriber::EnvFilter::try_new(
+                        "error,wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+                    )
+                })
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
 
-    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
-    {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
+                .init();
+        }
+
+        #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
+        {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
+        }
     }
 
     // Initialize shared GPU context (if GPU feature enabled)
@@ -271,7 +277,10 @@ unsafe fn __init_impl() {
     }
 
     init_global_executor(native_executor::NativeExecutor::new());
-    init_local_executor(native_executor::NativeExecutor::new());
+    let _ = waterui::inspector::maybe_init_from_env();
+    init_local_executor(waterui::task::monitored_local_executor(
+        native_executor::NativeExecutor::new(),
+    ));
 }
 
 #[cfg(target_os = "android")]

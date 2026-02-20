@@ -19,7 +19,7 @@ use crate::interaction::{ChartViewport, HitResult};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 /// GPU-accelerated pie chart renderer.
@@ -269,7 +269,7 @@ impl PieChartRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Pie Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -298,9 +298,37 @@ impl PieChartRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
+    }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(slice_buffer) = &self.slice_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Pie Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: slice_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }
 
@@ -343,39 +371,35 @@ impl GpuRenderer for PieChartRenderer {
             &initial_slice_data,
         ));
 
-        // Create bind group
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Pie Chart Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.slice_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
 
     fn render(&mut self, frame: &GpuFrame) {
+        // Update slice data
+        let slices = self.calculate_slices();
+        let mut needs_rebind = false;
+        if !slices.is_empty() {
+            if let Some(buffer) = self.slice_buffer.as_mut() {
+                needs_rebind |= write_storage_buffer_with_growth(
+                    frame.device,
+                    frame.queue,
+                    buffer,
+                    "Pie Chart Slice Data",
+                    &slices,
+                );
+            }
+        }
+        if needs_rebind {
+            self.rebuild_bind_group(frame.device);
+        }
         let Some(pipeline) = &self.pipeline else {
             return;
         };
         let Some(bind_group) = &self.bind_group else {
             return;
         };
-
-        // Update slice data
-        let slices = self.calculate_slices();
-        if !slices.is_empty() {
-            write_storage_buffer(frame.queue, self.slice_buffer.as_ref().unwrap(), &slices);
-        }
 
         // Determine hovered slice
         let hovered_slice: f32 = if let Some((x, y)) = frame.pointer_normalized() {
@@ -523,16 +547,26 @@ impl ChartRenderer for PieChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = f32;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.previous_data = core::mem::take(&mut self.data);
         self.data = data.clone();
 
         // Update GPU buffer
-        if let Some(buffer) = &self.slice_buffer {
-            let slices = self.calculate_slices();
+        let slices = self.calculate_slices();
+        let mut needs_rebind = false;
+        if let Some(buffer) = self.slice_buffer.as_mut() {
             if !slices.is_empty() {
-                write_storage_buffer(queue, buffer, &slices);
+                needs_rebind |= write_storage_buffer_with_growth(
+                    device,
+                    queue,
+                    buffer,
+                    "Pie Chart Slice Data",
+                    &slices,
+                );
             }
+        }
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
     }
 

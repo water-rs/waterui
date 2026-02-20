@@ -396,10 +396,10 @@ impl SnackbarManager {
                     spacer(),
                     button(text(action_label).bold())
                         .style(ButtonStyle::Borderless)
-                        .action(move || {
-                            // Execute action handler
-                            action.handler.call(&waterui_core::Environment::default());
-                            // Dismiss snackbar
+                        .extract::<waterui_core::Environment>()
+                        .action(move |env| {
+                            // Execute action handler with the live view environment.
+                            action.handler.call(&env);
                             manager.dismiss();
                         }),
                 ))

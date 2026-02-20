@@ -316,8 +316,10 @@ impl GpuRenderer for GradientRenderer {
             ctx.surface_format
         );
 
-        let shader =
-            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &GRADIENT_SHADER);
+        let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+            ctx.device,
+            &GRADIENT_SHADER,
+        );
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -411,7 +413,7 @@ impl GpuRenderer for GradientRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Gradient Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -421,7 +423,7 @@ impl GpuRenderer for GradientRenderer {
         };
 
         // Try with cache first
-        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -450,12 +452,12 @@ impl GpuRenderer for GradientRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        let error = crate::pollster::block_on(error_scope.pop());
         if let Some(e) = error {
             tracing::warn!(
                 "[GradientRenderer] Pipeline creation with cache failed: {}",
@@ -489,7 +491,7 @@ impl GpuRenderer for GradientRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 });
         } else {
@@ -595,6 +597,7 @@ impl GpuRenderer for GradientRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);
@@ -813,8 +816,10 @@ where
         }
 
         // Create shader directly (no more shared context cache - compile on-demand)
-        let shader =
-            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &GRADIENT_SHADER);
+        let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+            ctx.device,
+            &GRADIENT_SHADER,
+        );
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -905,7 +910,7 @@ where
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Mesh Gradient Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -915,7 +920,7 @@ where
         };
 
         // Try with cache first
-        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -944,12 +949,12 @@ where
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        let error = crate::pollster::block_on(error_scope.pop());
         if let Some(e) = error {
             tracing::warn!(
                 "[ReactiveMeshRenderer] Pipeline creation with cache failed: {}",
@@ -983,7 +988,7 @@ where
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 });
         } else {
@@ -1138,6 +1143,7 @@ where
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

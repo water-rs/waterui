@@ -17,7 +17,7 @@ use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 /// GPU-accelerated radar/spider chart renderer.
@@ -194,7 +194,7 @@ impl RadarRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Radar Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -223,7 +223,7 @@ impl RadarRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -259,6 +259,41 @@ impl RadarRenderer {
         }
         colors
     }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(value_buffer) = &self.value_buffer else {
+            return;
+        };
+        let Some(color_buffer) = &self.color_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Radar Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: value_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: color_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
 }
 
 impl GpuRenderer for RadarRenderer {
@@ -285,26 +320,7 @@ impl GpuRenderer for RadarRenderer {
         }
         self.color_buffer = Some(create_storage_buffer(ctx, "Radar Colors", &initial_colors));
 
-        // Create bind group
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Radar Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.value_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.color_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -450,20 +466,38 @@ impl ChartRenderer for RadarRenderer {
     type Data = RadarData;
     type DataValue = RadarHit;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.data = data.clone();
         self.bounds = DataBounds::new(-1.0, 1.0, -1.0, 1.0);
 
+        let values = self.pack_values();
+        let colors = self.pack_colors();
+        let mut needs_rebind = false;
+
         // Upload values to GPU
-        if let Some(buffer) = &self.value_buffer {
-            let values = self.pack_values();
-            write_storage_buffer(queue, buffer, &values);
+        if let Some(buffer) = self.value_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Radar Values",
+                &values,
+            );
         }
 
         // Upload colors to GPU
-        if let Some(buffer) = &self.color_buffer {
-            let colors = self.pack_colors();
-            write_storage_buffer(queue, buffer, &colors);
+        if let Some(buffer) = self.color_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Radar Colors",
+                &colors,
+            );
+        }
+
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

@@ -876,7 +876,7 @@ impl GpuRenderer for CanvasRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Canvas Blit Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -912,7 +912,7 @@ impl GpuRenderer for CanvasRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -1047,6 +1047,7 @@ impl GpuRenderer for CanvasRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

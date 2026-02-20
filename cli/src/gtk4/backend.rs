@@ -94,6 +94,7 @@ impl Backend for Gtk4Backend {
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: manifest.package.accessory,
+            preview_runtime_fingerprint: None,
         };
 
         templates::gtk4::scaffold(&project.backend_path::<Self>(), &ctx)

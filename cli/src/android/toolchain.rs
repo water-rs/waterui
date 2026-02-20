@@ -16,11 +16,13 @@ impl AndroidSdk {
     /// Detect the path to the Android SDK installation.
     #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
-        // Check ANDROID_HOME environment variable
-        if let Ok(android_home) = env::var("ANDROID_HOME") {
-            let sdk_path = PathBuf::from(android_home);
-            if sdk_path.exists() {
-                return Some(sdk_path);
+        // Environment variables (prefer the modern variable first).
+        for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+            if let Ok(raw) = env::var(key) {
+                let sdk_path = PathBuf::from(raw);
+                if sdk_path.exists() {
+                    return Some(sdk_path);
+                }
             }
         }
 
