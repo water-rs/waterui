@@ -128,19 +128,26 @@ impl CustomViewRenderer for FFIViewRenderer {
                 (render_fn)(view_ptr_void, wui_size, callback);
             }
 
-            // Wait for result
-            let result = rx.recv().await.unwrap_or_else(|_| RenderResult {
-                rgba_data: Vec::new(),
-                width: 0,
-                height: 0,
-            });
+            let callback_completed = unsafe {
+                (&*callback_data.cast::<CallbackData>())
+                    .finished
+                    .load(Ordering::Acquire)
+            };
+            assert!(
+                callback_completed,
+                "Native view renderer must invoke callback synchronously before returning"
+            );
+
+            let recv_result = rx.recv().await;
 
             // Free callback data after the callback completes.
             unsafe {
                 drop(Box::from_raw(callback_data.cast::<CallbackData>()));
             }
 
-            result
+            recv_result.unwrap_or_else(|err| {
+                panic!("Native view renderer callback channel closed before result: {err}");
+            })
         })
     }
 }

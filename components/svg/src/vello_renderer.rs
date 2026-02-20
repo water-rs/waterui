@@ -120,7 +120,7 @@ impl VelloSvgRenderer {
         scene.fill(
             Fill::NonZero,
             transform,
-            &Brush::Solid(Color::rgba8(200, 200, 200, 128)),
+            &Brush::Solid(Color::from_rgba8(200, 200, 200, 128)),
             None,
             &rect,
         );
@@ -202,12 +202,7 @@ impl GpuRenderer for VelloSvgRenderer {
         // Create Vello renderer
         let renderer = vello::Renderer::new(
             ctx.device,
-            vello::RendererOptions {
-                surface_format: Some(wgpu::TextureFormat::Rgba8Unorm),
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::all(),
-                num_init_threads: None,
-            },
+            Default::default(),
         )
         .expect("Failed to create Vello renderer");
         self.renderer = Some(renderer);
@@ -220,7 +215,7 @@ impl GpuRenderer for VelloSvgRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         self.sampler = Some(sampler);
@@ -266,7 +261,7 @@ impl GpuRenderer for VelloSvgRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Vello SVG Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -307,7 +302,7 @@ impl GpuRenderer for VelloSvgRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
         self.blit_pipeline = Some(pipeline);
@@ -348,6 +343,7 @@ impl GpuRenderer for VelloSvgRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             pass.set_pipeline(pipeline);

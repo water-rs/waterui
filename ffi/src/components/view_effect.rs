@@ -458,11 +458,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
     match input_type {
         WuiInputType::WgpuTexture => {
             // Direct texture reference from GpuSurface - most efficient path
-            // The input_handle is a pointer to the wgpu::Texture
-            // We'll use this directly in render() instead of the capture texture
-            // For now, we just validate it's not null
-            state.imported_texture = None;
-            state.imported_format = None;
+            // The input_handle is a pointer to the producer-owned wgpu::Texture.
+            // Clone the handle so ViewEffect can sample from it during render.
+            let imported = unsafe { &*(input_handle as *const wgpu::Texture) };
+            state.imported_texture = Some(imported.clone());
+            state.imported_format = Some(imported.format());
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 state.imported_metal_texture = None;
@@ -506,12 +506,23 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
                 return false;
             };
 
-            let bytes_per_row = width * 4; // Assuming RGBA8
+            let Some(bytes_per_row) = width.checked_mul(4) else {
+                tracing::error!(
+                    "[ViewEffect] invalid PixelData width {} (bytes_per_row overflow)",
+                    width
+                );
+                return false;
+            };
+            let Some(data_len) = bytes_per_row.checked_mul(height) else {
+                tracing::error!(
+                    "[ViewEffect] invalid PixelData size {}x{} (data length overflow)",
+                    width,
+                    height
+                );
+                return false;
+            };
             let data = unsafe {
-                core::slice::from_raw_parts(
-                    input_handle as *const u8,
-                    (bytes_per_row * height) as usize,
-                )
+                core::slice::from_raw_parts(input_handle as *const u8, data_len as usize)
             };
 
             state.queue.write_texture(
@@ -788,18 +799,18 @@ fn try_configure_surface(
 ) -> bool {
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
 
-    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    device.push_error_scope(wgpu::ErrorFilter::Internal);
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let configure_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         surface.configure(device, config);
     }))
     .is_err();
 
-    let validation_err = pollster::block_on(device.pop_error_scope());
-    let internal_err = pollster::block_on(device.pop_error_scope());
-    let oom_err = pollster::block_on(device.pop_error_scope());
+    let validation_err = pollster::block_on(validation_scope.pop());
+    let internal_err = pollster::block_on(internal_scope.pop());
+    let oom_err = pollster::block_on(oom_scope.pop());
 
     if configure_panicked {
         tracing::warn!("[ViewEffect] Surface::configure panicked");
@@ -985,6 +996,25 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_ahardwarebuffer(
                 state.imported_format = Some(format);
                 state.input_width = width;
                 state.input_height = height;
+
+                // Recalculate output dimensions.
+                let (output_width, output_height) = state.output_size.compute(width, height);
+                if output_width != state.output_width || output_height != state.output_height {
+                    state.output_width = output_width;
+                    state.output_height = output_height;
+                    state.output_config.width = output_width;
+                    state.output_config.height = output_height;
+
+                    if !try_configure_surface(&state.output_surface, &state.device, &state.output_config)
+                    {
+                        tracing::warn!(
+                            "[ViewEffect] output resize failed ({}x{})",
+                            output_width,
+                            output_height
+                        );
+                        return false;
+                    }
+                }
                 true
             }
             Err(e) => {
