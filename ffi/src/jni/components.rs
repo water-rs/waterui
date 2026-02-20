@@ -172,40 +172,30 @@ impl SubView for JniSubView {
         let width = proposal.width.unwrap_or(f32::NAN);
         let height = proposal.height.unwrap_or(f32::NAN);
 
-        // Call measureForLayout(float, float) -> SizeStruct
-        let result = env.call_method(
-            &self.subview_ref,
-            "measureForLayout",
-            "(FF)Ldev/waterui/android/runtime/SizeStruct;",
-            &[JValue::Float(width), JValue::Float(height)],
-        );
-
-        match result {
-            Ok(ret) => {
-                let size_obj = ret.l().expect("measureForLayout should return object");
-                // Extract width and height from SizeStruct
-                let w = env
-                    .get_field(&size_obj, "width", "F")
-                    .expect("SizeStruct.width")
-                    .f()
-                    .expect("width is float");
-                let h = env
-                    .get_field(&size_obj, "height", "F")
-                    .expect("SizeStruct.height")
-                    .f()
-                    .expect("height is float");
-                Size {
-                    width: w,
-                    height: h,
-                }
-            }
-            Err(e) => {
-                tracing::error!("measureForLayout failed: {:?}", e);
-                Size {
-                    width: 0.0,
-                    height: 0.0,
-                }
-            }
+        let size_obj = env
+            .call_method(
+                &self.subview_ref,
+                "measureForLayout",
+                "(FF)Ldev/waterui/android/runtime/SizeStruct;",
+                &[JValue::Float(width), JValue::Float(height)],
+            )
+            .expect("measureForLayout call failed")
+            .l()
+            .expect("measureForLayout should return object");
+        // Extract width and height from SizeStruct
+        let w = env
+            .get_field(&size_obj, "width", "F")
+            .expect("SizeStruct.width")
+            .f()
+            .expect("width is float");
+        let h = env
+            .get_field(&size_obj, "height", "F")
+            .expect("SizeStruct.height")
+            .f()
+            .expect("height is float");
+        Size {
+            width: w,
+            height: h,
         }
     }
 
@@ -763,15 +753,18 @@ unsafe extern "C" fn anyviews_watch_call(
         unsafe { drop(Box::from_raw(metadata_ptr)) };
     }
 
-    let watcher_data =
-        match (!data.is_null()).then(|| unsafe { &*(data as *const AnyViewsWatchData) }) {
-            Some(value) => value,
-            None => return,
-        };
+    debug_assert!(
+        !data.is_null(),
+        "anyviews_watch_call received null callback payload"
+    );
+    let watcher_data = unsafe { &*(data as *const AnyViewsWatchData) };
 
-    if let Ok(mut env) = watcher_data.jvm.attach_current_thread() {
-        let _ = env.call_method(&watcher_data.callback, "run", "()V", &[]);
-    }
+    let mut env = watcher_data
+        .jvm
+        .attach_current_thread()
+        .expect("anyviews_watch_call: failed to attach current thread to JVM");
+    env.call_method(&watcher_data.callback, "run", "()V", &[])
+        .expect("anyviews_watch_call: Java callback run() failed");
 }
 
 unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
@@ -816,13 +809,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInR
     let rust_ids: Vec<waterui_core::id::Id> = unsafe { crate::IntoRust::into_rust(ids) };
     let values: Vec<jint> = rust_ids.into_iter().map(i32::from).collect();
 
-    let Ok(array) = env.new_int_array(values.len() as jint) else {
-        return core::ptr::null_mut();
-    };
-
-    if env.set_int_array_region(&array, 0, &values).is_err() {
-        return core::ptr::null_mut();
-    }
+    let array = env
+        .new_int_array(values.len() as jint)
+        .expect("anyViewsGetIdsInRange: failed to allocate jintArray");
+    env.set_int_array_region(&array, 0, &values)
+        .expect("anyViewsGetIdsInRange: failed to write ids into jintArray");
 
     array.into_raw()
 }
@@ -877,18 +868,21 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatchRang
     end: jint,
     callback: JObject<'local>,
 ) -> jlong {
-    if handle == 0 || callback.is_null() {
-        return 0;
-    }
+    assert!(
+        handle != 0,
+        "WatcherJni.anyViewsWatchRange received null AnyViews handle"
+    );
+    assert!(
+        !callback.is_null(),
+        "WatcherJni.anyViewsWatchRange received null callback"
+    );
 
-    let jvm = match env.get_java_vm() {
-        Ok(vm) => vm,
-        Err(_) => return 0,
-    };
-    let callback = match env.new_global_ref(&callback) {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
+    let jvm = env
+        .get_java_vm()
+        .expect("WatcherJni.anyViewsWatchRange failed to access JavaVM");
+    let callback = env
+        .new_global_ref(&callback)
+        .expect("WatcherJni.anyViewsWatchRange failed to create callback GlobalRef");
 
     let data = Box::new(AnyViewsWatchData { jvm, callback });
     let data_ptr = Box::into_raw(data) as *mut ();
@@ -983,8 +977,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_fontFromResolved<
 ) -> jlong {
     let family = env
         .get_string(&family)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .expect("WatcherJni.fontFromResolved: failed to read family")
+        .to_string_lossy()
+        .into_owned();
 
     let weight = match weight {
         0 => crate::components::text::WuiFontWeight::Thin,
@@ -1659,7 +1654,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetu
     unsafe extern "C" fn run_callback(data: *mut c_void) {
         let runnable = unsafe { Box::from_raw(data as *mut GlobalRef) };
         crate::jni::with_jni_env(|env| {
-            let _ = env.call_method(&*runnable, "run", "()V", &[]);
+            env.call_method(&*runnable, "run", "()V", &[])
+                .expect("AppliedFilterSetup.run_callback: Java runnable run() failed");
         });
     }
 
@@ -1696,7 +1692,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSync
         return 0;
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    let ok = unsafe { crate::components::applied_filter::waterui_applied_filter_sync_targets(wrapper.state) };
+    let ok = unsafe {
+        crate::components::applied_filter::waterui_applied_filter_sync_targets(wrapper.state)
+    };
     if ok { 1 } else { 0 }
 }
 
@@ -1721,8 +1719,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterPoll
         return 0;
     }
     let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    let should_redraw =
-        unsafe { crate::components::applied_filter::waterui_applied_filter_poll_redraw(wrapper.state) };
+    let should_redraw = unsafe {
+        crate::components::applied_filter::waterui_applied_filter_poll_redraw(wrapper.state)
+    };
     if should_redraw { 1 } else { 0 }
 }
 
@@ -2117,14 +2116,15 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropHandler<'
     let wui_env = env_ptr as *const crate::WuiEnv;
     let value: String = env
         .get_string(&data_value)
-        .map(|s| s.into())
-        .unwrap_or_default();
+        .expect("WatcherJni.callDropHandler: failed to read data_value")
+        .into();
     let tag = if data_tag == 0 {
         crate::drag_drop::WuiDragDataTag::Text
     } else {
         crate::drag_drop::WuiDragDataTag::Url
     };
-    let c_str = alloc::ffi::CString::new(value).unwrap_or_default();
+    let c_str = alloc::ffi::CString::new(value)
+        .expect("WatcherJni.callDropHandler: data_value contains interior NUL");
     unsafe { crate::drag_drop::waterui_call_drop_handler(drop_dest, wui_env, tag, c_str.as_ptr()) };
 }
 

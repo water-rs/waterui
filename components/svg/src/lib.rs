@@ -162,10 +162,12 @@ impl Svg {
         GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
     }
 
-    /// Format a ResolvedColor as an SVG-compatible hex string.
+    /// Format a ResolvedColor as an SVG-compatible color string.
     ///
-    /// Converts from linear RGB to sRGB and formats as #rrggbb.
-    fn resolved_color_to_svg_hex(
+    /// Converts from linear RGB to sRGB.
+    /// - Opaque colors are emitted as `#rrggbb`.
+    /// - Translucent colors are emitted as `rgba(r,g,b,a)`.
+    fn resolved_color_to_svg_color(
         color: &waterui_graphics::color::ResolvedColor,
     ) -> alloc::string::String {
         let srgb = color.to_srgb();
@@ -175,7 +177,12 @@ impl Svg {
         let g = (srgb.green * 255.0).clamp(0.0, 255.0) as u8;
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let b = (srgb.blue * 255.0).clamp(0.0, 255.0) as u8;
-        alloc::format!("#{r:02x}{g:02x}{b:02x}")
+        let alpha = color.opacity.clamp(0.0, 1.0);
+        if alpha >= 0.999_999 {
+            alloc::format!("#{r:02x}{g:02x}{b:02x}")
+        } else {
+            alloc::format!("rgba({r},{g},{b},{alpha:.6})")
+        }
     }
 }
 
@@ -185,13 +192,13 @@ impl View for Svg {
         let color_hex = if let Some(tint) = &self.tint {
             // Use explicit tint color
             let resolved = tint.resolve(env).get();
-            Svg::resolved_color_to_svg_hex(&resolved)
+            Svg::resolved_color_to_svg_color(&resolved)
         } else {
             // Try to get foreground color from environment, fallback to white
             env.query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
                 .map(|sig| {
                     let fg = sig.get();
-                    Svg::resolved_color_to_svg_hex(&fg)
+                    Svg::resolved_color_to_svg_color(&fg)
                 })
                 .unwrap_or_else(|| "#ffffff".into())
         };
