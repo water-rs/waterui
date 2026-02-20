@@ -13,7 +13,7 @@ use nami::{
     watcher::{Context, Metadata as WatcherMetadata},
 };
 use native_executor::sleep;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{AnyView, Metadata, Retain, View, dynamic::Dynamic};
 use waterui_graphics::color::Srgb;
 use waterui_layout::stack::{HorizontalAlignment, VStack};
@@ -91,6 +91,15 @@ impl FlowMarkdown {
         self.config.table_policy = policy;
         self
     }
+
+    /// Sets fade animation for newly revealed typewriter token batches.
+    ///
+    /// Use `None` to disable token fade-in.
+    #[must_use]
+    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+        self.config.typewriter_token_fade_in = animation;
+        self
+    }
 }
 
 impl View for FlowMarkdown {
@@ -147,7 +156,11 @@ fn spawn_typewriter_reveal_if_needed(
             let Some(view) = next else {
                 return;
             };
-            handler.set(view);
+            if let Some(animation) = run.token_fade_in.clone() {
+                handler.set_with_metadata(view, WatcherMetadata::new().with(animation));
+            } else {
+                handler.set(view);
+            }
         }
     })
     .detach();
@@ -161,6 +174,7 @@ pub struct FlowMarkdownConfig {
     stream_mode: FlowStreamMode,
     max_pending_bytes: usize,
     table_policy: FlowTablePolicy,
+    typewriter_token_fade_in: Option<Animation>,
 }
 
 impl Default for FlowMarkdownConfig {
@@ -171,6 +185,7 @@ impl Default for FlowMarkdownConfig {
             stream_mode: FlowStreamMode::AppendOnly,
             max_pending_bytes: 32 * 1024,
             table_policy: FlowTablePolicy::NoAnimationReadablePending,
+            typewriter_token_fade_in: None,
         }
     }
 }
@@ -221,6 +236,8 @@ const FLOW_KIND_PRIORITY: [FlowElementKind; 9] = [
     FlowElementKind::Hr,
 ];
 
+const INCOMPLETE_LINK_SENTINEL: &str = "flowmarkdown:incomplete-link";
+
 /// Animation policy for flow updates.
 #[derive(Debug, Clone)]
 pub enum FlowAnimationPolicy {
@@ -234,6 +251,8 @@ pub enum FlowAnimationPolicy {
         cps: u32,
         /// Milliseconds per reveal batch.
         batch_ms: u64,
+        /// Optional fade animation applied when this typewriter batch enters.
+        fade_in: Option<Animation>,
     },
 }
 
@@ -267,9 +286,10 @@ struct FlowUpdate {
 
 struct FlowMarkdownState {
     config: FlowMarkdownConfig,
-    parser: Option<Parser>,
+    parser: Parser,
     tree: Option<Tree>,
     source: String,
+    source_end_point: Point,
     blocks: Vec<FlowBlock>,
     typewriter_visible_chars: usize,
     typewriter_target_chars: usize,
@@ -281,6 +301,7 @@ struct TypewriterRun {
     revision: u64,
     batch_chars: usize,
     batch_ms: u64,
+    token_fade_in: Option<Animation>,
 }
 
 impl FlowMarkdownState {
@@ -290,6 +311,7 @@ impl FlowMarkdownState {
             parser: init_markdown_parser(),
             tree: None,
             source: String::new(),
+            source_end_point: Point { row: 0, column: 0 },
             blocks: Vec::new(),
             typewriter_visible_chars: 0,
             typewriter_target_chars: 0,
@@ -298,61 +320,78 @@ impl FlowMarkdownState {
     }
 
     fn recompute(&mut self, markdown: &str, upstream_metadata: WatcherMetadata) -> FlowUpdate {
+        let previous_len = self.source.len();
         let is_append_only = markdown.starts_with(&self.source);
-        let appended = is_append_only && markdown.len() > self.source.len();
+        let appended = is_append_only && markdown.len() > previous_len;
         let should_incremental = self.config.stream_mode == FlowStreamMode::AppendOnly
             && is_append_only
             && !self.source.is_empty();
 
-        let previous_tree = self.tree.take();
-        let next_tree = self
-            .parser
-            .as_mut()
-            .and_then(|parser| parser.parse(markdown, previous_tree.as_ref()));
+        let mut previous_tree_for_diff = None;
+        let (next_tree, next_source_end_point) = if should_incremental {
+            let mut previous_tree = self
+                .tree
+                .take()
+                .expect("FlowMarkdown incremental parse requires cached previous tree");
+            let edit =
+                build_append_input_edit(previous_len, self.source_end_point, markdown);
+            previous_tree.edit(&edit);
+            let next_tree = self
+                .parser
+                .parse(markdown, Some(&previous_tree))
+                .expect("FlowMarkdown incremental parse returned no syntax tree");
+            previous_tree_for_diff = Some(previous_tree);
+            (next_tree, edit.new_end_position)
+        } else {
+            let next_tree = self
+                .parser
+                .parse(markdown, None)
+                .expect("FlowMarkdown full parse returned no syntax tree");
+            (next_tree, text_end_point(markdown))
+        };
 
         let mut changed_kinds = HashSet::new();
         let mut blocks = Vec::new();
+        let ranges = collect_block_ranges(&next_tree, markdown.len());
+        let changed_ranges = collect_changed_ranges(
+            previous_tree_for_diff.as_ref(),
+            &next_tree,
+            markdown.len(),
+            should_incremental,
+        );
 
-        if let Some(tree) = &next_tree {
-            let ranges = collect_block_ranges(tree, markdown.len());
-            let changed_ranges = collect_changed_ranges(
-                previous_tree.as_ref(),
-                tree,
-                markdown.len(),
-                should_incremental,
-            );
+        let previous_map: HashMap<(usize, usize), FlowBlock> = self
+            .blocks
+            .iter()
+            .cloned()
+            .map(|b| ((b.range.start, b.range.end), b))
+            .collect();
 
-            let previous_map: HashMap<(usize, usize), FlowBlock> = self
-                .blocks
+        for block in ranges {
+            let key = (block.range.start, block.range.end);
+            let has_changed = changed_ranges
                 .iter()
-                .cloned()
-                .map(|b| ((b.range.start, b.range.end), b))
-                .collect();
+                .any(|range| ranges_overlap(range, &block.range));
 
-            for block in ranges {
-                let key = (block.range.start, block.range.end);
-                let has_changed = changed_ranges
-                    .iter()
-                    .any(|range| ranges_overlap(range, &block.range));
-
-                if !has_changed
-                    && should_incremental
-                    && let Some(old) = previous_map.get(&key)
-                {
-                    blocks.push(old.clone());
-                    continue;
-                }
-
-                let parsed = parse_block(
-                    markdown,
-                    &block,
-                    self.config.table_policy,
-                    self.config.max_pending_bytes,
-                );
-                changed_kinds.insert(parsed.kind);
-                blocks.push(parsed);
+            if !has_changed
+                && should_incremental
+                && let Some(old) = previous_map.get(&key)
+            {
+                blocks.push(old.clone());
+                continue;
             }
-        } else {
+
+            let parsed = parse_block(
+                markdown,
+                &block,
+                self.config.table_policy,
+                self.config.max_pending_bytes,
+            );
+            changed_kinds.insert(parsed.kind);
+            blocks.push(parsed);
+        }
+
+        if blocks.is_empty() && !markdown.is_empty() {
             let fallback = parse_fallback(markdown);
             changed_kinds.insert(FlowElementKind::Text);
             blocks.push(fallback);
@@ -360,15 +399,16 @@ impl FlowMarkdownState {
 
         self.source.clear();
         self.source.push_str(markdown);
+        self.source_end_point = next_source_end_point;
         self.blocks = blocks;
-        self.tree = next_tree;
+        self.tree = Some(next_tree);
 
         self.typewriter_revision = self.typewriter_revision.wrapping_add(1);
 
         let full_typewriter_chars = self.total_typewriter_char_count(&self.blocks);
         let typewriter = if should_incremental && appended {
             self.resolve_typewriter_run(&changed_kinds)
-                .and_then(|(batch_chars, batch_ms)| {
+                .and_then(|(batch_chars, batch_ms, token_fade_in)| {
                     let visible = self.typewriter_visible_chars.min(full_typewriter_chars);
                     self.typewriter_visible_chars = visible;
                     self.typewriter_target_chars = full_typewriter_chars;
@@ -376,6 +416,7 @@ impl FlowMarkdownState {
                         revision: self.typewriter_revision,
                         batch_chars,
                         batch_ms,
+                        token_fade_in,
                     })
                 })
         } else {
@@ -432,17 +473,21 @@ impl FlowMarkdownState {
     fn resolve_typewriter_run(
         &self,
         changed_kinds: &HashSet<FlowElementKind>,
-    ) -> Option<(usize, u64)> {
+    ) -> Option<(usize, u64, Option<Animation>)> {
         for kind in FLOW_KIND_PRIORITY {
             if !changed_kinds.contains(&kind) {
                 continue;
             }
-            if let Some(FlowAnimationPolicy::Typewriter { cps, batch_ms }) =
+            if let Some(FlowAnimationPolicy::Typewriter {
+                cps,
+                batch_ms,
+                fade_in,
+            }) =
                 self.animation_policy(kind)
             {
                 let batch_ms = batch_ms.max(1);
                 let batch_chars = ((u64::from(cps.max(1)) * batch_ms) / 1000).max(1) as usize;
-                return Some((batch_chars, batch_ms));
+                return Some((batch_chars, batch_ms, fade_in));
             }
         }
         None
@@ -494,6 +539,7 @@ fn animation_policy_for_kind(
             | FlowElementKind::Link => FlowAnimationPolicy::Typewriter {
                 cps: 64,
                 batch_ms: 40,
+                fade_in: config.typewriter_token_fade_in.clone(),
             },
             FlowElementKind::CodeBlock | FlowElementKind::Table => FlowAnimationPolicy::None,
             FlowElementKind::Image => {
@@ -517,10 +563,12 @@ struct BlockRange {
     kind: FlowElementKind,
 }
 
-fn init_markdown_parser() -> Option<Parser> {
+fn init_markdown_parser() -> Parser {
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_md::LANGUAGE.into()).ok()?;
-    Some(parser)
+    parser
+        .set_language(&tree_sitter_md::LANGUAGE.into())
+        .expect("FlowMarkdown failed to load tree-sitter markdown grammar");
+    parser
 }
 
 fn collect_changed_ranges(
@@ -534,12 +582,14 @@ fn collect_changed_ranges(
     {
         let ranges: Vec<Range<usize>> = previous
             .changed_ranges(next)
-            .map(|r| r.start_byte..r.end_byte)
+            .map(|range| range.start_byte.min(text_len)..range.end_byte.min(text_len))
+            .filter(|range| range.start < range.end)
             .collect();
         if !ranges.is_empty() {
             return ranges;
         }
     }
+
     vec![0..text_len]
 }
 
@@ -605,25 +655,26 @@ fn parse_block(
         .map_or_else(String::new, ToString::to_string);
 
     if slice.len() > max_pending_bytes {
-        slice.truncate(max_pending_bytes);
+        slice.truncate(utf8_boundary_at_or_before(&slice, max_pending_bytes));
     }
 
-    let elements = match block.kind {
-        FlowElementKind::Table if is_incomplete_table(&slice) => match table_policy {
+    let elements = match () {
+        _ if block.kind == FlowElementKind::Table && is_incomplete_table(&slice) => match table_policy {
             FlowTablePolicy::NoAnimationReadablePending => {
                 vec![RichTextElement::Text(StyledStr::plain(
                     "Streaming table...".to_string(),
                 ))]
             }
         },
-        FlowElementKind::Image if is_incomplete_image_fragment(&slice) => {
+        _ if block.kind == FlowElementKind::Image && is_incomplete_image_fragment(&slice) => {
             vec![RichTextElement::Text(StyledStr::plain(
                 extract_image_alt_or_placeholder(&slice),
             ))]
         }
         _ => {
-            let rich = RichText::from_markdown(&slice);
-            let parsed = rich.elements().to_vec();
+            let completed = complete_incomplete_markdown_fragment(&slice);
+            let rich = RichText::from_markdown(&completed);
+            let parsed = normalize_incomplete_link_elements(rich.elements().to_vec());
             if parsed.is_empty() {
                 vec![RichTextElement::Text(StyledStr::plain(
                     sanitize_pending_text_fragment(&slice),
@@ -634,10 +685,504 @@ fn parse_block(
         }
     };
 
+    let kind = infer_block_kind(block.kind, &elements);
+
     FlowBlock {
         range: block.range.clone(),
-        kind: block.kind,
+        kind,
         elements,
+    }
+}
+
+fn utf8_boundary_at_or_before(value: &str, max_len: usize) -> usize {
+    if max_len >= value.len() {
+        return value.len();
+    }
+
+    let mut boundary = max_len;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FenceMarker {
+    marker: char,
+    len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LinkCandidate {
+    label_end: Option<usize>,
+    destination_start: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineCompletionToken {
+    Backticks(usize),
+    Delimiter { marker: char, len: usize },
+}
+
+fn complete_incomplete_markdown_fragment(markdown: &str) -> String {
+    let fenced = close_unterminated_fence(markdown);
+    let inline_closed = close_unterminated_inline_markers(&fenced);
+    close_unterminated_link(&inline_closed)
+}
+
+fn close_unterminated_fence(markdown: &str) -> String {
+    let (_, open_fence) = scan_fenced_ranges(markdown);
+    let Some(open_fence) = open_fence else {
+        return markdown.to_string();
+    };
+
+    let mut completed = String::with_capacity(markdown.len() + open_fence.len + 1);
+    completed.push_str(markdown);
+    if !completed.ends_with('\n') {
+        completed.push('\n');
+    }
+    for _ in 0..open_fence.len {
+        completed.push(open_fence.marker);
+    }
+    completed
+}
+
+fn close_unterminated_inline_markers(markdown: &str) -> String {
+    let (fence_ranges, _) = scan_fenced_ranges(markdown);
+    let mut fence_cursor = 0usize;
+    let mut escaped_next = false;
+    let mut stack: Vec<InlineCompletionToken> = Vec::new();
+    let mut chars = markdown.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if byte_in_ranges(idx, &fence_ranges, &mut fence_cursor) {
+            continue;
+        }
+        if escaped_next {
+            escaped_next = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            if !matches!(stack.last(), Some(InlineCompletionToken::Backticks(_))) {
+                escaped_next = true;
+            }
+            continue;
+        }
+
+        if ch == '`' {
+            let run = consume_repeated_marker(ch, &mut chars, &fence_ranges, &mut fence_cursor);
+            match stack.last().copied() {
+                Some(InlineCompletionToken::Backticks(open_len)) if open_len == run => {
+                    stack.pop();
+                }
+                Some(InlineCompletionToken::Backticks(_)) => {}
+                _ => stack.push(InlineCompletionToken::Backticks(run)),
+            }
+            continue;
+        }
+
+        if matches!(stack.last(), Some(InlineCompletionToken::Backticks(_))) {
+            continue;
+        }
+
+        if ch == '~' {
+            let run = consume_repeated_marker(ch, &mut chars, &fence_ranges, &mut fence_cursor);
+            for _ in 0..(run / 2) {
+                toggle_inline_token(
+                    &mut stack,
+                    InlineCompletionToken::Delimiter {
+                        marker: '~',
+                        len: 2,
+                    },
+                );
+            }
+            continue;
+        }
+
+        if ch == '*' || ch == '_' {
+            let run = consume_repeated_marker(ch, &mut chars, &fence_ranges, &mut fence_cursor);
+            if ch == '_'
+                && is_intraword_underscore(markdown, idx, run)
+            {
+                continue;
+            }
+
+            for len in decompose_emphasis_run(run) {
+                toggle_inline_token(
+                    &mut stack,
+                    InlineCompletionToken::Delimiter { marker: ch, len },
+                );
+            }
+        }
+    }
+
+    if stack.is_empty() {
+        return markdown.to_string();
+    }
+
+    let mut completed = String::with_capacity(markdown.len() + 8);
+    completed.push_str(markdown);
+    for token in stack.iter().rev() {
+        match *token {
+            InlineCompletionToken::Backticks(len) => {
+                for _ in 0..len {
+                    completed.push('`');
+                }
+            }
+            InlineCompletionToken::Delimiter { marker, len } => {
+                for _ in 0..len {
+                    completed.push(marker);
+                }
+            }
+        }
+    }
+    completed
+}
+
+fn close_unterminated_link(markdown: &str) -> String {
+    let (fence_ranges, _) = scan_fenced_ranges(markdown);
+    let mut fence_cursor = 0usize;
+    let mut escaped_next = false;
+    let mut inline_code_backticks: Option<usize> = None;
+    let mut links = Vec::new();
+    let bytes = markdown.as_bytes();
+    let mut chars = markdown.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if byte_in_ranges(idx, &fence_ranges, &mut fence_cursor) {
+            continue;
+        }
+        if escaped_next {
+            escaped_next = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            if inline_code_backticks.is_none() {
+                escaped_next = true;
+            }
+            continue;
+        }
+
+        if ch == '`' {
+            let run = consume_repeated_marker(ch, &mut chars, &fence_ranges, &mut fence_cursor);
+            match inline_code_backticks {
+                Some(open) if open == run => inline_code_backticks = None,
+                Some(_) => {}
+                None => inline_code_backticks = Some(run),
+            }
+            continue;
+        }
+
+        if inline_code_backticks.is_some() {
+            continue;
+        }
+
+        match ch {
+            '[' => {
+                let is_image = idx > 0 && bytes[idx - 1] == b'!';
+                if !is_image {
+                    links.push(LinkCandidate {
+                        label_end: None,
+                        destination_start: None,
+                    });
+                }
+            }
+            ']' => {
+                if let Some(last) = links.last_mut()
+                    && last.label_end.is_none()
+                {
+                    last.label_end = Some(idx + ch.len_utf8());
+                }
+            }
+            '(' => {
+                if let Some(last) = links.last_mut()
+                    && last.label_end == Some(idx)
+                {
+                    last.destination_start = Some(idx + ch.len_utf8());
+                }
+            }
+            ')' => {
+                if let Some(last) = links.last()
+                    && last.destination_start.is_some()
+                {
+                    links.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(candidate) = links
+        .iter()
+        .rev()
+        .find(|candidate| candidate.label_end.is_none() || candidate.destination_start.is_some())
+        .copied()
+    else {
+        return markdown.to_string();
+    };
+
+    if candidate.label_end.is_none() {
+        let mut completed =
+            String::with_capacity(markdown.len() + INCOMPLETE_LINK_SENTINEL.len() + 4);
+        completed.push_str(markdown);
+        completed.push_str("](");
+        completed.push_str(INCOMPLETE_LINK_SENTINEL);
+        completed.push(')');
+        return completed;
+    }
+
+    if let Some(destination_start) = candidate.destination_start {
+        let mut completed =
+            String::with_capacity(markdown.len() + INCOMPLETE_LINK_SENTINEL.len() + 1);
+        completed.push_str(
+            markdown
+                .get(..destination_start)
+                .expect("link destination start should be on UTF-8 boundary"),
+        );
+        completed.push_str(INCOMPLETE_LINK_SENTINEL);
+        completed.push(')');
+        return completed;
+    }
+
+    markdown.to_string()
+}
+
+fn normalize_incomplete_link_elements(elements: Vec<RichTextElement>) -> Vec<RichTextElement> {
+    elements
+        .into_iter()
+        .map(normalize_incomplete_link_element)
+        .collect()
+}
+
+fn normalize_incomplete_link_element(element: RichTextElement) -> RichTextElement {
+    match element {
+        RichTextElement::Link { label, url } if url.as_str() == INCOMPLETE_LINK_SENTINEL => {
+            RichTextElement::Text(label)
+        }
+        RichTextElement::Group { elements, inline } => RichTextElement::Group {
+            elements: normalize_incomplete_link_elements(elements),
+            inline,
+        },
+        RichTextElement::List {
+            items,
+            ordered,
+            start,
+        } => RichTextElement::List {
+            items: normalize_incomplete_link_elements(items),
+            ordered,
+            start,
+        },
+        RichTextElement::Quote { content } => RichTextElement::Quote {
+            content: normalize_incomplete_link_elements(content),
+        },
+        RichTextElement::Table {
+            headers,
+            rows,
+            alignments,
+        } => RichTextElement::Table {
+            headers: normalize_incomplete_link_elements(headers),
+            rows: rows
+                .into_iter()
+                .map(normalize_incomplete_link_elements)
+                .collect(),
+            alignments,
+        },
+        other => other,
+    }
+}
+
+fn toggle_inline_token(stack: &mut Vec<InlineCompletionToken>, token: InlineCompletionToken) {
+    if stack.last().copied() == Some(token) {
+        stack.pop();
+    } else {
+        stack.push(token);
+    }
+}
+
+fn decompose_emphasis_run(run: usize) -> Vec<usize> {
+    let mut remaining = run;
+    let mut chunks = Vec::new();
+    while remaining >= 2 {
+        chunks.push(2);
+        remaining -= 2;
+    }
+    if remaining == 1 {
+        chunks.push(1);
+    }
+    chunks
+}
+
+fn consume_repeated_marker(
+    marker: char,
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    fence_ranges: &[Range<usize>],
+    fence_cursor: &mut usize,
+) -> usize {
+    let mut run = 1usize;
+    while let Some((next_idx, next_ch)) = chars.peek().copied() {
+        if next_ch != marker || byte_in_ranges(next_idx, fence_ranges, fence_cursor) {
+            break;
+        }
+        chars.next();
+        run += 1;
+    }
+    run
+}
+
+fn is_intraword_underscore(markdown: &str, start: usize, run: usize) -> bool {
+    let prev = markdown[..start].chars().next_back();
+    let next = markdown[start + run..].chars().next();
+    is_word_char(prev) && is_word_char(next)
+}
+
+fn is_word_char(ch: Option<char>) -> bool {
+    ch.is_some_and(char::is_alphanumeric)
+}
+
+fn scan_fenced_ranges(markdown: &str) -> (Vec<Range<usize>>, Option<FenceMarker>) {
+    let mut ranges = Vec::new();
+    let mut offset = 0usize;
+    let mut open: Option<(usize, FenceMarker)> = None;
+
+    for line_with_newline in markdown.split_inclusive('\n') {
+        let line = line_with_newline
+            .strip_suffix('\n')
+            .unwrap_or(line_with_newline);
+        if let Some((open_start, open_marker)) = open {
+            if let Some((marker, len, rest)) = parse_fence_run(line)
+                && marker == open_marker.marker
+                && len >= open_marker.len
+                && rest.trim().is_empty()
+            {
+                ranges.push(open_start..(offset + line_with_newline.len()));
+                open = None;
+            }
+        } else if let Some((marker, len, _)) = parse_fence_run(line) {
+            open = Some((offset, FenceMarker { marker, len }));
+        }
+        offset += line_with_newline.len();
+    }
+
+    if let Some((start, marker)) = open {
+        ranges.push(start..markdown.len());
+        return (ranges, Some(marker));
+    }
+
+    (ranges, None)
+}
+
+fn parse_fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len()
+        && idx < 3
+        && (bytes[idx] == b' ' || bytes[idx] == b'\t')
+    {
+        idx += 1;
+    }
+
+    let marker = *bytes.get(idx)?;
+    if marker != b'`' && marker != b'~' {
+        return None;
+    }
+
+    let mut run_len = 0usize;
+    while idx + run_len < bytes.len() && bytes[idx + run_len] == marker {
+        run_len += 1;
+    }
+    if run_len < 3 {
+        return None;
+    }
+
+    Some((marker as char, run_len, &line[idx + run_len..]))
+}
+
+fn byte_in_ranges(index: usize, ranges: &[Range<usize>], cursor: &mut usize) -> bool {
+    while *cursor < ranges.len() && index >= ranges[*cursor].end {
+        *cursor += 1;
+    }
+    if let Some(range) = ranges.get(*cursor) {
+        index >= range.start && index < range.end
+    } else {
+        false
+    }
+}
+
+fn infer_block_kind(default_kind: FlowElementKind, elements: &[RichTextElement]) -> FlowElementKind {
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::Image))
+    {
+        return FlowElementKind::Image;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::Table))
+    {
+        return FlowElementKind::Table;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::CodeBlock))
+    {
+        return FlowElementKind::CodeBlock;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::ListItem))
+    {
+        return FlowElementKind::ListItem;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::Quote))
+    {
+        return FlowElementKind::Quote;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::Link))
+    {
+        return FlowElementKind::Link;
+    }
+    if elements
+        .iter()
+        .any(|element| rich_text_contains_kind(element, FlowElementKind::Hr))
+    {
+        return FlowElementKind::Hr;
+    }
+    default_kind
+}
+
+fn rich_text_contains_kind(element: &RichTextElement, kind: FlowElementKind) -> bool {
+    match (element, kind) {
+        (RichTextElement::Image { .. }, FlowElementKind::Image)
+        | (RichTextElement::Table { .. }, FlowElementKind::Table)
+        | (RichTextElement::Code { .. }, FlowElementKind::CodeBlock)
+        | (RichTextElement::List { .. }, FlowElementKind::ListItem)
+        | (RichTextElement::Quote { .. }, FlowElementKind::Quote)
+        | (RichTextElement::Link { .. }, FlowElementKind::Link)
+        | (RichTextElement::Divider, FlowElementKind::Hr) => true,
+        (RichTextElement::Group { elements, .. }, _) => elements
+            .iter()
+            .any(|child| rich_text_contains_kind(child, kind)),
+        (RichTextElement::List { items, .. }, _) => {
+            items.iter().any(|child| rich_text_contains_kind(child, kind))
+        }
+        (RichTextElement::Quote { content }, _) => content
+            .iter()
+            .any(|child| rich_text_contains_kind(child, kind)),
+        (RichTextElement::Table { headers, rows, .. }, _) => {
+            headers
+                .iter()
+                .any(|child| rich_text_contains_kind(child, kind))
+                || rows.iter().any(|row| {
+                    row.iter().any(|child| rich_text_contains_kind(child, kind))
+                })
+        }
+        _ => false,
     }
 }
 
@@ -972,14 +1517,35 @@ fn is_incomplete_table(markdown: &str) -> bool {
     if lines.len() < 2 {
         return false;
     }
-    if !lines[0].contains('|') {
+    let header = lines[0];
+    if header.matches('|').count() < 1 {
         return false;
     }
-    let separator = lines[1];
-    if !(separator.contains('-') && separator.contains('|')) {
-        return true;
+    let separator = lines[1].trim();
+    if looks_like_table_separator_row(separator) {
+        return false;
     }
-    lines.iter().any(|line| line.matches('|').count() < 2)
+    looks_like_table_separator_prefix(separator)
+}
+
+fn looks_like_table_separator_prefix(line: &str) -> bool {
+    !line.is_empty()
+        && line.contains('-')
+        && line
+            .chars()
+            .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+}
+
+fn looks_like_table_separator_row(line: &str) -> bool {
+    let mut has_segment = false;
+    for segment in line.split('|').map(str::trim).filter(|seg| !seg.is_empty()) {
+        has_segment = true;
+        let dashes = segment.trim_matches(':');
+        if dashes.is_empty() || !dashes.chars().all(|c| c == '-') {
+            return false;
+        }
+    }
+    has_segment
 }
 
 fn is_incomplete_image_fragment(markdown: &str) -> bool {
@@ -989,7 +1555,11 @@ fn is_incomplete_image_fragment(markdown: &str) -> bool {
     let Some(start) = markdown.rfind("![") else {
         return false;
     };
-    !markdown[start..].contains("](") || !markdown[start..].contains(')')
+    let fragment = &markdown[start..];
+    let Some(open_link) = fragment.find("](") else {
+        return false;
+    };
+    !fragment[open_link + 2..].contains(')')
 }
 
 fn extract_image_alt_or_placeholder(markdown: &str) -> String {
@@ -1006,11 +1576,52 @@ fn extract_image_alt_or_placeholder(markdown: &str) -> String {
 }
 
 fn sanitize_pending_text_fragment(text: &str) -> String {
-    if text.contains('|') {
+    if is_incomplete_table(text) {
         "Streaming table...".to_string()
     } else {
         text.to_string()
     }
+}
+
+fn build_append_input_edit(previous_len: usize, previous_end: Point, next: &str) -> InputEdit {
+    assert!(
+        next.len() >= previous_len,
+        "FlowMarkdown incremental edit requires appended text"
+    );
+    assert!(
+        next.is_char_boundary(previous_len),
+        "FlowMarkdown incremental edit boundary must be on UTF-8 boundary"
+    );
+
+    let appended = next
+        .get(previous_len..)
+        .expect("FlowMarkdown incremental append slice should exist");
+    let new_end = advance_point(previous_end, appended);
+
+    InputEdit {
+        start_byte: previous_len,
+        old_end_byte: previous_len,
+        new_end_byte: next.len(),
+        start_position: previous_end,
+        old_end_position: previous_end,
+        new_end_position: new_end,
+    }
+}
+
+fn text_end_point(text: &str) -> Point {
+    advance_point(Point { row: 0, column: 0 }, text)
+}
+
+fn advance_point(mut point: Point, text: &str) -> Point {
+    for byte in text.bytes() {
+        if byte == b'\n' {
+            point.row += 1;
+            point.column = 0;
+        } else {
+            point.column += 1;
+        }
+    }
+    point
 }
 
 fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
@@ -1059,5 +1670,269 @@ mod tests {
             .insert(FlowElementKind::Text, FlowAnimationPolicy::None);
         let policy = animation_policy_for_kind(&config, FlowElementKind::Text);
         assert!(matches!(policy, FlowAnimationPolicy::None));
+    }
+
+    #[test]
+    fn append_input_edit_updates_utf8_multiline_positions() {
+        let previous = "line1\n\u{4E2D}";
+        let appended = "\n\u{03B2}eta";
+        let next = format!("{previous}{appended}");
+        let edit = build_append_input_edit(previous.len(), text_end_point(previous), next.as_str());
+
+        assert_eq!(edit.start_byte, previous.len());
+        assert_eq!(edit.old_end_byte, previous.len());
+        assert_eq!(edit.new_end_byte, next.len());
+        assert_eq!(edit.start_position, Point { row: 1, column: 3 });
+        assert_eq!(edit.old_end_position, Point { row: 1, column: 3 });
+        assert_eq!(edit.new_end_position, Point { row: 2, column: 5 });
+    }
+
+    #[test]
+    fn tree_sitter_incremental_append_reports_tail_changed_ranges() {
+        let mut parser = init_markdown_parser();
+        let original = "# Title\n\nParagraph";
+        let mut old_tree = parser
+            .parse(original, None)
+            .expect("initial markdown parse should produce a syntax tree");
+        let next = format!("{original}\n\n- appended");
+        let edit = build_append_input_edit(original.len(), text_end_point(original), next.as_str());
+        old_tree.edit(&edit);
+        let new_tree = parser
+            .parse(next.as_str(), Some(&old_tree))
+            .expect("incremental markdown parse should produce a syntax tree");
+
+        let changed_ranges: Vec<Range<usize>> = old_tree
+            .changed_ranges(&new_tree)
+            .map(|range| range.start_byte..range.end_byte)
+            .collect();
+        assert!(
+            !changed_ranges.is_empty(),
+            "incremental append should report changed syntax ranges"
+        );
+        assert!(
+            changed_ranges
+                .iter()
+                .all(|range| range.start >= original.len().saturating_sub(1)),
+            "changed ranges should be localized near append boundary"
+        );
+    }
+
+    #[test]
+    fn typewriter_run_includes_token_fade_animation_when_enabled() {
+        let mut config = FlowMarkdownConfig::default();
+        config.typewriter_token_fade_in = Some(Animation::ease_in_out(Duration::from_millis(140)));
+        let mut state = FlowMarkdownState::new(config);
+
+        let first = state.recompute("# Title", WatcherMetadata::new());
+        core::mem::drop(first.view);
+
+        let update = state.recompute("# Title\n\nNew streamed tokens", WatcherMetadata::new());
+        let run = update
+            .typewriter
+            .as_ref()
+            .expect("append should produce a typewriter run");
+        assert!(
+            run.token_fade_in.is_some(),
+            "typewriter run should carry token fade-in animation"
+        );
+        core::mem::drop(update.view);
+    }
+
+    #[test]
+    fn completion_closes_basic_inline_markers_for_streaming_fragments() {
+        assert_eq!(
+            complete_incomplete_markdown_fragment("**bold"),
+            "**bold**"
+        );
+        assert_eq!(
+            complete_incomplete_markdown_fragment("*italic"),
+            "*italic*"
+        );
+        assert_eq!(
+            complete_incomplete_markdown_fragment("`code"),
+            "`code`"
+        );
+        assert_eq!(
+            complete_incomplete_markdown_fragment("~~strike"),
+            "~~strike~~"
+        );
+    }
+
+    #[test]
+    fn completion_repairs_incomplete_links_with_placeholder_target() {
+        let expected = format!("[WaterUI]({INCOMPLETE_LINK_SENTINEL})");
+        assert_eq!(complete_incomplete_markdown_fragment("[WaterUI"), expected);
+        assert_eq!(
+            complete_incomplete_markdown_fragment("[WaterUI](https://exampl"),
+            expected
+        );
+    }
+
+    #[test]
+    fn completion_preserves_intraword_underscore_sequences() {
+        let markdown = "Contact john_doe@example.com about snake_case parsing.";
+        assert_eq!(complete_incomplete_markdown_fragment(markdown), markdown);
+    }
+
+    #[test]
+    fn completion_closes_unterminated_code_fence_without_inline_noise() {
+        let markdown = concat!(
+            "```rust\n",
+            "fn sample() {\n",
+            "    let t = \"**still-code\";\n",
+            "}\n"
+        );
+        let completed = complete_incomplete_markdown_fragment(markdown);
+        assert_eq!(completed, format!("{markdown}```"));
+        assert_eq!(completed.matches("**").count(), markdown.matches("**").count());
+    }
+
+    #[test]
+    fn normalize_incomplete_links_rewrites_placeholder_links_to_text() {
+        let elements = vec![RichTextElement::Link {
+            label: StyledStr::plain("WaterUI"),
+            url: Str::from_static(INCOMPLETE_LINK_SENTINEL),
+        }];
+        let normalized = normalize_incomplete_link_elements(elements);
+
+        assert_eq!(normalized.len(), 1);
+        match &normalized[0] {
+            RichTextElement::Text(text) => assert_eq!(text.to_plain().as_str(), "WaterUI"),
+            other => panic!("placeholder link should be downgraded to text, got: {other:?}"),
+        }
+    }
+
+    fn stream_with_constant_chars_per_second(
+        state: &mut FlowMarkdownState,
+        markdown: &str,
+        chars_per_second: usize,
+    ) -> bool {
+        assert!(
+            chars_per_second > 0,
+            "stream simulation requires a positive chars_per_second"
+        );
+
+        let chars: Vec<char> = markdown.chars().collect();
+        let mut streamed = String::new();
+        let mut offset = 0usize;
+        let mut saw_typewriter = false;
+
+        while offset < chars.len() {
+            let end = (offset + chars_per_second).min(chars.len());
+            streamed.extend(chars[offset..end].iter().copied());
+            let update = state.recompute(streamed.as_str(), WatcherMetadata::new());
+            saw_typewriter |= update.typewriter.is_some();
+            core::mem::drop(update.view);
+            offset = end;
+        }
+
+        assert_eq!(
+            streamed, markdown,
+            "stream simulator must rebuild the full markdown payload"
+        );
+        saw_typewriter
+    }
+
+    #[test]
+    fn recompute_streams_complete_markdown_documents_at_constant_rate() {
+        const DOCS: [&str; 3] = [
+            concat!(
+                "# Stream One\n\n",
+                "This document simulates a complete assistant answer delivered at fixed rate.\n\n",
+                "- bullet one\n- bullet two\n\n",
+                "Final sentence."
+            ),
+            concat!(
+                "## Stream Two\n\n",
+                "| Key | Value |\n| --- | --- |\n| Throughput | 128 tok/s |\n| Latency | 42 ms |\n\n",
+                "```rust\nfn answer() -> i32 {\n    42\n}\n```\n"
+            ),
+            concat!(
+                "### Stream Three\n\n",
+                "> Quoted context for downstream model output.\n\n",
+                "1. first item\n2. second item\n\n",
+                "See [WaterUI](https://waterui.dev)."
+            ),
+        ];
+
+        for markdown in DOCS {
+            let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+            let saw_typewriter =
+                stream_with_constant_chars_per_second(&mut state, markdown, 16);
+            assert!(
+                saw_typewriter,
+                "constant-rate stream should trigger at least one typewriter run"
+            );
+
+            let settled = state.recompute(markdown, WatcherMetadata::new());
+            assert!(
+                settled.typewriter.is_none(),
+                "idempotent recompute with full markdown should not schedule new typewriter run"
+            );
+            core::mem::drop(settled.view);
+        }
+    }
+
+    #[test]
+    fn recompute_handles_streaming_append_sequence_with_tables_and_code() {
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+        let mut markdown = String::new();
+        let chunks = [
+            "# FlowMarkdown E2E\n\nStreaming response starts here.\n\n",
+            "## Highlights\n\n- Tail append updates\n- Typewriter reveal\n\n",
+            "| Metric | Value |\n| --- | --- |\n| Throughput | 128 tok/s |\n",
+            "| Latency | 42 ms |\n\n```rust\nfn answer() -> i32 {\n    42\n}\n```\n\n",
+            "![WaterUI mark](https://waterui.dev/favicon.ico)\n\nFinal line.",
+        ];
+
+        for chunk in chunks {
+            markdown.push_str(chunk);
+            let update = state.recompute(markdown.as_str(), WatcherMetadata::new());
+            let view = update.view;
+            core::mem::drop(view);
+        }
+
+        // Continue appending at char granularity to stress streaming parse path.
+        let tail = "\n\n- postscript";
+        for ch in tail.chars() {
+            markdown.push(ch);
+            let update = state.recompute(markdown.as_str(), WatcherMetadata::new());
+            let view = update.view;
+            core::mem::drop(view);
+        }
+    }
+
+    #[test]
+    fn recompute_uses_full_parse_for_rewrites_then_recovers_incremental_appends() {
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+
+        let first = state.recompute("# Title", WatcherMetadata::new());
+        assert!(
+            first.typewriter.is_none(),
+            "initial render should not use incremental typewriter run"
+        );
+        core::mem::drop(first.view);
+
+        let appended = state.recompute("# Title\n\nnext line", WatcherMetadata::new());
+        assert!(
+            appended.typewriter.is_some(),
+            "append updates should use incremental typewriter run"
+        );
+        core::mem::drop(appended.view);
+
+        let rewritten = state.recompute("## Rewritten\n\nnew root", WatcherMetadata::new());
+        assert!(
+            rewritten.typewriter.is_none(),
+            "non-append rewrites should force a full reparse"
+        );
+        core::mem::drop(rewritten.view);
+
+        let appended_after_rewrite =
+            state.recompute("## Rewritten\n\nnew root\n\n+ tail", WatcherMetadata::new());
+        assert!(
+            appended_after_rewrite.typewriter.is_some(),
+            "append after rewrite should recover incremental mode"
+        );
+        core::mem::drop(appended_after_rewrite.view);
     }
 }
