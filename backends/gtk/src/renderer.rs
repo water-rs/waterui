@@ -240,9 +240,42 @@ impl GtkRenderer {
 
         // Metadata<OnEvent> - handle events
         dispatcher.register::<Metadata<OnEvent>>(|_state, ctx, metadata, env| {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            use waterui_core::event::Event;
+
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
-            // TODO: Connect event handlers
+            widget.set_can_target(true);
+
+            let expected = metadata.value.event();
+            let handler = Rc::new(RefCell::new(metadata.value));
+            let env = env.clone();
+            let motion = gtk4::EventControllerMotion::new();
+
+            match expected {
+                Event::HoverEnter => {
+                    let env = env.clone();
+                    let handler = handler.clone();
+                    motion.connect_enter(move |_, _, _| {
+                        if let Ok(mut on_event) = handler.try_borrow_mut() {
+                            on_event.handle(&env);
+                        }
+                    });
+                }
+                Event::HoverExit => {
+                    let env = env.clone();
+                    let handler = handler.clone();
+                    motion.connect_leave(move |_| {
+                        if let Ok(mut on_event) = handler.try_borrow_mut() {
+                            on_event.handle(&env);
+                        }
+                    });
+                }
+                _ => panic!("unsupported OnEvent variant on GTK backend"),
+            }
+
+            widget.add_controller(motion);
             widget
         });
 

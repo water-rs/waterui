@@ -25,12 +25,27 @@ pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 /// format, it falls back to a standard sRGB swapchain format (or the first supported format).
 #[must_use]
 pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+    preferred_surface_format_with_preference(caps, None)
+}
+
+/// Picks the best surface format for a [`GpuSurface`] with an optional HDR preference override.
+///
+/// - `Some(true)`: prefer HDR when supported.
+/// - `Some(false)`: prefer SDR even if HDR is supported.
+/// - `None`: follow `WATERUI_GPU_PREFER_HDR` behavior.
+#[must_use]
+pub fn preferred_surface_format_with_preference(
+    caps: &wgpu::SurfaceCapabilities,
+    prefer_hdr_override: Option<bool>,
+) -> wgpu::TextureFormat {
     let hdr = wgpu::TextureFormat::Rgba16Float;
     // Default to HDR across all platforms. Users can explicitly opt out with:
     // WATERUI_GPU_PREFER_HDR=0|false|FALSE
-    let prefer_hdr = std::env::var("WATERUI_GPU_PREFER_HDR")
-        .ok()
-        .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"));
+    let prefer_hdr = prefer_hdr_override.unwrap_or_else(|| {
+        std::env::var("WATERUI_GPU_PREFER_HDR")
+            .ok()
+            .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"))
+    });
 
     // HDR (linear, extended range) preferred when supported by the surface.
     if prefer_hdr && caps.formats.contains(&hdr) {
@@ -699,6 +714,11 @@ pub struct GpuSurface {
     ///
     /// Backends use this as the cap when selecting a supported sample count.
     msaa_max_samples: NonZeroU32,
+    /// Optional per-surface HDR preference override.
+    ///
+    /// `None` follows global `WATERUI_GPU_PREFER_HDR` behavior.
+    /// `Some(true)` prefers HDR, `Some(false)` prefers SDR.
+    surface_prefers_hdr: Option<bool>,
 }
 
 impl core::fmt::Debug for GpuSurface {
@@ -740,6 +760,7 @@ impl GpuSurface {
         Self {
             renderer: Box::new(renderer),
             msaa_max_samples: Self::default_msaa_max_samples(),
+            surface_prefers_hdr: None,
         }
     }
 
@@ -765,6 +786,32 @@ impl GpuSurface {
     #[must_use]
     pub const fn get_msaa_max_samples(&self) -> NonZeroU32 {
         self.msaa_max_samples
+    }
+
+    /// Prefer HDR swapchain formats for this surface when available.
+    ///
+    /// This overrides global `WATERUI_GPU_PREFER_HDR` for this surface only.
+    #[must_use]
+    pub const fn prefer_hdr_surface(mut self) -> Self {
+        self.surface_prefers_hdr = Some(true);
+        self
+    }
+
+    /// Prefer SDR swapchain formats for this surface even when HDR is available.
+    ///
+    /// This overrides global `WATERUI_GPU_PREFER_HDR` for this surface only.
+    #[must_use]
+    pub const fn prefer_sdr_surface(mut self) -> Self {
+        self.surface_prefers_hdr = Some(false);
+        self
+    }
+
+    /// Returns this surface's HDR preference override.
+    ///
+    /// `None` means follow global environment preference.
+    #[must_use]
+    pub const fn get_surface_prefers_hdr(&self) -> Option<bool> {
+        self.surface_prefers_hdr
     }
 
     /// Renders this surface once into an offscreen texture and reads back RGBA8 pixels.

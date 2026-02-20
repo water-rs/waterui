@@ -814,7 +814,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                     device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
                         label: Some("Solid Color Pipeline Layout"),
                         bind_group_layouts: &[&bind_group_layout],
-                        push_constant_ranges: &[],
+                        immediate_size: 0,
                     });
 
                 SolidColorSharedDeviceState {
@@ -832,10 +832,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                     None
                 };
 
-                // Try with pipeline cache first (if provided by the backend).
-                device.push_error_scope(crate::wgpu::ErrorFilter::Validation);
-
-                let mut pipeline =
+                let create_pipeline = |cache: Option<&crate::wgpu::PipelineCache>| {
                     device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
                         label: Some("Solid Color Pipeline"),
                         layout: Some(&shared.pipeline_layout),
@@ -861,45 +858,22 @@ impl crate::GpuRenderer for SolidColorRenderer {
                         },
                         depth_stencil: None,
                         multisample: crate::wgpu::MultisampleState::default(),
-                        multiview: None,
-                        cache: ctx.pipeline_cache,
-                    });
+                        multiview_mask: None,
+                        cache,
+                    })
+                };
 
-                let error = crate::pollster::block_on(device.pop_error_scope());
-                if let Some(e) = error {
-                    tracing::warn!("[Solid Color] Pipeline creation with cache failed: {}", e);
-                    pipeline =
-                        device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
-                            label: Some("Solid Color Pipeline (No Cache)"),
-                            layout: Some(&shared.pipeline_layout),
-                            vertex: crate::wgpu::VertexState {
-                                module: &shared.shader,
-                                entry_point: Some("vs_main"),
-                                buffers: &[],
-                                compilation_options:
-                                    crate::wgpu::PipelineCompilationOptions::default(),
-                            },
-                            fragment: Some(crate::wgpu::FragmentState {
-                                module: &shared.shader,
-                                entry_point: Some("fs_main"),
-                                targets: &[Some(crate::wgpu::ColorTargetState {
-                                    format: key.format,
-                                    blend,
-                                    write_mask: crate::wgpu::ColorWrites::ALL,
-                                })],
-                                compilation_options:
-                                    crate::wgpu::PipelineCompilationOptions::default(),
-                            }),
-                            primitive: crate::wgpu::PrimitiveState {
-                                topology: crate::wgpu::PrimitiveTopology::TriangleList,
-                                ..Default::default()
-                            },
-                            depth_stencil: None,
-                            multisample: crate::wgpu::MultisampleState::default(),
-                            multiview: None,
-                            cache: None,
-                        });
-                }
+                let pipeline = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    create_pipeline(ctx.pipeline_cache)
+                })) {
+                    Ok(pipeline) => pipeline,
+                    Err(_) => {
+                        tracing::warn!(
+                            "[Solid Color] Pipeline creation with cache panicked, retrying without cache"
+                        );
+                        create_pipeline(None)
+                    }
+                };
 
                 shared.pipelines.insert(key, pipeline);
             }
@@ -983,6 +957,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

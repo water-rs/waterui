@@ -6,6 +6,7 @@ pub mod create;
 pub mod device;
 pub mod devices;
 pub mod doctor;
+pub mod inspector;
 pub mod package;
 pub mod preview;
 pub mod run;

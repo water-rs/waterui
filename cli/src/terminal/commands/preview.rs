@@ -12,6 +12,7 @@ use crate::{error, header, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_symbol_candidates};
 use waterui_cli::preview::{PreviewPlatform, PreviewSession, launch_preview_session};
 use waterui_cli::toolchain::sccache::Sccache;
+use waterui_cli::utils::sccache_install_hint;
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -87,7 +88,8 @@ pub async fn run(args: Args) -> Result<()> {
         Ok(path) => Some(path),
         Err(_) => {
             warn!(
-                "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
+                "sccache not found. Build efficiency may be reduced. Install with: {}",
+                sccache_install_hint()
             );
             None
         }

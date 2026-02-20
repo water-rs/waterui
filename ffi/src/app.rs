@@ -19,9 +19,10 @@ impl IntoFFI for App {
     type FFI = WuiApp;
 
     fn into_ffi(self) -> Self::FFI {
+        let (windows, env) = self.into_parts();
         WuiApp {
-            windows: self.windows.into_ffi(),
-            env: self.env.into_ffi(),
+            windows: windows.into_ffi(),
+            env: env.into_ffi(),
         }
     }
 }

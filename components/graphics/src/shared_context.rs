@@ -170,15 +170,12 @@ impl SharedGpuContext {
         );
 
         let mut cache = self.shader_cache.lock();
-        if let Some(existing) = cache
-            .get(&source_hash)
-            .and_then(|bucket| {
-                bucket
-                    .iter()
-                    .find(|entry| entry.source.as_str() == source)
-                    .map(|entry| entry.module.clone())
-            })
-        {
+        if let Some(existing) = cache.get(&source_hash).and_then(|bucket| {
+            bucket
+                .iter()
+                .find(|entry| entry.source.as_str() == source)
+                .map(|entry| entry.module.clone())
+        }) {
             return existing;
         }
 
@@ -196,7 +193,11 @@ impl SharedGpuContext {
         module
     }
 
-    fn cached_shader_module(&self, source_hash: u64, source: &str) -> Option<Arc<wgpu::ShaderModule>> {
+    fn cached_shader_module(
+        &self,
+        source_hash: u64,
+        source: &str,
+    ) -> Option<Arc<wgpu::ShaderModule>> {
         let cache = self.shader_cache.lock();
         cache.get(&source_hash).and_then(|bucket| {
             bucket
@@ -274,40 +275,33 @@ static SHARED_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// waterui_graphics::shared_context::init_shared_context()?;
 /// ```
 pub fn init_shared_context() -> Result<(), SharedContextError> {
-    if SHARED_CONTEXT.get().is_some() {
-        return Ok(());
-    }
-
     // Ensure only one thread performs the expensive device creation.
     let init_lock = SHARED_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = init_lock.lock();
 
-    if SHARED_CONTEXT.get().is_some() {
-        return Ok(());
+    if SHARED_CONTEXT.get().is_none() {
+        let ctx = create_shared_context()?;
+        let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
     }
-
-    let ctx = create_shared_context()?;
-
-    // Try to set it; if another thread beat us, that's fine
-    let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
 
     Ok(())
 }
 
 /// Get the shared GPU context.
 ///
-/// Initializes the context on first call if not already initialized.
-///
 /// # Panics
 ///
-/// Panics if context initialization fails (no suitable GPU found).
+/// Panics if initializing the shared context fails.
 #[must_use]
 pub fn shared_context() -> Arc<RwLock<SharedGpuContext>> {
+    if SHARED_CONTEXT.get().is_none()
+        && let Err(error) = init_shared_context()
+    {
+        panic!("shared context initialization failed: {error}");
+    }
     SHARED_CONTEXT
-        .get_or_init(|| match create_shared_context() {
-            Ok(ctx) => Arc::new(RwLock::new(ctx)),
-            Err(e) => panic!("Failed to initialize shared GPU context: {e}"),
-        })
+        .get()
+        .expect("shared context must be initialized after successful init")
         .clone()
 }
 
@@ -593,20 +587,22 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     // Create pipeline cache only if the feature is available
     let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         // Try to load cache from disk, but don't fail if it's corrupted
-        let cache_data = pipeline_cache_path.as_ref().and_then(|path| match fs::read(path) {
-            Ok(data) => {
-                tracing::info!(
-                    "[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)",
-                    path,
-                    data.len()
-                );
-                Some(data)
-            }
-            Err(_) => {
-                tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
-                None
-            }
-        });
+        let cache_data = pipeline_cache_path
+            .as_ref()
+            .and_then(|path| match fs::read(path) {
+                Ok(data) => {
+                    tracing::info!(
+                        "[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)",
+                        path,
+                        data.len()
+                    );
+                    Some(data)
+                }
+                Err(_) => {
+                    tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
+                    None
+                }
+            });
 
         // SAFETY: We're providing valid PipelineCacheDescriptor with fallback enabled
         // If the cache data is invalid, wgpu will create an empty cache instead of failing

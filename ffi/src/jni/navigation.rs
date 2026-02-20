@@ -28,12 +28,13 @@ unsafe extern "C" fn jni_navigation_push(
     crate::jni::with_jni_env(|env| {
         // Convert WuiNavigationView to Java object
         let java_nav_view = crate::jni::convert::struct_to_java(env, &nav_view);
-        let _ = env.call_method(
+        env.call_method(
             data.callback.as_obj(),
             "onPush",
             "(Ldev/waterui/android/runtime/NavigationViewStruct;)V",
             &[JValue::Object(&java_nav_view)],
-        );
+        )
+        .expect("jni_navigation_push: failed to call callback.onPush(NavigationViewStruct)");
     });
 }
 
@@ -41,7 +42,8 @@ unsafe extern "C" fn jni_navigation_push(
 unsafe extern "C" fn jni_navigation_pop(data: *mut ()) {
     let data = unsafe { &*(data as *const JniNavigationCallbackData) };
     crate::jni::with_jni_env(|env| {
-        let _ = env.call_method(data.callback.as_obj(), "onPop", "()V", &[]);
+        env.call_method(data.callback.as_obj(), "onPop", "()V", &[])
+            .expect("jni_navigation_pop: failed to call callback.onPop()");
     });
 }
 

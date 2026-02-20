@@ -11,7 +11,7 @@ use waterui::app::App;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{Circle, RoundedRectangle};
-use waterui::task::{sleep, spawn_local};
+use waterui::task::sleep;
 use waterui_graphics::{
     AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor,
 };
@@ -83,26 +83,19 @@ fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
     colors
 }
 
+async fn animate_mesh_colors(colors: Binding<[ResolvedColor; 9]>) {
+    let start = std::time::Instant::now();
+    loop {
+        let elapsed = start.elapsed().as_secs_f32();
+        colors.set(compute_animated_colors(elapsed));
+        sleep(Duration::from_millis(16)).await;
+    }
+}
+
 /// Demo: Animated fluid mesh gradient background (automatic time-based animation)
 fn animated_background_section() -> impl View {
     // Create binding for animated colors
     let colors: Binding<[ResolvedColor; 9]> = Binding::container(compute_animated_colors(0.0));
-
-    // Spawn animation task that continuously updates colors
-    let colors_for_task = colors.clone();
-    spawn_local(async move {
-        let start = std::time::Instant::now();
-        loop {
-            // Compute time-based animated colors
-            let elapsed = start.elapsed().as_secs_f32();
-            let animated = compute_animated_colors(elapsed);
-            colors_for_task.set(animated);
-
-            // ~60fps update rate
-            sleep(Duration::from_millis(16)).await;
-        }
-    })
-    .detach();
 
     vstack((
         text("Animated Mesh Gradient").size(20.0),
@@ -110,7 +103,7 @@ fn animated_background_section() -> impl View {
         // The animated mesh gradient
         zstack((
             // Background: MeshGradient accepts Signal directly!
-            MeshGradient::new(3, 3, colors).size(300.0, 200.0),
+            MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0),
             // Overlay content
             vstack((
                 text("Fluid Background")
@@ -124,6 +117,7 @@ fn animated_background_section() -> impl View {
     ))
     .spacing(12.0)
     .padding()
+    .task(animate_mesh_colors(colors.clone()))
 }
 
 /// Demo: GPU flowing gradient (fully shader animated, no CPU updates)

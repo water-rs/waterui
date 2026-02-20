@@ -32,6 +32,20 @@ pub fn set_std_output(enabled: bool) {
     STD_OUTPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Returns a platform-appropriate installation hint for sccache.
+#[must_use]
+pub const fn sccache_install_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "brew install sccache"
+    } else if cfg!(target_os = "linux") {
+        "your distro package manager (e.g. apt/dnf/pacman) or cargo install sccache"
+    } else if cfg!(target_os = "windows") {
+        "winget install Mozilla.sccache or cargo install sccache"
+    } else {
+        "cargo install sccache"
+    }
+}
+
 // Warn: You will lose stdout/stderr piping if you modify this function!
 pub(crate) fn command(command: &mut Command) -> &mut Command {
     command
