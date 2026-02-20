@@ -28,6 +28,7 @@ mod embedded {
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
+    pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
@@ -60,6 +61,8 @@ pub struct TemplateContext {
     pub ios_permissions: Vec<(String, String)>,
     /// Whether to build as an accessory (headless) app on macOS.
     pub accessory: bool,
+    /// Preview runtime fingerprint inserted into preview support app templates.
+    pub preview_runtime_fingerprint: Option<String>,
 }
 
 impl TemplateContext {
@@ -71,6 +74,16 @@ impl TemplateContext {
 
         // Rust identifier form of crate name (hyphens -> underscores)
         let crate_name_ident = self.crate_name.replace('-', "_");
+        let android_backend_path = if self.use_remote_dev_backend {
+            String::new()
+        } else {
+            self.compute_android_backend_path().unwrap_or_else(|| {
+                panic!(
+                    "TemplateContext missing local Android backend path: \
+use_remote_dev_backend=false requires waterui_path or android_backend_path"
+                )
+            })
+        };
 
         template
             .replace("__APP_DISPLAY_NAME__", &self.app_display_name)
@@ -80,10 +93,7 @@ impl TemplateContext {
             .replace("__ANDROID_NAMESPACE__", &android_namespace)
             .replace("__BUNDLE_IDENTIFIER__", &self.bundle_identifier)
             .replace("__AUTHOR__", &self.author)
-            .replace(
-                "__ANDROID_BACKEND_PATH__",
-                &self.compute_android_backend_path().unwrap_or_default(),
-            )
+            .replace("__ANDROID_BACKEND_PATH__", &android_backend_path)
             .replace(
                 "__USE_REMOTE_DEV_BACKEND__",
                 if self.use_remote_dev_backend {
@@ -113,6 +123,10 @@ impl TemplateContext {
             .replace(
                 "__MACOS_LSUIELEMENT__",
                 if self.accessory { "YES" } else { "NO" },
+            )
+            .replace(
+                "__PREVIEW_RUNTIME_FINGERPRINT__",
+                self.preview_runtime_fingerprint.as_deref().unwrap_or_default(),
             )
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
@@ -166,7 +180,10 @@ impl TemplateContext {
 
     /// Compute the relative path from the Android project to the `WaterUI` Android backend.
     fn compute_android_backend_path(&self) -> Option<String> {
-        self.compute_relative_backend_path("android")
+        self.android_backend_path
+            .as_ref()
+            .map(|path| normalize_path_for_config(path))
+            .or_else(|| self.compute_relative_backend_path("android"))
     }
 
     /// Compute the relative path from the backend project directory to the project root.
@@ -317,6 +334,7 @@ mod tests {
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
+            preview_runtime_fingerprint: None,
         }
     }
 
@@ -414,6 +432,81 @@ async fn scaffold_dir(
     }
 
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SupportCargoManifest {
+    package: SupportPackageSection,
+    lib: SupportLibSection,
+    dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
+    workspace: SupportWorkspaceSection,
+}
+
+#[derive(serde::Serialize)]
+struct SupportPackageSection {
+    name: String,
+    version: String,
+    edition: String,
+}
+
+#[derive(serde::Serialize)]
+struct SupportLibSection {
+    #[serde(rename = "crate-type")]
+    crate_type: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SupportWorkspaceSection {}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum SupportDependencyValue {
+    Simple(String),
+    Detailed(SupportDependencyDetail),
+}
+
+#[derive(serde::Serialize)]
+struct SupportDependencyDetail {
+    path: String,
+}
+
+async fn write_support_cargo_toml(
+    base_dir: &Path,
+    crate_name: &str,
+    dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
+) -> io::Result<()> {
+    let manifest = SupportCargoManifest {
+        package: SupportPackageSection {
+            name: crate_name.to_string(),
+            version: "0.1.0".to_string(),
+            edition: "2024".to_string(),
+        },
+        lib: SupportLibSection {
+            crate_type: vec![
+                "staticlib".to_string(),
+                "cdylib".to_string(),
+                "rlib".to_string(),
+            ],
+        },
+        dependencies,
+        workspace: SupportWorkspaceSection {},
+    };
+
+    let toml_string = toml::to_string_pretty(&manifest)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::create_dir_all(base_dir).await?;
+    fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+    Ok(())
+}
+
+fn dependency_path(path: &Path) -> SupportDependencyValue {
+    SupportDependencyValue::Detailed(SupportDependencyDetail {
+        path: normalize_path_for_config(path),
+    })
+}
+
+fn dependency_version(version: &str) -> SupportDependencyValue {
+    SupportDependencyValue::Simple(version.to_string())
 }
 
 /// Apple backend templates.
@@ -728,9 +821,31 @@ pub mod root {
 pub mod preview {
     use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
 
-    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
+    use super::{
+        Path, TemplateContext, dependency_path, dependency_version, embedded, io, scaffold_dir,
+        write_support_cargo_toml,
+    };
 
     const WATERUI_PREVIEW_VERSION: &str = "0.1";
+
+    /// Hash of embedded preview template files.
+    #[must_use]
+    pub fn template_fingerprint() -> String {
+        use sha2::Digest as _;
+
+        let mut hasher = sha2::Sha256::new();
+        let mut dirs_to_process = vec![&embedded::PREVIEW];
+        while let Some(current_dir) = dirs_to_process.pop() {
+            for file in current_dir.files() {
+                hasher.update(file.path().to_string_lossy().as_bytes());
+                hasher.update(file.contents());
+            }
+            for subdir in current_dir.dirs() {
+                dirs_to_process.push(subdir);
+            }
+        }
+        format!("{:x}", hasher.finalize())
+    }
 
     /// Write preview app templates to the given directory.
     ///
@@ -747,44 +862,7 @@ pub mod preview {
 
     /// Generate preview app Cargo.toml programmatically.
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        use serde::Serialize;
         use std::collections::BTreeMap;
-
-        #[derive(Serialize)]
-        struct CargoManifest {
-            package: PackageSection,
-            lib: LibSection,
-            dependencies: BTreeMap<String, DependencyValue>,
-            workspace: WorkspaceSection,
-        }
-
-        #[derive(Serialize)]
-        struct PackageSection {
-            name: String,
-            version: String,
-            edition: String,
-        }
-
-        #[derive(Serialize)]
-        struct LibSection {
-            #[serde(rename = "crate-type")]
-            crate_type: Vec<String>,
-        }
-
-        #[derive(Serialize)]
-        struct WorkspaceSection {}
-
-        #[derive(Serialize)]
-        #[serde(untagged)]
-        enum DependencyValue {
-            Simple(String),
-            Detailed(DependencyDetail),
-        }
-
-        #[derive(Serialize)]
-        struct DependencyDetail {
-            path: String,
-        }
 
         let mut dependencies = BTreeMap::new();
 
@@ -792,67 +870,103 @@ pub mod preview {
             // Local path dependencies
             dependencies.insert(
                 "waterui".to_string(),
-                DependencyValue::Detailed(DependencyDetail {
-                    path: normalize_path_for_config(waterui_path),
-                }),
+                dependency_path(waterui_path),
             );
 
             let ffi_path = waterui_path.join("ffi");
-            dependencies.insert(
-                "waterui-ffi".to_string(),
-                DependencyValue::Detailed(DependencyDetail {
-                    path: normalize_path_for_config(&ffi_path),
-                }),
-            );
+            dependencies.insert("waterui-ffi".to_string(), dependency_path(&ffi_path));
 
             let preview_path = waterui_path.join("components").join("preview");
-            dependencies.insert(
-                "waterui-preview".to_string(),
-                DependencyValue::Detailed(DependencyDetail {
-                    path: normalize_path_for_config(&preview_path),
-                }),
-            );
+            dependencies.insert("waterui-preview".to_string(), dependency_path(&preview_path));
         } else {
             // Registry dependencies
             dependencies.insert(
                 "waterui".to_string(),
-                DependencyValue::Simple(WATERUI_VERSION.to_string()),
+                dependency_version(WATERUI_VERSION),
             );
             dependencies.insert(
                 "waterui-ffi".to_string(),
-                DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
+                dependency_version(WATERUI_FFI_VERSION),
             );
             dependencies.insert(
                 "waterui-preview".to_string(),
-                DependencyValue::Simple(WATERUI_PREVIEW_VERSION.to_string()),
+                dependency_version(WATERUI_PREVIEW_VERSION),
             );
         }
+        write_support_cargo_toml(base_dir, &ctx.crate_name, dependencies).await
+    }
+}
 
-        let manifest = CargoManifest {
-            package: PackageSection {
-                name: ctx.crate_name.clone(),
-                version: "0.1.0".to_string(),
-                edition: "2024".to_string(),
-            },
-            lib: LibSection {
-                crate_type: vec![
-                    "staticlib".to_string(),
-                    "cdylib".to_string(),
-                    "rlib".to_string(),
-                ],
-            },
-            dependencies,
-            workspace: WorkspaceSection {},
-        };
+/// Inspector app templates.
+pub mod inspector {
+    use super::{
+        Path, TemplateContext, dependency_path, dependency_version, embedded, io, scaffold_dir,
+        write_support_cargo_toml,
+    };
 
-        // Serialize to TOML
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    /// Hash of embedded inspector template files.
+    #[must_use]
+    pub fn template_fingerprint() -> String {
+        use sha2::Digest as _;
 
-        let cargo_path = base_dir.join("Cargo.toml");
-        fs::create_dir_all(base_dir).await?;
-        fs::write(&cargo_path, toml_string).await?;
+        let mut hasher = sha2::Sha256::new();
+        let mut dirs_to_process = vec![&embedded::INSPECTOR];
+        while let Some(current_dir) = dirs_to_process.pop() {
+            for file in current_dir.files() {
+                hasher.update(file.path().to_string_lossy().as_bytes());
+                hasher.update(file.contents());
+            }
+            for subdir in current_dir.dirs() {
+                dirs_to_process.push(subdir);
+            }
+        }
+        format!("{:x}", hasher.finalize())
+    }
 
-        Ok(())
+    /// Write inspector app templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx).await?;
+        scaffold_dir(&embedded::INSPECTOR, base_dir, ctx).await
+    }
+
+    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        use std::collections::BTreeMap;
+
+        let waterui_path = ctx.waterui_path.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Inspector support app requires a local waterui_path",
+            )
+        })?;
+
+        let inspector_protocol_path = waterui_path.join("components/inspector-protocol");
+        if !inspector_protocol_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Inspector support app requires {} (missing components/inspector-protocol)",
+                    waterui_path.display()
+                ),
+            ));
+        }
+
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert("waterui".to_string(), dependency_path(waterui_path));
+        dependencies.insert(
+            "waterui-ffi".to_string(),
+            dependency_path(&waterui_path.join("ffi")),
+        );
+        dependencies.insert(
+            "waterui-inspector-protocol".to_string(),
+            dependency_path(&inspector_protocol_path),
+        );
+        dependencies.insert("smol".to_string(), dependency_version("2.0.2"));
+        dependencies.insert("futures-lite".to_string(), dependency_version("2.6"));
+
+        write_support_cargo_toml(base_dir, &ctx.crate_name, dependencies).await
     }
 }

@@ -372,7 +372,20 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
 
     // If already cached, return the path
     if cache_file.exists() {
-        if std::fs::metadata(&cache_file).map(|m| m.len()).unwrap_or(0) == 0 {
+        let cache_len = match std::fs::metadata(&cache_file) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => {
+                return Err(error).wrap_err_with(|| {
+                    format!(
+                        "Failed to read cached font metadata for '{}' at {}",
+                        name,
+                        cache_file.display()
+                    )
+                });
+            }
+        };
+        if cache_len == 0 {
             warn!(
                 "Ignoring empty cached font '{}' at {}",
                 name,
@@ -416,8 +429,8 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+        .expect("System clock is before UNIX_EPOCH")
+        .as_nanos();
     let temp_file = cache_dir.join(format!(
         "{hash}.{extension}.tmp-{}-{nonce}",
         std::process::id()
