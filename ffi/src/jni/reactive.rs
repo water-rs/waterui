@@ -57,13 +57,21 @@ fn create_resolved_font_struct<'local>(
     env: &mut JNIEnv<'local>,
     size: f32,
     weight: i32,
+    family: &str,
 ) -> JObject<'local> {
     let classes = crate::jni::java_classes();
+    let family = env
+        .new_string(family)
+        .expect("Failed to create font family string");
     unsafe {
         env.new_object_unchecked(
             &classes.resolved_font_struct_class,
             jni::objects::JMethodID::from_raw(classes.resolved_font_struct_ctor),
-            &[JValue::Float(size).as_jni(), JValue::Int(weight).as_jni()],
+            &[
+                JValue::Float(size).as_jni(),
+                JValue::Int(weight).as_jni(),
+                JValue::Object(&family).as_jni(),
+            ],
         )
         .expect("Failed to create ResolvedFontStruct")
     }
@@ -208,13 +216,17 @@ fn read_binding_str_to_bytes(env: &mut JNIEnv, binding_ptr: jlong) -> jobject {
 /// Helper for setting a Str binding from byte array
 fn set_binding_str_from_bytes(env: &mut JNIEnv, binding_ptr: jlong, bytes: &JByteArray) {
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
-    let len = env.get_array_length(bytes).unwrap_or(0) as usize;
+    let len = env
+        .get_array_length(bytes)
+        .expect("set_binding_str_from_bytes: failed to read byte array length")
+        as usize;
     let mut buf = alloc::vec![0i8; len];
-    env.get_byte_array_region(bytes, 0, &mut buf).ok();
+    env.get_byte_array_region(bytes, 0, &mut buf)
+        .expect("set_binding_str_from_bytes: failed to read byte array content");
     let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
-    if let Ok(s) = String::from_utf8(bytes) {
-        binding.set(waterui::Str::from(s));
-    }
+    let s = String::from_utf8(bytes)
+        .expect("set_binding_str_from_bytes: input byte array is not valid UTF-8");
+    binding.set(waterui::Str::from(s));
 }
 
 /// Generates JNI read/set functions for Str-based binding types (using byte array).
@@ -527,7 +539,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
 
     // Convert weight enum to int (the enum repr(C) matches Java expectations)
     let weight_int = ffi.weight as i32;
-    create_resolved_font_struct(&mut env, ffi.size, weight_int).into_raw()
+    let family = unsafe { ffi.family.as_str() };
+    create_resolved_font_struct(&mut env, ffi.size, weight_int, family).into_raw()
 }
 
 /// Read a StyledStr computed value and return Java StyledStrStruct.
@@ -1182,7 +1195,8 @@ unsafe extern "C" fn watcher_call_resolved_font(
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let java_value = create_resolved_font_struct(&mut env, value.size, value.weight as i32);
+    let family = unsafe { value.family.as_str() };
+    let java_value = create_resolved_font_struct(&mut env, value.size, value.weight as i32, family);
 
     let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);

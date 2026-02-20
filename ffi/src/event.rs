@@ -21,8 +21,7 @@ impl IntoFFI for LifeCycle {
         match self {
             LifeCycle::Appear => WuiLifeCycle::Appear,
             LifeCycle::Disappear => WuiLifeCycle::Disappear,
-            // Handle any future lifecycle variants
-            _ => WuiLifeCycle::Appear,
+            _ => panic!("unsupported LifeCycle variant for FFI"),
         }
     }
 }
@@ -64,10 +63,13 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
     handler: *mut WuiLifeCycleHookHandler,
     env: *const crate::WuiEnv,
 ) {
-    unsafe {
+    if handler.is_null() || env.is_null() {
+        return;
+    }
+    let _ = crate::ffi_boundary("waterui_call_lifecycle_hook", || unsafe {
         let hook = alloc::boxed::Box::from_raw(handler);
         hook.0.handle(&*env);
-    }
+    });
 }
 
 /// Drops a LifeCycleHook handler without calling it.
@@ -77,6 +79,9 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
 /// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleHookHandler) {
+    if handler.is_null() {
+        return;
+    }
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
     }
@@ -100,8 +105,7 @@ impl IntoFFI for Event {
         match self {
             Event::HoverEnter => WuiEvent::HoverEnter,
             Event::HoverExit => WuiEvent::HoverExit,
-            // Handle any future event variants
-            _ => WuiEvent::HoverEnter,
+            _ => panic!("unsupported Event variant for FFI"),
         }
     }
 }
@@ -141,10 +145,13 @@ pub unsafe extern "C" fn waterui_call_on_event(
     handler: *mut WuiOnEventHandler,
     env: *const crate::WuiEnv,
 ) {
-    unsafe {
+    if handler.is_null() || env.is_null() {
+        return;
+    }
+    let _ = crate::ffi_boundary("waterui_call_on_event", || unsafe {
         let on_event = &mut *handler;
         on_event.0.handle(&*env);
-    }
+    });
 }
 
 /// Drops an OnEvent handler.
@@ -154,6 +161,9 @@ pub unsafe extern "C" fn waterui_call_on_event(
 /// * `handler` must be a valid pointer to a WuiOnEventHandler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_on_event(handler: *mut WuiOnEventHandler) {
+    if handler.is_null() {
+        return;
+    }
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
     }

@@ -373,6 +373,28 @@ fn init_wgpu_if_needed(_area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4
     let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
     let format = query_framebuffer_format(&glow);
 
+    if let Some(prefers_hdr) = state
+        .gpu_surface
+        .as_ref()
+        .and_then(|surface| surface.get_surface_prefers_hdr())
+    {
+        let format_is_hdr = matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        );
+        match (prefers_hdr, format_is_hdr) {
+            (true, false) => tracing::warn!(
+                "[gtk-gpu] GpuSurface requested HDR surface but GtkGLArea default {:?} is SDR; preference ignored",
+                format
+            ),
+            (false, true) => tracing::warn!(
+                "[gtk-gpu] GpuSurface requested SDR surface but GtkGLArea default {:?} is HDR; preference ignored",
+                format
+            ),
+            _ => {}
+        }
+    }
+
     let exposed = unsafe {
         wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
     }

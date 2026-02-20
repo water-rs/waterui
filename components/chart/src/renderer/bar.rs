@@ -17,7 +17,7 @@ use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
-    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+    multisample_state, shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 const PLOT_PADDING: f32 = 0.1;
@@ -160,7 +160,7 @@ impl BarChartRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Bar Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -189,9 +189,54 @@ impl BarChartRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
+    }
+
+    fn to_gpu_data(&self, data: &[DataPoint]) -> Vec<GpuDataPoint> {
+        data.iter()
+            .map(|p| GpuDataPoint {
+                x: p.x,
+                y: p.y,
+                color: glam::Vec4::from_array(self.bar_color),
+            })
+            .collect()
+    }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(current_buffer) = &self.current_buffer else {
+            return;
+        };
+        let Some(previous_buffer) = &self.previous_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bar Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: current_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: previous_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }
 
@@ -207,15 +252,7 @@ impl GpuRenderer for BarChartRenderer {
 
         // Create data buffers with initial capacity
         let initial_capacity = self.data.len().max(16384);
-        let initial_data: Vec<GpuDataPoint> = self
-            .data
-            .iter()
-            .map(|p| GpuDataPoint {
-                x: p.x,
-                y: p.y,
-                color: glam::Vec4::from_array(self.bar_color),
-            })
-            .collect();
+        let initial_data = self.to_gpu_data(&self.data);
 
         self.current_buffer = Some(if initial_data.is_empty() {
             create_storage_buffer(
@@ -237,26 +274,7 @@ impl GpuRenderer for BarChartRenderer {
             create_storage_buffer(ctx, "Bar Chart Previous Data", &initial_data)
         });
 
-        // Create bind group
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bar Chart Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.current_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.previous_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -398,25 +416,43 @@ impl ChartRenderer for BarChartRenderer {
     type Data = Vec<DataPoint>;
     type DataValue = DataPoint;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
 
         // Update data
-        self.data = data.clone();
+        let previous_data = core::mem::replace(&mut self.data, data.clone());
         self.bounds = DataBounds::from_points(&self.data);
 
-        // Upload to GPU
-        if let Some(buffer) = &self.current_buffer {
-            let gpu_data: Vec<GpuDataPoint> = data
-                .iter()
-                .map(|p| GpuDataPoint {
-                    x: p.x,
-                    y: p.y,
-                    color: glam::Vec4::from_array(self.bar_color),
-                })
-                .collect();
-            write_storage_buffer(queue, buffer, &gpu_data);
+        let current_gpu_data = self.to_gpu_data(data);
+        let mut previous_gpu_data = self.to_gpu_data(&previous_data);
+        if previous_gpu_data.len() < current_gpu_data.len() {
+            previous_gpu_data.resize(current_gpu_data.len(), GpuDataPoint::default());
+        }
+
+        let mut needs_rebind = false;
+
+        if let Some(buffer) = self.current_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Bar Chart Current Data",
+                &current_gpu_data,
+            );
+        }
+        if let Some(buffer) = self.previous_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Bar Chart Previous Data",
+                &previous_gpu_data,
+            );
+        }
+
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;
