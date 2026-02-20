@@ -5,8 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use color_eyre::eyre::{Context, Result, bail};
 use sha2::Digest as _;
@@ -23,14 +22,17 @@ use crate::build::RustBuild;
 use crate::device::{Device, DeviceEvent, Local, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
+use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
+use crate::runtime_fingerprint::compute_runtime_fingerprint;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
+const PREVIEW_DYLIB_METADATA_SUFFIX: &str = ".waterui-preview-dylib-signature";
 
 #[derive(Debug, Clone)]
 struct PreviewRequirements {
     waterui_root: PathBuf,
-    waterui_core_fingerprint: String,
+    runtime_fingerprint: String,
 }
 
 /// A preview session that manages the preview app and TCP connection.
@@ -50,6 +52,8 @@ pub struct PreviewSession {
     owns_app: bool,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<PathBuf>,
+    /// Runtime fingerprint used for ABI-safe dylib invalidation.
+    runtime_fingerprint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +87,15 @@ impl PreviewSession {
             .clone()
             .unwrap_or_else(|| expected_path.clone());
 
-        let dylib_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime).await? {
+        let target_triple = target.triple().to_string();
+        let dylib_signature = dylib_build_signature(
+            &self.runtime_fingerprint,
+            &target_triple,
+            project.crate_name(),
+        );
+        let dylib_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature)
+            .await?
+        {
             candidate_path
         } else {
             info!("Building dylib...");
@@ -91,6 +103,7 @@ impl PreviewSession {
                 .build_dylib(project.crate_name(), false)
                 .await
                 .wrap_err("Failed to build dylib")?;
+            write_dylib_signature(&dylib_path, &dylib_signature).await?;
 
             info!("Dylib built: {}", dylib_path.display());
             dylib_path
@@ -142,7 +155,37 @@ impl PreviewSession {
     }
 }
 
-async fn dylib_is_up_to_date(path: &std::path::Path, source_mtime: SystemTime) -> Result<bool> {
+fn dylib_signature_path(path: &Path) -> PathBuf {
+    let mut raw = path.as_os_str().to_os_string();
+    raw.push(PREVIEW_DYLIB_METADATA_SUFFIX);
+    PathBuf::from(raw)
+}
+
+fn dylib_build_signature(runtime_fingerprint: &str, target_triple: &str, crate_name: &str) -> String {
+    format!(
+        "runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}"
+    )
+}
+
+fn preview_run_options() -> RunOptions {
+    let mut run_options = RunOptions::new();
+    for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
+        run_options.insert_env_var(key.to_string(), value.to_string());
+    }
+    run_options
+}
+
+async fn write_dylib_signature(path: &Path, signature: &str) -> Result<()> {
+    let signature_path = dylib_signature_path(path);
+    smol::fs::write(signature_path, signature.as_bytes()).await?;
+    Ok(())
+}
+
+async fn dylib_is_up_to_date(
+    path: &std::path::Path,
+    source_mtime: SystemTime,
+    expected_signature: &str,
+) -> Result<bool> {
     let metadata = match smol::fs::metadata(path).await {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -150,7 +193,18 @@ async fn dylib_is_up_to_date(path: &std::path::Path, source_mtime: SystemTime) -
     };
 
     let dylib_mtime = metadata.modified()?;
-    Ok(dylib_mtime >= source_mtime)
+    if dylib_mtime < source_mtime {
+        return Ok(false);
+    }
+
+    let signature_path = dylib_signature_path(path);
+    let stored_signature = match smol::fs::read_to_string(&signature_path).await {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+
+    Ok(stored_signature.trim() == expected_signature)
 }
 
 async fn compute_dylib_id(path: &Path) -> Result<DylibId> {
@@ -194,7 +248,7 @@ pub async fn launch_preview_session(
     sccache_path: Option<PathBuf>,
 ) -> Result<PreviewSession> {
     let requirements = resolve_preview_requirements(project_path).await?;
-    let expected_fingerprint = requirements.waterui_core_fingerprint.clone();
+    let expected_fingerprint = requirements.runtime_fingerprint.clone();
 
     let tcp_config = PreviewTcpConfig::from_env()
         .map_err(|e| color_eyre::eyre::eyre!(e))
@@ -211,13 +265,14 @@ pub async fn launch_preview_session(
             running: None,
             owns_app: false,
             sccache_path,
+            runtime_fingerprint: expected_fingerprint.clone(),
         });
     }
 
     info!("No preview app running, launching...");
 
     // Ensure the preview support app exists and is up to date
-    let preview_app_path = preview_support_path();
+    let preview_app_path = preview_support_path()?;
     ensure_preview_support_app(&preview_app_path, &requirements).await?;
 
     // Open the preview app project
@@ -234,7 +289,7 @@ pub async fn launch_preview_session(
             let device = Local;
             device.launch().await?;
             info!("Building and running preview app on macOS...");
-            let run_options = RunOptions::new();
+            let run_options = preview_run_options();
             project
                 .run_with_options(backend, TargetPlatform::MacOS, device, run_options)
                 .await
@@ -260,7 +315,7 @@ pub async fn launch_preview_session(
 
             simulator.launch().await?;
             info!("Building and running preview app on iOS Simulator...");
-            let run_options = RunOptions::new();
+            let run_options = preview_run_options();
             project
                 .run_with_options(
                     backend,
@@ -285,7 +340,7 @@ pub async fn launch_preview_session(
             if let Some(device) = devices.into_iter().next() {
                 device.launch().await?;
                 info!("Building and running preview app on Android device...");
-                let run_options = RunOptions::new();
+                let run_options = preview_run_options();
                 project
                     .run_android_with_options(backend, device, run_options)
                     .await
@@ -299,7 +354,7 @@ pub async fn launch_preview_session(
                 let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
                 emulator.launch().await?;
                 info!("Building and running preview app on Android emulator...");
-                let run_options = RunOptions::new();
+                let run_options = preview_run_options();
                 project
                     .run_android_with_options(backend, emulator, run_options)
                     .await
@@ -323,6 +378,7 @@ pub async fn launch_preview_session(
             running: Some(running),
             owns_app: true,
             sccache_path,
+            runtime_fingerprint: expected_fingerprint.clone(),
         }),
         ConnectionResult::Crashed(message) => {
             bail!("Preview app crashed:\n{message}")
@@ -427,11 +483,10 @@ async fn wait_for_connection_or_crash(
 }
 
 /// Get the path to the preview support app.
-fn preview_support_path() -> PathBuf {
-    dirs::home_dir()
-        .expect("home directory should exist")
-        .join(".water")
-        .join("preview_support")
+fn preview_support_path() -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Home directory is not available"))?;
+    Ok(home.join(".water").join("preview_support"))
 }
 
 /// Ensure the preview support app exists and matches the current project requirements.
@@ -445,9 +500,16 @@ async fn ensure_preview_support_app(
 
     let mut needs_scaffold = !cargo_path.exists();
     if !needs_scaffold {
-        let stored_signature = smol::fs::read_to_string(&metadata_path)
-            .await
-            .unwrap_or_default();
+        let stored_signature = match smol::fs::read_to_string(&metadata_path).await {
+            Ok(signature) => signature,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "Failed to read preview metadata {}: {err}",
+                    metadata_path.display()
+                ));
+            }
+        };
         if stored_signature.trim() != desired_signature {
             needs_scaffold = true;
         }
@@ -491,7 +553,7 @@ async fn remove_dir_all_retry(path: &Path) -> Result<()> {
 /// Scaffold the preview support app as a normal playground project.
 async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements) -> Result<()> {
     use crate::project::{CreateOptions, Manifest as WaterManifest};
-    use cargo_toml::{Dependency, DependencyDetail, Manifest as CargoManifest};
+    use crate::templates::TemplateContext;
 
     let waterui_path = requirements.waterui_root.clone();
 
@@ -513,35 +575,25 @@ async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements
     manifest.package.accessory = true;
     manifest.save(project.root()).await?;
 
-    // Add waterui-preview dependency to Cargo.toml
-    let cargo_path = project.root().join("Cargo.toml");
-    let cargo_content = smol::fs::read_to_string(&cargo_path).await?;
-    let mut manifest: CargoManifest = toml::from_str(&cargo_content)?;
+    let ctx = TemplateContext {
+        app_display_name: "WaterUI Preview".to_string(),
+        app_name: "WaterUIPreview".to_string(),
+        crate_name: project.crate_name().to_string(),
+        bundle_identifier: "dev.waterui.preview".to_string(),
+        author: String::new(),
+        android_backend_path: Some(waterui_path.join("backends/android")),
+        use_remote_dev_backend: false,
+        waterui_path: Some(waterui_path),
+        backend_project_path: None,
+        android_permissions: Vec::new(),
+        ios_permissions: Vec::new(),
+        accessory: true,
+        preview_runtime_fingerprint: Some(requirements.runtime_fingerprint.clone()),
+    };
 
-    let preview_path = waterui_path.join("components/preview");
-    if !preview_path.exists() {
-        bail!(
-            "Preview compatibility requires a co-located WaterUI source tree at {} (missing components/preview)",
-            waterui_path.display()
-        );
-    }
-    manifest.dependencies.insert(
-        "waterui-preview".to_string(),
-        Dependency::Detailed(Box::new(DependencyDetail {
-            path: Some(preview_path.display().to_string()),
-            ..Default::default()
-        })),
-    );
-
-    let updated = toml::to_string_pretty(&manifest)?;
-    smol::fs::write(&cargo_path, updated).await?;
-
-    // Overwrite lib.rs with preview template
-    let lib_template = include_str!("../templates/preview/src/lib.rs.tpl").replace(
-        "{{waterui_core_fingerprint}}",
-        requirements.waterui_core_fingerprint.as_str(),
-    );
-    smol::fs::write(project.root().join("src/lib.rs"), lib_template).await?;
+    crate::templates::preview::scaffold(project.root(), &ctx)
+        .await
+        .wrap_err("Failed to scaffold embedded preview app template")?;
 
     info!("Preview app scaffolded at {}", path.display());
     Ok(())
@@ -549,9 +601,10 @@ async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements
 
 fn preview_signature(requirements: &PreviewRequirements) -> String {
     format!(
-        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nwaterui_root={}\nwaterui_core={}",
+        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nwaterui_root={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
         requirements.waterui_root.display(),
-        requirements.waterui_core_fingerprint
+        requirements.runtime_fingerprint,
+        crate::templates::preview::template_fingerprint(),
     )
 }
 
@@ -580,9 +633,14 @@ Current project resolves `waterui` from a non-path source."
         .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
 
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
+    let waterui_core_id = waterui_core.id.to_string();
+    let runtime_fingerprint_base = compute_runtime_fingerprint(&waterui_root, &waterui_core_id)
+        .await?;
+    let runtime_fingerprint =
+        format!("{runtime_fingerprint_base}|profile={}", runtime_profile_tag());
     Ok(PreviewRequirements {
         waterui_root,
-        waterui_core_fingerprint: waterui_core.id.to_string(),
+        runtime_fingerprint,
     })
 }
 

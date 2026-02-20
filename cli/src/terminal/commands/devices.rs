@@ -52,23 +52,23 @@ pub async fn run(args: Args) -> Result<()> {
             display_ios_devices(&ios_devices);
         }
         TargetPlatform::Android => {
-            let (emulator_path, adb_path) = resolve_android_tools()?;
+            let adb_path = resolve_android_adb()?;
             let (avds, devices, running_avds) =
-                scan_android_devices(emulator_path, adb_path).await?;
+                scan_android_devices(AndroidSdk::emulator_path(), adb_path).await?;
             display_android_devices(&avds, &devices, &running_avds);
         }
         TargetPlatform::Macos => {
             display_macos_devices();
         }
         TargetPlatform::All => {
-            // Fast-fail when Android tooling is unavailable.
-            let (emulator_path, adb_path) = resolve_android_tools()?;
+            // Fast-fail only when adb is unavailable.
+            let adb_path = resolve_android_adb()?;
             let spinner = shell::spinner("Scanning devices...");
 
             // Scan iOS and Android in parallel
             let (ios_devices, android_result) = zip(
                 scan_ios_devices(),
-                scan_android_devices(emulator_path, adb_path),
+                scan_android_devices(AndroidSdk::emulator_path(), adb_path),
             )
             .await;
 
@@ -102,9 +102,9 @@ async fn run_json(args: Args) -> Result<()> {
             }
         }
         TargetPlatform::Android => {
-            let (emulator_path, adb_path) = resolve_android_tools()?;
+            let adb_path = resolve_android_adb()?;
             let (avds, devices, running_avds) =
-                scan_android_devices(emulator_path, adb_path).await?;
+                scan_android_devices(AndroidSdk::emulator_path(), adb_path).await?;
             DevicesJsonOutput {
                 ty: "devices",
                 platform: "android",
@@ -124,11 +124,11 @@ async fn run_json(args: Args) -> Result<()> {
             }]),
         },
         TargetPlatform::All => {
-            // Fast-fail when Android tooling is unavailable.
-            let (emulator_path, adb_path) = resolve_android_tools()?;
+            // Fast-fail only when adb is unavailable.
+            let adb_path = resolve_android_adb()?;
             let (ios_devices, android_result) = zip(
                 scan_ios_devices(),
-                scan_android_devices(emulator_path, adb_path),
+                scan_android_devices(AndroidSdk::emulator_path(), adb_path),
             )
             .await;
             let ios_devices = ios_devices?;
@@ -156,21 +156,20 @@ async fn scan_ios_devices() -> Result<Vec<AppleSimulator>> {
     Ok(AppleSimulator::scan_ios().await?)
 }
 
-fn resolve_android_tools() -> Result<(PathBuf, PathBuf)> {
-    let emulator_path = AndroidSdk::emulator_path()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Android emulator not found"))?;
-    let adb_path =
-        AndroidSdk::adb_path().ok_or_else(|| color_eyre::eyre::eyre!("Android adb not found"))?;
-    Ok((emulator_path, adb_path))
+fn resolve_android_adb() -> Result<PathBuf> {
+    AndroidSdk::adb_path().ok_or_else(|| color_eyre::eyre::eyre!("Android adb not found"))
 }
 
 /// Scan Android devices and emulators.
 async fn scan_android_devices(
-    emulator_path: PathBuf,
+    emulator_path: Option<PathBuf>,
     adb_path: PathBuf,
 ) -> Result<(Vec<String>, Vec<AndroidDevice>, HashSet<String>)> {
     // List available AVDs (emulators) and connected devices in parallel
-    let avds_future = async {
+    let avds_future = async move {
+        let Some(emulator_path) = emulator_path else {
+            return Ok(Vec::new());
+        };
         Command::new(&emulator_path)
             .arg("-list-avds")
             .output()
