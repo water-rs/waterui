@@ -253,7 +253,11 @@ fn init_classes(env: &mut JNIEnv) -> JavaClasses {
         .new_global_ref(resolved_font_struct_class)
         .expect("Failed to create global ref");
     let resolved_font_struct_ctor = env
-        .get_method_id(&resolved_font_struct_class, "<init>", "(FI)V")
+        .get_method_id(
+            &resolved_font_struct_class,
+            "<init>",
+            "(FILjava/lang/String;)V",
+        )
         .expect("ResolvedFontStruct constructor not found")
         .into_raw();
 

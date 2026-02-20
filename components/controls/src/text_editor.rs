@@ -49,26 +49,21 @@ impl RichTextEditor {
 
     /// Sets the maximum number of lines to show.
     ///
-    /// Currently only `1` is supported across backends.
-    ///
     /// # Panics
     ///
-    /// Panics if `line_limit` is `0` or not `1`.
+    /// Panics if `line_limit` is `0`.
     #[must_use]
     pub fn line_limit(mut self, line_limit: usize) -> Self {
         assert!(line_limit > 0, "Line limit must be greater than 0");
-        assert_eq!(
-            line_limit, 1,
-            "RichTextEditor multi-line editing is not implemented yet"
-        );
         self.0.line_limit = NonZeroUsize::new(line_limit);
         self
     }
 
     /// Disables the line limit.
     #[must_use]
-    pub fn disable_line_limit(self) -> Self {
-        panic!("RichTextEditor multi-line editing is not implemented yet");
+    pub fn disable_line_limit(mut self) -> Self {
+        self.0.line_limit = None;
+        self
     }
 }
 
@@ -105,15 +100,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "multi-line editing is not implemented yet")]
-    fn line_limit_non_one_panics() {
+    fn line_limit_non_one_is_supported() {
         let value = Binding::container(StyledStr::default());
         let _ = RichTextEditor::new(&value).line_limit(2);
     }
 
     #[test]
-    #[should_panic(expected = "multi-line editing is not implemented yet")]
-    fn disable_line_limit_panics() {
+    fn disable_line_limit_does_not_panic() {
         let value = Binding::container(StyledStr::default());
         let _ = RichTextEditor::new(&value).disable_line_limit();
     }

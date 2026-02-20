@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use crate::AssetError;
 
 pub(crate) fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
-    if url.starts_with("http://") && !is_loopback_http_url(url) {
+    if has_http_scheme(url) && !is_loopback_http_url(url) {
         return Err(AssetError::http_not_allowed(url));
     }
 
@@ -17,9 +17,24 @@ fn is_loopback_http_url(url: &str) -> bool {
 }
 
 fn extract_http_host(url: &str) -> Option<&str> {
-    let remainder = url.strip_prefix("http://")?;
+    let remainder = strip_http_prefix(url)?;
     let authority = remainder.split(['/', '?', '#']).next()?;
     authority.rsplit('@').next()
+}
+
+fn has_http_scheme(url: &str) -> bool {
+    strip_http_prefix(url).is_some()
+}
+
+fn strip_http_prefix(url: &str) -> Option<&str> {
+    const HTTP_PREFIX: &str = "http://";
+    let prefix_len = HTTP_PREFIX.len();
+    let prefix = url.get(..prefix_len)?;
+    if prefix.eq_ignore_ascii_case(HTTP_PREFIX) {
+        url.get(prefix_len..)
+    } else {
+        None
+    }
 }
 
 fn normalize_host(authority: &str) -> Option<&str> {
@@ -49,6 +64,7 @@ mod tests {
         for url in [
             "http://localhost/file.bin",
             "http://LOCALHOST:8080/file.bin",
+            "HTTP://localhost/file.bin",
             "http://127.0.0.1/file.bin",
             "http://127.5.6.7:9000/file.bin",
             "http://[::1]/file.bin",
@@ -61,6 +77,7 @@ mod tests {
     fn rejects_non_loopback_http_urls() {
         for url in [
             "http://example.com/file.bin",
+            "HTTP://example.com/file.bin",
             "http://localhost.evil.com/file.bin",
             "http://127.0.0.1.evil.com/file.bin",
             "http://[::2]/file.bin",

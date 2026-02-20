@@ -3,10 +3,19 @@ use std::path::PathBuf;
 use waterui_preview_protocol::DylibId;
 
 fn water_cache_dir() -> PathBuf {
-    dirs::home_dir()
-        .expect("preview requires a home directory for ~/.water cache")
-        .join(".water")
-        .join("cache")
+    if let Some(cache_dir) = std::env::var_os("WATER_CACHE_DIR") {
+        return PathBuf::from(cache_dir);
+    }
+
+    if let Some(cache_dir) = dirs::cache_dir() {
+        return cache_dir.join("waterui");
+    }
+
+    if let Some(home_dir) = dirs::home_dir() {
+        return home_dir.join(".water").join("cache");
+    }
+
+    std::env::temp_dir().join("waterui-cache")
 }
 
 pub fn preview_dylib_cache_dir() -> PathBuf {
