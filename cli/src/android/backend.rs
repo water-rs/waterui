@@ -122,6 +122,7 @@ impl Backend for AndroidBackend {
             android_permissions,
             ios_permissions: Vec::new(),
             accessory: manifest.package.accessory,
+            preview_runtime_fingerprint: None,
         };
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)

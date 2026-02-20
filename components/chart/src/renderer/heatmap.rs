@@ -15,7 +15,7 @@ use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 const PLOT_PADDING: f32 = 0.05;
@@ -132,7 +132,7 @@ impl HeatmapRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Heatmap Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -161,9 +161,37 @@ impl HeatmapRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
+    }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(value_buffer) = &self.value_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Heatmap Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: value_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }
 
@@ -191,22 +219,7 @@ impl GpuRenderer for HeatmapRenderer {
             &initial_values,
         ));
 
-        // Create bind group
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Heatmap Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.value_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -375,16 +388,26 @@ impl ChartRenderer for HeatmapRenderer {
     type Data = HeatmapData;
     type DataValue = HeatmapHit;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Update data
         self.data = data.clone();
         self.bounds = DataBounds::new(0.0, data.cols as f32, 0.0, data.rows as f32);
 
         // Upload values to GPU
-        if let Some(buffer) = &self.value_buffer {
+        let mut needs_rebind = false;
+        if let Some(buffer) = self.value_buffer.as_mut() {
             if !data.values.is_empty() {
-                write_storage_buffer(queue, buffer, &data.values);
+                needs_rebind |= write_storage_buffer_with_growth(
+                    device,
+                    queue,
+                    buffer,
+                    "Heatmap Values",
+                    &data.values,
+                );
             }
+        }
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

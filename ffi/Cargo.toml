@@ -57,7 +57,7 @@ wgpu-hal = { workspace = true, features = ["vulkan"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
-metal = "0.32"
+metal = "0.33"
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 

@@ -353,7 +353,7 @@ impl GpuRenderer for FlameRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -431,7 +431,7 @@ impl GpuRenderer for FlameRenderer {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Pipeline Layout"),
                     bind_group_layouts: &[&globals_layout],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         let composite_pipeline_layout =
@@ -439,7 +439,7 @@ impl GpuRenderer for FlameRenderer {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Composite Layout"),
                     bind_group_layouts: &[&globals_layout, &sample_layout],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         // Blur shader uses @group(2), so we must provide layouts for groups 0..=2.
@@ -448,7 +448,7 @@ impl GpuRenderer for FlameRenderer {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Blur Pipeline Layout"),
                     bind_group_layouts: &[&globals_layout, &sample_layout, &blur_layout],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         let flame_pipeline = ctx
@@ -478,7 +478,7 @@ impl GpuRenderer for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -509,7 +509,7 @@ impl GpuRenderer for FlameRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: ctx.pipeline_cache,
                 });
 
@@ -540,7 +540,7 @@ impl GpuRenderer for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -571,7 +571,7 @@ impl GpuRenderer for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -713,6 +713,7 @@ impl GpuRenderer for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(flame_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -735,6 +736,7 @@ impl GpuRenderer for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(downsample_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -758,6 +760,7 @@ impl GpuRenderer for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(blur_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -782,6 +785,7 @@ impl GpuRenderer for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(blur_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -806,6 +810,7 @@ impl GpuRenderer for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(final_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);

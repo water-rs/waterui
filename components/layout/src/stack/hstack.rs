@@ -195,8 +195,7 @@ impl Layout for HStackLayout {
                 measurements[b]
                     .size
                     .width
-                    .partial_cmp(&measurements[a].size.width)
-                    .unwrap()
+                    .total_cmp(&measurements[a].size.width)
             });
 
             // Compress largest children first until we fit
@@ -316,8 +315,7 @@ impl Layout for HStackLayout {
                 measurements[b]
                     .size
                     .width
-                    .partial_cmp(&measurements[a].size.width)
-                    .unwrap()
+                    .total_cmp(&measurements[a].size.width)
             });
 
             // Compress largest children first until we fit

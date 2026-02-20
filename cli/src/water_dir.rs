@@ -28,8 +28,16 @@ pub async fn ensure_valid(project_root: &Path) -> eyre::Result<()> {
     if water_dir.exists() {
         // Check if metadata exists and matches current CLI commit
         let should_clean = if metadata_path.exists() {
-            let stored_commit = fs::read_to_string(&metadata_path).await.unwrap_or_default();
-            stored_commit.trim() != CLI_COMMIT
+            match fs::read_to_string(&metadata_path).await {
+                Ok(stored_commit) => stored_commit.trim() != CLI_COMMIT,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+                Err(err) => {
+                    return Err(eyre::eyre!(
+                        "failed to read Water metadata at {}: {err}",
+                        metadata_path.display()
+                    ));
+                }
+            }
         } else {
             // No metadata file - old .water directory, clean it
             true

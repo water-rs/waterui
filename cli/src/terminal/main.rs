@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use futures::future::{self, Either};
 
-use commands::{build, clean, create, device, devices, doctor, package, preview, run};
+use commands::{build, clean, create, device, devices, doctor, inspector, package, preview, run};
 
 /// `WaterUI` command line interface.
 #[derive(Parser, Debug)]
@@ -56,6 +56,9 @@ enum Commands {
 
     /// Preview a view function as PNG.
     Preview(preview::Args),
+
+    /// Launch the WaterUI inspector app.
+    Inspector(inspector::Args),
 }
 
 fn main() -> Result<()> {
@@ -104,6 +107,7 @@ fn main() -> Result<()> {
                     Commands::Device(args) => device::run(args).await,
                     Commands::Devices(args) => devices::run(args).await,
                     Commands::Preview(args) => preview::run(args).await,
+                    Commands::Inspector(args) => inspector::run(args).await,
                 }
             };
 

@@ -17,7 +17,7 @@ use crate::interaction::{ChartViewport, HitResult};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 /// GPU-accelerated gauge chart renderer.
@@ -200,7 +200,7 @@ impl GaugeRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Gauge Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -229,7 +229,7 @@ impl GaugeRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -270,6 +270,41 @@ impl GaugeRenderer {
                 .collect()
         }
     }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(region_color_buffer) = &self.region_color_buffer else {
+            return;
+        };
+        let Some(region_threshold_buffer) = &self.region_threshold_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Gauge Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: region_color_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: region_threshold_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
 }
 
 impl GpuRenderer for GaugeRenderer {
@@ -300,35 +335,7 @@ impl GpuRenderer for GaugeRenderer {
             &thresholds,
         ));
 
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(
-            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Gauge Chart Bind Group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self
-                            .region_color_buffer
-                            .as_ref()
-                            .unwrap()
-                            .as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self
-                            .region_threshold_buffer
-                            .as_ref()
-                            .unwrap()
-                            .as_entire_binding(),
-                    },
-                ],
-            }),
-        );
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -447,19 +454,37 @@ impl ChartRenderer for GaugeRenderer {
     type Data = GaugeData;
     type DataValue = f32;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.previous_value = self.data.value;
         self.data = data.clone();
 
+        let colors = self.get_region_colors();
+        let thresholds = self.get_region_thresholds();
+        let mut needs_rebind = false;
+
         // Update region buffers
-        if let Some(buffer) = &self.region_color_buffer {
-            let colors = self.get_region_colors();
-            write_storage_buffer(queue, buffer, &colors);
+        if let Some(buffer) = self.region_color_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Gauge Region Colors",
+                &colors,
+            );
         }
 
-        if let Some(buffer) = &self.region_threshold_buffer {
-            let thresholds = self.get_region_thresholds();
-            write_storage_buffer(queue, buffer, &thresholds);
+        if let Some(buffer) = self.region_threshold_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Gauge Region Thresholds",
+                &thresholds,
+            );
+        }
+
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

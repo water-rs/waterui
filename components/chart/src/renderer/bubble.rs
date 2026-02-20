@@ -16,7 +16,7 @@ use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer,
+    shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 const PLOT_PADDING: f32 = 0.1;
@@ -184,7 +184,7 @@ impl BubbleRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Bubble Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -213,7 +213,7 @@ impl BubbleRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -256,6 +256,34 @@ impl BubbleRenderer {
             })
             .collect()
     }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(point_buffer) = &self.point_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bubble Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: point_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
 }
 
 impl GpuRenderer for BubbleRenderer {
@@ -276,21 +304,7 @@ impl GpuRenderer for BubbleRenderer {
         }
         self.point_buffer = Some(create_storage_buffer(ctx, "Bubble Points", &initial_points));
 
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bubble Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.point_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -422,17 +436,27 @@ impl ChartRenderer for BubbleRenderer {
     type Data = Vec<BubblePoint>;
     type DataValue = BubblePoint;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.data = data.clone();
         let (bounds, size_bounds) = Self::compute_bounds(data);
         self.bounds = bounds;
         self.size_bounds = size_bounds;
 
-        if let Some(buffer) = &self.point_buffer {
-            let gpu_points = self.to_gpu_points();
+        let gpu_points = self.to_gpu_points();
+        let mut needs_rebind = false;
+        if let Some(buffer) = self.point_buffer.as_mut() {
             if !gpu_points.is_empty() {
-                write_storage_buffer(queue, buffer, &gpu_points);
+                needs_rebind |= write_storage_buffer_with_growth(
+                    device,
+                    queue,
+                    buffer,
+                    "Bubble Points",
+                    &gpu_points,
+                );
             }
+        }
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

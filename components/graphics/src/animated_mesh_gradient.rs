@@ -219,8 +219,10 @@ impl AnimatedMeshRenderer {
 
 impl GpuRenderer for AnimatedMeshRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
-        let shader =
-            crate::shared_context::create_cached_shader_module_prewarmed(ctx.device, &ANIMATED_MESH_SHADER);
+        let shader = crate::shared_context::create_cached_shader_module_prewarmed(
+            ctx.device,
+            &ANIMATED_MESH_SHADER,
+        );
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -260,7 +262,7 @@ impl GpuRenderer for AnimatedMeshRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Animated Mesh Gradient Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let blend = if ctx.is_hdr() {
@@ -296,7 +298,7 @@ impl GpuRenderer for AnimatedMeshRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -367,6 +369,7 @@ impl GpuRenderer for AnimatedMeshRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

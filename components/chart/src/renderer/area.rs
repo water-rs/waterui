@@ -16,7 +16,7 @@ use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::ChartRenderer;
 use crate::renderer::base::{
     ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
-    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+    multisample_state, shader_with_common, write_storage_buffer_with_growth, write_uniform_buffer,
 };
 
 const PLOT_PADDING: f32 = 0.1;
@@ -154,7 +154,7 @@ impl AreaRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Area Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         ctx.device
@@ -183,7 +183,7 @@ impl AreaRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview: None,
+                multiview_mask: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -274,6 +274,48 @@ impl AreaRenderer {
             (point_count - 1) * series_count
         }
     }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(segment_buffer) = &self.segment_buffer else {
+            return;
+        };
+        let Some(color_buffer) = &self.color_buffer else {
+            return;
+        };
+        let Some(prev_segment_buffer) = &self.prev_segment_buffer else {
+            return;
+        };
+
+        let bind_group_layout = pipeline.get_bind_group_layout(0);
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Area Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: segment_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: color_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: prev_segment_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
 }
 
 impl GpuRenderer for AreaRenderer {
@@ -305,35 +347,7 @@ impl GpuRenderer for AreaRenderer {
         }
         self.color_buffer = Some(create_storage_buffer(ctx, "Area Chart Colors", &colors));
 
-        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(
-            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Area Chart Bind Group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.segment_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.color_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self
-                            .prev_segment_buffer
-                            .as_ref()
-                            .unwrap()
-                            .as_entire_binding(),
-                    },
-                ],
-            }),
-        );
+        self.rebuild_bind_group(ctx.device);
 
         async {}
     }
@@ -483,23 +497,53 @@ impl ChartRenderer for AreaRenderer {
     type Data = AreaData;
     type DataValue = AreaSeries;
 
-    fn update_data(&mut self, data: &Self::Data, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn update_data(&mut self, data: &Self::Data, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Swap buffers for animation
         core::mem::swap(&mut self.segment_buffer, &mut self.prev_segment_buffer);
 
+        let mut previous_segments = self.to_gpu_segments();
         self.data = data.clone();
         self.bounds = data.bounds().with_padding(0.1);
 
-        // Upload segments
-        if let Some(buffer) = &self.segment_buffer {
-            let segments = self.to_gpu_segments();
-            write_storage_buffer(queue, buffer, &segments);
+        let segments = self.to_gpu_segments();
+        if previous_segments.len() < segments.len() {
+            previous_segments.resize(segments.len(), GpuAreaSegment::default());
         }
 
-        // Upload colors
-        if let Some(buffer) = &self.color_buffer {
-            let colors = self.get_colors();
-            write_storage_buffer(queue, buffer, &colors);
+        let mut needs_rebind = false;
+
+        if let Some(buffer) = self.segment_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Area Chart Segments",
+                &segments,
+            );
+        }
+        if let Some(buffer) = self.prev_segment_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Area Chart Prev Segments",
+                &previous_segments,
+            );
+        }
+
+        let colors = self.get_colors();
+        if let Some(buffer) = self.color_buffer.as_mut() {
+            needs_rebind |= write_storage_buffer_with_growth(
+                device,
+                queue,
+                buffer,
+                "Area Chart Colors",
+                &colors,
+            );
+        }
+
+        if needs_rebind {
+            self.rebuild_bind_group(device);
         }
 
         self.needs_redraw = true;

@@ -130,8 +130,8 @@ async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
     bail!("{message}");
 }
 
-async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
-    const FLAG: &str = "-framework VideoToolbox";
+async fn ensure_apple_framework_linking(xcodeproj: &Path) -> eyre::Result<()> {
+    const REQUIRED_FLAGS: [&str; 1] = ["-framework VideoToolbox"];
     let pbxproj_path = xcodeproj.join("project.pbxproj");
     if !pbxproj_path.exists() {
         return Ok(());
@@ -140,13 +140,13 @@ async fn ensure_video_toolbox_linking(xcodeproj: &Path) -> eyre::Result<()> {
     let content = fs::read_to_string(&pbxproj_path)
         .await
         .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
-    let (updated, changed) = inject_other_ldflags(&content, &[FLAG]);
+    let (updated, changed) = inject_other_ldflags(&content, &REQUIRED_FLAGS);
     if changed {
         fs::write(&pbxproj_path, updated)
             .await
             .wrap_err_with(|| format!("Failed to write {}", pbxproj_path.display()))?;
         info!(
-            "Updated {} to link VideoToolbox for codec support",
+            "Updated {} to link required Apple media frameworks",
             pbxproj_path.display()
         );
     }
@@ -291,7 +291,7 @@ pub async fn package_apple(
         );
     }
 
-    ensure_video_toolbox_linking(&xcodeproj).await?;
+    ensure_apple_framework_linking(&xcodeproj).await?;
     ensure_dav1d_linking(&xcodeproj, platform).await?;
     validate_local_apple_backend(project).await?;
 
@@ -479,7 +479,7 @@ mod tests {
     use super::inject_other_ldflags;
 
     #[test]
-    fn injects_video_toolbox_into_other_ldflags() {
+    fn injects_required_apple_frameworks_into_other_ldflags() {
         let input =
             "OTHER_LDFLAGS = \"-lwaterui_app -lc++\";\nOTHER_LDFLAGS = \"-lwaterui_app -lc++\";\n";
         let (output, changed) = inject_other_ldflags(input, &["-framework VideoToolbox"]);

@@ -40,11 +40,17 @@ fn sample_items() -> Vec<Item> {
 /// Root view containing the navigation stack
 fn main_view() -> impl View {
     let counter = binding(0);
-    NavigationStack::new(home_view(counter).title("Navigation Demo"))
+    let notifications = binding(true);
+    let dark_mode = binding(false);
+    NavigationStack::new(home_view(counter, notifications, dark_mode).title("Navigation Demo"))
 }
 
 /// Home screen with navigation links
-fn home_view(counter: Binding<i32>) -> impl View {
+fn home_view(
+    counter: Binding<i32>,
+    notifications: Binding<bool>,
+    dark_mode: Binding<bool>,
+) -> impl View {
     let items = sample_items();
 
     scroll(
@@ -52,7 +58,7 @@ fn home_view(counter: Binding<i32>) -> impl View {
             header_section(),
             counter_section(&counter),
             topics_section(items, counter),
-            settings_section(),
+            settings_section(notifications, dark_mode),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
@@ -115,7 +121,7 @@ fn topics_section(items: Vec<Item>, counter: Binding<i32>) -> impl View {
 }
 
 /// Settings navigation link section
-fn settings_section() -> impl View {
+fn settings_section(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl View {
     vstack((
         spacer_min(16.0),
         Divider,
@@ -127,7 +133,7 @@ fn settings_section() -> impl View {
                 text(">").foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            || settings_view().title("Settings"),
+            move || settings_view(notifications.clone(), dark_mode.clone()).title("Settings"),
         ),
     ))
 }
@@ -262,10 +268,7 @@ fn deepest_view() -> impl View {
 }
 
 /// Settings view with sub-navigation
-fn settings_view() -> impl View {
-    let notifications = binding(true);
-    let dark_mode = binding(false);
-
+fn settings_view(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl View {
     scroll(
         vstack((
             text("Settings").title(),

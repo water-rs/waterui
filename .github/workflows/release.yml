@@ -36,29 +36,42 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Work around missing workspace member in old commit
+      - name: Ensure local branch context
         shell: bash
         run: |
-          # release-plz checks out historical commits while comparing packages with crates.io.
-          # In this repo, the `derive/` crate was deleted, but the workspace `members` list kept
-          # referencing it for a few subsequent commits, causing `cargo metadata`/`cargo package`
-          # to fail when release-plz checks out any of those commits.
-          #
-          # Work around it in CI by using `git replace` to "patch" each affected commit with a
-          # new one that adds a minimal `derive/` crate. This avoids rewriting history.
           set -euo pipefail
 
-          echo "GIT_NO_REPLACE_OBJECTS=${GIT_NO_REPLACE_OBJECTS-<unset>}"
-          unset GIT_NO_REPLACE_OBJECTS
-          git --version
+          HEAD_SHA="$(git rev-parse HEAD)"
+          CURRENT_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
+          if [[ -n "${CURRENT_BRANCH}" ]]; then
+            echo "Using branch ${CURRENT_BRANCH} at ${HEAD_SHA}"
+            exit 0
+          fi
 
-          ORIGINAL_SHA="$(git rev-parse HEAD)"
-          ORIGINAL_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
-          if [[ -z "${ORIGINAL_BRANCH}" ]]; then
-            # `actions/checkout` can leave the repo in detached HEAD state.
-            # Create a local branch so release-plz can determine the current branch.
-            ORIGINAL_BRANCH="${WORKFLOW_HEAD_BRANCH:-main}"
-            git checkout -q -B "${ORIGINAL_BRANCH}" "${ORIGINAL_SHA}"
+          TARGET_BRANCH="${WORKFLOW_HEAD_BRANCH:-main}"
+          echo "Detached HEAD detected at ${HEAD_SHA}; creating local branch ${TARGET_BRANCH}."
+          git checkout -q -B "${TARGET_BRANCH}" "${HEAD_SHA}"
+
+      - name: Preflight release invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MISSING_PATHS=()
+          while IFS= read -r dep_path; do
+            if [[ -z "${dep_path}" ]]; then
+              continue
+            fi
+            if [[ ! -e "${dep_path}" ]]; then
+              MISSING_PATHS+=("${dep_path}")
+            fi
+          done < <(sed -nE 's/.*path[[:space:]]*=[[:space:]]*"(\.\.[^"]*)".*/\1/p' Cargo.toml | sort -u)
+
+          if [[ ${#MISSING_PATHS[@]} -gt 0 ]]; then
+            echo "::error::Missing sibling path dependencies referenced by Cargo.toml: ${MISSING_PATHS[*]}"
+            echo "::error::Failing fast because a fresh checkout is not self-contained."
+            echo "::error::Check out the sibling repositories or replace these path dependencies with published versions."
+            exit 1
           fi
 
           BROKEN_COMMITS=()
@@ -67,7 +80,8 @@ jobs:
               continue
             fi
 
-            # Only consider commits where `derive` is a workspace member.
+            # Detect historical commits that reference `derive` in workspace members
+            # without containing derive/Cargo.toml.
             if ! git show "${sha}:Cargo.toml" 2>/dev/null | awk '
               BEGIN { in_members = 0 }
               /^[[:space:]]*members[[:space:]]*=[[:space:]]*[[]/ { in_members = 1 }
@@ -77,7 +91,6 @@ jobs:
               continue
             fi
 
-            # Skip commits where `derive/` exists.
             if git cat-file -e "${sha}:derive/Cargo.toml" 2>/dev/null; then
               continue
             fi
@@ -85,66 +98,15 @@ jobs:
             BROKEN_COMMITS+=("$sha")
           done < <(git rev-list --reverse HEAD)
 
-          if [[ ${#BROKEN_COMMITS[@]} -eq 0 ]]; then
-            echo "No broken commits found; skipping workaround."
-            exit 0
+          if [[ ${#BROKEN_COMMITS[@]} -gt 0 ]]; then
+            echo "::error::Found historical commits with missing derive workspace member."
+            echo "::error::release-plz will fail when traversing these commits. Commit list:"
+            printf '%s\n' "${BROKEN_COMMITS[@]}"
+            echo "::error::Fix repository history or configure a release baseline before running this workflow."
+            exit 1
           fi
 
-          echo "Applying git-replace workaround for ${#BROKEN_COMMITS[@]} commit(s): ${BROKEN_COMMITS[*]}"
-
-          for BROKEN_SHA in "${BROKEN_COMMITS[@]}"; do
-            if git show-ref --verify --quiet "refs/replace/${BROKEN_SHA}"; then
-              echo "Replacement already exists for ${BROKEN_SHA}; skipping."
-              continue
-            fi
-
-            echo "Patching commit ${BROKEN_SHA}..."
-
-            # Create a replacement commit with the *same parents* as the broken commit.
-            # IMPORTANT: don't create it as a child of BROKEN_SHA (that would create a cycle).
-            PARENTS_STR="$(git show -s --format=%P "${BROKEN_SHA}")"
-
-            git checkout -q "${BROKEN_SHA}"
-            mkdir -p derive/src
-            printf '%s\n' \
-              '[package]' \
-              'name = "waterui-derive-placeholder"' \
-              'version = "0.0.0"' \
-              'edition = "2021"' \
-              'publish = false' \
-              > derive/Cargo.toml
-            echo "pub fn _placeholder() {}" > derive/src/lib.rs
-            git add derive
-
-            TREE_SHA="$(git write-tree)"
-            PARENT_ARGS=()
-            for p in ${PARENTS_STR}; do
-              PARENT_ARGS+=("-p" "$p")
-            done
-            FIX_SHA="$(printf '%s\n' "chore: add placeholder derive workspace member" | git commit-tree "${TREE_SHA}" "${PARENT_ARGS[@]}")"
-            git reset -q --hard
-
-            if [[ -n "${ORIGINAL_BRANCH}" ]]; then
-              git checkout -q "${ORIGINAL_BRANCH}"
-            else
-              git checkout -q "${ORIGINAL_SHA}"
-            fi
-
-            git replace -f "${BROKEN_SHA}" "${FIX_SHA}"
-          done
-
-          echo "Replacements applied:"
-          git replace -l || true
-
-          # Sanity check: ensure `git checkout <sha>` yields a workspace with `derive/Cargo.toml`.
-          for sha in "${BROKEN_COMMITS[@]}"; do
-            git checkout -q "${sha}"
-            if [[ ! -f derive/Cargo.toml ]]; then
-              echo "Sanity check failed: derive/Cargo.toml missing at commit ${sha}"
-              exit 1
-            fi
-          done
-          git checkout -q "${ORIGINAL_BRANCH}"
+          echo "Release preflight checks passed."
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install release-plz
         uses: taiki-e/install-action@v2
@@ -157,12 +119,12 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           echo "-- Running release-plz release-pr --"
-          env -u GIT_NO_REPLACE_OBJECTS release-plz release-pr \
+          release-plz release-pr \
             --git-token "${GITHUB_TOKEN}" \
             --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
             --config release-plz.toml
           echo "-- Running release-plz release --"
-          env -u GIT_NO_REPLACE_OBJECTS release-plz release \
+          release-plz release \
             --git-token "${GITHUB_TOKEN}" \
             --config release-plz.toml
 

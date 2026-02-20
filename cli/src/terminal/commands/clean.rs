@@ -1,6 +1,9 @@
 //! `water clean` command implementation.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
@@ -57,7 +60,7 @@ pub async fn run(args: Args) -> Result<()> {
     if args.recursive {
         if args.backend != TargetBackend::All {
             warn!(
-                "Ignoring `--backend {:?}` in recursive mode; cleaning `.water` and `target` only",
+                "Ignoring `--backend {:?}` in recursive mode; cleaning project cache directories only",
                 args.backend
             );
         }
@@ -120,13 +123,22 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    let mut total_dirs_to_remove = 0usize;
-    for project_root in &project_roots {
-        total_dirs_to_remove += removable_cache_dir_count(project_root).await;
+    let mut project_cache_dirs = Vec::with_capacity(project_roots.len());
+    let mut discovered = stream::iter(
+        project_roots
+            .into_iter()
+            .map(|project_root| async move { ProjectCacheDirs::discover(project_root).await }),
+    )
+    .buffer_unordered(clean_parallelism());
+    while let Some(cache_dirs) = discovered.next().await {
+        project_cache_dirs.push(cache_dirs);
     }
 
+    let unique_cache_dirs = unique_cache_dirs(&project_cache_dirs);
+    let total_dirs_to_remove = removable_cache_dir_count(&unique_cache_dirs).await;
+
     if total_dirs_to_remove == 0 {
-        note!("Found projects, but no `.water` or `target` directories needed cleaning");
+        note!("Found projects, but no cache directories needed cleaning");
         return Ok(());
     }
 
@@ -136,7 +148,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
                 "Delete {total_dirs_to_remove} cache directories across {} project(s) under {}?",
-                project_roots.len(),
+                project_cache_dirs.len(),
                 root.display()
             ))
             .default(false)
@@ -149,32 +161,21 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
 
     let progress = make_progress_bar(total_dirs_to_remove as u64);
 
-    let mut cleaned_projects = 0usize;
+    let project_count = project_cache_dirs.len();
     let mut removed_dirs = 0usize;
 
-    let mut clean_results = stream::iter(project_roots.into_iter().map(|project_root| {
+    let mut clean_results = stream::iter(unique_cache_dirs.into_iter().map(|cache_dir| {
         let progress = progress.clone();
         async move {
-            let removed = clean_project_caches(&project_root, progress).await?;
-            Ok::<_, color_eyre::Report>((project_root, removed))
+            clean_cache_dir(cache_dir, progress).await
         }
     }))
     .buffer_unordered(clean_parallelism());
 
     while let Some(result) = clean_results.next().await {
-        let (project_root, removed) = result?;
-        if removed > 0 {
-            cleaned_projects += 1;
-            removed_dirs += removed;
-            success!(
-                "Cleaned {} ({})",
-                project_root.display(),
-                if removed == 2 {
-                    ".water + target"
-                } else {
-                    "partial cache"
-                }
-            );
+        if let Some(cache_dir) = result? {
+            removed_dirs += 1;
+            success!("Removed {}", cache_dir.display());
         }
     }
     drop(clean_results);
@@ -184,8 +185,8 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
     }
 
     success!(
-        "Recursive clean complete: cleaned {} project(s), removed {} directory(s)",
-        cleaned_projects,
+        "Recursive clean complete: scanned {} project(s), removed {} directory(s)",
+        project_count,
         removed_dirs
     );
 
@@ -242,11 +243,61 @@ async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(project_roots)
 }
 
-async fn removable_cache_dir_count(project_root: &Path) -> usize {
+#[derive(Debug)]
+struct ProjectCacheDirs {
+    cache_dirs: Vec<PathBuf>,
+}
+
+impl ProjectCacheDirs {
+    async fn discover(project_root: PathBuf) -> Self {
+        let mut cache_dirs = vec![project_root.join(".water")];
+        match resolve_target_dir(project_root.clone()).await {
+            Ok(target_dir) => cache_dirs.push(target_dir),
+            Err(error) => warn!(
+                "Skipping target cache discovery for {}: {}",
+                project_root.display(),
+                error
+            ),
+        }
+        cache_dirs.sort();
+        cache_dirs.dedup();
+        Self { cache_dirs }
+    }
+}
+
+async fn resolve_target_dir(
+    project_root: PathBuf,
+) -> std::result::Result<PathBuf, cargo_metadata::Error> {
+    smol::unblock(move || {
+        let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
+        metadata_cmd.current_dir(&project_root);
+        metadata_cmd.no_deps();
+        let metadata = metadata_cmd.exec()?;
+        Ok(metadata.target_directory.as_std_path().to_path_buf())
+    })
+    .await
+}
+
+fn unique_cache_dirs(project_cache_dirs: &[ProjectCacheDirs]) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+
+    for project_cache_dirs in project_cache_dirs {
+        for dir in &project_cache_dirs.cache_dirs {
+            if seen.insert(dir.clone()) {
+                unique.push(dir.clone());
+            }
+        }
+    }
+
+    unique
+}
+
+async fn removable_cache_dir_count(cache_dirs: &[PathBuf]) -> usize {
     let mut count = 0usize;
 
-    for dir_name in [".water", "target"] {
-        if path_exists(&project_root.join(dir_name)).await {
+    for dir in cache_dirs {
+        if path_exists(dir).await {
             count += 1;
         }
     }
@@ -254,24 +305,20 @@ async fn removable_cache_dir_count(project_root: &Path) -> usize {
     count
 }
 
-async fn clean_project_caches(project_root: &Path, progress: Option<ProgressBar>) -> Result<usize> {
-    let mut removed = 0usize;
-
-    for dir_name in [".water", "target"] {
-        let dir = project_root.join(dir_name);
-        if path_exists(&dir).await {
-            if let Some(pb) = progress.as_ref() {
-                pb.set_message(format!("Removing {}", dir.display()));
-            }
-            smol::fs::remove_dir_all(&dir).await?;
-            removed += 1;
-            if let Some(pb) = progress.as_ref() {
-                pb.inc(1);
-            }
-        }
+async fn clean_cache_dir(cache_dir: PathBuf, progress: Option<ProgressBar>) -> Result<Option<PathBuf>> {
+    if !path_exists(&cache_dir).await {
+        return Ok(None);
     }
 
-    Ok(removed)
+    if let Some(pb) = progress.as_ref() {
+        pb.set_message(format!("Removing {}", cache_dir.display()));
+    }
+    smol::fs::remove_dir_all(&cache_dir).await?;
+    if let Some(pb) = progress.as_ref() {
+        pb.inc(1);
+    }
+
+    Ok(Some(cache_dir))
 }
 
 fn make_progress_bar(total: u64) -> Option<ProgressBar> {
@@ -323,7 +370,8 @@ mod tests {
     #[test]
     fn removable_cache_count_is_zero_when_missing() {
         let missing = Path::new("/definitely/not/exist/waterui-clean-test");
-        assert_eq!(block_on(removable_cache_dir_count(missing)), 0);
+        let cache_dirs = vec![missing.join(".water"), missing.join("target")];
+        assert_eq!(block_on(removable_cache_dir_count(&cache_dirs)), 0);
     }
 
     #[test]
