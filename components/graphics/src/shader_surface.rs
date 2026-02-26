@@ -307,7 +307,7 @@ impl GpuRenderer for ShaderRenderer {
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some("ShaderSurface Pipeline Layout"),
                         bind_group_layouts: &[&bind_group_layout],
-                        immediate_size: 0,
+                        push_constant_ranges: &[],
                     });
 
             let blend = if ctx.is_hdr() {
@@ -343,7 +343,7 @@ impl GpuRenderer for ShaderRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: ctx.pipeline_cache,
                 });
 
@@ -450,17 +450,16 @@ impl GpuRenderer for ShaderRenderer {
                 label: Some("ShaderSurface Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

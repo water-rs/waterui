@@ -75,27 +75,15 @@ pub use waterui_icon::IconGlyph;
 
 /// Brand logos.
 pub mod brands {
-    #[cfg(feature = "svg")]
-    #[allow(unused_imports)]
-    use crate::Svg;
-
     include!(concat!(env!("OUT_DIR"), "/brands.rs"));
 }
 
 /// Regular weight (outlined) icons.
 pub mod regular {
-    #[cfg(feature = "svg")]
-    #[allow(unused_imports)]
-    use crate::Svg;
-
     include!(concat!(env!("OUT_DIR"), "/regular.rs"));
 }
 
 /// Solid (filled) icons.
 pub mod solid {
-    #[cfg(feature = "svg")]
-    #[allow(unused_imports)]
-    use crate::Svg;
-
     include!(concat!(env!("OUT_DIR"), "/solid.rs"));
 }

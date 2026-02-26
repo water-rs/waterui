@@ -395,10 +395,10 @@ impl WebViewHandle for FfiWebViewHandle {
     }
 
     fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
-        let Some(add_handler) = self.ffi.add_handler else {
-            tracing::warn!("add_handler not supported by native backend");
-            return;
-        };
+        let add_handler = self
+            .ffi
+            .add_handler
+            .expect("WebView backend must implement `add_handler`");
 
         let engine = base64::engine::general_purpose::STANDARD;
         let name = Str::from(name.to_string());
@@ -423,29 +423,29 @@ impl WebViewHandle for FfiWebViewHandle {
     }
 
     fn remove_handler(&self, name: &str) {
-        let Some(remove_handler) = self.ffi.remove_handler else {
-            tracing::warn!("remove_handler not supported by native backend");
-            return;
-        };
+        let remove_handler = self
+            .ffi
+            .remove_handler
+            .expect("WebView backend must implement `remove_handler`");
 
         let name = Str::from(name.to_string());
         unsafe { remove_handler(self.ffi.data, name.into_ffi()) }
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
-        let Some(set_cookie) = self.ffi.set_cookie else {
-            tracing::warn!("set_cookie not supported by native backend");
-            return;
-        };
+        let set_cookie = self
+            .ffi
+            .set_cookie
+            .expect("WebView backend must implement `set_cookie`");
         let cookie = Str::from(cookie.to_string());
         unsafe { set_cookie(self.ffi.data, cookie.into_ffi()) }
     }
 
     fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        let Some(get_cookies) = self.ffi.get_cookies else {
-            tracing::warn!("get_cookies not supported by native backend");
-            return Vec::new();
-        };
+        let get_cookies = self
+            .ffi
+            .get_cookies
+            .expect("WebView backend must implement `get_cookies`");
 
         let raw = unsafe { get_cookies(self.ffi.data.cast_const()) };
         let text: Str = unsafe { raw.into_rust() };
@@ -556,15 +556,14 @@ ffi_view!(WebView, *mut WuiWebView, webview);
 ///   installed the WebViewController via `waterui_env_install_webview_controller`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView) -> *mut () {
-    if webview.is_null() {
-        return core::ptr::null_mut();
-    }
     unsafe {
-        let webview = &*webview;
+        let webview = crate::expect_non_null(webview, "waterui_webview_native_handle", "webview");
         let handle = webview.0.handle();
         match handle.downcast_ref::<FfiWebViewHandle>() {
             Some(ffi_handle) => ffi_handle.native_ptr(),
-            None => core::ptr::null_mut(),
+            None => panic!(
+                "waterui_webview_native_handle: expected FfiWebViewHandle; install WebViewController first"
+            ),
         }
     }
 }
@@ -603,10 +602,8 @@ pub unsafe extern "C" fn waterui_env_install_webview_controller(
     env: *mut WuiEnv,
     create_fn: WuiCreateWebViewFn,
 ) {
-    if env.is_null() {
-        return;
-    }
-    let env = unsafe { &mut *env };
+    let env =
+        unsafe { crate::expect_non_null_mut(env, "waterui_env_install_webview_controller", "env") };
 
     let controller = WebViewController::new(FfiWebViewController { create_fn });
     env.insert(controller);

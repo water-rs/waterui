@@ -73,3 +73,40 @@ pub use wgpu;
 pub use bytemuck;
 
 pub use pollster;
+
+#[inline]
+pub(crate) fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
+where
+    F: core::future::Future,
+{
+    use core::task::{Context, Poll};
+
+    let mut future = std::pin::pin!(future);
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("{scope}: future returned Pending in synchronous path"),
+    }
+}
+
+#[inline]
+pub(crate) fn pop_error_scope_now(
+    device: &wgpu::Device,
+    scope: &'static str,
+) -> Option<wgpu::Error> {
+    use core::future::Future as _;
+    use core::task::{Context, Poll};
+
+    let mut future = std::pin::pin!(device.pop_error_scope());
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+
+    if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
+        return result;
+    }
+
+    let _ = device.poll(wgpu::PollType::Poll);
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)"),
+    }
+}

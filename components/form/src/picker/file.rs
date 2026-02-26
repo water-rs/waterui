@@ -76,21 +76,28 @@ impl<Label: View> View for FilePicker<Label> {
                     let mut urls = Vec::with_capacity(max_num);
 
                     for _ in 0..max_num {
-                        let path = FileDialog::new()
-                            .show_open_single_file()
-                            .await
-                            .unwrap_or_else(|error| {
-                                panic!("FilePicker failed to present file dialog: {error}")
-                            });
+                        let path = match FileDialog::new().show_open_single_file().await {
+                            Ok(path) => path,
+                            Err(error) => {
+                                std::eprintln!("FilePicker failed to present file dialog: {error}");
+                                return;
+                            }
+                        };
 
                         let Some(path) = path else {
                             break;
                         };
 
                         let selected_path = if self.import {
-                            import_to_sandbox(&path).unwrap_or_else(|error| {
-                                panic!("FilePicker failed to import selected file: {error}")
-                            })
+                            match import_to_sandbox(&path) {
+                                Ok(imported) => imported,
+                                Err(error) => {
+                                    std::eprintln!(
+                                        "FilePicker failed to import selected file: {error}"
+                                    );
+                                    return;
+                                }
+                            }
                         } else {
                             path
                         };
@@ -100,6 +107,10 @@ impl<Label: View> View for FilePicker<Label> {
                         ));
                     }
 
+                    // User cancel should preserve previous selection.
+                    if urls.is_empty() {
+                        return;
+                    }
                     value.set(urls);
                 }
 

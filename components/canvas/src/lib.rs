@@ -162,16 +162,22 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_clip_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
-        self.scene
-            .push_clip_layer(self.current_state.transform, &kurbo_rect);
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &kurbo_rect,
+        );
     }
 
     /// Pushes a clip layer, clipping subsequent drawing to the given path.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_clip_path(&mut self, path: &Path) {
-        self.scene
-            .push_clip_layer(self.current_state.transform, path.inner());
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            path.inner(),
+        );
     }
 
     /// Pushes a layer with alpha (opacity), clipping content to the given rectangle.
@@ -180,6 +186,7 @@ impl DrawingContext<'_> {
     pub fn push_alpha_rect(&mut self, alpha: f32, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
         self.scene.push_layer(
+            self.current_state.fill_rule,
             self.current_state.blend_mode,
             alpha.clamp(0.0, 1.0),
             self.current_state.transform,
@@ -192,6 +199,7 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_alpha_path(&mut self, alpha: f32, path: &Path) {
         self.scene.push_layer(
+            self.current_state.fill_rule,
             self.current_state.blend_mode,
             alpha.clamp(0.0, 1.0),
             self.current_state.transform,
@@ -313,7 +321,11 @@ impl DrawingContext<'_> {
 
     /// Fills a path with the current fill style.
     pub fn fill_path(&mut self, path: &Path) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let brush = self.resolve_fill_style();
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(path.inner());
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
@@ -321,12 +333,17 @@ impl DrawingContext<'_> {
             None,
             path.inner(),
         );
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Strokes a path with the current stroke style and line properties.
     pub fn stroke_path(&mut self, path: &Path) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(path.inner());
         self.scene.stroke(
             &stroke,
             self.current_state.transform,
@@ -334,6 +351,7 @@ impl DrawingContext<'_> {
             None,
             path.inner(),
         );
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     // ========================================================================
@@ -342,8 +360,12 @@ impl DrawingContext<'_> {
 
     /// Fills a rectangle with the current fill style.
     pub fn fill_rect(&mut self, rect: Rect) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let kurbo_rect = rect_to_kurbo(rect);
         let brush = self.resolve_fill_style();
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&kurbo_rect);
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
@@ -351,13 +373,18 @@ impl DrawingContext<'_> {
             None,
             &kurbo_rect,
         );
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Strokes a rectangle with the current stroke style.
     pub fn stroke_rect(&mut self, rect: Rect) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let kurbo_rect = rect_to_kurbo(rect);
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&kurbo_rect);
         self.scene.stroke(
             &stroke,
             self.current_state.transform,
@@ -365,6 +392,7 @@ impl DrawingContext<'_> {
             None,
             &kurbo_rect,
         );
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Clears a rectangle to transparent black.
@@ -386,8 +414,12 @@ impl DrawingContext<'_> {
 
     /// Fills a circle with the current fill style.
     pub fn fill_circle(&mut self, center: Point, radius: f32) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let brush = self.resolve_fill_style();
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&circle);
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
@@ -395,24 +427,35 @@ impl DrawingContext<'_> {
             None,
             &circle,
         );
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Strokes a circle with the current stroke style.
     pub fn stroke_circle(&mut self, center: Point, radius: f32) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&circle);
         self.scene
             .stroke(&stroke, self.current_state.transform, &brush, None, &circle);
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Strokes a line segment with the current stroke style.
     pub fn stroke_line(&mut self, start: Point, end: Point) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let line = kurbo::Line::new(point_to_kurbo(start), point_to_kurbo(end));
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&line);
         self.scene
             .stroke(&stroke, self.current_state.transform, &brush, None, &line);
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     // ========================================================================
@@ -612,6 +655,9 @@ impl DrawingContext<'_> {
     /// ctx.draw_image_scaled(&image, dest);
     /// ```
     pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: Rect) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         // Calculate transform to scale image to destination rectangle
         let scale_x = f64::from(dest.size().width) / f64::from(image.width());
         let scale_y = f64::from(dest.size().height) / f64::from(image.height());
@@ -626,9 +672,12 @@ impl DrawingContext<'_> {
 
         // Wrap ImageData in ImageBrush
         let image_brush = peniko::ImageBrush::new(image.inner().clone());
+        let dest_rect = rect_to_kurbo(dest);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&dest_rect);
 
         // Draw image using vello
         self.scene.draw_image(&image_brush, final_transform);
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Draws a sub-rectangle of an image, scaled to fit the destination.
@@ -650,6 +699,9 @@ impl DrawingContext<'_> {
     /// ctx.draw_image_sub(&sprite_sheet, src, dest);
     /// ```
     pub fn draw_image_sub(&mut self, image: &CanvasImage, src: Rect, dest: Rect) {
+        if self.skip_draw_for_zero_alpha() {
+            return;
+        }
         // Use push_clip_layer with clip to render only the source rectangle
         // Calculate transform for the sub-rectangle
 
@@ -676,14 +728,19 @@ impl DrawingContext<'_> {
         let clip_rect = rect_to_kurbo(dest);
 
         // Push a clipped layer, draw the image, then pop
-        self.scene
-            .push_clip_layer(self.current_state.transform, &clip_rect);
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &clip_rect,
+        );
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&clip_rect);
 
         // Wrap ImageData in ImageBrush
         let image_brush = peniko::ImageBrush::new(image.inner().clone());
 
         self.scene.draw_image(&image_brush, final_transform);
 
+        self.pop_global_alpha_layer_if_needed(pushed_alpha);
         self.scene.pop_layer();
     }
 
@@ -799,6 +856,38 @@ impl DrawingContext<'_> {
             StrokeStyle::ConicGradient(gradient) => gradient.build(),
         }
     }
+
+    #[inline]
+    fn normalized_global_alpha(&self) -> f32 {
+        self.current_state.global_alpha.clamp(0.0, 1.0)
+    }
+
+    #[inline]
+    fn skip_draw_for_zero_alpha(&self) -> bool {
+        self.normalized_global_alpha() <= 0.0
+    }
+
+    fn push_global_alpha_layer_if_needed(&mut self, clip_shape: &impl kurbo::Shape) -> bool {
+        let alpha = self.normalized_global_alpha();
+        if alpha >= 1.0 {
+            return false;
+        }
+        self.scene.push_layer(
+            self.current_state.fill_rule,
+            self.current_state.blend_mode,
+            alpha,
+            self.current_state.transform,
+            clip_shape,
+        );
+        true
+    }
+
+    #[inline]
+    fn pop_global_alpha_layer_if_needed(&mut self, pushed: bool) {
+        if pushed {
+            self.scene.pop_layer();
+        }
+    }
 }
 
 /// Internal renderer that bridges Canvas to `GpuSurface`.
@@ -853,7 +942,7 @@ impl GpuRenderer for CanvasRenderer {
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(waterui_graphics::shaders::BLIT.label),
                 source: wgpu::ShaderSource::Wgsl(
-                    waterui_graphics::shaders::BLIT.source.clone().into(),
+                    waterui_graphics::shaders::BLIT.source.into(),
                 ),
             });
 
@@ -886,14 +975,10 @@ impl GpuRenderer for CanvasRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Canvas Blit Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::REPLACE)
-        };
+        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
 
         let pipeline = ctx
             .device
@@ -922,7 +1007,7 @@ impl GpuRenderer for CanvasRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -1047,17 +1132,16 @@ impl GpuRenderer for CanvasRenderer {
                 label: Some("Canvas Blit Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

@@ -116,11 +116,7 @@ impl IntoRust for WuiTextStyle {
     type Rust = Style;
 
     unsafe fn into_rust(self) -> Self::Rust {
-        let font = if self.font.is_null() {
-            Font::default()
-        } else {
-            unsafe { self.font.into_rust() }
-        };
+        let font = unsafe { self.font.into_rust() };
 
         let foreground = if self.foreground.is_null() {
             None

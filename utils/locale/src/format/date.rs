@@ -6,8 +6,13 @@ use icu_datetime::{
     options::length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
 };
 use icu_provider::DataLocale;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::locale::{Locale, locales};
+
+static DATE_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static TIME_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static DATETIME_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Date formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -134,9 +139,27 @@ fn fallback_time_string(time: &SimpleTime, with_seconds: bool) -> String {
     }
 }
 
+fn report_fallback_once(flag: &AtomicBool, kind: &str, locale: &Locale, reason: &str) {
+    if flag
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        eprintln!(
+            "[waterui-locale] {kind} formatting fallback for locale {}: {reason}",
+            locale.canonical_tag()
+        );
+    }
+}
+
 /// Format a date according to locale conventions.
 pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> String {
     let Some(date_iso) = to_iso_date(date) else {
+        report_fallback_once(
+            &DATE_FALLBACK_LOGGED,
+            "date",
+            locale,
+            "invalid date components",
+        );
         return fallback_date_string(date);
     };
 
@@ -150,14 +173,36 @@ pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> Stri
         Ok(formatter) => formatter
             .format(&date_iso.to_any())
             .map(|formatted| formatted.to_string())
-            .unwrap_or_else(|_| fallback_date_string(date)),
-        Err(_) => fallback_date_string(date),
+            .unwrap_or_else(|err| {
+                report_fallback_once(
+                    &DATE_FALLBACK_LOGGED,
+                    "date",
+                    locale,
+                    &format!("ICU format failed: {err}"),
+                );
+                fallback_date_string(date)
+            }),
+        Err(err) => {
+            report_fallback_once(
+                &DATE_FALLBACK_LOGGED,
+                "date",
+                locale,
+                &format!("ICU formatter init failed: {err}"),
+            );
+            fallback_date_string(date)
+        }
     }
 }
 
 /// Format a time according to locale conventions.
 pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> String {
     let Some(time_iso) = to_iso_time_only(time) else {
+        report_fallback_once(
+            &TIME_FALLBACK_LOGGED,
+            "time",
+            locale,
+            "invalid time components",
+        );
         let with_seconds = !matches!(style, TimeStyle::Short);
         return fallback_time_string(time, with_seconds);
     };
@@ -170,7 +215,13 @@ pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> Stri
 
     match formatter {
         Ok(formatter) => formatter.format(&time_iso).to_string(),
-        Err(_) => {
+        Err(err) => {
+            report_fallback_once(
+                &TIME_FALLBACK_LOGGED,
+                "time",
+                locale,
+                &format!("ICU formatter init failed: {err}"),
+            );
             let with_seconds = !matches!(style, TimeStyle::Short);
             fallback_time_string(time, with_seconds)
         }
@@ -186,6 +237,12 @@ pub fn format_datetime(
     time_style: TimeStyle,
 ) -> String {
     let Some(datetime_iso) = to_iso_datetime(date, time) else {
+        report_fallback_once(
+            &DATETIME_FALLBACK_LOGGED,
+            "datetime",
+            locale,
+            "invalid date/time components",
+        );
         let date_fallback = fallback_date_string(date);
         let time_fallback = fallback_time_string(time, !matches!(time_style, TimeStyle::Short));
         return format!("{date_fallback} {time_fallback}");
@@ -205,11 +262,23 @@ pub fn format_datetime(
             .format(&datetime_iso.to_any())
             .map(|formatted| formatted.to_string())
             .unwrap_or_else(|_| {
+                report_fallback_once(
+                    &DATETIME_FALLBACK_LOGGED,
+                    "datetime",
+                    locale,
+                    "ICU format failed",
+                );
                 let date_fallback = format_date(locale, date, date_style);
                 let time_fallback = format_time(locale, time, time_style);
                 format!("{date_fallback} {time_fallback}")
             }),
-        Err(_) => {
+        Err(err) => {
+            report_fallback_once(
+                &DATETIME_FALLBACK_LOGGED,
+                "datetime",
+                locale,
+                &format!("ICU formatter init failed: {err}"),
+            );
             let date_fallback = format_date(locale, date, date_style);
             let time_fallback = format_time(locale, time, time_style);
             format!("{date_fallback} {time_fallback}")

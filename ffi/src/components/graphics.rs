@@ -37,10 +37,6 @@ ffi_view!(RendererView, *mut WuiRendererView, renderer_view);
 /// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererView) -> f32 {
-    debug_assert!(
-        !view.is_null(),
-        "waterui_renderer_view_width: received null pointer"
-    );
     unsafe { (&(*view)).width }
 }
 
@@ -50,10 +46,6 @@ pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererVie
 /// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_height(view: *const WuiRendererView) -> f32 {
-    debug_assert!(
-        !view.is_null(),
-        "waterui_renderer_view_height: received null pointer"
-    );
     unsafe { (&(*view)).height }
 }
 
@@ -82,15 +74,6 @@ pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     stride: usize,
     format: WuiRendererBufferFormat,
 ) -> bool {
-    debug_assert!(
-        !view.is_null(),
-        "waterui_renderer_view_render_cpu: received null view pointer"
-    );
-    debug_assert!(
-        !pixels.is_null(),
-        "waterui_renderer_view_render_cpu: received null pixel pointer"
-    );
-
     let expected = stride * (height as usize);
 
     let format = RendererBufferFormat::from(format);

@@ -413,7 +413,7 @@ impl GpuRenderer for GradientRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Gradient Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -423,7 +423,7 @@ impl GpuRenderer for GradientRenderer {
         };
 
         // Try with cache first
-        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -452,12 +452,15 @@ impl GpuRenderer for GradientRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = crate::pollster::block_on(error_scope.pop());
+        let error = crate::pop_error_scope_now(
+            ctx.device,
+            "gradient_renderer::create_render_pipeline::validation_error_scope",
+        );
         if let Some(e) = error {
             tracing::warn!(
                 "[GradientRenderer] Pipeline creation with cache failed: {}",
@@ -491,7 +494,7 @@ impl GpuRenderer for GradientRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: None,
                 });
         } else {
@@ -587,17 +590,16 @@ impl GpuRenderer for GradientRenderer {
                 label: Some("Gradient Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);
@@ -910,7 +912,7 @@ where
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Mesh Gradient Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -920,7 +922,7 @@ where
         };
 
         // Try with cache first
-        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -949,12 +951,15 @@ where
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = crate::pollster::block_on(error_scope.pop());
+        let error = crate::pop_error_scope_now(
+            ctx.device,
+            "gradient_renderer::create_mesh_pipeline::validation_error_scope",
+        );
         if let Some(e) = error {
             tracing::warn!(
                 "[ReactiveMeshRenderer] Pipeline creation with cache failed: {}",
@@ -988,7 +993,7 @@ where
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: None,
                 });
         } else {
@@ -1133,17 +1138,16 @@ where
                 label: Some("Mesh Gradient Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

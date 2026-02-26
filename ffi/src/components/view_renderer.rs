@@ -96,13 +96,24 @@ impl CustomViewRenderer for FFIViewRenderer {
             ) {
                 let data = unsafe { &*data.cast::<CallbackData>() };
 
-                // Ignore duplicate callbacks to avoid double-free.
-                if data.finished.swap(true, Ordering::AcqRel) {
-                    return;
-                }
+                assert!(
+                    !data.finished.swap(true, Ordering::AcqRel),
+                    "Native view renderer invoked callback more than once"
+                );
+
+                let expected_len = usize::try_from(width)
+                    .expect("width does not fit usize")
+                    .checked_mul(usize::try_from(height).expect("height does not fit usize"))
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .expect("RGBA byte length overflow");
+                assert_eq!(
+                    rgba_len, expected_len,
+                    "Native view renderer returned invalid RGBA length: got {}, expected {} for {}x{}",
+                    rgba_len, expected_len, width, height
+                );
 
                 // Copy the RGBA data (native owns the original buffer)
-                let rgba_data = if rgba_ptr.is_null() || rgba_len == 0 {
+                let rgba_data = if rgba_len == 0 {
                     Vec::new()
                 } else {
                     unsafe { core::slice::from_raw_parts(rgba_ptr, rgba_len) }.to_vec()
@@ -128,26 +139,19 @@ impl CustomViewRenderer for FFIViewRenderer {
                 (render_fn)(view_ptr_void, wui_size, callback);
             }
 
-            let callback_completed = unsafe {
-                (&*callback_data.cast::<CallbackData>())
-                    .finished
-                    .load(Ordering::Acquire)
-            };
-            assert!(
-                callback_completed,
-                "Native view renderer must invoke callback synchronously before returning"
-            );
-
-            let recv_result = rx.recv().await;
+            let recv_result = rx.try_recv().unwrap_or_else(|err| {
+                panic!(
+                    "Native view renderer must invoke callback synchronously before returning: \
+                     {err}"
+                );
+            });
 
             // Free callback data after the callback completes.
             unsafe {
                 drop(Box::from_raw(callback_data.cast::<CallbackData>()));
             }
 
-            recv_result.unwrap_or_else(|err| {
-                panic!("Native view renderer callback channel closed before result: {err}");
-            })
+            recv_result
         })
     }
 }
@@ -168,10 +172,8 @@ pub unsafe extern "C" fn waterui_env_install_view_renderer(
     env: *mut WuiEnv,
     render_fn: ViewRenderFn,
 ) {
-    if env.is_null() {
-        return;
-    }
-    let env = unsafe { &mut *env };
+    let env =
+        unsafe { crate::expect_non_null_mut(env, "waterui_env_install_view_renderer", "env") };
 
     let renderer = ViewRenderer::new(FFIViewRenderer { render_fn });
     env.insert(renderer);

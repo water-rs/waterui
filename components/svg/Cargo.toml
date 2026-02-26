@@ -6,16 +6,9 @@ authors.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description = "SVG rendering for WaterUI with CPU (resvg) and GPU (Vello) backends"
-keywords = ["svg", "graphics", "waterui", "resvg", "vello"]
+description = "SVG rendering for WaterUI using Vello"
+keywords = ["svg", "graphics", "waterui", "vello"]
 categories = ["gui"]
-
-[features]
-default = ["cpu"]
-# CPU backend using resvg - rasterizes to texture then blits to GPU
-cpu = ["dep:resvg"]
-# GPU backend using Vello - direct vector rendering (requires git dependency)
-vello-backend = ["dep:vello"]
 
 [dependencies]
 waterui-core.workspace = true
@@ -24,15 +17,10 @@ waterui-layout.workspace = true
 waterui-str.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
+vello_svg.workspace = true
 
-# SVG parsing (always needed)
-usvg = "0.45"
-
-# CPU backend (resvg)
-resvg = { version = "0.45", optional = true }
-
-# GPU backend (Vello) - git dependency, not on crates.io with wgpu 27+ support yet
-vello = { workspace = true, optional = true }
+# GPU backend (Vello)
+vello.workspace = true
 
 [lints]
 workspace = true

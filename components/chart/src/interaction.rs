@@ -289,7 +289,7 @@ impl ZoomPanState {
     /// Clamps offset to keep data visible.
     fn clamp_offset(&mut self) {
         // At higher zoom levels, allow more offset
-        let max_offset = 0.5 - 0.5 / self.scale;
+        let max_offset = (0.5 - 0.5 / self.scale).max(0.0);
         self.offset.x = self.offset.x.clamp(-max_offset, max_offset);
         self.offset.y = self.offset.y.clamp(-max_offset, max_offset);
     }
