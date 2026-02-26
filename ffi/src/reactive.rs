@@ -80,7 +80,9 @@ where
             let native_data = *rc;
             let _ = Rc::into_raw(rc); // don't drop the Rc
             let guard_ptr = (self.watch)(native_data as *const (), watcher);
-            (*Box::from_raw(guard_ptr)).0
+            let guard = Box::from_raw(guard_ptr);
+            let WuiWatcherGuard(guard) = *guard;
+            guard
         }
     }
 }
@@ -308,7 +310,7 @@ macro_rules! ffi_computed {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_clone_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> *mut $crate::reactive::WuiComputed<$ty> {
                 unsafe {
-                    let cloned = (*computed).clone();
+                    let cloned = core::clone::Clone::clone(core::ops::Deref::deref(&*computed));
                     $crate::IntoFFI::into_ffi(cloned)
                 }
             }

@@ -158,16 +158,22 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_clip_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
-        self.scene
-            .push_clip_layer(self.current_state.transform, &kurbo_rect);
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &kurbo_rect,
+        );
     }
 
     /// Pushes a clip layer, clipping subsequent drawing to the given path.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_clip_path(&mut self, path: &Path) {
-        self.scene
-            .push_clip_layer(self.current_state.transform, path.inner());
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            path.inner(),
+        );
     }
 
     /// Pushes a layer with alpha (opacity), clipping content to the given rectangle.
@@ -176,6 +182,7 @@ impl DrawingContext<'_> {
     pub fn push_alpha_rect(&mut self, alpha: f32, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
         self.scene.push_layer(
+            self.current_state.fill_rule,
             self.current_state.blend_mode,
             alpha.clamp(0.0, 1.0),
             self.current_state.transform,
@@ -188,6 +195,7 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_alpha_path(&mut self, alpha: f32, path: &Path) {
         self.scene.push_layer(
+            self.current_state.fill_rule,
             self.current_state.blend_mode,
             alpha.clamp(0.0, 1.0),
             self.current_state.transform,
@@ -672,8 +680,11 @@ impl DrawingContext<'_> {
         let clip_rect = rect_to_kurbo(dest);
 
         // Push a clipped layer, draw the image, then pop
-        self.scene
-            .push_clip_layer(self.current_state.transform, &clip_rect);
+        self.scene.push_clip_layer(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &clip_rect,
+        );
 
         // Wrap ImageData in ImageBrush
         let image_brush = peniko::ImageBrush::new(image.inner().clone());
@@ -876,7 +887,7 @@ impl GpuRenderer for CanvasRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Canvas Blit Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -887,34 +898,30 @@ impl GpuRenderer for CanvasRenderer {
 
         let pipeline = ctx
             .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Canvas Blit Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("Canvas Blit Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader.as_ref(),
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader.as_ref(),
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: ctx.surface_format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(), multiview: None, cache: None, });
 
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Canvas Blit Sampler"),
@@ -1033,22 +1040,15 @@ impl GpuRenderer for CanvasRenderer {
             });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Canvas Blit Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("Canvas Blit Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &frame.view, depth_slice: None, resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            }, })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,  });
 
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, &bind_group, &[]);

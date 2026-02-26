@@ -8,6 +8,10 @@
 
 extern crate alloc;
 
+use alloc::{string::String, sync::Arc};
+use core::any::Any;
+use std::sync::Mutex;
+use waterui_core::Signal;
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
 
 /// A GPU renderer for SVG content using Vello.
@@ -22,7 +26,9 @@ use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
 /// so HDR colors (values > 1.0) are not supported.
 pub struct VelloSvgRenderer {
     /// The parsed usvg tree.
-    svg_tree: usvg::Tree,
+    svg_tree: vello_svg::usvg::Tree,
+    /// Cached converted scene from the source SVG.
+    base_scene: vello::Scene,
     /// Vello renderer.
     renderer: Option<vello::Renderer>,
     /// Intermediate texture for Vello rendering.
@@ -51,6 +57,24 @@ impl core::fmt::Debug for VelloSvgRenderer {
 }
 
 impl VelloSvgRenderer {
+    /// Parses SVG content and builds a cached Vello scene.
+    fn parse_tree_and_scene(svg_content: &str) -> (vello_svg::usvg::Tree, vello::Scene) {
+        let tree = vello_svg::usvg::Tree::from_str(svg_content, &vello_svg::usvg::Options::default())
+            .expect("Failed to parse SVG");
+        let svg_size = tree.size();
+        assert!(
+            svg_size.width().is_finite()
+                && svg_size.height().is_finite()
+                && svg_size.width() > 0.0
+                && svg_size.height() > 0.0,
+            "SVG must have positive finite dimensions, got {}x{}",
+            svg_size.width(),
+            svg_size.height()
+        );
+        let base_scene = vello_svg::render_tree(&tree);
+        (tree, base_scene)
+    }
+
     /// Creates a new Vello SVG renderer from SVG content.
     ///
     /// # Panics
@@ -58,10 +82,10 @@ impl VelloSvgRenderer {
     /// Panics if the SVG content cannot be parsed.
     #[must_use]
     pub fn new(svg_content: &str) -> Self {
-        let tree = usvg::Tree::from_str(svg_content, &usvg::Options::default())
-            .expect("Failed to parse SVG");
+        let (svg_tree, base_scene) = Self::parse_tree_and_scene(svg_content);
         Self {
-            svg_tree: tree,
+            svg_tree,
+            base_scene,
             renderer: None,
             texture: None,
             bind_group: None,
@@ -71,6 +95,17 @@ impl VelloSvgRenderer {
             current_width: 0,
             current_height: 0,
         }
+    }
+
+    /// Replaces the parsed SVG content while keeping existing GPU resources.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new SVG content cannot be parsed.
+    pub fn reparse_svg(&mut self, svg_content: &str) {
+        let (svg_tree, base_scene) = Self::parse_tree_and_scene(svg_content);
+        self.svg_tree = svg_tree;
+        self.base_scene = base_scene;
     }
 
     /// Creates a new Vello SVG renderer from SVG path data.
@@ -87,43 +122,24 @@ impl VelloSvgRenderer {
 
     /// Converts usvg tree to vello scene.
     fn build_scene(&self, width: f32, height: f32) -> vello::Scene {
-        use vello::kurbo::{Affine, Rect};
-        use vello::peniko::{Brush, Color, Fill};
-
-        let mut scene = vello::Scene::new();
+        use vello::kurbo::Affine;
         let svg_size = self.svg_tree.size();
+        let svg_width = svg_size.width();
+        let svg_height = svg_size.height();
 
         // Calculate transform to fit SVG in target size
-        let scale_x = width / svg_size.width();
-        let scale_y = height / svg_size.height();
+        let scale_x = width / svg_width;
+        let scale_y = height / svg_height;
         let scale = scale_x.min(scale_y);
 
         // Center the SVG
-        let offset_x = f64::from((width - svg_size.width() * scale) / 2.0);
-        let offset_y = f64::from((height - svg_size.height() * scale) / 2.0);
+        let offset_x = f64::from((width - svg_width * scale) / 2.0);
+        let offset_y = f64::from((height - svg_height * scale) / 2.0);
 
         let transform = Affine::translate((offset_x, offset_y)) * Affine::scale(f64::from(scale));
 
-        // Render usvg tree to vello scene
-        // Note: This is a simplified implementation. A full implementation would
-        // traverse the usvg tree and convert each element to vello primitives.
-        // For now, we render a placeholder rectangle.
-        // TODO: Implement full usvg to vello conversion using vello_svg crate
-
-        // Placeholder: render a rect with the SVG bounds
-        let rect = Rect::new(
-            0.0,
-            0.0,
-            f64::from(svg_size.width()),
-            f64::from(svg_size.height()),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &Brush::Solid(Color::from_rgba8(200, 200, 200, 128)),
-            None,
-            &rect,
-        );
+        let mut scene = vello::Scene::new();
+        scene.append(&self.base_scene, Some(transform));
 
         scene
     }
@@ -178,16 +194,16 @@ impl VelloSvgRenderer {
         }
 
         // Render scene with Vello
+        #[allow(clippy::cast_precision_loss)]
+        let scene = self.build_scene(width as f32, height as f32);
         if let (Some(renderer), Some(texture)) = (&mut self.renderer, &self.texture) {
-            #[allow(clippy::cast_precision_loss)]
-            let scene = self.build_scene(width as f32, height as f32);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
             let render_params = vello::RenderParams {
                 base_color: vello::peniko::Color::TRANSPARENT,
                 width,
                 height,
-                antialiasing_method: vello::AaConfig::Msaa16,
+                antialiasing_method: vello::AaConfig::Area,
             };
 
             renderer
@@ -197,12 +213,130 @@ impl VelloSvgRenderer {
     }
 }
 
+/// Placeholder token used by reactive SVG templates for tint substitution.
+pub(crate) const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
+
+/// Reactive wrapper that updates SVG tint without recreating GPU surface state.
+pub(crate) struct ReactiveVelloSvgRenderer<S>
+where
+    S: Signal<Output = String>,
+{
+    inner: VelloSvgRenderer,
+    svg_template: String,
+    color_signal: S,
+    pending_update: Arc<Mutex<bool>>,
+    _watcher_guard: Option<Box<dyn Any>>,
+    last_color: String,
+    template_uses_color: bool,
+}
+
+impl<S> ReactiveVelloSvgRenderer<S>
+where
+    S: Signal<Output = String>,
+{
+    /// Creates a reactive renderer from an SVG template and color signal.
+    #[must_use]
+    pub fn new(svg_template: impl Into<String>, color_signal: S) -> Self {
+        let svg_template = svg_template.into();
+        let template_uses_color = svg_template.contains(SVG_COLOR_PLACEHOLDER);
+        let initial_color = color_signal.get();
+        let initial_svg = if template_uses_color {
+            svg_template.replace(SVG_COLOR_PLACEHOLDER, &initial_color)
+        } else {
+            svg_template.clone()
+        };
+
+        Self {
+            inner: VelloSvgRenderer::new(&initial_svg),
+            svg_template,
+            color_signal,
+            pending_update: Arc::new(Mutex::new(false)),
+            _watcher_guard: None,
+            last_color: initial_color,
+            template_uses_color,
+        }
+    }
+
+    fn take_pending_update(&self) -> bool {
+        self.pending_update
+            .lock()
+            .ok()
+            .map_or(false, |mut pending| {
+                let value = *pending;
+                *pending = false;
+                value
+            })
+    }
+
+    fn sync_svg_from_color(&mut self) {
+        if !self.take_pending_update() {
+            return;
+        }
+
+        let color = self.color_signal.get();
+        if color == self.last_color {
+            return;
+        }
+
+        if self.template_uses_color {
+            let svg_content = self.svg_template.replace(SVG_COLOR_PLACEHOLDER, &color);
+            self.inner.reparse_svg(&svg_content);
+        }
+
+        self.last_color = color;
+    }
+}
+
+impl<S> GpuRenderer for ReactiveVelloSvgRenderer<S>
+where
+    S: Signal<Output = String>,
+{
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+        if self.template_uses_color && self._watcher_guard.is_none() {
+            let pending_update = Arc::clone(&self.pending_update);
+            let guard = self.color_signal.watch(move |_context| {
+                if let Ok(mut pending) = pending_update.lock() {
+                    *pending = true;
+                }
+            });
+            self._watcher_guard = Some(Box::new(guard));
+        }
+        self.inner.setup(ctx)
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        self.sync_svg_from_color();
+        self.inner.render(frame);
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.inner.resize(width, height);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.pending_update
+            .lock()
+            .ok()
+            .is_some_and(|pending| *pending)
+            || self.inner.needs_redraw()
+    }
+
+    fn requires_redraw_poll(&self) -> bool {
+        self.template_uses_color
+    }
+}
+
 impl GpuRenderer for VelloSvgRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         // Create Vello renderer
         let renderer = vello::Renderer::new(
             ctx.device,
-            Default::default(),
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: std::num::NonZeroUsize::new(1),
+                pipeline_cache: None,
+            },
         )
         .expect("Failed to create Vello renderer");
         self.renderer = Some(renderer);
@@ -215,7 +349,7 @@ impl GpuRenderer for VelloSvgRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         self.sampler = Some(sampler);
@@ -251,9 +385,7 @@ impl GpuRenderer for VelloSvgRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(waterui_graphics::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(
-                    waterui_graphics::shaders::BLIT.source.clone().into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.into()),
             });
 
         let pipeline_layout = ctx
@@ -261,7 +393,7 @@ impl GpuRenderer for VelloSvgRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Vello SVG Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -302,7 +434,7 @@ impl GpuRenderer for VelloSvgRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
         self.blit_pipeline = Some(pipeline);
@@ -343,7 +475,6 @@ impl GpuRenderer for VelloSvgRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             pass.set_pipeline(pipeline);
