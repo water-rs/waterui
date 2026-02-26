@@ -16,7 +16,7 @@ use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
 use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, wgpu};
 use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
@@ -2264,23 +2264,26 @@ impl VideoRenderer {
     }
 }
 
-impl GpuRenderer for VideoRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for VideoRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         self.step_decoder_if_needed(frame);
         self.render_surface(frame);
-    }
 
-    fn needs_redraw(&self) -> bool {
-        if self.decode_worker.is_none() {
-            return self.should_poll_source() || self.should_play() || self.is_buffering;
+        // Request continuous redraw while playback/buffering is active
+        let needs_redraw = if self.decode_worker.is_none() {
+            self.should_poll_source() || self.should_play() || self.is_buffering
+        } else {
+            self.pending_frame.is_some() || self.should_play() || self.is_buffering
+        };
+        if needs_redraw {
+            frame.request_redraw();
         }
-        self.pending_frame.is_some() || self.should_play() || self.is_buffering
     }
 }
 

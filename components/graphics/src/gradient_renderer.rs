@@ -1,6 +1,6 @@
 //! GPU-accelerated gradient rendering.
 //!
-//! This module provides a [`GradientRenderer`] that implements [`GpuRenderer`]
+//! This module provides a [`GradientRenderer`] that implements [`GpuView`]
 //! for rendering linear, radial, angular, and mesh gradients using WGSL shaders.
 //!
 //! # Architecture
@@ -18,10 +18,10 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use std::sync::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::color::ResolvedColor;
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuView, GpuSurface};
 use crate::include_shader;
 use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
 use waterui_core::View;
@@ -309,8 +309,8 @@ impl GradientRenderer {
     }
 }
 
-impl GpuRenderer for GradientRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for GradientRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[GradientRenderer] setup() called with format: {:?}",
             ctx.surface_format
@@ -511,7 +511,7 @@ impl GpuRenderer for GradientRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Check if pipeline format matches
         if let Some(pipeline_fmt) = self.pipeline_format {
             if pipeline_fmt != frame.format {
@@ -769,7 +769,7 @@ struct ReactiveMeshRenderer<C> {
     height: u32,
     colors: C,
     smooths_colors: bool,
-    pending_update: Arc<Mutex<bool>>,
+    pending_update: Arc<AtomicBool>,
     _watcher_guard: Option<Box<dyn Any>>,
     // GPU resources
     pipeline: Option<wgpu::RenderPipeline>,
@@ -788,7 +788,7 @@ impl<C> ReactiveMeshRenderer<C> {
             height,
             colors,
             smooths_colors,
-            pending_update: Arc::new(Mutex::new(false)),
+            pending_update: Arc::new(AtomicBool::new(false)),
             _watcher_guard: None,
             pipeline: None,
             uniform_buffer: None,
@@ -801,18 +801,18 @@ impl<C> ReactiveMeshRenderer<C> {
     }
 }
 
-impl<C> GpuRenderer for ReactiveMeshRenderer<C>
+impl<C> GpuView for ReactiveMeshRenderer<C>
 where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         if self._watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
+            let redraw_handle = ctx.redraw_handle.clone();
             let guard = self.colors.watch(move |_context| {
-                if let Ok(mut pending) = pending_update.lock() {
-                    *pending = true;
-                }
+                pending_update.store(true, Ordering::Release);
+                redraw_handle.request_redraw();
             });
             self._watcher_guard = Some(Box::new(guard));
         }
@@ -1010,7 +1010,7 @@ where
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Check format match
         if let Some(pipeline_fmt) = self.pipeline_format {
             if pipeline_fmt != frame.format {
@@ -1036,15 +1036,7 @@ where
             return;
         };
 
-        let pending_update = self
-            .pending_update
-            .lock()
-            .ok()
-            .map_or(false, |mut pending| {
-                let value = *pending;
-                *pending = false;
-                value
-            });
+        let pending_update = self.pending_update.swap(false, Ordering::AcqRel);
 
         if pending_update || self.last_colors.is_none() {
             // Read current colors from signal only when first drawing or when a watcher
@@ -1156,17 +1148,6 @@ where
         }
 
         frame.queue.submit(core::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.pending_update
-            .lock()
-            .ok()
-            .is_some_and(|pending| *pending)
-    }
-
-    fn requires_redraw_poll(&self) -> bool {
-        true
     }
 }
 

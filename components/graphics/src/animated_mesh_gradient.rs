@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 
 use crate::color::ResolvedColor;
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuView, GpuSurface};
 use crate::include_shader;
 use waterui_core::View;
 
@@ -217,8 +217,8 @@ impl AnimatedMeshRenderer {
     }
 }
 
-impl GpuRenderer for AnimatedMeshRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for AnimatedMeshRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let shader = crate::shared_context::create_cached_shader_module_prewarmed(
             ctx.device,
             &ANIMATED_MESH_SHADER,
@@ -311,7 +311,7 @@ impl GpuRenderer for AnimatedMeshRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         if let Some(pipeline_fmt) = self.pipeline_format
             && pipeline_fmt != frame.format
         {
@@ -377,10 +377,9 @@ impl GpuRenderer for AnimatedMeshRenderer {
         }
 
         frame.queue.submit(core::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.config.speed > 0.0
+        if self.config.speed > 0.0 {
+            frame.request_redraw();
+        }
     }
 }
 
