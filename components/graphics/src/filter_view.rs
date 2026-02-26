@@ -546,11 +546,6 @@ impl_filter_graph_one_param!(
     include_str!("../../../utils/filtrate-core/src/shaders/fragments/hue_rotation.wgsl")
 );
 impl_filter_graph_one_param!(
-    Opacity,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/opacity.wgsl")
-);
-impl_filter_graph_one_param!(
     Sepia,
     color,
     include_str!("../../../utils/filtrate-core/src/shaders/fragments/sepia.wgsl")
@@ -2730,12 +2725,6 @@ mod tests {
             FilterAdapter::new(filtrate_core::filters::Invert)
         );
         export_filter!(
-            "opacity.png",
-            input_width,
-            input_height,
-            FilterAdapter::new(filtrate_core::filters::Opacity(0.5f32))
-        );
-        export_filter!(
             "blur.png",
             input_width,
             input_height,
@@ -2888,21 +2877,6 @@ pub trait FilterViewExt: View + Sized {
     /// Apply an invert filter.
     fn invert(self) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Invert>> {
         FilteredView::new(self, FilterAdapter::new(filtrate_core::filters::Invert))
-    }
-
-    /// Apply an opacity filter.
-    fn opacity<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Opacity<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
-            self,
-            FilterAdapter::new(filtrate_core::filters::Opacity(amount.into_signal_f32())),
-        )
     }
 
     /// Apply a sepia filter.
