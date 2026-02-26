@@ -767,8 +767,8 @@ impl SolidColorRenderer {
     }
 }
 
-impl crate::GpuRenderer for SolidColorRenderer {
-    fn setup(&mut self, ctx: &crate::GpuContext) -> impl core::future::Future<Output = ()> {
+impl crate::GpuView for SolidColorRenderer {
+    fn setup(&mut self, ctx: &crate::GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
 
         let uniform_size = <SolidColorUniforms as encase::ShaderSize>::SHADER_SIZE.get() as u64;
@@ -905,7 +905,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &crate::GpuFrame) {
+    fn render(&mut self, frame: &mut crate::GpuFrame) {
         if let Some(target_fmt) = self.pipeline_format {
             if target_fmt != frame.format {
                 return;

@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::{BarcodeSource, view::BarcodeFill};
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, color::Srgb};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, color::Srgb};
 
 /// Uniforms consumed by `qr_render.wgsl`.
 #[repr(C)]
@@ -247,8 +247,8 @@ impl BarcodeRenderer {
     }
 }
 
-impl GpuRenderer for BarcodeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl std::future::Future<Output = ()> {
+impl GpuView for BarcodeRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl std::future::Future<Output = ()> {
         let (pipeline, bgl) =
             Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
         self.render_pipeline = Some(pipeline);
@@ -258,7 +258,7 @@ impl GpuRenderer for BarcodeRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         self.ensure_uniform_buffer(frame.device);
         self.ensure_matrix_buffer(frame.device, frame.queue);
 
@@ -337,10 +337,5 @@ impl GpuRenderer for BarcodeRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        // Keep source size synchronized for callers that inspect it.
-        self.source.set_size(width.min(height));
     }
 }

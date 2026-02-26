@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture, stream::LocalBoxStre
 use waterkit_camera::{Camera, Frame};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, bytemuck, wgpu};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
 
@@ -375,14 +375,14 @@ impl CameraFilterRenderer {
     }
 }
 
-impl GpuRenderer for CameraFilterRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for CameraFilterRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let reconnect_ticket = self.reconnect_ticket.get();
         if reconnect_ticket != self.last_reconnect_ticket {
             self.last_reconnect_ticket = reconnect_ticket;
@@ -452,10 +452,7 @@ impl GpuRenderer for CameraFilterRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
+        frame.request_redraw();
     }
 }
 
