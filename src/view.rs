@@ -20,7 +20,7 @@ use waterui_core::{
     metadata::MetadataKey,
     plugin::Plugin,
 };
-use waterui_graphics::{FilterViewExt, color::Color};
+use waterui_graphics::color::Color;
 
 use waterui_layout::{
     EdgeSet, IgnoreSafeArea, Overlay,
@@ -36,6 +36,7 @@ use crate::{
     background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
+    filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
     metadata::{context_menu::ContextMenu, secure::Secure},
@@ -61,6 +62,19 @@ pub trait ViewExt: View + Sized {
     /// * `metadata` - The metadata to attach
     fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
         Metadata::new(self, metadata)
+    }
+
+    /// Adjusts the opacity (transparency) of this view.
+    ///
+    /// This produces a lightweight `Metadata<Opacity>` that maps directly to
+    /// compositor-native operations (e.g. `CALayer.opacity` on Apple, `View.alpha`
+    /// on Android, `push_layer()` with alpha on hydrolysis). No offscreen texture
+    /// or GPU shader pass is involved.
+    ///
+    /// # Arguments
+    /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
+    fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
+        Metadata::new(self, Opacity::new(amount))
     }
 
     /// Sets the visibility of this view.
