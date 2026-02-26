@@ -80,12 +80,10 @@ pub(crate) fn import_ahardwarebuffer_as_wgpu_texture(
     ahb_drop: ExternalDropFn,
     ahb_drop_data: *mut c_void,
 ) -> Result<(wgpu::Texture, wgpu::TextureFormat), &'static str> {
-    if ahb_ptr.is_null() {
-        return Err("AHardwareBuffer pointer is null");
-    }
-    if width == 0 || height == 0 {
-        return Err("AHardwareBuffer import requires non-zero dimensions");
-    }
+    assert!(
+        width > 0 && height > 0,
+        "AHardwareBuffer import requires non-zero dimensions"
+    );
 
     // SAFETY: We immediately use the returned reference and don't store it beyond this scope.
     let Some(hal_device) = (unsafe { device.as_hal::<VulkanApi>() }) else {

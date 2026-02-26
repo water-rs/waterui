@@ -814,7 +814,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                     device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
                         label: Some("Solid Color Pipeline Layout"),
                         bind_group_layouts: &[&bind_group_layout],
-                        immediate_size: 0,
+                        push_constant_ranges: &[],
                     });
 
                 SolidColorSharedDeviceState {
@@ -858,7 +858,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                         },
                         depth_stencil: None,
                         multisample: crate::wgpu::MultisampleState::default(),
-                        multiview_mask: None,
+                        multiview: None,
                         cache,
                     })
                 };
@@ -957,7 +957,6 @@ impl crate::GpuRenderer for SolidColorRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

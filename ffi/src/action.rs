@@ -14,11 +14,10 @@ opaque!(WuiAction, BoxedAction<()>, action);
 /// * `env` must be a valid pointer to a `waterui_env` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const WuiEnv) {
-    if action.is_null() || env.is_null() {
-        return;
-    }
-    let _ = crate::ffi_boundary("waterui_call_action", || unsafe {
-        ((*action).0)(&*env);
+    let action = unsafe { crate::expect_non_null_mut(action, "waterui_call_action", "action") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_action", "env") };
+    let _ = crate::ffi_boundary("waterui_call_action", || {
+        (action.0)(env);
     });
 }
 
@@ -55,11 +54,11 @@ pub unsafe extern "C" fn waterui_call_index_action(
     env: *const WuiEnv,
     index: usize,
 ) {
-    if action.is_null() || env.is_null() {
-        return;
-    }
-    let _ = crate::ffi_boundary("waterui_call_index_action", || unsafe {
-        ((*action).0.0)(&*env, index);
+    let action =
+        unsafe { crate::expect_non_null_mut(action, "waterui_call_index_action", "action") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_index_action", "env") };
+    let _ = crate::ffi_boundary("waterui_call_index_action", || {
+        (action.0.0)(env, index);
     });
 }
 
@@ -97,11 +96,11 @@ pub unsafe extern "C" fn waterui_call_move_action(
     from_index: usize,
     to_index: usize,
 ) {
-    if action.is_null() || env.is_null() {
-        return;
-    }
-    let _ = crate::ffi_boundary("waterui_call_move_action", || unsafe {
-        ((*action).0.0)(&*env, from_index, to_index);
+    let action =
+        unsafe { crate::expect_non_null_mut(action, "waterui_call_move_action", "action") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_move_action", "env") };
+    let _ = crate::ffi_boundary("waterui_call_move_action", || {
+        (action.0.0)(env, from_index, to_index);
     });
 }
 
