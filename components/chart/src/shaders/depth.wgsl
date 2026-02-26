@@ -33,8 +33,8 @@ struct DepthColors {
     ask_line: vec4<f32>,
     mid_price: f32,
     line_width: f32,
-    _pad0: f32,
-    _pad1: f32,
+    bid_count: f32,
+    ask_count: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: ChartUniforms;
@@ -76,8 +76,8 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let bid_count = arrayLength(&bids);
-    let ask_count = arrayLength(&asks);
+    let bid_count = u32(colors.bid_count);
+    let ask_count = u32(colors.ask_count);
     let total_levels = bid_count + ask_count;
 
     if total_levels == 0u {

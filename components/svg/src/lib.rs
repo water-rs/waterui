@@ -3,26 +3,15 @@
 //! This crate provides `Svg`, a view for rendering SVG content using GPU-accelerated
 //! rendering via `GpuSurface`.
 //!
-//! # Backends
-//!
-//! - **CPU backend** (`cpu` feature, default): Uses resvg to rasterize SVGs
-//!   to a texture which is then blitted to the GPU. Simple and widely compatible.
-//!
-//! - **GPU backend** (`vello` feature): Uses Vello for direct GPU vector rendering.
-//!   Potentially better quality and performance, but requires a git dependency.
+//! SVG rendering is backed by Vello for direct GPU vector rendering.
 
 #![allow(clippy::multiple_crate_versions)]
 
 extern crate alloc;
 
-#[cfg(feature = "cpu")]
-mod cpu_renderer;
-#[cfg(feature = "vello-backend")]
 mod vello_renderer;
 
-use waterui_core::Signal;
-use waterui_core::resolve::Resolvable;
-use waterui_core::{Environment, View};
+use waterui_core::{AnyView, Environment, Signal, SignalExt, View};
 use waterui_graphics::GpuSurface;
 use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
@@ -130,8 +119,12 @@ impl Svg {
         if let (Some(width), Some(height)) = (self.width, self.height) {
             let content = self.content.as_str();
             if content.trim_start().starts_with('<') {
-                // Already full SVG markup
-                self.content.to_string()
+                // Full SVG markup: support tint only for currentColor-driven assets.
+                if content.contains("currentColor") {
+                    content.replace("currentColor", color)
+                } else {
+                    self.content.to_string()
+                }
             } else if self.stroke {
                 // Stroke-based path (for outline icons like Lucide)
                 alloc::format!(
@@ -150,16 +143,42 @@ impl Svg {
     }
 
     /// Creates a GpuSurface renderer for this SVG with the given color.
-    #[cfg(feature = "cpu")]
-    fn to_gpu_surface(&self, color: &str) -> GpuSurface {
-        let svg_content = self.build_svg_content(color);
-        GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content))
-    }
-
-    #[cfg(all(feature = "vello-backend", not(feature = "cpu")))]
     fn to_gpu_surface(&self, color: &str) -> GpuSurface {
         let svg_content = self.build_svg_content(color);
         GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+    }
+
+    /// Creates a reactive GpuSurface renderer for this SVG.
+    fn to_reactive_gpu_surface<S>(&self, color_signal: S) -> GpuSurface
+    where
+        S: Signal<Output = alloc::string::String>,
+    {
+        let svg_template = self.build_svg_content(vello_renderer::SVG_COLOR_PLACEHOLDER);
+        GpuSurface::new(vello_renderer::ReactiveVelloSvgRenderer::new(
+            svg_template,
+            color_signal,
+        ))
+    }
+
+    /// Wraps a GpuSurface in a frame, preserving optional intrinsic size.
+    fn frame_surface(&self, surface: GpuSurface) -> AnyView {
+        match (self.width, self.height) {
+            (Some(w), Some(h)) => AnyView::new(Frame::new(surface).width(w).height(h)),
+            _ => AnyView::new(Frame::new(surface)),
+        }
+    }
+
+    /// Creates a framed SVG surface view for the given color.
+    fn to_framed_surface(&self, color: &str) -> AnyView {
+        self.frame_surface(self.to_gpu_surface(color))
+    }
+
+    /// Creates a framed reactive SVG surface view.
+    fn to_reactive_framed_surface<S>(&self, color_signal: S) -> AnyView
+    where
+        S: Signal<Output = alloc::string::String>,
+    {
+        self.frame_surface(self.to_reactive_gpu_surface(color_signal))
     }
 
     /// Format a ResolvedColor as an SVG-compatible color string.
@@ -188,32 +207,21 @@ impl Svg {
 
 impl View for Svg {
     fn body(self, env: &Environment) -> impl View {
-        // Get the color to use: explicit tint or default to white (for dark themes)
-        let color_hex = if let Some(tint) = &self.tint {
-            // Use explicit tint color
-            let resolved = tint.resolve(env).get();
-            Svg::resolved_color_to_svg_color(&resolved)
-        } else {
-            // Try to get foreground color from environment, fallback to white
-            env.query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
-                .map(|sig| {
-                    let fg = sig.get();
-                    Svg::resolved_color_to_svg_color(&fg)
-                })
-                .unwrap_or_else(|| "#ffffff".into())
-        };
-
-        let surface = self.to_gpu_surface(&color_hex);
-        // Apply frame with intrinsic dimensions if available
-        match (self.width, self.height) {
-            (Some(w), Some(h)) => Frame::new(surface).width(w).height(h),
-            _ => Frame::new(surface),
+        if let Some(tint) = self.tint.clone() {
+            let color_signal = tint
+                .resolve(env)
+                .map(|resolved| Svg::resolved_color_to_svg_color(&resolved));
+            return self.to_reactive_framed_surface(color_signal);
         }
+
+        // No explicit tint: use foreground color if present, else white.
+        let color_hex = env
+            .query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
+            .map(Svg::resolved_color_to_svg_color)
+            .unwrap_or_else(|| "#ffffff".into());
+        self.to_framed_surface(&color_hex)
     }
 }
 
-// Re-export renderers for advanced usage
-#[cfg(feature = "cpu")]
-pub use cpu_renderer::SvgRenderer;
-#[cfg(feature = "vello-backend")]
+// Re-export renderer for advanced usage.
 pub use vello_renderer::VelloSvgRenderer;

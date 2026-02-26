@@ -12,7 +12,7 @@
 //! Image::new(rgba_pixels, 800, 600)
 //! ```
 
-use alloc::borrow::ToOwned;
+use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -198,6 +198,9 @@ impl Image {
                 decoded.hdr,
                 decoded.wide_gamut,
             ),
+            other => {
+                panic!("Image::from_decoded: unsupported decoded pixel format: {other:?}");
+            }
         }
     }
 }
@@ -246,6 +249,8 @@ impl core::fmt::Debug for ImageRenderer {
 }
 
 impl ImageRenderer {
+    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+
     fn new(
         pixels: Vec<u8>,
         width: u32,
@@ -266,6 +271,39 @@ impl ImageRenderer {
             bind_group: None,
             sampler: None,
         }
+    }
+
+    #[inline]
+    const fn bytes_per_pixel(source_pixel_format: SourcePixelFormat) -> u32 {
+        match source_pixel_format {
+            SourcePixelFormat::Rgba8UnormSrgb => 4,
+            SourcePixelFormat::Rgba16Float => 8,
+        }
+    }
+
+    #[inline]
+    const fn align_bytes_per_row(bytes_per_row: u32) -> u32 {
+        bytes_per_row.div_ceil(Self::COPY_ALIGNMENT) * Self::COPY_ALIGNMENT
+    }
+
+    fn pad_rows_for_upload(
+        pixels: &[u8],
+        unpadded_bpr: u32,
+        padded_bpr: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        debug_assert!(padded_bpr >= unpadded_bpr);
+        debug_assert_eq!(pixels.len(), (unpadded_bpr * height) as usize);
+
+        let mut padded = vec![0u8; (padded_bpr * height) as usize];
+        for row in 0..height as usize {
+            let src_start = row * unpadded_bpr as usize;
+            let src_end = src_start + unpadded_bpr as usize;
+            let dst_start = row * padded_bpr as usize;
+            let dst_end = dst_start + unpadded_bpr as usize;
+            padded[dst_start..dst_end].copy_from_slice(&pixels[src_start..src_end]);
+        }
+        padded
     }
 
     fn create_render_pipeline(
@@ -308,7 +346,7 @@ impl ImageRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Image pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
-            immediate_size: 0,
+            push_constant_ranges: &[],
         });
 
         let fragment_entry_point = if hdr_to_sdr_tonemap {
@@ -346,7 +384,7 @@ impl ImageRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            multiview: None,
             cache: pipeline_cache,
         });
 
@@ -357,7 +395,7 @@ impl ImageRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -378,19 +416,29 @@ impl GpuRenderer for ImageRenderer {
 
         // Upload pending pixels to GPU texture
         if let Some(pixels) = self.pending_pixels.take() {
-            let (texture_format, bytes_per_row) = match self.source_pixel_format {
-                SourcePixelFormat::Rgba8UnormSrgb => (
+            let texture_format = match self.source_pixel_format {
+                SourcePixelFormat::Rgba8UnormSrgb =>
                     // Use sRGB format - standard web/PNG/JPEG content.
                     // GPU automatically converts sRGB to linear when sampling.
                     wgpu::TextureFormat::Rgba8UnormSrgb,
-                    self.width * 4,
-                ),
-                SourcePixelFormat::Rgba16Float => (
+                SourcePixelFormat::Rgba16Float =>
                     // HDR path: linear extended-range source pixels.
                     wgpu::TextureFormat::Rgba16Float,
-                    self.width * 8,
-                ),
             };
+            let bytes_per_pixel = Self::bytes_per_pixel(self.source_pixel_format);
+            let unpadded_bpr = self.width * bytes_per_pixel;
+            let padded_bpr = Self::align_bytes_per_row(unpadded_bpr);
+            let upload_pixels: Cow<'_, [u8]> = if padded_bpr == unpadded_bpr {
+                Cow::Borrowed(pixels.as_slice())
+            } else {
+                Cow::Owned(Self::pad_rows_for_upload(
+                    &pixels,
+                    unpadded_bpr,
+                    padded_bpr,
+                    self.height,
+                ))
+            };
+
             let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Image source texture"),
                 size: wgpu::Extent3d {
@@ -413,10 +461,10 @@ impl GpuRenderer for ImageRenderer {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &pixels,
+                upload_pixels.as_ref(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
+                    bytes_per_row: Some(padded_bpr),
                     rows_per_image: Some(self.height),
                 },
                 wgpu::Extent3d {
@@ -496,17 +544,16 @@ impl GpuRenderer for ImageRenderer {
                 label: Some("Image render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(render_pipeline);

@@ -24,6 +24,7 @@ pub struct ResolvedParticleConfig {
     pub gravity: [f32; 2],
     pub wind: [f32; 2],
     pub turbulence: f32,
+    pub drag: f32,
     pub life_range: [f32; 2],
     pub speed_range: [f32; 2],
     pub angle_range: [f32; 2],
@@ -103,6 +104,7 @@ impl ParticleRenderer {
                 emitter_size: glam::Vec2::new(emitter_w, emitter_h),
                 emit_rate: self.config.emit_rate,
                 turbulence: self.config.turbulence,
+                drag: self.config.drag,
                 stretch_factor: if self.config.stretch_with_velocity {
                     1.0
                 } else {
@@ -203,7 +205,7 @@ impl GpuRenderer for ParticleRenderer {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Compute PL"),
                 bind_group_layouts: &[&compute_bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -269,7 +271,7 @@ impl GpuRenderer for ParticleRenderer {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Render PL"),
                 bind_group_layouts: &[&render_bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -317,7 +319,7 @@ impl GpuRenderer for ParticleRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            multiview: None,
             cache: ctx.pipeline_cache,
         });
 
@@ -382,17 +384,16 @@ impl GpuRenderer for ParticleRenderer {
                 label: Some("Particle Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             rpass.set_pipeline(pipeline);

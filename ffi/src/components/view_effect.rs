@@ -36,7 +36,15 @@ use waterui_graphics::view_effect::{
     EffectContext, EffectInput, EffectOutput, OutputSize, ViewEffectErased,
 };
 
+use super::pixel_upload::prepare_rgba8_upload;
 use crate::{IntoFFI, WuiAnyView};
+
+#[cold]
+#[inline(never)]
+fn abort_on_panic(scope: &'static str) -> ! {
+    tracing::error!("{scope} panicked; aborting process");
+    std::process::abort();
+}
 
 /// FFI representation of output size.
 #[repr(C)]
@@ -196,25 +204,19 @@ pub unsafe extern "C" fn waterui_view_effect_init(
     input_width: u32,
     input_height: u32,
 ) -> *mut WuiViewEffectState {
-    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if effect.is_null() || output_layer.is_null() || input_width == 0 || input_height == 0 {
-            tracing::error!(
-                "[ViewEffect] init failed: invalid parameters (effect={:?}, layer={:?}, {}x{})",
-                effect,
-                output_layer,
-                input_width,
-                input_height
-            );
-            return core::ptr::null_mut();
-        }
+    unsafe {
+        crate::expect_non_null_mut(effect, "waterui_view_effect_init", "effect");
+        crate::expect_non_null(output_layer, "waterui_view_effect_init", "output_layer");
+    }
+    assert!(
+        input_width > 0 && input_height > 0,
+        "waterui_view_effect_init: dimensions must be positive, got {input_width}x{input_height}"
+    );
 
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let wui_effect = unsafe { &mut *effect };
 
         // Recover the effect wrapper
-        if wui_effect.effect.is_null() {
-            tracing::error!("[ViewEffect] init failed: effect pointer is null");
-            return core::ptr::null_mut();
-        }
         let effect_wrapper: ViewEffectRendererWrapper =
             unsafe { *Box::from_raw(wui_effect.effect as *mut ViewEffectRendererWrapper) };
 
@@ -228,8 +230,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
         if !waterui_graphics::shared_context::is_initialized() {
             tracing::debug!("[ViewEffect] Shared context not initialized, initializing now...");
             if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
-                tracing::error!("[ViewEffect] Init failed: {}", e);
-                return core::ptr::null_mut();
+                panic!("waterui_view_effect_init: shared GPU context init failed: {e}");
             }
         }
         let ctx = shared_context();
@@ -245,27 +246,23 @@ pub unsafe extern "C" fn waterui_view_effect_init(
         let Some(output_surface) =
             super::gpu_surface::create_surface_from_layer(instance, output_layer)
         else {
-            tracing::error!("[ViewEffect] Failed to create output surface from layer");
-            return core::ptr::null_mut();
+            panic!("waterui_view_effect_init: failed to create output surface from layer");
         };
 
         // Configure output surface
         let surface_caps = output_surface.get_capabilities(adapter);
         if surface_caps.formats.is_empty() {
-            tracing::error!("[ViewEffect] Shared adapter cannot present to output surface!");
-            return core::ptr::null_mut();
+            panic!("waterui_view_effect_init: adapter cannot present to output surface");
         }
 
         let preferred = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
         let format = if surface_caps.formats.contains(&preferred) {
             preferred
         } else {
-            tracing::warn!(
-                "[ViewEffect] Preferred format {:?} not supported, using {:?}",
-                preferred,
-                surface_caps.formats[0]
+            panic!(
+                "waterui_view_effect_init: preferred format {:?} is not supported by surface capabilities {:?}",
+                preferred, surface_caps.formats
             );
-            surface_caps.formats[0]
         };
 
         let present_mode = if surface_caps
@@ -305,10 +302,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             format
         );
 
-        if !try_configure_surface(&output_surface, &device, &output_config) {
-            tracing::error!("[ViewEffect] Output surface configuration failed!");
-            return core::ptr::null_mut();
-        }
+        try_configure_surface(&output_surface, &device, &output_config);
 
         // Create capture texture (for capturing child view output)
         // Use the same format as output for simplicity
@@ -356,10 +350,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
 
     match init_result {
         Ok(ptr) => ptr,
-        Err(_) => {
-            tracing::error!("[ViewEffect] init panicked");
-            core::ptr::null_mut()
-        }
+        Err(_) => abort_on_panic("waterui_view_effect_init"),
     }
 }
 
@@ -407,11 +398,12 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
     width: u32,
     height: u32,
 ) -> bool {
-    if state.is_null() || input_handle.is_null() || width == 0 || height == 0 {
-        return false;
-    }
-
-    let state = unsafe { &mut *state };
+    let state =
+        unsafe { crate::expect_non_null_mut(state, "waterui_view_effect_set_input", "state") };
+    assert!(
+        width > 0 && height > 0,
+        "waterui_view_effect_set_input: dimensions must be positive, got {width}x{height}"
+    );
 
     // Handle dimension changes
     if width != state.input_width || height != state.input_height {
@@ -426,14 +418,7 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             state.output_config.width = output_width;
             state.output_config.height = output_height;
 
-            if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-                tracing::warn!(
-                    "[ViewEffect] output resize failed ({}x{})",
-                    output_width,
-                    output_height
-                );
-                return false;
-            }
+            try_configure_surface(&state.output_surface, &state.device, &state.output_config);
         }
 
         // Recreate capture texture if needed
@@ -477,8 +462,9 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             }
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             {
-                tracing::error!("[ViewEffect] MetalTexture not supported on this platform");
-                false
+                panic!(
+                    "waterui_view_effect_set_input: MetalTexture is only supported on Apple platforms"
+                );
             }
         }
         WuiInputType::AHardwareBuffer => {
@@ -488,42 +474,28 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             // `waterui_view_effect_set_input_ahardwarebuffer` entry point.
             #[cfg(target_os = "android")]
             {
-                tracing::error!(
-                    "[ViewEffect] AHardwareBuffer import requires a drop callback; use waterui_view_effect_set_input_ahardwarebuffer"
+                panic!(
+                    "waterui_view_effect_set_input: AHardwareBuffer requires a drop callback; use waterui_view_effect_set_input_ahardwarebuffer"
                 );
-                false
             }
             #[cfg(not(target_os = "android"))]
             {
-                tracing::error!("[ViewEffect] AHardwareBuffer not supported on this platform");
-                false
+                panic!(
+                    "waterui_view_effect_set_input: AHardwareBuffer is only supported on Android"
+                );
             }
         }
         WuiInputType::PixelData => {
-            // Copy pixel data to capture texture (fallback path)
+            // Copy pixel data to capture texture.
             // input_handle is a pointer to RGBA pixel data
-            let Some(ref capture_texture) = state.capture_texture else {
-                return false;
-            };
-
-            let Some(bytes_per_row) = width.checked_mul(4) else {
-                tracing::error!(
-                    "[ViewEffect] invalid PixelData width {} (bytes_per_row overflow)",
-                    width
-                );
-                return false;
-            };
-            let Some(data_len) = bytes_per_row.checked_mul(height) else {
-                tracing::error!(
-                    "[ViewEffect] invalid PixelData size {}x{} (data length overflow)",
-                    width,
-                    height
-                );
-                return false;
-            };
-            let data = unsafe {
-                core::slice::from_raw_parts(input_handle as *const u8, data_len as usize)
-            };
+            let capture_texture = state
+                .capture_texture
+                .as_ref()
+                .expect("[ViewEffect] PixelData input requires an allocated capture texture");
+            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height) }
+                .unwrap_or_else(|error| {
+                    panic!("[ViewEffect] invalid PixelData {width}x{height} ({error})");
+                });
 
             state.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -532,11 +504,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                data,
+                upload.bytes(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: None,
+                    bytes_per_row: Some(upload.bytes_per_row()),
+                    rows_per_image: Some(height),
                 },
                 wgpu::Extent3d {
                     width,
@@ -574,14 +546,10 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
 pub unsafe extern "C" fn waterui_view_effect_render(
     state: *mut WuiViewEffectState,
 ) -> WuiViewEffectRenderResult {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_view_effect_render", "state");
+    }
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() {
-            return WuiViewEffectRenderResult {
-                success: false,
-                needs_redraw: false,
-            };
-        }
-
         let state = unsafe { &mut *state };
 
         let input_format = if state.imported_texture.is_some() {
@@ -602,7 +570,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.effect_wrapper.erased.setup(&ctx);
-            pollster::block_on(setup_future);
+            crate::ready_now_or_panic(setup_future, "waterui_view_effect_render::setup");
             state.initialized = true;
         }
 
@@ -610,38 +578,19 @@ pub unsafe extern "C" fn waterui_view_effect_render(
         let output = match state.output_surface.get_current_texture() {
             Ok(o) => o,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                if !try_configure_surface(
-                    &state.output_surface,
-                    &state.device,
-                    &state.output_config,
-                ) {
-                    return WuiViewEffectRenderResult {
-                        success: false,
-                        needs_redraw: true,
-                    };
-                }
+                try_configure_surface(&state.output_surface, &state.device, &state.output_config);
                 match state.output_surface.get_current_texture() {
                     Ok(o) => o,
-                    Err(_) => {
-                        return WuiViewEffectRenderResult {
-                            success: false,
-                            needs_redraw: true,
-                        };
+                    Err(e) => {
+                        panic!("waterui_view_effect_render: acquire after reconfigure failed: {e}");
                     }
                 }
             }
             Err(wgpu::SurfaceError::Timeout) => {
-                return WuiViewEffectRenderResult {
-                    success: true,
-                    needs_redraw: true,
-                };
+                panic!("waterui_view_effect_render: surface timeout");
             }
             Err(e) => {
-                tracing::error!("[ViewEffect] render failed: {e}");
-                return WuiViewEffectRenderResult {
-                    success: false,
-                    needs_redraw: true,
-                };
+                panic!("waterui_view_effect_render: get_current_texture failed: {e}");
             }
         };
 
@@ -651,11 +600,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
         } else if let Some(ref capture) = state.capture_texture {
             capture
         } else {
-            tracing::error!("[ViewEffect] no input texture available");
-            return WuiViewEffectRenderResult {
-                success: false,
-                needs_redraw: false,
-            };
+            panic!("[ViewEffect] render requires either imported_texture or capture_texture");
         };
 
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -705,13 +650,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
 
     match render_result {
         Ok(result) => result,
-        Err(_) => {
-            tracing::error!("[ViewEffect] render panicked");
-            WuiViewEffectRenderResult {
-                success: false,
-                needs_redraw: false,
-            }
-        }
+        Err(_) => abort_on_panic("waterui_view_effect_render"),
     }
 }
 
@@ -726,7 +665,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
 ///
 /// # Returns
 ///
-/// Pointer to the capture wgpu::Texture, or null if not available.
+/// Pointer to the capture wgpu::Texture.
 ///
 /// # Safety
 ///
@@ -735,16 +674,15 @@ pub unsafe extern "C" fn waterui_view_effect_render(
 pub unsafe extern "C" fn waterui_view_effect_get_capture_texture(
     state: *mut WuiViewEffectState,
 ) -> *const c_void {
-    if state.is_null() {
-        return core::ptr::null();
-    }
+    let state = unsafe {
+        crate::expect_non_null(state, "waterui_view_effect_get_capture_texture", "state")
+    };
 
-    let state = unsafe { &*state };
-
-    match &state.capture_texture {
-        Some(texture) => texture as *const wgpu::Texture as *const c_void,
-        None => core::ptr::null(),
-    }
+    let texture = state
+        .capture_texture
+        .as_ref()
+        .expect("waterui_view_effect_get_capture_texture: capture texture missing");
+    texture as *const wgpu::Texture as *const c_void
 }
 
 /// Clean up ViewEffect resources.
@@ -755,10 +693,9 @@ pub unsafe extern "C" fn waterui_view_effect_get_capture_texture(
 /// and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_drop(state: *mut WuiViewEffectState) {
-    if !state.is_null() {
-        unsafe {
-            let _ = Box::from_raw(state);
-        }
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_view_effect_drop", "state");
+        let _ = Box::from_raw(state);
     }
 }
 
@@ -774,15 +711,9 @@ pub unsafe extern "C" fn waterui_view_effect_drop(state: *mut WuiViewEffectState
 pub unsafe extern "C" fn waterui_view_effect_child_is_gpu_surface(
     effect: *const WuiViewEffect,
 ) -> bool {
-    if effect.is_null() {
-        return false;
-    }
-
-    let effect = unsafe { &*effect };
-
-    if effect.content.is_null() {
-        return false;
-    }
+    let effect = unsafe {
+        crate::expect_non_null(effect, "waterui_view_effect_child_is_gpu_surface", "effect")
+    };
 
     // Check if content's type ID matches GpuSurface
     let content_type_id = unsafe { crate::waterui_view_id(effect.content) };
@@ -796,33 +727,29 @@ fn try_configure_surface(
     surface: &wgpu::Surface<'static>,
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
-) -> bool {
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+) {
+    let _ = device.poll(wgpu::PollType::Poll);
 
-    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
-    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    device.push_error_scope(wgpu::ErrorFilter::Internal);
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let configure_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         surface.configure(device, config);
     }))
     .is_err();
 
-    let validation_err = pollster::block_on(validation_scope.pop());
-    let internal_err = pollster::block_on(internal_scope.pop());
-    let oom_err = pollster::block_on(oom_scope.pop());
+    let validation_err = crate::pop_error_scope_now(device, "view_effect::validation_error_scope");
+    let internal_err = crate::pop_error_scope_now(device, "view_effect::internal_error_scope");
+    let oom_err = crate::pop_error_scope_now(device, "view_effect::oom_error_scope");
 
     if configure_panicked {
-        tracing::warn!("[ViewEffect] Surface::configure panicked");
-        return false;
+        abort_on_panic("view_effect::try_configure_surface");
     }
 
     if let Some(err) = validation_err.or(internal_err).or(oom_err) {
-        tracing::warn!("[ViewEffect] Surface::configure failed: {err}");
-        return false;
+        panic!("view_effect::try_configure_surface failed: {err}");
     }
-
-    true
 }
 
 /// Import a Metal texture as a wgpu texture (Apple zero-copy path).
@@ -855,11 +782,6 @@ fn import_metal_texture(
     use metal::foreign_types::ForeignTypeRef;
     use wgpu_hal::Api;
 
-    if mtl_texture_ptr.is_null() {
-        tracing::error!("[ViewEffect] MTLTexture pointer is null");
-        return false;
-    }
-
     // Create a metal::Texture from the raw MTLTexture pointer
     // The native side passes us an MTLTexture (id<MTLTexture>)
     // which is a raw pointer in Objective-C
@@ -878,8 +800,10 @@ fn import_metal_texture(
         metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
         metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
         other => {
-            tracing::error!("[ViewEffect] Unsupported Metal texture format {:?}", other);
-            return false;
+            panic!(
+                "view_effect::import_metal_texture: unsupported Metal format {:?}",
+                other
+            );
         }
     };
 
@@ -937,14 +861,7 @@ fn import_metal_texture(
         state.output_config.width = output_width;
         state.output_config.height = output_height;
 
-        if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-            tracing::warn!(
-                "[ViewEffect] output resize failed ({}x{})",
-                output_width,
-                output_height
-            );
-            return false;
-        }
+        try_configure_surface(&state.output_surface, &state.device, &state.output_config);
     }
 
     true
@@ -975,13 +892,20 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_ahardwarebuffer(
     width: u32,
     height: u32,
 ) -> bool {
-    if state.is_null() || ahb_ptr.is_null() || drop_fn as usize == 0 || width == 0 || height == 0 {
-        return false;
-    }
+    let state = unsafe {
+        crate::expect_non_null_mut(
+            state,
+            "waterui_view_effect_set_input_ahardwarebuffer",
+            "state",
+        )
+    };
+    assert!(
+        width > 0 && height > 0,
+        "waterui_view_effect_set_input_ahardwarebuffer: dimensions must be positive, got {width}x{height}"
+    );
 
     #[cfg(target_os = "android")]
     {
-        let state = unsafe { &mut *state };
         match android_ahb::import_ahardwarebuffer_as_wgpu_texture(
             &state.device,
             ahb_ptr,
@@ -1005,31 +929,25 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_ahardwarebuffer(
                     state.output_config.width = output_width;
                     state.output_config.height = output_height;
 
-                    if !try_configure_surface(&state.output_surface, &state.device, &state.output_config)
-                    {
-                        tracing::warn!(
-                            "[ViewEffect] output resize failed ({}x{})",
-                            output_width,
-                            output_height
-                        );
-                        return false;
-                    }
+                    try_configure_surface(
+                        &state.output_surface,
+                        &state.device,
+                        &state.output_config,
+                    );
                 }
                 true
             }
             Err(e) => {
-                tracing::error!("[ViewEffect] AHardwareBuffer import failed: {e}");
-                false
+                panic!(
+                    "waterui_view_effect_set_input_ahardwarebuffer: AHardwareBuffer import failed: {e}"
+                );
             }
         }
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = state;
-        let _ = drop_fn;
-        let _ = drop_data;
-        tracing::error!("[ViewEffect] AHardwareBuffer import only supported on Android");
-        false
+        let _ = (state, ahb_ptr, drop_fn, drop_data, width, height);
+        panic!("waterui_view_effect_set_input_ahardwarebuffer: only supported on Android");
     }
 }

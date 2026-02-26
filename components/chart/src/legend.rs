@@ -79,7 +79,6 @@ pub enum LegendOrientation {
 /// ```
 pub struct Legend {
     items: Vec<LegendItem>,
-    #[allow(dead_code)]
     position: LegendPosition,
     orientation: LegendOrientation,
     marker_size: f32,

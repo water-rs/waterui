@@ -20,6 +20,7 @@ exclude = [
   ".claude",
   "*.png",
   "kit",
+  "utils/nami",
 ]
 
 
@@ -69,9 +70,9 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 [workspace.dependencies]
 executor-core = { version = "0.7.0", features = ["std"]}
 futures = "0.3"
-# Local sibling-path overrides. Release workflow validates these paths explicitly.
-nami = { version = "0.10.1", path = "../nami" }
-nami-core = { version = "0.3.2", path = "../nami/core" }
+# Local vendored dependency overrides via git submodule.
+nami = { version = "0.10.1", path = "utils/nami" }
+nami-core = { version = "0.3.2", path = "utils/nami/core" }
 tracing = "0.1.41"
 thiserror = "2.0.17"
 waterui-core = { version = "0.2.0", path = "core" }
@@ -99,7 +100,6 @@ waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
-waterkit-regional = { version = "0.1.0", path = "kit/regional" }
 waterkit-screen = { version = "0.1.0", path = "kit/screen" }
 waterkit-audio = { version = "0.1.0", path = "kit/audio" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
@@ -122,11 +122,12 @@ waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
-wgpu = "28.0.0"
+wgpu = "27"
 encase = { version = "0.10", features = ["glam"] }
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
+vello_svg = "0.9.0"
 lyon = "1.0"
-wgpu-hal = { version = "28.0.0", features = ["gles", "metal"] }
+wgpu-hal = { version = "27", features = ["gles", "metal"] }
 glow = "0.16"
 time = "0.3"
 tiny-skia = "0.11"
@@ -167,7 +168,6 @@ waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview.workspace = true
 waterui-locale.workspace = true
-waterkit-regional.workspace = true
 waterkit-screen.workspace = true
 executor-core.workspace = true
 futures.workspace = true
@@ -244,3 +244,6 @@ panic = "abort"    # Smaller panic handling
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[patch.crates-io]
+vello = { git = "https://github.com/linebender/vello", branch = "main" }

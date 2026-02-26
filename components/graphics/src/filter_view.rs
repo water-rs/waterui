@@ -1118,8 +1118,8 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.scratch_size = (width, height);
     }
 
-    fn take_validation_error(scope: wgpu::ErrorScopeGuard) -> Option<wgpu::Error> {
-        crate::pollster::block_on(scope.pop())
+    fn take_validation_error(device: &wgpu::Device) -> Option<wgpu::Error> {
+        crate::pop_error_scope_now(device, "filter_view::take_validation_error")
     }
 
     fn build_compiled_passes(
@@ -1131,7 +1131,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.passes.clear();
 
         if self.requires_scratch {
-            let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let probe = ctx.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("filter scratch format probe"),
                 size: wgpu::Extent3d {
@@ -1147,7 +1147,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 view_formats: &[],
             });
             let _ = probe.create_view(&wgpu::TextureViewDescriptor::default());
-            if Self::take_validation_error(error_scope).is_some() {
+            if Self::take_validation_error(ctx.device).is_some() {
                 return Err("selected scratch texture format is unsupported on this device");
             }
         }
@@ -1161,10 +1161,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     } else {
                         scratch_format
                     };
-                    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
                         self.create_color_pipeline(ctx, fragments, target_format);
-                    if Self::take_validation_error(error_scope).is_some() {
+                    if Self::take_validation_error(ctx.device).is_some() {
                         return Err("failed to create color pipeline for selected target format");
                     }
                     self.passes.push(CompiledPass {
@@ -1177,10 +1177,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     });
                 }
                 PlannedPassKind::Spatial { shader } => {
-                    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
                         self.create_spatial_pipeline(ctx, shader, scratch_format)?;
-                    if let Some(err) = Self::take_validation_error(error_scope) {
+                    if let Some(err) = Self::take_validation_error(ctx.device) {
                         tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
                         return Err(
                             "failed to create spatial pipeline for selected storage format",
@@ -1206,9 +1206,9 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             self.passes.last().map(|p| &p.kind),
             Some(CompiledPassKind::Spatial { .. })
         ) {
-            let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let (blit_pipeline, blit_bind_group_layout) = self.create_blit_pipeline(ctx);
-            if Self::take_validation_error(error_scope).is_some() {
+            if Self::take_validation_error(ctx.device).is_some() {
                 return Err("failed to create final blit pipeline");
             }
             self.blit_pipeline = Some(blit_pipeline);
@@ -1238,7 +1238,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         self.sampler = Some(sampler);
@@ -1406,17 +1406,16 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                 label: Some("filter color pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                     view: target_view,
+                                    depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                                         store: wgpu::StoreOp::Store,
                                     },
-                                    depth_slice: None,
                                 })],
                                 depth_stencil_attachment: None,
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
-                multiview_mask: None,
                             });
                         render_pass.set_pipeline(pipeline);
                         render_pass.set_bind_group(0, &bind_group, &[]);
@@ -1527,17 +1526,16 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     label: Some("filter final blit pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &output.view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
-                multiview_mask: None,
                 });
                 render_pass.set_pipeline(blit_pipeline);
                 render_pass.set_bind_group(0, &blit_bind_group, &[]);
@@ -1624,7 +1622,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter color pipeline layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let pipeline = ctx
@@ -1654,7 +1652,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -1717,7 +1715,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter spatial pipeline layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let pipeline = ctx
@@ -1773,7 +1771,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("filter blit pipeline layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let pipeline = ctx
@@ -1803,7 +1801,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 

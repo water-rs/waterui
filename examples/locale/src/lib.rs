@@ -7,13 +7,13 @@
 //! - Language variant fallback (zh-TW vs zh-HK vs zh-CN)
 //! - CLDR plural rules
 //! - Date and unit formatting
-//! - Interactive locale switching via waterkit regional callbacks
+//! - Interactive locale switching via WaterUI regional runtime callbacks
 //!
 //! ## How i18n Works
 //!
 //! 1. Define translations in `i18n/<locale>.toml` files
 //! 2. Use `text!("key")` - translations are loaded at compile time
-//! 3. Push locale updates to `waterkit_regional`
+//! 3. Push locale updates to `waterui::regional`
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
 use waterui::app::App;
@@ -196,7 +196,7 @@ fn main(env: &Environment) -> impl View {
     let selection = Binding::container(initial_code);
     let sel_watch = selection.clone();
     // Initialize shared runtime locale from the picker's initial value.
-    let _ = waterkit_regional::set_locale_tag(initial_code);
+    waterui::regional::set_locale_tag(initial_code).expect("picker locale tag must be valid");
 
     scroll(
         vstack((
@@ -220,7 +220,7 @@ fn main(env: &Environment) -> impl View {
         .padding_with(EdgeInsets::all(16.0)),
     )
     .on_change(&selection, |code| {
-        let _ = waterkit_regional::set_locale_tag(code.to_string());
+        waterui::regional::set_locale_tag(code).expect("picker locale tag must be valid");
     })
 }
 

@@ -309,7 +309,7 @@ impl GpuRenderer for ChoroplethRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("choropleth_pipeline_layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         // Render pipeline
@@ -345,7 +345,7 @@ impl GpuRenderer for ChoroplethRenderer {
                     },
                     depth_stencil: None,
                     multisample: multisample_state(ctx.msaa_samples),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: None,
                 }),
         );
@@ -560,6 +560,28 @@ impl GpuRenderer for ChoroplethRenderer {
         };
 
         if self.total_indices == 0 {
+            let mut encoder = frame
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("choropleth_clear_encoder"),
+                });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("choropleth_clear_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &frame.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            frame.queue.submit([encoder.finish()]);
+            self.needs_redraw = self.animation.progress < 1.0;
             return;
         }
 
@@ -642,12 +664,12 @@ impl GpuRenderer for ChoroplethRenderer {
                 label: Some("choropleth_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 ..Default::default()
             });
@@ -806,21 +828,4 @@ struct ChoroplethUniforms {
     pointer: glam::Vec4,
     value_range: glam::Vec4,
     stroke_color: glam::Vec4,
-}
-
-#[allow(dead_code)]
-fn check(
-    viewport: glam::Vec4,
-    bounds: glam::Vec4,
-    animation: glam::Vec4,
-    pointer: glam::Vec4,
-    value_range: glam::Vec4,
-    stroke_color: glam::Vec4,
-    pos: glam::Vec2,
-    value: f32,
-    polygon_id: f32,
-    position: f32,
-    _pad: [f32; 3],
-    color: glam::Vec4,
-) {
 }

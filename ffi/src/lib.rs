@@ -84,6 +84,68 @@ pub fn ffi_boundary<T>(name: &'static str, f: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
+#[inline]
+pub(crate) fn pop_error_scope_now(
+    device: &wgpu::Device,
+    scope: &'static str,
+) -> Option<wgpu::Error> {
+    use core::future::Future as _;
+    use core::task::{Context, Poll};
+
+    let mut future = std::pin::pin!(device.pop_error_scope());
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+
+    if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
+        return result;
+    }
+
+    let _ = device.poll(wgpu::PollType::Poll);
+
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => result,
+        Poll::Pending => {
+            panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)")
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
+where
+    F: core::future::Future,
+{
+    use core::task::{Context, Poll};
+
+    let mut future = std::pin::pin!(future);
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("{scope}: future returned Pending in synchronous FFI path"),
+    }
+}
+
+#[inline]
+#[track_caller]
+pub unsafe fn expect_non_null<'a, T>(
+    ptr: *const T,
+    function: &'static str,
+    parameter: &'static str,
+) -> &'a T {
+    let _ = (function, parameter);
+    unsafe { &*ptr }
+}
+
+#[inline]
+#[track_caller]
+pub unsafe fn expect_non_null_mut<'a, T>(
+    ptr: *mut T,
+    function: &'static str,
+    parameter: &'static str,
+) -> &'a mut T {
+    let _ = (function, parameter);
+    unsafe { &mut *ptr }
+}
+
 #[macro_export]
 macro_rules! export {
     () => {
@@ -238,7 +300,9 @@ unsafe fn __init_impl() {
 
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+                .with(
+                    tracing_android::layer("WaterUI").expect("Failed to create Android log layer"),
+                )
                 .init();
         }
 
@@ -269,11 +333,10 @@ unsafe fn __init_impl() {
     // Initialize shared GPU context (if GPU feature enabled)
     #[cfg(feature = "gpu")]
     {
-        if let Err(error) = waterui_graphics::shared_context::init_shared_context() {
-            tracing::warn!("Failed to initialize shared GPU context during startup: {error}");
-        } else {
-            waterui_graphics::prewarm::spawn_builtin_shader_prewarm();
-        }
+        waterui_graphics::shared_context::init_shared_context().unwrap_or_else(|error| {
+            panic!("ffi::__init_impl: shared GPU context initialization failed: {error}")
+        });
+        waterui_graphics::prewarm::spawn_builtin_shader_prewarm();
     }
 
     init_global_executor(native_executor::NativeExecutor::new());
@@ -449,7 +512,8 @@ pub extern "C" fn waterui_anyview_id() -> WuiTypeId {
 /// duration of this function call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
-    unsafe { (*env).clone().into_ffi() }
+    let env = unsafe { expect_non_null(env, "waterui_clone_env", "env") };
+    env.0.clone().into_ffi()
 }
 
 /// Gets the body of a view given the environment
@@ -463,17 +527,10 @@ pub unsafe extern "C" fn waterui_view_body(
     view: *mut WuiAnyView,
     env: *mut WuiEnv,
 ) -> *mut WuiAnyView {
-    unsafe {
-        if view.is_null() || env.is_null() {
-            return core::ptr::null_mut();
-        }
-        let view = view.into_rust();
-        let body = view.body(&*env);
-
-        let body = AnyView::new(body);
-
-        body.into_ffi()
-    }
+    let env = unsafe { expect_non_null_mut(env, "waterui_view_body", "env") };
+    let view = unsafe { view.into_rust() };
+    let body = view.body(env);
+    AnyView::new(body).into_ffi()
 }
 
 /// Gets the id of a view as a 128-bit value for O(1) comparison.
@@ -486,10 +543,8 @@ pub unsafe extern "C" fn waterui_view_body(
 /// duration of this function call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
-    unsafe {
-        let view = &*view;
-        WuiTypeId::from_runtime(view.type_id(), view.name())
-    }
+    let view = unsafe { expect_non_null(view, "waterui_view_id", "view") };
+    WuiTypeId::from_runtime(view.type_id(), view.name())
 }
 
 /// Gets the stretch axis of a view.
@@ -506,7 +561,8 @@ pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
 pub unsafe extern "C" fn waterui_view_stretch_axis(
     view: *const WuiAnyView,
 ) -> crate::components::layout::WuiStretchAxis {
-    unsafe { (&*view).stretch_axis().into() }
+    let view = unsafe { expect_non_null(view, "waterui_view_stretch_axis", "view") };
+    view.stretch_axis().into()
 }
 
 // ============================================================================
@@ -1235,10 +1291,8 @@ ffi_metadata!(Retain, WuiMetadataRetain, retain);
 /// `waterui_force_as_metadata_retain` and has not been dropped before.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
-    if !retain._opaque.is_null() {
-        unsafe {
-            drop(Box::from_raw(retain._opaque as *mut Retain));
-        }
+    unsafe {
+        drop(Box::from_raw(retain._opaque as *mut Retain));
     }
 }
 
@@ -1368,11 +1422,10 @@ pub unsafe extern "C" fn waterui_call_shared_action(
     action: *const WuiSharedAction,
     env: *const WuiEnv,
 ) {
-    if action.is_null() || env.is_null() {
-        return;
-    }
-    let _ = ffi_boundary("waterui_call_shared_action", || unsafe {
-        (*action).0.call(&*env);
+    let action = unsafe { expect_non_null(action, "waterui_call_shared_action", "action") };
+    let env = unsafe { expect_non_null(env, "waterui_call_shared_action", "env") };
+    let _ = ffi_boundary("waterui_call_shared_action", || {
+        action.0.call(env);
     });
 }
 

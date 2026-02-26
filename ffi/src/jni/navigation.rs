@@ -12,7 +12,11 @@ use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JValue};
 use jni::sys::{jboolean, jlong, jobject};
 
-use crate::jni::convert::jlong_to_ptr_mut;
+#[inline]
+fn require_ptr<T>(ptr: jlong, function: &str, pointer_name: &str) -> *mut T {
+    let _ = (function, pointer_name);
+    ptr as *mut T
+}
 
 /// Data for the JNI navigation controller callback.
 struct JniNavigationCallbackData {
@@ -92,8 +96,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigat
     env_ptr: jlong,
     controller_ptr: jlong,
 ) {
-    let wui_env = unsafe { jlong_to_ptr_mut(env_ptr) };
-    let controller = unsafe { jlong_to_ptr_mut(controller_ptr) };
+    let wui_env: *mut crate::WuiEnv =
+        require_ptr(env_ptr, "envInstallNavigationController", "env");
+    let controller: *mut crate::components::navigation::WuiNavigationController = require_ptr(
+        controller_ptr,
+        "envInstallNavigationController",
+        "controller",
+    );
     unsafe {
         crate::components::navigation::waterui_env_install_navigation_controller(
             wui_env, controller,
@@ -108,9 +117,12 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropNavigationCon
     _class: JClass<'local>,
     ptr: jlong,
 ) {
-    unsafe {
-        crate::components::navigation::waterui_drop_navigation_controller(jlong_to_ptr_mut(ptr))
-    };
+    let ptr = require_ptr::<crate::components::navigation::WuiNavigationController>(
+        ptr,
+        "dropNavigationController",
+        "controller",
+    );
+    unsafe { crate::components::navigation::waterui_drop_navigation_controller(ptr) };
 }
 
 /// Checks if the environment has a navigation controller installed.
@@ -122,7 +134,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationC
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jboolean {
-    let wui_env: *const crate::WuiEnv = unsafe { jlong_to_ptr_mut(env_ptr) };
+    let wui_env: *const crate::WuiEnv = require_ptr(env_ptr, "envHasNavigationController", "env");
     if unsafe { crate::components::navigation::waterui_env_has_navigation_controller(wui_env) } {
         1
     } else {
@@ -137,7 +149,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationPop<'lo
     _class: JClass<'local>,
     env_ptr: jlong,
 ) {
-    let wui_env: *const crate::WuiEnv = unsafe { jlong_to_ptr_mut(env_ptr) };
+    let wui_env: *const crate::WuiEnv = require_ptr(env_ptr, "navigationPop", "env");
     unsafe { crate::components::navigation::waterui_navigation_pop(wui_env) };
 }
 
@@ -154,7 +166,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
 ) -> jobject {
     use crate::components::navigation::WuiTabContent;
 
-    let content: *mut WuiTabContent = unsafe { jlong_to_ptr_mut(content_ptr) };
+    let content: *mut WuiTabContent = require_ptr(content_ptr, "tabContent", "content");
     let nav_view = unsafe { crate::components::navigation::waterui_tab_content(content) };
     crate::jni::convert::struct_to_java(&mut env, &nav_view).into_raw()
 }

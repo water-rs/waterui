@@ -27,17 +27,16 @@ impl GpuRenderer for SolidClearRenderer {
                 label: Some("offscreen_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.color),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
         }
         frame.queue.submit([encoder.finish()]);

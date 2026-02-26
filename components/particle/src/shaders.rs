@@ -27,6 +27,7 @@ struct Uniforms {
     emitter_size: vec2<f32>,
     emit_rate: f32,
     turbulence: f32,
+    drag: f32,
     stretch_factor: f32,
     softness: f32,
     life_range: vec2<f32>,
@@ -73,8 +74,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     if (p.life > 0.0) {
         // Apply forces
-        let drag = 1.0; // TODO: add drag to uniforms
-        p.vel = p.vel * drag;
+        p.vel = p.vel * uniforms.drag;
         p.vel += (uniforms.gravity + uniforms.wind) * uniforms.dt;
         
         // Turbulence (random horizontal jitter)
@@ -151,6 +151,7 @@ struct Uniforms {
     emitter_size: vec2<f32>,
     emit_rate: f32,
     turbulence: f32,
+    drag: f32,
     stretch_factor: f32,
     softness: f32,
     life_range: vec2<f32>,

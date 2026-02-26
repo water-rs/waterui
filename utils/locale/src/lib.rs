@@ -27,6 +27,7 @@ pub mod format;
 pub mod locale;
 pub mod parser;
 pub mod plural;
+pub mod regional;
 mod system;
 pub mod text;
 

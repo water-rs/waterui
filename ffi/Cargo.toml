@@ -35,7 +35,6 @@ waterui-webview.workspace = true
 waterui-map.workspace = true
 waterui-str.workspace = true
 waterui-locale.workspace = true
-waterkit-regional.workspace = true
 wgpu.workspace = true
 async-channel = "2.3"
 base64 = "0.22.1"
@@ -57,7 +56,7 @@ wgpu-hal = { workspace = true, features = ["vulkan"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
-metal = "0.33"
+metal = "0.32"
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 

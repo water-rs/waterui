@@ -22,8 +22,9 @@ fn main() -> impl View {
 
     let preview_status: Binding<String> =
         Binding::container(String::from("Starting camera renderer..."));
-    let waterkit_status: Binding<String> =
-        Binding::container(String::from("Not synced. Tap the button below to query Waterkit."));
+    let waterkit_status: Binding<String> = Binding::container(String::from(
+        "Not synced. Tap the button below to query Waterkit.",
+    ));
     let permission_status: Binding<String> =
         Binding::container(String::from("Permission status: unknown"));
     let camera_inventory: Binding<String> =
@@ -48,17 +49,17 @@ fn main() -> impl View {
             reconnect_ticket.clone(),
             preview_status.clone(),
         ),
-        text!("{preview_status}").caption().foreground(MutedForeground),
-        hstack((
-            button("Reconnect Camera Stream")
-                .with_state(&reconnect_ticket)
-                .with_state(&preview_status)
-                .action(|(ticket, status)| {
-                    let next = ticket.get().saturating_add(1);
-                    ticket.set(next);
-                    status.set(String::from("Reconnecting camera stream..."));
-                }),
-        )),
+        text!("{preview_status}")
+            .caption()
+            .foreground(MutedForeground),
+        hstack((button("Reconnect Camera Stream")
+            .with_state(&reconnect_ticket)
+            .with_state(&preview_status)
+            .action(|(ticket, status)| {
+                let next = ticket.get().saturating_add(1);
+                ticket.set(next);
+                status.set(String::from("Reconnecting camera stream..."));
+            }),)),
     ))
     .spacing(10.0);
 
@@ -82,7 +83,9 @@ fn main() -> impl View {
         text("Waterkit Bridge").headline(),
         text!("{waterkit_status}").body(),
         text!("{permission_status}").body(),
-        text!("{camera_inventory}").footnote().foreground(MutedForeground),
+        text!("{camera_inventory}")
+            .footnote()
+            .foreground(MutedForeground),
         button("Sync with Waterkit Camera")
             .with_state(&waterkit_status)
             .with_state(&permission_status)
@@ -118,7 +121,11 @@ fn camera_surface(
     .padding_with(8.0)
 }
 
-fn filter_button(label: &'static str, filter_index: usize, active_filter: &Binding<usize>) -> impl View {
+fn filter_button(
+    label: &'static str,
+    filter_index: usize,
+    active_filter: &Binding<usize>,
+) -> impl View {
     button(label)
         .with_state(active_filter)
         .action(move |selected| selected.set(filter_index))
@@ -174,51 +181,53 @@ impl CameraFilterRenderer {
             return;
         }
 
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Camera Filter Shader"),
-            source: wgpu::ShaderSource::Wgsl(CAMERA_FILTER_SHADER.into()),
-        });
-
-        let bind_group_layout = ctx
+        let shader = ctx
             .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Camera Filter Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Camera Filter Shader"),
+                source: wgpu::ShaderSource::Wgsl(CAMERA_FILTER_SHADER.into()),
             });
+
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Camera Filter Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Camera Filter Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let pipeline = ctx
@@ -248,7 +257,7 @@ impl CameraFilterRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -266,7 +275,7 @@ impl CameraFilterRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -328,7 +337,9 @@ impl CameraFilterRenderer {
         let (brightness, saturation, contrast, tint, vignette) =
             filter_params(self.active_filter.get(), self.filter_strength.get() as f32);
 
-        let uniforms: [f32; 8] = [brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0];
+        let uniforms: [f32; 8] = [
+            brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0,
+        ];
         frame
             .queue
             .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
@@ -410,12 +421,11 @@ impl GpuRenderer for CameraFilterRenderer {
                 }));
         }
 
-        let mut encoder =
-            frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Camera Filter Encoder"),
-                });
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Camera Filter Encoder"),
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -432,7 +442,6 @@ impl GpuRenderer for CameraFilterRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             if let (Some(pipeline), Some(bind_group)) = (&self.pipeline, &self.latest_bind_group) {

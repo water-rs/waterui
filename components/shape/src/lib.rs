@@ -24,8 +24,8 @@ extern crate alloc;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use core::time::Duration;
 
-use nami::{signal::IntoComputed, Computed, Signal};
-use waterui_core::{easing::EasingCurve, metadata::MetadataKey, Environment, View};
+use nami::{Computed, Signal, signal::IntoComputed};
+use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
@@ -963,7 +963,7 @@ impl GpuRenderer for MorphShapeRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Morph Shape Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -999,7 +999,7 @@ impl GpuRenderer for MorphShapeRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
@@ -1068,17 +1068,16 @@ impl GpuRenderer for MorphShapeRenderer {
                 label: Some("Morph Shape Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);
@@ -1350,7 +1349,7 @@ impl GpuRenderer for LyonShapeRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shape Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -1360,7 +1359,7 @@ impl GpuRenderer for LyonShapeRenderer {
         };
 
         // Try to Create Pipeline with cache first
-        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -1402,12 +1401,12 @@ impl GpuRenderer for LyonShapeRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = waterui_graphics::pollster::block_on(error_scope.pop());
+        let error = waterui_graphics::pollster::block_on(ctx.device.pop_error_scope());
         if let Some(e) = error {
             tracing::warn!("[Shape] Pipeline creation with cache failed: {}", e);
             // Retry without cache
@@ -1451,7 +1450,7 @@ impl GpuRenderer for LyonShapeRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: None,
                 });
         } else {
@@ -1571,17 +1570,16 @@ impl GpuRenderer for LyonShapeRenderer {
                 label: Some("Shape Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);
@@ -1691,7 +1689,7 @@ impl GpuRenderer for SdfShapeRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("SDF Shape Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         let blend = if ctx.is_hdr() {
@@ -1701,7 +1699,7 @@ impl GpuRenderer for SdfShapeRenderer {
         };
 
         // Try to Create Pipeline with cache first
-        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let mut pipeline = ctx
             .device
@@ -1730,12 +1728,12 @@ impl GpuRenderer for SdfShapeRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             });
 
         // Check for validation error
-        let error = waterui_graphics::pollster::block_on(error_scope.pop());
+        let error = waterui_graphics::pollster::block_on(ctx.device.pop_error_scope());
         if let Some(e) = error {
             tracing::warn!("[SDF Shape] Pipeline creation with cache failed: {}", e);
             // Retry without cache
@@ -1766,7 +1764,7 @@ impl GpuRenderer for SdfShapeRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
+                    multiview: None,
                     cache: None,
                 });
         } else {
@@ -1845,17 +1843,16 @@ impl GpuRenderer for SdfShapeRenderer {
                 label: Some("SDF Shape Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             render_pass.set_pipeline(pipeline);

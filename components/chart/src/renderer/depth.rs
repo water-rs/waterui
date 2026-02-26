@@ -181,7 +181,7 @@ impl DepthRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Depth Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         ctx.device
@@ -210,7 +210,7 @@ impl DepthRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -291,7 +291,8 @@ impl GpuRenderer for DepthRenderer {
             ask_line: glam::Vec4::from_array(self.ask_line_color),
             mid_price,
             line_width: 2.0,
-            _pad: glam::Vec2::ZERO,
+            bid_count: self.data.bids.len() as f32,
+            ask_count: self.data.asks.len() as f32,
         };
         self.color_buffer = Some(create_uniform_buffer(ctx, "Depth Colors", &colors));
 
@@ -348,12 +349,12 @@ impl GpuRenderer for DepthRenderer {
                     label: Some("Depth Chart Clear Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &frame.view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
                     })],
                     ..Default::default()
                 });
@@ -430,7 +431,8 @@ impl GpuRenderer for DepthRenderer {
             ask_line: glam::Vec4::from_array(self.ask_line_color),
             mid_price,
             line_width: 2.0,
-            _pad: glam::Vec2::ZERO,
+            bid_count: self.data.bids.len() as f32,
+            ask_count: self.data.asks.len() as f32,
         };
         write_uniform_buffer(frame.queue, self.color_buffer.as_ref().unwrap(), &colors);
 
@@ -456,12 +458,12 @@ impl GpuRenderer for DepthRenderer {
                 label: Some("Depth Chart Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 ..Default::default()
             });
@@ -607,5 +609,6 @@ struct DepthColors {
     ask_line: glam::Vec4,
     mid_price: f32,
     line_width: f32,
-    _pad: glam::Vec2,
+    bid_count: f32,
+    ask_count: f32,
 }
