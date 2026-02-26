@@ -27,7 +27,7 @@ use {
     wgpu_hal::api::Metal as MetalApi,
 };
 
-use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
+use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
@@ -333,6 +333,10 @@ pub struct WuiGpuSurfaceState {
     render_invocations: u64,
     /// Stable id for diagnostics output.
     diagnostic_id: u64,
+    /// Environment pointer for GpuView::setup().
+    env: *mut crate::WuiEnv,
+    /// Redraw handle for external redraw triggers.
+    redraw_handle: RedrawHandle,
 }
 
 /// Result returned by a GpuSurface render invocation.
@@ -373,10 +377,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     layer: *mut c_void,
     width: u32,
     height: u32,
+    env: *mut crate::WuiEnv,
 ) -> *mut WuiGpuSurfaceState {
     unsafe {
         crate::expect_non_null_mut(surface, "waterui_gpu_surface_init", "surface");
         crate::expect_non_null(layer, "waterui_gpu_surface_init", "layer");
+        crate::expect_non_null_mut(env, "waterui_gpu_surface_init", "env");
     }
     assert!(
         width > 0 && height > 0,
@@ -506,6 +512,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
                 format,
                 present_mode,
             ),
+            env,
+            redraw_handle: RedrawHandle::new(),
         });
 
         Box::into_raw(state)
@@ -575,9 +583,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             try_configure_surface(&state.wgpu_surface, &state.device, &state.config);
             state.current_width = width;
             state.current_height = height;
-
-            // Call user's resize callback
-            state.gpu_surface.resize(width, height);
         }
 
         // Call setup on first render (await the future synchronously)
@@ -597,8 +602,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                     4,
                 ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
+                redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx);
+            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render::setup");
             state.initialized = true;
             state.renderer_format = format;
@@ -653,20 +659,21 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         });
 
         // Create frame data
-        let frame = GpuFrame {
-            device: &state.device,
-            queue: &state.queue,
-            texture: &output.texture,
+        let mut frame = GpuFrame::new(
+            &state.device,
+            &state.queue,
+            &output.texture,
             view,
-            format: state.config.format,
+            state.config.format,
             width,
             height,
-            pointer: state.pointer_state,
-            gesture: state.gesture_state,
-        };
+            state.pointer_state,
+            state.gesture_state,
+        );
 
         // Call user's render callback
-        state.gpu_surface.render(&frame);
+        state.gpu_surface.render(&mut frame);
+        let needs_redraw = frame.was_redraw_requested() || state.redraw_handle.take_dirty();
         if trace_frame {
             tracing::debug!("[GpuSurface] render#{frame_no}: user render callback complete");
         }
@@ -683,7 +690,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         WuiGpuSurfaceRenderResult {
             ok: true,
-            needs_redraw: state.gpu_surface.needs_redraw(),
+            needs_redraw,
         }
     }));
 
@@ -711,7 +718,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_needs_redraw(state: *mut WuiGpuSurf
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
-        state.gpu_surface.needs_redraw()
+        state.redraw_handle.take_dirty()
     }));
 
     match result {
@@ -722,8 +729,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_needs_redraw(state: *mut WuiGpuSurf
 
 /// Query whether backend should keep redraw polling active while idle.
 ///
-/// This hint is intended for renderers that rely on async signal watchers and
-/// cannot wake the native backend directly.
+/// Deprecated: With the push-based `RedrawHandle` model, polling is no longer needed.
+/// Always returns `false`. Backends should rely on `needs_redraw` from render results
+/// and external redraw triggers instead.
 ///
 /// # Safety
 ///
@@ -735,15 +743,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_requires_redraw_poll(
     unsafe {
         crate::expect_non_null_mut(state, "waterui_gpu_surface_requires_redraw_poll", "state");
     }
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let state = unsafe { &mut *state };
-        state.gpu_surface.requires_redraw_poll()
-    }));
-
-    match result {
-        Ok(value) => value,
-        Err(_) => abort_on_panic("waterui_gpu_surface_requires_redraw_poll"),
-    }
+    false
 }
 
 /// Render a single frame into an external texture.
@@ -800,7 +800,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             state.current_height = height;
             state.config.width = width;
             state.config.height = height;
-            state.gpu_surface.resize(width, height);
         }
 
         if !state.initialized || state.renderer_format != target_format {
@@ -815,8 +814,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
                     4,
                 ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
+                redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx);
+            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_texture::setup");
             state.initialized = true;
             state.renderer_format = target_format;
@@ -828,19 +828,19 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             ..Default::default()
         });
 
-        let frame = GpuFrame {
-            device: &state.device,
-            queue: &state.queue,
+        let mut frame = GpuFrame::new(
+            &state.device,
+            &state.queue,
             texture,
             view,
-            format: target_format,
+            target_format,
             width,
             height,
-            pointer: state.pointer_state,
-            gesture: state.gesture_state,
-        };
+            state.pointer_state,
+            state.gesture_state,
+        );
 
-        state.gpu_surface.render(&frame);
+        state.gpu_surface.render(&mut frame);
         // Ensure external renderers see completed writes before returning.
         poll_capture_completion(&state.device)
     }));
@@ -965,9 +965,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             state.current_height = height;
             state.config.width = width;
             state.config.height = height;
-            trace_metal_capture_step("render_to_metal_texture: resize callback begin");
-            state.gpu_surface.resize(width, height);
-            trace_metal_capture_step("render_to_metal_texture: resize callback done");
         }
 
         trace_metal_capture_step(&format!(
@@ -992,9 +989,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
                     4,
                 ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
+                redraw_handle: state.redraw_handle.clone(),
             };
             trace_metal_capture_step("render_to_metal_texture: setup future begin");
-            let setup_future = state.gpu_surface.setup(&ctx);
+            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
             trace_metal_capture_step("render_to_metal_texture: setup future created");
             trace_metal_capture_step("render_to_metal_texture: setup immediate-poll begin");
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_metal_texture::setup");
@@ -1010,20 +1008,20 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             ..Default::default()
         });
 
-        let frame = GpuFrame {
-            device: &state.device,
-            queue: &state.queue,
-            texture: &wgpu_texture,
+        let mut frame = GpuFrame::new(
+            &state.device,
+            &state.queue,
+            &wgpu_texture,
             view,
-            format: target_format,
+            target_format,
             width,
             height,
-            pointer: state.pointer_state,
-            gesture: state.gesture_state,
-        };
+            state.pointer_state,
+            state.gesture_state,
+        );
 
         trace_metal_capture_step("render_to_metal_texture: render");
-        state.gpu_surface.render(&frame);
+        state.gpu_surface.render(&mut frame);
         trace_metal_capture_step("render_to_metal_texture: poll");
         poll_capture_completion(&state.device)
     }));
@@ -1080,8 +1078,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
                     4,
                 ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
+                redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx);
+            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_await_ready::setup");
             state.initialized = true;
             state.renderer_format = format;
@@ -1111,19 +1110,19 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             ..Default::default()
         });
 
-        let frame = GpuFrame {
-            device: &state.device,
-            queue: &state.queue,
-            texture: &output.texture,
+        let mut frame = GpuFrame::new(
+            &state.device,
+            &state.queue,
+            &output.texture,
             view,
-            format: state.config.format,
-            width: state.current_width,
-            height: state.current_height,
-            pointer: state.pointer_state,
-            gesture: state.gesture_state,
-        };
+            state.config.format,
+            state.current_width,
+            state.current_height,
+            state.pointer_state,
+            state.gesture_state,
+        );
 
-        state.gpu_surface.render(&frame);
+        state.gpu_surface.render(&mut frame);
         output.present();
 
         true

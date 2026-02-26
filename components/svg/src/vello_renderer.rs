@@ -1,6 +1,6 @@
 //! GPU-based SVG renderer using Vello.
 //!
-//! This module provides `VelloSvgRenderer`, an implementation of `GpuRenderer`
+//! This module provides `VelloSvgRenderer`, an implementation of `GpuView`
 //! that renders SVG content directly on the GPU using Vello.
 //!
 //! Note: Vello does NOT support HDR (requires Rgba8Unorm format), but provides
@@ -10,9 +10,9 @@ extern crate alloc;
 
 use alloc::{string::String, sync::Arc};
 use core::any::Any;
-use std::sync::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 use waterui_core::Signal;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
 /// A GPU renderer for SVG content using Vello.
 ///
@@ -224,7 +224,7 @@ where
     inner: VelloSvgRenderer,
     svg_template: String,
     color_signal: S,
-    pending_update: Arc<Mutex<bool>>,
+    pending_update: Arc<AtomicBool>,
     _watcher_guard: Option<Box<dyn Any>>,
     last_color: String,
     template_uses_color: bool,
@@ -250,7 +250,7 @@ where
             inner: VelloSvgRenderer::new(&initial_svg),
             svg_template,
             color_signal,
-            pending_update: Arc::new(Mutex::new(false)),
+            pending_update: Arc::new(AtomicBool::new(false)),
             _watcher_guard: None,
             last_color: initial_color,
             template_uses_color,
@@ -258,14 +258,7 @@ where
     }
 
     fn take_pending_update(&self) -> bool {
-        self.pending_update
-            .lock()
-            .ok()
-            .map_or(false, |mut pending| {
-                let value = *pending;
-                *pending = false;
-                value
-            })
+        self.pending_update.swap(false, Ordering::AcqRel)
     }
 
     fn sync_svg_from_color(&mut self) {
@@ -287,47 +280,31 @@ where
     }
 }
 
-impl<S> GpuRenderer for ReactiveVelloSvgRenderer<S>
+impl<S> GpuView for ReactiveVelloSvgRenderer<S>
 where
     S: Signal<Output = String>,
 {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+    fn setup(&mut self, ctx: &GpuContext, env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         if self.template_uses_color && self._watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
+            let redraw_handle = ctx.redraw_handle.clone();
             let guard = self.color_signal.watch(move |_context| {
-                if let Ok(mut pending) = pending_update.lock() {
-                    *pending = true;
-                }
+                pending_update.store(true, Ordering::Release);
+                redraw_handle.request_redraw();
             });
             self._watcher_guard = Some(Box::new(guard));
         }
-        self.inner.setup(ctx)
+        self.inner.setup(ctx, env)
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         self.sync_svg_from_color();
         self.inner.render(frame);
     }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.inner.resize(width, height);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.pending_update
-            .lock()
-            .ok()
-            .is_some_and(|pending| *pending)
-            || self.inner.needs_redraw()
-    }
-
-    fn requires_redraw_poll(&self) -> bool {
-        self.template_uses_color
-    }
 }
 
-impl GpuRenderer for VelloSvgRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for VelloSvgRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         // Create Vello renderer
         let renderer = vello::Renderer::new(
             ctx.device,
@@ -442,7 +419,7 @@ impl GpuRenderer for VelloSvgRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Render SVG to texture
         self.render_to_texture(frame.device, frame.queue, frame.width, frame.height);
 
@@ -483,12 +460,5 @@ impl GpuRenderer for VelloSvgRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        if width != self.current_width || height != self.current_height {
-            self.current_width = 0; // Force texture recreation
-            self.current_height = 0;
-        }
     }
 }

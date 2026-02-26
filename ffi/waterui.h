@@ -4881,6 +4881,7 @@ struct WuiTypeId waterui_gpu_surface_id(void);
  *   - Android: `ANativeWindow*`
  * * `width` - Initial surface width in pixels
  * * `height` - Initial surface height in pixels
+ * * `env` - Pointer to a valid WaterUI environment used during renderer setup
  *
  * # Returns
  *
@@ -4895,7 +4896,8 @@ struct WuiTypeId waterui_gpu_surface_id(void);
 struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surface,
                                                     void *layer,
                                                     uint32_t width,
-                                                    uint32_t height);
+                                                    uint32_t height,
+                                                    struct WuiEnv *env);
 
 /**
  * Render a single frame.

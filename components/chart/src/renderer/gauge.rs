@@ -9,7 +9,7 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, GaugeData};
@@ -307,8 +307,8 @@ impl GaugeRenderer {
     }
 }
 
-impl GpuRenderer for GaugeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+impl GpuView for GaugeRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
         self.msaa_samples = ctx.msaa_samples;
         self.pipeline = Some(Self::create_pipeline(ctx));
 
@@ -340,7 +340,7 @@ impl GpuRenderer for GaugeRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let Some(pipeline) = &self.pipeline else {
             return;
         };

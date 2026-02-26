@@ -7,7 +7,7 @@ use core::future::Future;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{ContourData, DataBounds};
@@ -229,8 +229,8 @@ impl ContourRenderer {
     }
 }
 
-impl GpuRenderer for ContourRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+impl GpuView for ContourRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
         self.msaa_samples = ctx.msaa_samples;
         // Create pipeline
         self.pipeline = Some(Self::create_pipeline(ctx));
@@ -269,7 +269,7 @@ impl GpuRenderer for ContourRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let Some(pipeline) = &self.pipeline else {
             return;
         };

@@ -3,7 +3,7 @@
 use core::future::Future;
 
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu,
+    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -11,12 +11,12 @@ struct SolidClearRenderer {
     color: wgpu::Color,
 }
 
-impl GpuRenderer for SolidClearRenderer {
-    fn setup(&mut self, _ctx: &GpuContext) -> impl Future<Output = ()> {
+impl GpuView for SolidClearRenderer {
+    fn setup(&mut self, _ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -55,9 +55,10 @@ fn render_offscreen_returns_expected_rgba_and_png() {
             a: 1.0,
         },
     };
+    let mut env = waterui_core::Environment::new();
 
     let output = GpuSurface::new(renderer)
-        .render_offscreen(config)
+        .render_offscreen(config, &mut env)
         .expect("offscreen render should succeed");
 
     assert_eq!(output.width, 16);
