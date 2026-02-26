@@ -121,8 +121,8 @@ impl Barcode {
 
     /// Fills dark modules using arbitrary GPU-rendered content.
     ///
-    /// Any type implementing `GpuRenderer` can be passed directly because
-    /// `GpuRenderer` has a blanket `GpuView` implementation.
+    /// Any type implementing `GpuView` can be passed directly because
+    /// `GpuView` has a blanket `GpuView` implementation.
     #[must_use]
     pub fn fill_gpu<V: GpuView>(self, fill: V) -> BarcodeGpuFill<V> {
         BarcodeGpuFill {
@@ -155,13 +155,13 @@ impl View for Barcode {
 }
 
 impl<V: GpuView> View for BarcodeGpuFill<V> {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         let source = match self.symbology {
             BarcodeSymbology::Qr => BarcodeSource::qr(self.content),
             BarcodeSymbology::Code128 => BarcodeSource::code128(self.content),
         };
         let effect = BarcodeMaskEffect::new(source, self.light_color);
-        let fill_surface = GpuSurface::from_gpu_view(self.fill, env);
+        let fill_surface = GpuSurface::new(self.fill);
         ViewEffect::new(fill_surface, effect)
     }
 }

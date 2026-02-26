@@ -9,8 +9,6 @@ pub use color::{Color, Colorspace, ResolvedColor};
 
 /// High-performance GPU rendering surface using wgpu (advanced API).
 pub mod gpu_surface;
-/// GPU-view abstraction that resolves into `GpuRenderer`.
-pub mod gpu_view;
 
 /// Simplified shader-based GPU surface (intermediate API).
 pub mod shader_surface;
@@ -39,10 +37,9 @@ pub mod filter_view;
 
 // Re-export key types for user convenience.
 pub use gpu_surface::{
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
+    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
 };
-pub use gpu_view::GpuView;
 
 pub use shader_surface::ShaderSurface;
 

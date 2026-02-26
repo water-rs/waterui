@@ -11,7 +11,7 @@ use bytemuck::cast_slice;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, wgpu};
 use wgpu::util::DeviceExt;
 
 use super::ChartRenderer;
@@ -239,8 +239,8 @@ impl Default for ChoroplethRenderer {
     }
 }
 
-impl GpuRenderer for ChoroplethRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for ChoroplethRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         self.msaa_samples = ctx.msaa_samples;
         // Create shader
         let shader_source = shader_with_common(include_str!("../shaders/choropleth.wgsl"));
@@ -431,7 +431,7 @@ impl GpuRenderer for ChoroplethRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Update zoom/pan state from gesture input
         self.zoom_pan
             .update(&frame.gesture, frame.width as f32, frame.height as f32);

@@ -3,7 +3,7 @@ use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
 use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, color::Color, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, color::Color, wgpu};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
@@ -192,8 +192,8 @@ impl WaveformRenderer {
     }
 }
 
-impl GpuRenderer for WaveformRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for WaveformRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
 
         // 1. Create Shader
@@ -313,7 +313,7 @@ impl GpuRenderer for WaveformRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let (Some(pipeline), Some(bind_group), Some(uniform_buffer), Some(samples_buffer)) = (
             &self.pipeline,
             &self.bind_group,
@@ -399,9 +399,6 @@ impl GpuRenderer for WaveformRenderer {
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
+        frame.request_redraw();
     }
 }
