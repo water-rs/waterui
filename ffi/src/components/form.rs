@@ -196,9 +196,14 @@ impl IntoFFI for Date {
 impl crate::IntoRust for WuiDate {
     type Rust = Date;
     unsafe fn into_rust(self) -> Self::Rust {
-        // Safe: We clamp invalid values to valid ranges
-        let month = Month::try_from(self.month).unwrap_or(Month::January);
-        Date::from_calendar_date(self.year, month, self.day.clamp(1, 31)).unwrap_or(Date::MIN)
+        let month = Month::try_from(self.month)
+            .expect("invalid month received from native DatePicker FFI bridge");
+        Date::from_calendar_date(self.year, month, self.day).unwrap_or_else(|_| {
+            panic!(
+                "invalid date received from native DatePicker FFI bridge: year={}, month={}, day={}",
+                self.year, self.month, self.day
+            )
+        })
     }
 }
 

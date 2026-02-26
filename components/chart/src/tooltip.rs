@@ -112,7 +112,6 @@ impl TooltipContent {
 pub struct Tooltip {
     content: TooltipContent,
     background: Srgb,
-    #[allow(dead_code)]
     text_color: Srgb,
     corner_radius: f32,
     padding: f32,
@@ -166,11 +165,12 @@ impl View for Tooltip {
             return AnyView::new(());
         }
 
+        let text_color = Color::from(self.text_color);
         let mut views: Vec<AnyView> = Vec::new();
 
         // Add title if present
         if let Some(title) = &self.content.title {
-            views.push(AnyView::new(text(title.clone())));
+            views.push(AnyView::new(text(title.clone()).color(text_color.clone())));
         }
 
         // Add values with optional color indicators
@@ -180,14 +180,17 @@ impl View for Tooltip {
                 let indicator = Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
                     .width(8.0)
                     .height(8.0);
-                let line = text(alloc::format!("{}: {}", val.label, val.value));
+                let line =
+                    text(alloc::format!("{}: {}", val.label, val.value)).color(text_color.clone());
                 AnyView::new(HStack::new(
                     VerticalAlignment::Center,
                     6.0,
                     (indicator, line),
                 ))
             } else {
-                AnyView::new(text(alloc::format!("{}: {}", val.label, val.value)))
+                AnyView::new(text(alloc::format!("{}: {}", val.label, val.value)).color(
+                    text_color.clone(),
+                ))
             };
             views.push(value_view);
         }

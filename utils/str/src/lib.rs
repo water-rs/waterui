@@ -469,8 +469,6 @@ impl From<Str> for String {
 }
 
 #[cfg(test)]
-#[allow(unused)]
-#[allow(clippy::redundant_clone)]
 mod tests {
     use super::*;
     use alloc::vec;
@@ -676,22 +674,24 @@ mod tests {
     #[test]
     fn test_memory_safety_reference_counting() {
         let original = Str::from(String::from("reference test"));
-        #[allow(clippy::collection_is_never_read)]
         let mut clones = vec![];
 
         // Create many clones
         for _ in 0..50 {
             clones.push(original.clone());
         }
+        assert_eq!(clones.len(), 50);
 
         // no reference count exposed
 
         // Drop half the clones
         clones.truncate(25);
+        assert_eq!(clones.len(), 25);
         // no reference count exposed
 
         // Drop all clones
         clones.clear();
+        assert!(clones.is_empty());
         // no reference count exposed
     }
 
@@ -817,8 +817,7 @@ mod tests {
         for chunk in handles.chunks_mut(100) {
             for (i, handle) in chunk.iter().enumerate() {
                 assert_eq!(handle.as_str(), "base");
-                #[allow(clippy::manual_is_multiple_of)]
-                if i % 2 == 0 {
+                if i.is_multiple_of(2) {
                     // Mark for keeping (we'll drop the others)
                 }
             }

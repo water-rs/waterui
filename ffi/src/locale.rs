@@ -31,7 +31,7 @@ use core::ffi::c_char;
 use core::str::FromStr;
 
 use waterui::Str;
-use waterui_locale::Locale;
+use waterui_locale::{Locale, regional};
 
 use crate::{IntoFFI, WuiEnv};
 
@@ -87,41 +87,35 @@ impl From<WuiLocale> for Locale {
     }
 }
 
-fn parse_locale_or_default(locale_id: &str) -> Locale {
-    match Locale::from_str(locale_id) {
-        Ok(locale) => locale,
-        Err(_) => {
-            tracing::warn!("Invalid locale '{}', falling back to English", locale_id);
-            waterui_locale::locales::EN
-        }
-    }
+fn parse_locale(locale_id: &str) -> Locale {
+    Locale::from_str(locale_id).unwrap_or_else(|error| {
+        panic!("Invalid locale '{locale_id}': {error}");
+    })
 }
 
 fn install_locale_value(env: &mut WuiEnv, locale: Locale) {
     env.0.insert(locale.clone());
-    let _ = waterkit_regional::set_locale_tag(locale.canonical_tag());
+    regional::set_locale_tag(locale.canonical_tag())
+        .expect("locale inserted into environment must be valid");
 }
 
 fn current_locale(env: &WuiEnv) -> Locale {
     if let Some(locale) = env.0.get::<Locale>().cloned() {
         return locale;
     }
-    parse_locale_or_default(waterkit_regional::current_settings().locale_tag())
+    parse_locale(regional::current_settings().locale_tag())
 }
 
 /// Installs a locale into the environment using a predefined locale enum.
 ///
 /// This installs a `Locale` snapshot into the environment and publishes it
-/// to the shared `waterkit-regional` runtime context.
+/// to the shared regional runtime context.
 ///
 /// # Safety
 /// - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_install_locale(env: *mut WuiEnv, locale: WuiLocale) {
-    if env.is_null() {
-        return;
-    }
-    let env = unsafe { &mut *env };
+    let env = unsafe { crate::expect_non_null_mut(env, "waterui_env_install_locale", "env") };
     let rust_locale: Locale = locale.into();
     install_locale_value(env, rust_locale.clone());
     tracing::debug!("Installed locale {:?}", rust_locale);
@@ -135,7 +129,7 @@ pub unsafe extern "C" fn waterui_env_install_locale(env: *mut WuiEnv, locale: Wu
 /// If the locale string is invalid, falls back to English ("en").
 ///
 /// This installs a `Locale` snapshot into the environment and publishes it
-/// to the shared `waterkit-regional` runtime context.
+/// to the shared regional runtime context.
 ///
 /// # Safety
 /// - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -145,23 +139,22 @@ pub unsafe extern "C" fn waterui_env_install_locale_string(
     env: *mut WuiEnv,
     locale_str: *const c_char,
 ) {
-    if env.is_null() || locale_str.is_null() {
-        return;
-    }
-
-    let env = unsafe { &mut *env };
+    let env =
+        unsafe { crate::expect_non_null_mut(env, "waterui_env_install_locale_string", "env") };
+    let locale_str = unsafe {
+        crate::expect_non_null(
+            locale_str,
+            "waterui_env_install_locale_string",
+            "locale_str",
+        )
+    };
 
     // Convert C string to Rust &str
     let c_str = unsafe { core::ffi::CStr::from_ptr(locale_str) };
-    let locale_id = match c_str.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            tracing::warn!("Invalid UTF-8 in locale string, falling back to English");
-            "en"
-        }
-    };
-
-    let rust_locale = parse_locale_or_default(locale_id);
+    let locale_id = c_str
+        .to_str()
+        .expect("waterui_env_install_locale_string: locale_str must be valid UTF-8");
+    let rust_locale = parse_locale(locale_id);
     install_locale_value(env, rust_locale.clone());
     tracing::debug!("Installed locale from string {:?}", rust_locale);
 }
@@ -175,11 +168,7 @@ pub unsafe extern "C" fn waterui_env_install_locale_string(
 /// - `env` must be a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_get_locale(env: *const WuiEnv) -> WuiLocale {
-    if env.is_null() {
-        return WuiLocale::EnUs;
-    }
-
-    let env = unsafe { &*env };
+    let env = unsafe { crate::expect_non_null(env, "waterui_env_get_locale", "env") };
     let locale = current_locale(env);
     let lang = locale.language.as_str();
 
@@ -212,7 +201,10 @@ pub unsafe extern "C" fn waterui_env_get_locale(env: *const WuiEnv) -> WuiLocale
         "es" => WuiLocale::Es,
         "ru" => WuiLocale::Ru,
         "ar" => WuiLocale::Ar,
-        _ => WuiLocale::EnUs,
+        _ => panic!(
+            "waterui_env_get_locale: unsupported language '{}' for WuiLocale; use waterui_env_get_locale_tag for lossless locale",
+            lang
+        ),
     }
 }
 
@@ -224,11 +216,7 @@ pub unsafe extern "C" fn waterui_env_get_locale(env: *const WuiEnv) -> WuiLocale
 /// - `env` must be a valid pointer or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_get_locale_tag(env: *const WuiEnv) -> crate::WuiStr {
-    if env.is_null() {
-        return "".into_ffi();
-    }
-
-    let env = unsafe { &*env };
+    let env = unsafe { crate::expect_non_null(env, "waterui_env_get_locale_tag", "env") };
     let locale = current_locale(env);
     Str::from(locale.canonical_tag()).into_ffi()
 }
@@ -261,7 +249,7 @@ mod tests {
         unsafe {
             waterui_env_install_locale(env_ptr, WuiLocale::EnUs);
             waterui_env_install_locale(env_ptr, WuiLocale::EnGb);
-            assert_eq!(waterkit_regional::current_settings().locale_tag(), "en-GB");
+            assert_eq!(regional::current_settings().locale_tag(), "en-GB");
 
             drop(Box::from_raw(env_ptr));
         }

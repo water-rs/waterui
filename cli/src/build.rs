@@ -430,11 +430,16 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             .map(|s| s.trim().to_string())?;
 
         // Use a reasonable minimum deployment target
-        let min_version = match target_os {
-            "ios" | "tvos" => "17.0",
-            "watchos" => "10.0",
-            "xros" => "1.0",
-            _ => unimplemented!(),
+        let min_version = if matches!(target_os, "ios" | "tvos") {
+            "17.0"
+        } else if target_os == "watchos" {
+            "10.0"
+        } else {
+            debug_assert_eq!(
+                target_os, "xros",
+                "bindgen simulator target_os must be one of ios/tvos/watchos/xros"
+            );
+            "1.0"
         };
 
         Some(format!(

@@ -194,7 +194,7 @@ impl RadarRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Radar Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         ctx.device
@@ -223,7 +223,7 @@ impl RadarRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -350,12 +350,12 @@ impl GpuRenderer for RadarRenderer {
                     label: Some("Radar Clear Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &frame.view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
                     })],
                     ..Default::default()
                 });
@@ -432,12 +432,12 @@ impl GpuRenderer for RadarRenderer {
                 label: Some("Radar Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 ..Default::default()
             });
@@ -476,24 +476,14 @@ impl ChartRenderer for RadarRenderer {
 
         // Upload values to GPU
         if let Some(buffer) = self.value_buffer.as_mut() {
-            needs_rebind |= write_storage_buffer_with_growth(
-                device,
-                queue,
-                buffer,
-                "Radar Values",
-                &values,
-            );
+            needs_rebind |=
+                write_storage_buffer_with_growth(device, queue, buffer, "Radar Values", &values);
         }
 
         // Upload colors to GPU
         if let Some(buffer) = self.color_buffer.as_mut() {
-            needs_rebind |= write_storage_buffer_with_growth(
-                device,
-                queue,
-                buffer,
-                "Radar Colors",
-                &colors,
-            );
+            needs_rebind |=
+                write_storage_buffer_with_growth(device, queue, buffer, "Radar Colors", &colors);
         }
 
         if needs_rebind {

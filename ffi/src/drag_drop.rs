@@ -5,6 +5,7 @@ use waterui::drag_drop::{DragData, Draggable, DropDestination};
 use waterui_str::Str;
 
 use crate::{IntoFFI, WuiEnv, WuiStr};
+use core::ptr;
 
 // ============================================================================
 // DragData FFI
@@ -40,11 +41,7 @@ impl IntoFFI for DragData {
                 tag: WuiDragDataTag::Url,
                 value: Str::from(s).into_ffi(),
             },
-            // Handle any future variants
-            _ => WuiDragData {
-                tag: WuiDragDataTag::Text,
-                value: Str::from("").into_ffi(),
-            },
+            _ => panic!("waterui drag/drop FFI does not support this DragData variant"),
         }
     }
 }
@@ -80,14 +77,14 @@ impl IntoFFI for Draggable {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggable) -> WuiDragData {
     unsafe {
-        if draggable.is_null() || (*draggable).inner.is_null() {
-            return WuiDragData {
-                tag: WuiDragDataTag::Text,
-                value: Str::from("").into_ffi(),
-            };
-        }
+        let draggable =
+            crate::expect_non_null(draggable, "waterui_draggable_get_data", "draggable");
+        let wrapper = crate::expect_non_null(
+            draggable.inner,
+            "waterui_draggable_get_data",
+            "draggable.inner",
+        );
         use nami::Signal;
-        let wrapper = &*(*draggable).inner;
         wrapper.0.data.get().into_ffi()
     }
 }
@@ -100,9 +97,12 @@ pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggab
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_draggable(draggable: *mut WuiDraggable) {
     unsafe {
-        if !draggable.is_null() && !(*draggable).inner.is_null() {
-            drop(Box::from_raw((*draggable).inner));
-        }
+        let draggable =
+            crate::expect_non_null_mut(draggable, "waterui_drop_draggable", "draggable");
+        let inner = draggable.inner;
+        crate::expect_non_null_mut(inner, "waterui_drop_draggable", "draggable.inner");
+        drop(Box::from_raw(inner));
+        draggable.inner = ptr::null_mut();
     }
 }
 
@@ -149,13 +149,19 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
     data_value: *const core::ffi::c_char,
 ) {
     unsafe {
-        if dest.is_null() || (*dest).handler.is_null() || data_value.is_null() {
-            return;
-        }
+        let dest = crate::expect_non_null(dest, "waterui_call_drop_handler", "dest");
+        let env = crate::expect_non_null(env, "waterui_call_drop_handler", "env");
+        let handler =
+            crate::expect_non_null_mut(dest.handler, "waterui_call_drop_handler", "dest.handler");
+        let data_value =
+            crate::expect_non_null(data_value, "waterui_call_drop_handler", "data_value");
 
         // Convert C string to Rust String
         let c_str = core::ffi::CStr::from_ptr(data_value);
-        let value = c_str.to_string_lossy().into_owned();
+        let value = c_str
+            .to_str()
+            .expect("waterui_call_drop_handler: `data_value` must be valid UTF-8")
+            .to_owned();
 
         // Create DragData from the tag and value
         let data = match data_tag {
@@ -165,12 +171,11 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
 
         // Clone the environment and insert the DragData
         // This allows handlers to extract DragData using Use<DragData>
-        let mut env_with_data = (*env).clone();
+        let mut env_with_data = env.0.clone();
         env_with_data.insert(data);
 
         // Get the handler and call it
-        let drop_handler = &mut *(*dest).handler;
-        (drop_handler.0.on_drop)(&env_with_data);
+        (handler.0.on_drop)(&env_with_data);
     }
 }
 
@@ -186,12 +191,15 @@ pub unsafe extern "C" fn waterui_call_drop_enter_handler(
     env: *const WuiEnv,
 ) {
     unsafe {
-        if dest.is_null() || (*dest).handler.is_null() {
-            return;
-        }
-        let drop_handler = &mut *(*dest).handler;
+        let dest = crate::expect_non_null(dest, "waterui_call_drop_enter_handler", "dest");
+        let env = crate::expect_non_null(env, "waterui_call_drop_enter_handler", "env");
+        let drop_handler = crate::expect_non_null_mut(
+            dest.handler,
+            "waterui_call_drop_enter_handler",
+            "dest.handler",
+        );
         if let Some(ref mut on_enter) = drop_handler.0.on_enter {
-            (on_enter)(&*env);
+            (on_enter)(env);
         }
     }
 }
@@ -208,12 +216,15 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
     env: *const WuiEnv,
 ) {
     unsafe {
-        if dest.is_null() || (*dest).handler.is_null() {
-            return;
-        }
-        let drop_handler = &mut *(*dest).handler;
+        let dest = crate::expect_non_null(dest, "waterui_call_drop_exit_handler", "dest");
+        let env = crate::expect_non_null(env, "waterui_call_drop_exit_handler", "env");
+        let drop_handler = crate::expect_non_null_mut(
+            dest.handler,
+            "waterui_call_drop_exit_handler",
+            "dest.handler",
+        );
         if let Some(ref mut on_exit) = drop_handler.0.on_exit {
-            (on_exit)(&*env);
+            (on_exit)(env);
         }
     }
 }
@@ -226,8 +237,10 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_drop_destination(dest: *mut WuiDropDestination) {
     unsafe {
-        if !dest.is_null() && !(*dest).handler.is_null() {
-            drop(Box::from_raw((*dest).handler));
-        }
+        let dest = crate::expect_non_null_mut(dest, "waterui_drop_drop_destination", "dest");
+        let handler = dest.handler;
+        crate::expect_non_null_mut(handler, "waterui_drop_drop_destination", "dest.handler");
+        drop(Box::from_raw(handler));
+        dest.handler = ptr::null_mut();
     }
 }
