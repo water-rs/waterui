@@ -95,7 +95,7 @@ impl GtkRenderer {
     /// Renders an `AnyView` to a GTK widget.
     pub fn render_any(&mut self, view: AnyView, env: &Environment) -> Widget {
         let ctx = RenderContext::with_renderer(self);
-        self.dispatcher.dispatch_any(view, env, ctx)
+        self.dispatcher.dispatch(view, env, ctx)
     }
 
     fn register_components(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
@@ -186,6 +186,7 @@ impl GtkRenderer {
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
         use waterui::component::focus::Focused;
+        use waterui::filter::Opacity;
         use waterui::gesture::GestureObserver;
         use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
         use waterui::style::Shadow;
@@ -202,6 +203,22 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Retain>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             renderer.render_any(metadata.content, env)
+        });
+
+        // Metadata<Opacity> - apply opacity via GTK widget opacity
+        dispatcher.register::<Metadata<Opacity>>(|_state, ctx, metadata, env| {
+            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let widget = renderer.render_any(metadata.content, env);
+            let opacity = metadata.value;
+            widget.set_opacity(f64::from(opacity.value.get()));
+            nami::watch(opacity.value, {
+                let widget = widget.clone();
+                move |alpha| {
+                    widget.set_opacity(f64::from(alpha.into_value()));
+                }
+            })
+            .detach();
+            widget
         });
 
         // Metadata<Shadow> - apply shadow and render content
