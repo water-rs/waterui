@@ -8,6 +8,8 @@ web/pkg
 .build
 Cargo.lock
 *.log
+/.cargo/
+*.rlib
 
 # Personal/temporary files
 *.skill
