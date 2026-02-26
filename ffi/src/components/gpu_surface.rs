@@ -21,7 +21,9 @@ use alloc::vec;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
-    metal::MTLTextureType, metal::foreign_types::{ForeignType, ForeignTypeRef}, wgpu_hal::Api,
+    metal::MTLTextureType,
+    metal::foreign_types::{ForeignType, ForeignTypeRef},
+    wgpu_hal::Api,
     wgpu_hal::api::Metal as MetalApi,
 };
 
@@ -29,6 +31,13 @@ use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurfa
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
+
+#[cold]
+#[inline(never)]
+fn abort_on_panic(scope: &'static str) -> ! {
+    tracing::error!("{scope} panicked; aborting process");
+    std::process::abort();
+}
 
 struct GpuSurfaceDiagnostics {
     enabled: bool,
@@ -224,20 +233,26 @@ fn poll_capture_completion(device: &wgpu::Device) -> bool {
     match device.poll(poll_type) {
         Ok(_) => true,
         Err(e) => {
-            tracing::warn!("[GpuSurface] capture poll timed out/failed: {e}");
-            false
+            panic!("gpu_surface::poll_capture_completion failed: {e}");
         }
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn gpu_capture_trace_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("waterui_gpu_capture_trace.log")
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn trace_metal_capture_step(step: &str) {
     use std::io::Write as _;
 
-    let enabled = std::env::var("WATERUI_GPU_CAPTURE_TRACE").ok().is_some_and(|v| {
-        let value = v.trim().to_ascii_lowercase();
-        matches!(value.as_str(), "1" | "true" | "yes" | "on")
-    });
+    let enabled = std::env::var("WATERUI_GPU_CAPTURE_TRACE")
+        .ok()
+        .is_some_and(|v| {
+            let value = v.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        });
     if !enabled {
         return;
     }
@@ -249,7 +264,7 @@ fn trace_metal_capture_step(step: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/waterui_gpu_capture_trace.log")
+        .open(gpu_capture_trace_path())
     {
         let _ = writeln!(file, "{now} {step}");
     }
@@ -318,29 +333,6 @@ pub struct WuiGpuSurfaceState {
     render_invocations: u64,
     /// Stable id for diagnostics output.
     diagnostic_id: u64,
-    /// Count of frames skipped/dropped due transient surface acquisition failures.
-    dropped_frames: u64,
-    /// Last time a dropped-frame warning was emitted.
-    last_drop_warn_at: Instant,
-}
-
-impl WuiGpuSurfaceState {
-    fn record_dropped_frame(&mut self, frame_no: u64, reason: &str) {
-        self.dropped_frames = self.dropped_frames.saturating_add(1);
-        let now = Instant::now();
-        let should_warn = self.dropped_frames <= 3
-            || now.duration_since(self.last_drop_warn_at) >= Duration::from_millis(500);
-        if should_warn {
-            self.last_drop_warn_at = now;
-            tracing::warn!(
-                "[GpuSurface] dropped frame surface#{} frame#{} reason={} dropped_total={}",
-                self.diagnostic_id,
-                frame_no,
-                reason,
-                self.dropped_frames
-            );
-        }
-    }
 }
 
 /// Result returned by a GpuSurface render invocation.
@@ -382,24 +374,18 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     width: u32,
     height: u32,
 ) -> *mut WuiGpuSurfaceState {
-    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if surface.is_null() || layer.is_null() || width == 0 || height == 0 {
-            tracing::error!(
-                "[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
-                surface,
-                layer,
-                width,
-                height
-            );
-            return core::ptr::null_mut();
-        }
+    unsafe {
+        crate::expect_non_null_mut(surface, "waterui_gpu_surface_init", "surface");
+        crate::expect_non_null(layer, "waterui_gpu_surface_init", "layer");
+    }
+    assert!(
+        width > 0 && height > 0,
+        "waterui_gpu_surface_init: dimensions must be positive, got {width}x{height}"
+    );
 
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let wui_surface = unsafe { &mut *surface };
 
-        if wui_surface.surface.is_null() {
-            tracing::error!("[GpuSurface] init failed: surface pointer is null");
-            return core::ptr::null_mut();
-        }
         let gpu_surface: GpuSurface =
             unsafe { *Box::from_raw(wui_surface.surface as *mut GpuSurface) };
 
@@ -411,8 +397,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         if !waterui_graphics::shared_context::is_initialized() {
             tracing::debug!("[GpuSurface] Shared context not initialized, initializing now...");
             if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
-                tracing::error!("[GpuSurface] Init failed: {}", e);
-                return core::ptr::null_mut();
+                panic!("waterui_gpu_surface_init: shared GPU context init failed: {e}");
             }
         }
         let ctx = shared_context();
@@ -429,8 +414,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         // NOTE: The shared instance was created with support for all backends (on desktop)
         // or Vulkan+GLES (on Android), so it should be compatible.
         let Some(wgpu_surface) = create_surface_from_layer(instance, layer) else {
-            tracing::error!("[GpuSurface] Failed to create wgpu Surface from layer");
-            return core::ptr::null_mut();
+            panic!("waterui_gpu_surface_init: failed to create wgpu surface from layer");
         };
 
         // 3. Configure Surface
@@ -439,11 +423,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
         // Validation: Ensure adapter can present to this surface
         if surface_caps.formats.is_empty() {
-            tracing::error!("[GpuSurface] Shared adapter cannot present to this surface!");
-            // In a perfect world, we might fallback to re-creating the shared context
-            // with a different adapter, but that's complex since other views might be using it.
-            // For now, this is a fatal error for this view.
-            return core::ptr::null_mut();
+            panic!("waterui_gpu_surface_init: adapter cannot present to this surface");
         }
 
         let preferred = waterui_graphics::gpu_surface::preferred_surface_format_with_preference(
@@ -455,12 +435,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         let format = if surface_caps.formats.contains(&preferred) {
             preferred
         } else {
-            tracing::warn!(
-                "[GpuSurface] Preferred format {:?} not supported, falling back to {:?}",
-                preferred,
-                surface_caps.formats[0]
+            panic!(
+                "waterui_gpu_surface_init: preferred format {:?} is not supported by surface capabilities {:?}",
+                preferred, surface_caps.formats
             );
-            surface_caps.formats[0]
         };
 
         // Select presentation mode (VSync)
@@ -503,10 +481,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             present_mode
         );
 
-        if !try_configure_surface(&wgpu_surface, &device, &config) {
-            tracing::error!("[GpuSurface] Surface configuration failed!");
-            return core::ptr::null_mut();
-        }
+        try_configure_surface(&wgpu_surface, &device, &config);
 
         // 4. Create State
         // Store Arc<Device> and Arc<Queue> which are cheap to clone
@@ -531,8 +506,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
                 format,
                 present_mode,
             ),
-            dropped_frames: 0,
-            last_drop_warn_at: Instant::now(),
         });
 
         Box::into_raw(state)
@@ -540,10 +513,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
     match init_result {
         Ok(ptr) => ptr,
-        Err(_) => {
-            tracing::error!("[GpuSurface] init panicked");
-            core::ptr::null_mut()
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_init"),
     }
 }
 
@@ -571,14 +541,15 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     width: u32,
     height: u32,
 ) -> WuiGpuSurfaceRenderResult {
-    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() || width == 0 || height == 0 {
-            return WuiGpuSurfaceRenderResult {
-                ok: false,
-                needs_redraw: false,
-            };
-        }
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_render", "state");
+    }
+    assert!(
+        width > 0 && height > 0,
+        "waterui_gpu_surface_render: dimensions must be positive, got {width}x{height}"
+    );
 
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
 
         state.render_invocations = state.render_invocations.saturating_add(1);
@@ -601,14 +572,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             state.config.width = width;
             state.config.height = height;
 
-            if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
-                tracing::warn!("[GpuSurface] resize reconfigure failed ({width}x{height})");
-                state.record_dropped_frame(frame_no, "resize_reconfigure_failed");
-                return WuiGpuSurfaceRenderResult {
-                    ok: false,
-                    needs_redraw: true,
-                };
-            }
+            try_configure_surface(&state.wgpu_surface, &state.device, &state.config);
             state.current_width = width;
             state.current_height = height;
 
@@ -635,7 +599,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
-            pollster::block_on(setup_future);
+            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render::setup");
             state.initialized = true;
             state.renderer_format = format;
             if trace_frame {
@@ -650,56 +614,32 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             Ok(Ok(o)) => o,
             Ok(Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                 tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
-                if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
-                    tracing::warn!("[GpuSurface] reconfigure failed after surface lost/outdated");
-                    state.record_dropped_frame(frame_no, "surface_reconfigure_failed");
-                    return WuiGpuSurfaceRenderResult {
-                        ok: false,
-                        needs_redraw: true,
-                    };
-                }
+                try_configure_surface(&state.wgpu_surface, &state.device, &state.config);
                 match state.wgpu_surface.get_current_texture() {
                     Ok(o) => o,
                     Err(wgpu::SurfaceError::Timeout) => {
-                        // Surface isn't ready yet (common during window move/resize); skip this frame.
-                        state.record_dropped_frame(frame_no, "surface_timeout_after_reconfigure");
-                        return WuiGpuSurfaceRenderResult {
-                            ok: true,
-                            needs_redraw: true,
-                        };
+                        panic!(
+                            "waterui_gpu_surface_render: surface timeout after reconfigure for \
+                             surface#{} frame#{}",
+                            state.diagnostic_id, frame_no
+                        );
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
-                        );
-                        return WuiGpuSurfaceRenderResult {
-                            ok: false,
-                            needs_redraw: true,
-                        };
+                        panic!("waterui_gpu_surface_render: acquire after reconfigure failed: {e}");
                     }
                 }
             }
             Ok(Err(wgpu::SurfaceError::Timeout)) => {
-                // Surface isn't ready yet (common during window move/resize); skip this frame.
-                state.record_dropped_frame(frame_no, "surface_timeout");
-                return WuiGpuSurfaceRenderResult {
-                    ok: true,
-                    needs_redraw: true,
-                };
+                panic!(
+                    "waterui_gpu_surface_render: surface timeout for surface#{} frame#{}",
+                    state.diagnostic_id, frame_no
+                );
             }
             Ok(Err(e)) => {
-                tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
-                return WuiGpuSurfaceRenderResult {
-                    ok: false,
-                    needs_redraw: true,
-                };
+                panic!("waterui_gpu_surface_render: get_current_texture failed: {e}");
             }
             Err(_) => {
-                tracing::error!("[GpuSurface] render panicked while acquiring swapchain texture");
-                return WuiGpuSurfaceRenderResult {
-                    ok: false,
-                    needs_redraw: false,
-                };
+                abort_on_panic("waterui_gpu_surface_render::acquire_swapchain_texture");
             }
         };
         if trace_frame {
@@ -749,13 +689,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
     let result = match render_result {
         Ok(result) => result,
-        Err(_) => {
-            tracing::error!("[GpuSurface] render panicked");
-            WuiGpuSurfaceRenderResult {
-                ok: false,
-                needs_redraw: false,
-            }
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_render"),
     };
 
     gpu_surface_diagnostics().on_render_result(result.ok, result.needs_redraw);
@@ -772,20 +706,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 /// `state` must be a valid pointer from `waterui_gpu_surface_init`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_needs_redraw(state: *mut WuiGpuSurfaceState) -> bool {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_needs_redraw", "state");
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() {
-            return false;
-        }
         let state = unsafe { &mut *state };
         state.gpu_surface.needs_redraw()
     }));
 
     match result {
         Ok(value) => value,
-        Err(_) => {
-            tracing::error!("[GpuSurface] needs_redraw probe panicked");
-            false
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_needs_redraw"),
     }
 }
 
@@ -801,20 +732,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_needs_redraw(state: *mut WuiGpuSurf
 pub unsafe extern "C" fn waterui_gpu_surface_requires_redraw_poll(
     state: *mut WuiGpuSurfaceState,
 ) -> bool {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_requires_redraw_poll", "state");
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() {
-            return false;
-        }
         let state = unsafe { &mut *state };
         state.gpu_surface.requires_redraw_poll()
     }));
 
     match result {
         Ok(value) => value,
-        Err(_) => {
-            tracing::error!("[GpuSurface] requires_redraw_poll probe panicked");
-            false
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_requires_redraw_poll"),
     }
 }
 
@@ -845,23 +773,25 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
     width: u32,
     height: u32,
 ) -> bool {
-    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() || texture.is_null() || width == 0 || height == 0 {
-            return false;
-        }
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_render_to_texture", "state");
+        crate::expect_non_null(texture, "waterui_gpu_surface_render_to_texture", "texture");
+    }
+    assert!(
+        width > 0 && height > 0,
+        "waterui_gpu_surface_render_to_texture: dimensions must be positive, got {width}x{height}"
+    );
 
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
         let texture = unsafe { &*(texture as *const wgpu::Texture) };
 
-        if !texture
-            .usage()
-            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
-        {
-            tracing::error!(
-                "[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage"
-            );
-            return false;
-        }
+        assert!(
+            texture
+                .usage()
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
+            "[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage"
+        );
 
         let target_format = texture.format();
 
@@ -887,7 +817,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
-            pollster::block_on(setup_future);
+            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_texture::setup");
             state.initialized = true;
             state.renderer_format = target_format;
         }
@@ -917,10 +847,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
 
     match render_result {
         Ok(ok) => ok,
-        Err(_) => {
-            tracing::error!("[GpuSurface] render_to_texture panicked");
-            false
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_render_to_texture"),
     }
 }
 
@@ -936,34 +863,45 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     width: u32,
     height: u32,
 ) -> bool {
+    unsafe {
+        crate::expect_non_null_mut(
+            state,
+            "waterui_gpu_surface_render_to_metal_texture",
+            "state",
+        );
+        crate::expect_non_null(
+            texture,
+            "waterui_gpu_surface_render_to_metal_texture",
+            "texture",
+        );
+    }
+    assert!(
+        width > 0 && height > 0,
+        "waterui_gpu_surface_render_to_metal_texture: dimensions must be positive, got {width}x{height}"
+    );
+
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         trace_metal_capture_step("render_to_metal_texture: begin");
-        if state.is_null() || texture.is_null() || width == 0 || height == 0 {
-            trace_metal_capture_step("render_to_metal_texture: invalid args");
-            return false;
-        }
-
         trace_metal_capture_step("render_to_metal_texture: deref state");
         let state = unsafe { &mut *state };
         trace_metal_capture_step("render_to_metal_texture: from_ptr");
         let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(texture.cast()) };
         trace_metal_capture_step("render_to_metal_texture: to_owned");
         let metal_texture = metal_texture_ref.to_owned();
-        let Some(hal_device) = (unsafe { state.device.as_hal::<MetalApi>() }) else {
-            tracing::error!("[GpuSurface] render_to_metal_texture: shared wgpu device is not Metal");
-            return false;
+        let hal_device = (unsafe { state.device.as_hal::<MetalApi>() })
+            .expect("[GpuSurface] render_to_metal_texture: shared wgpu device is not Metal");
+        let wgpu_device_ptr = {
+            let raw_device = hal_device.raw_device().lock();
+            raw_device.as_ptr().cast::<c_void>()
         };
-        let wgpu_device_ptr = hal_device.raw_device().as_ptr().cast::<c_void>();
         let texture_device_ptr = metal_texture.device().as_ptr().cast::<c_void>();
         trace_metal_capture_step(&format!(
             "render_to_metal_texture: device_ptrs wgpu={wgpu_device_ptr:p} texture={texture_device_ptr:p}"
         ));
-        if wgpu_device_ptr != texture_device_ptr {
-            tracing::error!(
-                "[GpuSurface] render_to_metal_texture: Metal device mismatch (wgpu={wgpu_device_ptr:p}, texture={texture_device_ptr:p})"
-            );
-            return false;
-        }
+        assert_eq!(
+            wgpu_device_ptr, texture_device_ptr,
+            "[GpuSurface] render_to_metal_texture: Metal device mismatch (wgpu={wgpu_device_ptr:p}, texture={texture_device_ptr:p})"
+        );
         trace_metal_capture_step("render_to_metal_texture: pixel_format query");
         let metal_pixel_format = metal_texture.pixel_format();
         trace_metal_capture_step(&format!(
@@ -975,11 +913,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
             metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
             other => {
-                tracing::error!(
+                panic!(
                     "[GpuSurface] render_to_metal_texture: unsupported format {:?}",
                     other
                 );
-                return false;
             }
         };
 
@@ -1059,9 +996,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             trace_metal_capture_step("render_to_metal_texture: setup future begin");
             let setup_future = state.gpu_surface.setup(&ctx);
             trace_metal_capture_step("render_to_metal_texture: setup future created");
-            trace_metal_capture_step("render_to_metal_texture: setup block_on begin");
-            pollster::block_on(setup_future);
-            trace_metal_capture_step("render_to_metal_texture: setup block_on done");
+            trace_metal_capture_step("render_to_metal_texture: setup immediate-poll begin");
+            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_metal_texture::setup");
+            trace_metal_capture_step("render_to_metal_texture: setup immediate-poll done");
             state.initialized = true;
             state.renderer_format = target_format;
         }
@@ -1093,10 +1030,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 
     match render_result {
         Ok(ok) => ok,
-        Err(_) => {
-            tracing::error!("[GpuSurface] render_to_metal_texture panicked");
-            false
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_render_to_metal_texture"),
     }
 }
 
@@ -1108,12 +1042,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     _width: u32,
     _height: u32,
 ) -> bool {
-    false
+    panic!("waterui_gpu_surface_render_to_metal_texture: only supported on Apple platforms");
 }
 
 /// Setup the GpuSurface and render the first frame.
 ///
-/// This function performs async setup (awaited synchronously via `block_on`),
+/// This function performs setup in the synchronous FFI render path,
 /// then renders the first frame. Native code should call this before showing
 /// the window to ensure all visible GpuSurfaces are ready.
 ///
@@ -1126,12 +1060,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 /// - `state` must be a valid pointer from `waterui_gpu_surface_init`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfaceState) -> bool {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_await_ready", "state");
+    }
     let await_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if state.is_null() {
-            tracing::error!("[GpuSurface] await_ready: null state");
-            return false;
-        }
-
         let state = unsafe { &mut *state };
 
         // Call setup if not already done
@@ -1150,7 +1082,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
-            pollster::block_on(setup_future);
+            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_await_ready::setup");
             state.initialized = true;
             state.renderer_format = format;
         }
@@ -1160,21 +1092,16 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             Ok(o) => o,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 tracing::debug!("[GpuSurface] await_ready: surface lost/outdated, reconfiguring");
-                if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
-                    tracing::warn!("[GpuSurface] await_ready: reconfigure failed");
-                    return false;
-                }
+                try_configure_surface(&state.wgpu_surface, &state.device, &state.config);
                 match state.wgpu_surface.get_current_texture() {
                     Ok(o) => o,
                     Err(e) => {
-                        tracing::debug!("[GpuSurface] await_ready: retry acquire failed: {e}");
-                        return false;
+                        panic!("waterui_gpu_surface_await_ready: retry acquire failed: {e}");
                     }
                 }
             }
             Err(e) => {
-                tracing::debug!("[GpuSurface] await_ready: acquire failed: {e}");
-                return false;
+                panic!("waterui_gpu_surface_await_ready: acquire failed: {e}");
             }
         };
 
@@ -1204,10 +1131,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
 
     match await_result {
         Ok(ok) => ok,
-        Err(_) => {
-            tracing::error!("[GpuSurface] await_ready panicked");
-            false
-        }
+        Err(_) => abort_on_panic("waterui_gpu_surface_await_ready"),
     }
 }
 
@@ -1221,14 +1145,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
 /// and must not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState) {
-    if !state.is_null() {
-        unsafe {
-            let state = Box::from_raw(state);
-            let remaining = gpu_surface_diagnostics()
-                .on_surface_drop(state.diagnostic_id, state.render_invocations);
-            if remaining == 0 {
-                waterui_graphics::shared_context::save_pipeline_cache();
-            }
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_gpu_surface_drop", "state");
+        let state = Box::from_raw(state);
+        let remaining = gpu_surface_diagnostics()
+            .on_surface_drop(state.diagnostic_id, state.render_invocations);
+        if remaining == 0 {
+            waterui_graphics::shared_context::save_pipeline_cache();
         }
     }
 }
@@ -1343,11 +1266,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
     state: *mut WuiGpuSurfaceState,
     input: WuiGpuSurfaceInput,
 ) {
-    if state.is_null() {
-        return;
-    }
-
-    let state = unsafe { &mut *state };
+    let state =
+        unsafe { crate::expect_non_null_mut(state, "waterui_gpu_surface_set_input", "state") };
     state.pointer_state = pointer_state_from_ffi(input.pointer);
     state.gesture_state = gesture_state_from_ffi(input.gesture);
 }
@@ -1417,33 +1337,29 @@ fn try_configure_surface(
     surface: &wgpu::Surface<'static>,
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
-) -> bool {
-    // Keep the device/queue idle before attempting to (re)configure.
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+) {
+    // Non-blocking poll so we don't stall the render thread.
+    let _ = device.poll(wgpu::PollType::Poll);
 
     // `Surface::configure` doesn't return a `Result`, so use error scopes to detect failures.
-    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
-    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    device.push_error_scope(wgpu::ErrorFilter::Internal);
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let configure_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         surface.configure(device, config);
     }))
     .is_err();
 
-    let validation_err = pollster::block_on(validation_scope.pop());
-    let internal_err = pollster::block_on(internal_scope.pop());
-    let oom_err = pollster::block_on(oom_scope.pop());
+    let validation_err = crate::pop_error_scope_now(device, "gpu_surface::validation_error_scope");
+    let internal_err = crate::pop_error_scope_now(device, "gpu_surface::internal_error_scope");
+    let oom_err = crate::pop_error_scope_now(device, "gpu_surface::oom_error_scope");
 
     if configure_panicked {
-        tracing::warn!("[GpuSurface] Surface::configure panicked");
-        return false;
+        abort_on_panic("gpu_surface::try_configure_surface");
     }
 
     if let Some(err) = validation_err.or(internal_err).or(oom_err) {
-        tracing::warn!("[GpuSurface] Surface::configure failed: {err}");
-        return false;
+        panic!("gpu_surface::try_configure_surface failed: {err}");
     }
-
-    true
 }

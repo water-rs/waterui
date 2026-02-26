@@ -77,17 +77,25 @@ where
                     let requested_filter = filter.get();
                     let picker = KitPhotoPicker::new()
                         .with_media_type(media_type_from_filter(&requested_filter));
-                    let handle = picker.pick().await.unwrap_or_else(|error| {
-                        panic!("MediaPicker failed to present picker dialog: {error}")
-                    });
+                    let handle = match picker.pick().await {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            tracing::warn!("MediaPicker failed to present picker dialog: {error}");
+                            return;
+                        }
+                    };
 
                     let Some(handle) = handle else {
                         return;
                     };
 
-                    let path = handle.load().await.unwrap_or_else(|error| {
-                        panic!("MediaPicker failed to load selected media: {error}")
-                    });
+                    let path = match handle.load().await {
+                        Ok(path) => path,
+                        Err(error) => {
+                            tracing::warn!("MediaPicker failed to load selected media: {error}");
+                            return;
+                        }
+                    };
 
                     let media = media_from_loaded_path(&path, &requested_filter);
                     selection.set(Some(Selected { media }));
@@ -109,7 +117,9 @@ fn media_type_from_filter(filter: &MediaFilter) -> MediaType {
         MediaFilter::Video => MediaType::Video,
         MediaFilter::LivePhoto => MediaType::LivePhoto,
         MediaFilter::All(filters) | MediaFilter::Any(filters) => {
-            if filters.iter().all(|f| matches!(f, MediaFilter::Video)) {
+            if filters.iter().any(requests_live_photo) {
+                MediaType::LivePhoto
+            } else if filters.iter().all(|f| matches!(f, MediaFilter::Video)) {
                 MediaType::Video
             } else {
                 MediaType::Image
@@ -140,8 +150,24 @@ fn media_from_loaded_path(path: &std::path::Path, requested_filter: &MediaFilter
             infer_media_from_path(url, path)
         }
         MediaFilter::All(_) | MediaFilter::Any(_) | MediaFilter::Not(_) => {
+            if requests_live_photo(requested_filter) {
+                tracing::warn!(
+                    "MediaPicker selected a LivePhoto-combinator filter; current API returns a single asset, falling back to image/video inference"
+                );
+            }
             infer_media_from_path(url, path)
         }
+    }
+}
+
+#[cfg(feature = "std")]
+fn requests_live_photo(filter: &MediaFilter) -> bool {
+    match filter {
+        MediaFilter::LivePhoto => true,
+        MediaFilter::All(filters) | MediaFilter::Any(filters) => {
+            filters.iter().any(requests_live_photo)
+        }
+        MediaFilter::Not(_) | MediaFilter::Image | MediaFilter::Video => false,
     }
 }
 

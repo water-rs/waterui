@@ -644,9 +644,6 @@ mod webkitgtk {
         data: *mut c_void,
         _closure: *mut glib::gobject_ffi::GClosure,
     ) {
-        if data.is_null() {
-            return;
-        }
         unsafe { drop(Box::from_raw(data.cast::<T>())) };
     }
 
@@ -1540,9 +1537,10 @@ unsafe extern "C" fn on_decide_policy(
     }
 
     let response = webkitgtk::response_from_decision(decision);
-    if response.is_null() {
-        return 0;
-    }
+    assert!(
+        !response.is_null(),
+        "on_decide_policy: response_from_decision returned null for response decision type"
+    );
 
     let status = webkitgtk::response_status(response);
     if !(300..400).contains(&status) {
@@ -1568,11 +1566,11 @@ unsafe extern "C" fn on_load_failed(
     user_data: *mut std::ffi::c_void,
 ) -> gtk4::glib::ffi::gboolean {
     let data = unsafe { &*(user_data.cast::<LoadFailedData>()) };
-    let message = if error.is_null() {
-        String::from("WebView load failed")
-    } else {
-        webkitgtk::cstr_to_string(unsafe { (*error).message })
-    };
+    assert!(
+        !error.is_null(),
+        "on_load_failed: WebKit passed a null GError pointer"
+    );
+    let message = webkitgtk::cstr_to_string(unsafe { (*error).message });
     data.shared
         .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
             message,

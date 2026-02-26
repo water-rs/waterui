@@ -16,7 +16,7 @@ use crate::system::runtime_locale_binding;
 /// This is the return type of the `text!` macro. It wraps a function
 /// that takes a locale and returns a `Text` view.
 ///
-/// Text reacts to locale changes from the `waterkit-regional` runtime automatically.
+/// Text reacts to locale changes from the shared regional runtime automatically.
 ///
 /// # Examples
 ///
@@ -173,7 +173,7 @@ fn resolve_locale_binding(env: &Environment) -> Binding<Locale> {
         return Binding::container(locale);
     }
 
-    // Otherwise, track the shared runtime locale from waterkit-regional.
+    // Otherwise, track the shared runtime locale.
     runtime_locale_binding()
 }
 

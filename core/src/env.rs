@@ -55,12 +55,34 @@ use alloc::{collections::BTreeMap, rc::Rc};
 /// env.remove::<String>();
 /// assert_eq!(env.get::<String>(), None);
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Environment {
-    map: BTreeMap<TypeId, Rc<dyn Any>>,
+    state: Rc<EnvironmentState>,
+}
+
+#[derive(Debug, Clone)]
+enum EnvironmentState {
+    Map(BTreeMap<TypeId, Rc<dyn Any>>),
+    Overlay {
+        parent: Rc<EnvironmentState>,
+        key: TypeId,
+        entry: EnvironmentEntry,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum EnvironmentEntry {
+    Present(Rc<dyn Any>),
+    Removed,
 }
 
 impl MetadataKey for Environment {}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 use crate::{
     View,
@@ -98,11 +120,43 @@ impl<K, V> Store<K, V> {
 }
 
 impl Environment {
+    fn lookup_any_in_state(state: &EnvironmentState, key: TypeId) -> Option<&Rc<dyn Any>> {
+        match state {
+            EnvironmentState::Map(map) => map.get(&key),
+            EnvironmentState::Overlay {
+                parent,
+                key: overlay_key,
+                entry,
+            } => {
+                if *overlay_key == key {
+                    match entry {
+                        EnvironmentEntry::Present(value) => Some(value),
+                        EnvironmentEntry::Removed => None,
+                    }
+                } else {
+                    Self::lookup_any_in_state(parent.as_ref(), key)
+                }
+            }
+        }
+    }
+
+    fn lookup_any(&self, key: TypeId) -> Option<&Rc<dyn Any>> {
+        Self::lookup_any_in_state(self.state.as_ref(), key)
+    }
+
+    fn push_overlay(&mut self, key: TypeId, entry: EnvironmentEntry) {
+        self.state = Rc::new(EnvironmentState::Overlay {
+            parent: self.state.clone(),
+            key,
+            entry,
+        });
+    }
+
     /// Creates a new empty environment.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            map: BTreeMap::new(),
+            state: Rc::new(EnvironmentState::Map(BTreeMap::new())),
         }
     }
 
@@ -113,7 +167,7 @@ impl Environment {
     #[must_use]
     pub fn store<K: 'static, V: 'static>(mut self, value: V) -> Self {
         self.insert(Store {
-            key: PhantomData::<V>,
+            key: PhantomData::<K>,
             value,
         });
         self
@@ -140,7 +194,21 @@ impl Environment {
     ///
     /// If a value of the same type already exists, it will be replaced.
     pub fn insert<T: 'static>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Rc::new(value));
+        let key = TypeId::of::<T>();
+        let value = Rc::new(value) as Rc<dyn Any>;
+        match Rc::get_mut(&mut self.state) {
+            Some(EnvironmentState::Map(map)) => {
+                map.insert(key, value);
+            }
+            Some(EnvironmentState::Overlay {
+                key: overlay_key,
+                entry,
+                ..
+            }) if *overlay_key == key => {
+                *entry = EnvironmentEntry::Present(value);
+            }
+            _ => self.push_overlay(key, EnvironmentEntry::Present(value)),
+        }
     }
 
     /// Inserts a view configuration hook into the environment.
@@ -155,7 +223,20 @@ impl Environment {
 
     /// Removes a value from the environment by its type.
     pub fn remove<T: 'static>(&mut self) {
-        self.map.remove(&TypeId::of::<T>());
+        let key = TypeId::of::<T>();
+        match Rc::get_mut(&mut self.state) {
+            Some(EnvironmentState::Map(map)) => {
+                map.remove(&key);
+            }
+            Some(EnvironmentState::Overlay {
+                key: overlay_key,
+                entry,
+                ..
+            }) if *overlay_key == key => {
+                *entry = EnvironmentEntry::Removed;
+            }
+            _ => self.push_overlay(key, EnvironmentEntry::Removed),
+        }
     }
 
     /// Adds a value to the environment and returns the modified environment.
@@ -164,6 +245,21 @@ impl Environment {
     pub fn with<T: 'static>(&mut self, value: T) -> &mut Self {
         self.insert(value);
         self
+    }
+
+    /// Returns a new environment that overlays a value on top of the current state.
+    ///
+    /// This is an O(1) operation backed by structural sharing and avoids copying
+    /// the underlying map.
+    #[must_use]
+    pub fn extending<T: 'static>(&self, value: T) -> Self {
+        Self {
+            state: Rc::new(EnvironmentState::Overlay {
+                parent: self.state.clone(),
+                key: TypeId::of::<T>(),
+                entry: EnvironmentEntry::Present(Rc::new(value) as Rc<dyn Any>),
+            }),
+        }
     }
 
     /// Retrieves a reference to a value from the environment by its type.
@@ -178,8 +274,7 @@ impl Environment {
     #[must_use]
     #[allow(clippy::coerce_container_to_any)]
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.map
-            .get(&TypeId::of::<T>())
+        self.lookup_any(TypeId::of::<T>())
             .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
 
@@ -189,10 +284,11 @@ impl Environment {
     /// The new value is created by calling the provided closure `f`.
     #[must_use]
     pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, f: F) -> &T {
-        if !self.map.contains_key(&TypeId::of::<T>()) {
+        if self.lookup_any(TypeId::of::<T>()).is_none() {
             self.insert(f());
         }
-        self.get::<T>().unwrap()
+        self.get::<T>()
+            .expect("value missing from environment after insertion")
     }
 
     /// Extracts a value from the environment using the `Extractor` trait.
@@ -292,8 +388,50 @@ pub const fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
 
 impl<V: View, T: 'static> View for With<V, T> {
     fn body(self, env: &Environment) -> impl View {
-        let mut env = env.clone();
-        env.insert(self.value);
+        let env = env.extending(self.value);
         Metadata::new(self.content, env)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+
+    use super::*;
+
+    #[test]
+    fn extending_reuses_parent_state_via_overlay() {
+        let mut base = Environment::new();
+        base.insert(7_u32);
+        let parent_state = base.state.clone();
+
+        let extended = base.extending(11_u64);
+        match extended.state.as_ref() {
+            EnvironmentState::Overlay { parent, key, entry } => {
+                assert!(Rc::ptr_eq(parent, &parent_state));
+                assert_eq!(*key, TypeId::of::<u64>());
+                match entry {
+                    EnvironmentEntry::Present(value) => {
+                        assert_eq!(value.downcast_ref::<u64>(), Some(&11_u64));
+                    }
+                    EnvironmentEntry::Removed => {
+                        panic!("overlay entry unexpectedly removed");
+                    }
+                }
+            }
+            EnvironmentState::Map(_) => panic!("extending must create overlay state"),
+        }
+    }
+
+    #[test]
+    fn deep_overlay_chain_preserves_parent_visibility() {
+        let mut env = Environment::new();
+        env.insert(String::from("root"));
+        let env = env.extending(3_i32).extending(true).extending(9_u8);
+
+        assert_eq!(env.get::<String>(), Some(&String::from("root")));
+        assert_eq!(env.get::<i32>(), Some(&3_i32));
+        assert_eq!(env.get::<bool>(), Some(&true));
+        assert_eq!(env.get::<u8>(), Some(&9_u8));
     }
 }

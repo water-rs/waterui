@@ -35,7 +35,6 @@ mod parser;
 pub use error::ParseError;
 
 use alloc::borrow::Cow;
-use alloc::boxed::Box;
 
 use alloc::string::{String, ToString};
 use core::fmt;
@@ -681,16 +680,20 @@ impl Signal for Fetched {
     type Guard = nami_core::watcher::BoxWatcherGuard;
 
     fn get(&self) -> Self::Output {
-        // TODO: Implement actual fetching logic
-        Some(self.url.clone())
+        panic!(
+            "Url::fetch() is not implemented yet for '{}'; reactive URL fetching backend is missing",
+            self.url
+        );
     }
 
     fn watch(
         &self,
         _watcher: impl Fn(nami_core::watcher::Context<Self::Output>) + 'static,
     ) -> Self::Guard {
-        // TODO: Implement actual watching logic
-        Box::new(())
+        panic!(
+            "Url::fetch().watch() is not implemented yet for '{}'; reactive URL fetching backend is missing",
+            self.url
+        );
     }
 }
 

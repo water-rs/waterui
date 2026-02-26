@@ -1,7 +1,5 @@
 use alloc::vec::Vec;
 
-use image::GenericImageView;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodePath {
     Platform,
@@ -65,9 +63,17 @@ pub(crate) fn decode_to_rgba8(data: &[u8]) -> Result<DecodedRgba, String> {
 
 pub(crate) fn decode_to_rgba8_with_path(data: &[u8]) -> Result<(DecodedRgba, DecodePath), String> {
     match detect_decode_route(data) {
-        DecodeRoute::Platform => decode_with_platform(data)
-            .map(|decoded| (decoded, DecodePath::Platform))
-            .map_err(|e| alloc::format!("Platform decode failed: {e}")),
+        DecodeRoute::Platform => match decode_with_platform(data) {
+            Ok(decoded) => Ok((decoded, DecodePath::Platform)),
+            Err(platform_err) => decode_with_software_fallback(data)
+                .map(|decoded| (decoded, DecodePath::SoftwareFallback))
+                .map_err(|software_err| {
+                    alloc::format!(
+                        "Platform decode failed: {platform_err}; software fallback failed: \
+                         {software_err}"
+                    )
+                }),
+        },
         DecodeRoute::Software => decode_with_software_fallback(data)
             .map(|decoded| (decoded, DecodePath::SoftwareFallback))
             .map_err(|e| alloc::format!("Software decode failed: {e}")),
@@ -234,13 +240,13 @@ fn parse_ftyp(data: &[u8]) -> Option<Ftyp> {
 }
 
 pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, String> {
-    let img = match ::image::load_from_memory(data) {
-        Ok(img) => img,
+    let decoded = match waterkit_codec::decode_image(data) {
+        Ok(decoded) => decoded,
         Err(primary_err) => {
             let Some(patched) = patch_heif_brand_to_avif(data) else {
-                return Err(alloc::format!("Image decode failed: {}", primary_err));
+                return Err(alloc::format!("Image decode failed: {primary_err}"));
             };
-            ::image::load_from_memory(&patched).map_err(|fallback_err| {
+            waterkit_codec::decode_image(&patched).map_err(|fallback_err| {
                 alloc::format!(
                     "Image decode failed: {primary_err}; HEIF fallback failed: \
                      {fallback_err}. HEIF software decode only supports AV1 payloads"
@@ -248,27 +254,37 @@ pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, 
             })?
         }
     };
-    let (width, height) = img.dimensions();
-    let pixels = img.into_rgba8().into_raw();
+    let width = decoded.width();
+    let height = decoded.height();
+    let pixel_format = decoded.pixel_format();
+    let hdr = decoded.hdr();
+    let wide_gamut = decoded.wide_gamut();
+    let pixels = decoded.into_pixels();
     Ok(DecodedRgba {
         pixels,
         width,
         height,
-        pixel_format: waterkit_codec::DecodedPixelFormat::Rgba8UnormSrgb,
-        hdr: false,
-        wide_gamut: false,
+        pixel_format,
+        hdr,
+        wide_gamut,
     })
 }
 
 pub(crate) fn decode_with_platform(data: &[u8]) -> Result<DecodedRgba, String> {
     let decoded = waterkit_codec::decode_image(data).map_err(|e| e.to_string())?;
+    let width = decoded.width();
+    let height = decoded.height();
+    let pixel_format = decoded.pixel_format();
+    let hdr = decoded.hdr();
+    let wide_gamut = decoded.wide_gamut();
+    let pixels = decoded.into_pixels();
     Ok(DecodedRgba {
-        pixels: decoded.pixels,
-        width: decoded.width,
-        height: decoded.height,
-        pixel_format: decoded.pixel_format,
-        hdr: decoded.hdr,
-        wide_gamut: decoded.wide_gamut,
+        pixels,
+        width,
+        height,
+        pixel_format,
+        hdr,
+        wide_gamut,
     })
 }
 

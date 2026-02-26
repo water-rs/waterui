@@ -50,6 +50,8 @@ pub struct Uniforms {
     pub emit_rate: f32,
     /// Turbulence factor.
     pub turbulence: f32,
+    /// Velocity damping factor (1.0 = no damping, 0.0 = stop immediately).
+    pub drag: f32,
     /// Velocity stretch factor (0.0 = disabled, >0.0 = magnitude scale).
     pub stretch_factor: f32,
     /// Edge softness (0.0=hard, 1.0=soft).
@@ -93,6 +95,7 @@ impl Default for Uniforms {
             emitter_size: glam::Vec2::ZERO,
             emit_rate: 100.0,
             turbulence: 0.0,
+            drag: 1.0,
             stretch_factor: 0.0,
             softness: 0.5,
             life_range: glam::Vec2::new(1.0, 1.0),

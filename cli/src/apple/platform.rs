@@ -346,7 +346,9 @@ pub async fn package_apple(
     let arch_name = match platform.arch() {
         Architecture::Aarch64(_) => "arm64",
         Architecture::X86_64 => "x86_64",
-        _ => unimplemented!(),
+        other => {
+            bail!("Unsupported Apple architecture for xcodebuild ARCHS: {other:?}");
+        }
     };
     let archs_arg = format!("ARCHS={arch_name}");
 

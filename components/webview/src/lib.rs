@@ -107,7 +107,6 @@ pub struct WebView {
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
-    #[allow(dead_code)]
     redirects_watcher: Option<std::rc::Rc<BoxWatcherGuard>>,
 }
 

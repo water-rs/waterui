@@ -1,6 +1,7 @@
 //! Locale-aware number formatting.
 
 use core::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fixed_decimal::FixedDecimal;
 use icu_decimal::FixedDecimalFormatter;
@@ -8,20 +9,37 @@ use icu_provider::DataLocale;
 
 use crate::locale::{Locale, locales};
 
+static NUMBER_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+
 fn data_locale(locale: &Locale) -> DataLocale {
     locale.0.clone().into()
 }
 
 fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
-    FixedDecimalFormatter::try_new(&data_locale(locale), Default::default())
-        .or_else(|_| FixedDecimalFormatter::try_new(&data_locale(&locales::EN), Default::default()))
-        .ok()
+    match FixedDecimalFormatter::try_new(&data_locale(locale), Default::default()) {
+        Ok(formatter) => Some(formatter),
+        Err(primary_error) => {
+            match FixedDecimalFormatter::try_new(&data_locale(&locales::EN), Default::default()) {
+                Ok(formatter) => Some(formatter),
+                Err(fallback_error) => {
+                    if NUMBER_FORMATTER_FALLBACK_LOGGED
+                        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        eprintln!(
+                            "[waterui-locale] number formatter unavailable for locale {}: primary={primary_error}; fallback_en={fallback_error}",
+                            locale.canonical_tag()
+                        );
+                    }
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn to_fixed_decimal(n: f64) -> FixedDecimal {
-    if !n.is_finite() {
-        return FixedDecimal::from(0);
-    }
+    debug_assert!(n.is_finite(), "to_fixed_decimal expects a finite number");
 
     if n.fract() == 0.0 && n.abs() <= i64::MAX as f64 {
         return FixedDecimal::from(n as i64);
@@ -66,6 +84,17 @@ fn to_fixed_decimal(n: f64) -> FixedDecimal {
 /// assert_eq!(format_number(&locales::FR, 1234.56), "1 234,56");
 /// ```
 pub fn format_number(locale: &Locale, n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        return if n.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
+        };
+    }
+
     let decimal = to_fixed_decimal(n);
     match decimal_formatter(locale) {
         Some(formatter) => formatter.format(&decimal).to_string(),

@@ -56,7 +56,7 @@ impl<T: Extractor> Extractor for Option<T> {
     /// This implementation allows for graceful handling of extraction failures
     /// by converting the error case into a `None` value.
     fn extract(env: &Environment) -> Result<Self, Error> {
-        Ok(Extractor::extract(env).ok())
+        Ok(<T as Extractor>::extract(env).ok())
     }
 }
 

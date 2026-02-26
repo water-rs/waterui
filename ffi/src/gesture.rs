@@ -88,8 +88,8 @@ impl IntoFFI for Gesture {
 /// The gesture pointer must be valid and properly initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_gesture(gesture: *mut WuiGesture) {
-    if gesture.is_null() {
-        return;
+    unsafe {
+        crate::expect_non_null_mut(gesture, "waterui_drop_gesture", "gesture");
     }
     unsafe {
         let gesture = Box::from_raw(gesture);

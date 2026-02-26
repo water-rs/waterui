@@ -272,19 +272,23 @@ static SHARED_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 ///
 /// ```ignore
 /// // During app startup
-/// waterui_graphics::shared_context::init_shared_context()?;
+/// waterui_graphics::shared_context::init_shared_context_async().await?;
 /// ```
-pub fn init_shared_context() -> Result<(), SharedContextError> {
+pub async fn init_shared_context_async() -> Result<(), SharedContextError> {
     // Ensure only one thread performs the expensive device creation.
     let init_lock = SHARED_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = init_lock.lock();
 
     if SHARED_CONTEXT.get().is_none() {
-        let ctx = create_shared_context()?;
+        let ctx = create_shared_context_async().await?;
         let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
     }
 
     Ok(())
+}
+
+pub fn init_shared_context() -> Result<(), SharedContextError> {
+    pollster::block_on(init_shared_context_async())
 }
 
 /// Get the shared GPU context.
@@ -403,13 +407,19 @@ fn pipeline_cache_path_for_adapter(info: &wgpu::AdapterInfo) -> Option<PathBuf> 
     })
 }
 
+async fn request_adapter_async(instance: &wgpu::Instance) -> Result<wgpu::Adapter, SharedContextError> {
+    instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|_| SharedContextError::NoAdapter)
+}
+
 fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, SharedContextError> {
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .map_err(|_| SharedContextError::NoAdapter)
+    pollster::block_on(request_adapter_async(instance))
 }
 
 #[cfg(target_os = "android")]
@@ -450,37 +460,45 @@ fn is_problematic_android_vulkan_adapter(info: &wgpu::AdapterInfo) -> bool {
 }
 
 #[cfg(target_os = "android")]
-fn request_android_adapter_with_backends(
+async fn request_android_adapter_with_backends_async(
     backends: wgpu::Backends,
 ) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends,
         ..Default::default()
     });
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).await?;
     Ok((instance, adapter))
 }
 
 #[cfg(target_os = "android")]
-fn create_android_instance_and_adapter()
--> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+fn request_android_adapter_with_backends(
+    backends: wgpu::Backends,
+) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    pollster::block_on(request_android_adapter_with_backends_async(backends))
+}
+
+#[cfg(target_os = "android")]
+async fn create_android_instance_and_adapter_async(
+) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     match android_backend_override() {
         AndroidBackendOverride::Vulkan => {
             tracing::info!(
                 "[SharedGpuContext] Android backend override: forcing Vulkan (WATERUI_ANDROID_GPU_BACKEND=vulkan)"
             );
-            return request_android_adapter_with_backends(wgpu::Backends::VULKAN);
+            return request_android_adapter_with_backends_async(wgpu::Backends::VULKAN).await;
         }
         AndroidBackendOverride::Gl => {
             tracing::info!(
                 "[SharedGpuContext] Android backend override: forcing OpenGL (WATERUI_ANDROID_GPU_BACKEND=gl)"
             );
-            return request_android_adapter_with_backends(wgpu::Backends::GL);
+            return request_android_adapter_with_backends_async(wgpu::Backends::GL).await;
         }
         AndroidBackendOverride::Auto => {}
     }
 
-    let (vk_instance, vk_adapter) = request_android_adapter_with_backends(wgpu::Backends::VULKAN)?;
+    let (vk_instance, vk_adapter) =
+        request_android_adapter_with_backends_async(wgpu::Backends::VULKAN).await?;
     let vk_info = vk_adapter.get_info();
 
     if is_problematic_android_vulkan_adapter(&vk_info) {
@@ -490,7 +508,7 @@ fn create_android_instance_and_adapter()
         );
 
         if let Ok((gl_instance, gl_adapter)) =
-            request_android_adapter_with_backends(wgpu::Backends::GL)
+            request_android_adapter_with_backends_async(wgpu::Backends::GL).await
         {
             let gl_info = gl_adapter.get_info();
             tracing::info!(
@@ -509,14 +527,20 @@ fn create_android_instance_and_adapter()
     Ok((vk_instance, vk_adapter))
 }
 
+#[cfg(target_os = "android")]
+fn create_android_instance_and_adapter(
+) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+    pollster::block_on(create_android_instance_and_adapter_async())
+}
+
 /// Create a new shared context (internal).
-fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
+async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContextError> {
     tracing::info!("[SharedGpuContext] Initializing shared GPU context");
 
     let (instance, adapter) = {
         #[cfg(target_os = "android")]
         {
-            create_android_instance_and_adapter()?
+            create_android_instance_and_adapter_async().await?
         }
 
         #[cfg(not(target_os = "android"))]
@@ -525,7 +549,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
                 backends: wgpu::Backends::all(),
                 ..Default::default()
             });
-            let adapter = request_adapter(&instance)?;
+            let adapter = request_adapter_async(&instance).await?;
             (instance, adapter)
         }
     };
@@ -569,15 +593,18 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     }
 
     // Request device
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("WaterUI Shared Device"),
-        required_features,
-        required_limits,
-        memory_hints: wgpu::MemoryHints::Performance,
-        experimental_features: wgpu::ExperimentalFeatures::default(),
-        trace: wgpu::Trace::default(),
-    }))
-    .map_err(|e| SharedContextError::DeviceCreationFailed(e.to_string()))?;
+    let (device, queue) =
+        adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("WaterUI Shared Device"),
+                required_features,
+                required_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .map_err(|e| SharedContextError::DeviceCreationFailed(e.to_string()))?;
 
     // Set error handler
     device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
@@ -631,6 +658,10 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         pipeline_cache_path,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
+}
+
+fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
+    pollster::block_on(create_shared_context_async())
 }
 
 #[cfg(test)]

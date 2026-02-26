@@ -91,12 +91,23 @@ impl Default for ParticleProps {
 }
 
 /// Internal environment configuration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct EnvironmentConfig {
     pub gravity: [f32; 2],
     pub wind: [f32; 2],
     pub drag: f32,
     pub turbulence: f32,
+}
+
+impl Default for EnvironmentConfig {
+    fn default() -> Self {
+        Self {
+            gravity: [0.0, 0.0],
+            wind: [0.0, 0.0],
+            drag: 1.0,
+            turbulence: 0.0,
+        }
+    }
 }
 
 /// Full internal configuration (built by modifier chain).

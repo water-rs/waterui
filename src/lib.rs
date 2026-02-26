@@ -112,10 +112,10 @@ pub use view::ViewExt;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 
-pub use waterkit_regional as regional;
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
+pub use waterui_locale::regional;
 #[doc(inline)]
 pub use waterui_macros::*;
 pub use waterui_media as media;

@@ -866,7 +866,7 @@ impl GpuSurface {
             msaa_samples,
             pipeline_cache: guard.pipeline_cache.as_ref(),
         };
-        crate::pollster::block_on(self.setup(&ctx));
+        crate::ready_now_or_panic(self.setup(&ctx), "gpu_surface::render_offscreen::setup");
         self.resize(width, height);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -953,7 +953,7 @@ impl GpuSurface {
             msaa_samples,
             pipeline_cache: guard.pipeline_cache.as_ref(),
         };
-        crate::pollster::block_on(self.setup(&ctx));
+        crate::ready_now_or_panic(self.setup(&ctx), "gpu_surface::render_offscreen_hdr::setup");
         self.resize(width, height);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {

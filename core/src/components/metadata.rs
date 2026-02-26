@@ -44,18 +44,19 @@ impl<T: MetadataKey> Metadata<T> {
             value,
         }
     }
+
+    #[cold]
+    fn panic_not_caught() {
+        panic!(
+            "The metadata `{}` is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
+            core::any::type_name::<Self>()
+        );
+    }
 }
 
 impl<T: MetadataKey> View for Metadata<T> {
-    #[allow(unused)]
-    #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
-        panic!(
-            "The metadata `{}`is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
-            core::any::type_name::<Self>()
-        );
-
-        return;
+        Self::panic_not_caught()
     }
 }
 
@@ -100,17 +101,18 @@ impl<T: MetadataKey> View for IgnorableMetadata<T> {
 /// This type implements `MetadataKey` and is used with `Metadata`,
 /// so renderers must handle it (by extracting content and keeping the value alive).
 #[derive(Debug)]
-pub struct Retain(
-    /// The retained value (not used, just kept alive).
-    #[allow(dead_code)]
-    Box<dyn Any>,
-);
+pub struct Retain {
+    /// The retained value (not read, only kept alive).
+    _value: Box<dyn Any>,
+}
 
 impl MetadataKey for Retain {}
 
 impl Retain {
     /// Creates a new `Retain` from a value.
     pub fn new<T: 'static>(value: T) -> Self {
-        Self(Box::new(value))
+        Self {
+            _value: Box::new(value),
+        }
     }
 }

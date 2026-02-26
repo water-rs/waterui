@@ -2,8 +2,8 @@ use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
-use waterui_core::{binding, env::Environment, view::View, Binding, Signal};
-use waterui_graphics::{color::Color, wgpu, GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, color::Color, wgpu};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
@@ -251,7 +251,7 @@ impl GpuRenderer for WaveformRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Waveform Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
-            immediate_size: 0,
+            push_constant_ranges: &[],
         });
 
         let blend = if ctx.is_hdr() {
@@ -285,7 +285,7 @@ impl GpuRenderer for WaveformRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 
@@ -374,6 +374,7 @@ impl GpuRenderer for WaveformRenderer {
                 label: Some("Waveform Visualizer Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -385,12 +386,10 @@ impl GpuRenderer for WaveformRenderer {
                         }),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
 
             rpass.set_pipeline(pipeline);

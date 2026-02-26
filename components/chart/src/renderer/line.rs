@@ -38,9 +38,11 @@ pub struct LineChartRenderer {
     // GPU resources (initialized on setup)
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
+    fill_uniform_buffer: Option<wgpu::Buffer>,
     current_buffer: Option<wgpu::Buffer>,
     previous_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    fill_bind_group: Option<wgpu::BindGroup>,
     msaa_target: Option<MsaaTarget>,
     msaa_samples: u32,
 
@@ -71,9 +73,11 @@ impl LineChartRenderer {
             fill_opacity: 0.3,
             pipeline: None,
             uniform_buffer: None,
+            fill_uniform_buffer: None,
             current_buffer: None,
             previous_buffer: None,
             bind_group: None,
+            fill_bind_group: None,
             msaa_target: None,
             msaa_samples: 1,
             animation: ChartAnimation::default(),
@@ -177,7 +181,7 @@ impl LineChartRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Line Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         ctx.device
@@ -206,7 +210,7 @@ impl LineChartRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -222,6 +226,9 @@ impl LineChartRenderer {
             return;
         };
         let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(fill_uniform_buffer) = &self.fill_uniform_buffer else {
             return;
         };
         let Some(current_buffer) = &self.current_buffer else {
@@ -250,6 +257,24 @@ impl LineChartRenderer {
                 },
             ],
         }));
+        self.fill_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Line Chart Fill Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: fill_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: current_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: previous_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }
 
@@ -262,6 +287,11 @@ impl GpuRenderer for LineChartRenderer {
         // Create uniform buffer with line-specific uniforms
         let uniforms = LineUniforms::default();
         self.uniform_buffer = Some(create_uniform_buffer(ctx, "Line Chart Uniforms", &uniforms));
+        self.fill_uniform_buffer = Some(create_uniform_buffer(
+            ctx,
+            "Line Chart Fill Uniforms",
+            &uniforms,
+        ));
 
         // Create data buffers with initial capacity
         let initial_capacity = self.data.len().max(16384);
@@ -296,7 +326,7 @@ impl GpuRenderer for LineChartRenderer {
         let Some(pipeline) = &self.pipeline else {
             return;
         };
-        let Some(bind_group) = &self.bind_group else {
+        let Some(line_bind_group) = &self.bind_group else {
             return;
         };
 
@@ -313,12 +343,12 @@ impl GpuRenderer for LineChartRenderer {
                     label: Some("Line Chart Clear Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &frame.view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
                     })],
                     ..Default::default()
                 });
@@ -397,47 +427,21 @@ impl GpuRenderer for LineChartRenderer {
         if self.show_fill {
             let mut fill_uniforms = base_uniforms;
             fill_uniforms.render_mode = 1.0;
+            let fill_uniform_buffer = self
+                .fill_uniform_buffer
+                .as_ref()
+                .expect("Line chart fill uniform buffer not initialized");
             write_uniform_buffer(
                 frame.queue,
-                self.uniform_buffer.as_ref().unwrap(),
+                fill_uniform_buffer,
                 &fill_uniforms,
             );
-
-            let (color_view, resolve_target) = msaa_attachment(
-                &mut self.msaa_target,
-                frame.device,
-                frame.format,
-                frame.width,
-                frame.height,
-                &frame.view,
-                self.msaa_samples,
-            );
-
-            {
-                let mut fill_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Line Chart Fill Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: color_view,
-                        resolve_target,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    ..Default::default()
-                });
-
-                fill_pass.set_pipeline(pipeline);
-                fill_pass.set_bind_group(0, bind_group, &[]);
-                fill_pass.draw(0..6, 0..segment_count);
-            }
-
-            let line_uniforms = base_uniforms;
             write_uniform_buffer(
                 frame.queue,
-                self.uniform_buffer.as_ref().unwrap(),
-                &line_uniforms,
+                self.uniform_buffer
+                    .as_ref()
+                    .expect("Line chart uniform buffer not initialized"),
+                &base_uniforms,
             );
 
             let (color_view, resolve_target) = msaa_attachment(
@@ -449,29 +453,36 @@ impl GpuRenderer for LineChartRenderer {
                 &frame.view,
                 self.msaa_samples,
             );
-            {
-                let mut line_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Line Chart Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: color_view,
-                        resolve_target,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    ..Default::default()
-                });
 
-                line_pass.set_pipeline(pipeline);
-                line_pass.set_bind_group(0, bind_group, &[]);
-                line_pass.draw(0..6, 0..segment_count);
-            }
+            let fill_bind_group = self
+                .fill_bind_group
+                .as_ref()
+                .expect("Line chart fill bind group not initialized");
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Line Chart Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    depth_slice: None,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, fill_bind_group, &[]);
+            pass.draw(0..6, 0..segment_count);
+            pass.set_bind_group(0, line_bind_group, &[]);
+            pass.draw(0..6, 0..segment_count);
         } else {
             write_uniform_buffer(
                 frame.queue,
-                self.uniform_buffer.as_ref().unwrap(),
+                self.uniform_buffer
+                    .as_ref()
+                    .expect("Line chart uniform buffer not initialized"),
                 &base_uniforms,
             );
 
@@ -489,18 +500,18 @@ impl GpuRenderer for LineChartRenderer {
                 label: Some("Line Chart Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 ..Default::default()
             });
 
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(0, line_bind_group, &[]);
             pass.draw(0..6, 0..segment_count);
         }
 

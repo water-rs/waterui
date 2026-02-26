@@ -207,17 +207,15 @@ mod tests {
     #[ignore = "requires network access to real image URLs"]
     fn streaming_decode_real_images_smoke() {
         futures::executor::block_on(async {
-            #[allow(unused_mut)]
-            let mut cases = vec![
-                (
-                    "jpeg",
-                    "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/main/testimages/testorig.jpg",
-                ),
-                (
-                    "tiff",
-                    "https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper.tif",
-                ),
-            ];
+            let mut cases = Vec::new();
+            cases.push((
+                "jpeg",
+                "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/main/testimages/testorig.jpg",
+            ));
+            cases.push((
+                "tiff",
+                "https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper.tif",
+            ));
             #[cfg(not(target_vendor = "apple"))]
             {
                 cases.push((
