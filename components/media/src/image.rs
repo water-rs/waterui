@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use crate::image_codec::{self, DecodedRgba};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
+    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
     OffscreenRenderOutput, OffscreenRenderOutputHdr,
 };
 use waterui_layout::frame::Frame;
@@ -174,16 +174,18 @@ impl Image {
     pub fn render_offscreen(
         self,
         config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        GpuSurface::new(self.renderer).render_offscreen(config)
+        GpuSurface::new(self.renderer).render_offscreen(config, env)
     }
 
     /// Renders this image into an HDR offscreen target and reads back `RGBA16F`.
     pub fn render_offscreen_hdr(
         self,
         config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
-        GpuSurface::new(self.renderer).render_offscreen_hdr(config)
+        GpuSurface::new(self.renderer).render_offscreen_hdr(config, env)
     }
 
     fn from_decoded(decoded: DecodedRgba) -> Self {
@@ -403,8 +405,8 @@ impl ImageRenderer {
     }
 }
 
-impl GpuRenderer for ImageRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for ImageRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ImageRenderer] setup() called with format: {:?}, size: {}x{}, source_hdr={}, source_wide_gamut={}",
             ctx.surface_format,
@@ -516,7 +518,7 @@ impl GpuRenderer for ImageRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         tracing::debug!(
             "[ImageRenderer] render() called, format: {:?}, size: {}x{}, has_pipeline: {}",
             frame.format,
@@ -720,8 +722,9 @@ mod tests {
         let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
             .expect("offscreen size must be valid");
         let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+        let mut env = waterui_core::Environment::new();
         image
-            .render_offscreen(config)
+            .render_offscreen(config, &mut env)
             .expect("offscreen image render should succeed")
     }
 
@@ -730,8 +733,9 @@ mod tests {
         let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
             .expect("offscreen size must be valid");
         let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
+        let mut env = waterui_core::Environment::new();
         image
-            .render_offscreen_hdr(config)
+            .render_offscreen_hdr(config, &mut env)
             .expect("offscreen HDR image render should succeed")
     }
 

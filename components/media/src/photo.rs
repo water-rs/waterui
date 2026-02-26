@@ -435,7 +435,8 @@ mod tests {
                     .expect("offscreen size must be valid");
                 let config =
                     OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
-                let Ok(output) = image.render_offscreen_hdr(config) else {
+                let mut env = waterui_core::Environment::new();
+                let Ok(output) = image.render_offscreen_hdr(config, &mut env) else {
                     continue;
                 };
 

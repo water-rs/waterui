@@ -15,7 +15,7 @@ use waterui_chart::renderer::{
 };
 use waterui_graphics::color::Srgb;
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface, OffscreenRenderConfig, OffscreenSize,
+    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenSize,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -97,12 +97,12 @@ where
     }
 }
 
-impl<R> GpuRenderer for SeededChart<R>
+impl<R> GpuView for SeededChart<R>
 where
     R: ChartRenderer,
     R::Data: Clone,
 {
-    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
         self.renderer
             .update_data(&self.initial_data, ctx.device, ctx.queue);
         let transition_data = self.transition_data.clone();
@@ -117,7 +117,7 @@ where
         }
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         self.renderer.set_animation(&self.animation);
         self.renderer.render(frame);
     }
@@ -179,8 +179,9 @@ where
     R: ChartRenderer + 'static,
     R::Data: Clone,
 {
+    let mut env = waterui_core::Environment::new();
     let output = GpuSurface::new(seeded)
-        .render_offscreen(OffscreenRenderConfig::new(size))
+        .render_offscreen(OffscreenRenderConfig::new(size), &mut env)
         .map_err(|e| format!("{name}: offscreen render failed: {e}"))?;
 
     let png_path = out_dir.join(format!("{name}.png"));

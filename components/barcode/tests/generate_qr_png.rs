@@ -16,8 +16,9 @@ fn generate_qr_png_offscreen() {
     let renderer = BarcodeRenderer::new(BarcodeSource::qr(content));
     let size = OffscreenSize::try_from_pixels(768, 768).expect("valid output size");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+    let mut env = waterui_core::Environment::new();
     let output = GpuSurface::new(renderer)
-        .render_offscreen(config)
+        .render_offscreen(config, &mut env)
         .expect("offscreen QR render should succeed");
     assert_eq!(
         output.rgba8.len(),

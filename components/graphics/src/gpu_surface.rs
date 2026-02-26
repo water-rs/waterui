@@ -14,8 +14,6 @@ use std::sync::mpsc;
 
 use waterui_core::{layout::StretchAxis, raw_view};
 
-use crate::gpu_view::GpuView;
-
 /// A boxed future for async setup operations.
 pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
@@ -117,6 +115,11 @@ pub struct GpuContext<'a> {
     pub msaa_samples: u32,
     /// Optional pipeline cache for faster pipeline creation.
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
+    /// Handle to request redraws from outside `render()`.
+    ///
+    /// Clone this during `setup()` and call `request_redraw()` when external
+    /// data arrives (e.g., nami signal change, timer, network response).
+    pub redraw_handle: RedrawHandle,
 }
 
 impl core::fmt::Debug for GpuContext<'_> {
@@ -217,6 +220,43 @@ impl GestureState {
     }
 }
 
+/// A handle that can trigger a redraw of the associated `GpuSurface`.
+///
+/// Cheap to clone. Thread-safe (`Send + Sync`).
+/// Obtain from [`GpuContext::redraw_handle`] during [`GpuView::setup`].
+#[derive(Clone, Debug)]
+pub struct RedrawHandle {
+    dirty: alloc::sync::Arc<core::sync::atomic::AtomicBool>,
+}
+
+impl RedrawHandle {
+    /// Creates a new redraw handle.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            dirty: alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Mark the surface as needing a redraw.
+    pub fn request_redraw(&self) {
+        self.dirty
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Check and clear the dirty flag. Returns `true` if a redraw was requested.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty
+            .swap(false, core::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl Default for RedrawHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Frame data provided during each render call.
 ///
 /// Contains references to the GPU resources and the current frame's texture,
@@ -247,6 +287,8 @@ pub struct GpuFrame<'a> {
     /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
     /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
+    /// Internal: set to true when `request_redraw()` is called.
+    redraw_requested: bool,
 }
 
 impl core::fmt::Debug for GpuFrame<'_> {
@@ -261,7 +303,34 @@ impl core::fmt::Debug for GpuFrame<'_> {
     }
 }
 
-impl GpuFrame<'_> {
+impl<'a> GpuFrame<'a> {
+    /// Creates a frame payload for a single render pass.
+    #[must_use]
+    pub fn new(
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        texture: &'a wgpu::Texture,
+        view: wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        pointer: PointerState,
+        gesture: GestureState,
+    ) -> Self {
+        Self {
+            device,
+            queue,
+            texture,
+            view,
+            format,
+            width,
+            height,
+            pointer,
+            gesture,
+            redraw_requested: false,
+        }
+    }
+
     /// Returns `true` if the frame format is HDR-capable (floating-point).
     #[must_use]
     pub const fn is_hdr(&self) -> bool {
@@ -282,6 +351,20 @@ impl GpuFrame<'_> {
     #[must_use]
     pub const fn is_hovering(&self) -> bool {
         self.pointer.is_hovering()
+    }
+
+    /// Request that `render()` be called again on the next frame.
+    ///
+    /// Use this for animations. If not called, the surface stays idle
+    /// until an external event triggers a redraw via [`RedrawHandle`].
+    pub fn request_redraw(&mut self) {
+        self.redraw_requested = true;
+    }
+
+    /// Check if redraw was requested during this render call.
+    #[must_use]
+    pub const fn was_redraw_requested(&self) -> bool {
+        self.redraw_requested
     }
 }
 
@@ -306,59 +389,39 @@ impl GpuFrame<'_> {
 ///     pipeline: Option<wgpu::RenderPipeline>,
 /// }
 ///
-/// impl GpuRenderer for TriangleRenderer {
-///     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
-///         // Sync work: create pipeline, buffers, etc.
+/// impl GpuView for TriangleRenderer {
+///     fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
 ///         self.pipeline = Some(ctx.device.create_render_pipeline(&...));
-///         async {} // Immediately ready
+///         async {}
 ///     }
 ///
-///     fn render(&mut self, frame: &GpuFrame) {
+///     fn render(&mut self, frame: &mut GpuFrame) {
 ///         let mut encoder = frame.device.create_command_encoder(&Default::default());
 ///         // ... render to frame.view ...
 ///         frame.queue.submit([encoder.finish()]);
 ///     }
 /// }
 /// ```
-pub trait GpuRenderer: 'static {
+pub trait GpuView: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
     /// GPU resources that persist across frames.
     ///
+    /// `ctx.redraw_handle` can be cloned here for external redraw triggers.
+    /// `env` provides access to the WaterUI environment (theme, fonts, etc.).
+    ///
     /// Returns a future that completes when setup is done. For sync renderers,
     /// return `async {}` after performing sync work.
-    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()>;
+    fn setup(&mut self, ctx: &GpuContext, env: &mut waterui_core::Environment) -> impl Future<Output = ()>;
 
     /// Called each frame to render.
     ///
     /// Use `frame.width` and `frame.height` to get the current surface dimensions.
     /// Render into `frame.view` or `frame.texture`.
-    fn render(&mut self, frame: &GpuFrame);
-
-    /// Called when the surface size changes (before render).
     ///
-    /// Default implementation does nothing. Override if you need to
-    /// recreate resources when the surface size changes.
-    fn resize(&mut self, _width: u32, _height: u32) {}
-
-    /// Returns whether another frame should be scheduled immediately.
-    ///
-    /// This powers on-demand rendering loops for time-based or stateful GPU
-    /// animations. Default is `false`.
-    fn needs_redraw(&self) -> bool {
-        false
-    }
-
-    /// Returns whether backend should keep lightweight redraw polling active.
-    ///
-    /// Some renderers receive async data updates through signal watchers, which may
-    /// happen while no frame is currently in-flight. In strict on-demand mode this
-    /// hint lets native backends poll [`GpuRenderer::needs_redraw`] without forcing
-    /// continuous rendering.
-    fn requires_redraw_poll(&self) -> bool {
-        false
-    }
+    /// Call `frame.request_redraw()` to schedule another frame (for animations).
+    fn render(&mut self, frame: &mut GpuFrame);
 }
 
 /// Strongly-typed non-zero dimensions for offscreen rendering.
@@ -650,34 +713,19 @@ impl core::fmt::Display for OffscreenRenderError {
 
 impl std::error::Error for OffscreenRenderError {}
 
-/// Private object-safe trait for type-erased GPU renderers.
-trait GpuRendererImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a>;
-    fn render(&mut self, frame: &GpuFrame);
-    fn resize(&mut self, width: u32, height: u32);
-    fn needs_redraw(&self) -> bool;
-    fn requires_redraw_poll(&self) -> bool;
+/// Private object-safe trait for type-erased GPU views.
+trait GpuViewImpl: 'static {
+    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a>;
+    fn render(&mut self, frame: &mut GpuFrame);
 }
 
-impl<T: GpuRenderer> GpuRendererImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a> {
-        Box::pin(GpuRenderer::setup(self, ctx))
+impl<T: GpuView> GpuViewImpl for T {
+    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a> {
+        Box::pin(GpuView::setup(self, ctx, env))
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
-        GpuRenderer::render(self, frame);
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        GpuRenderer::resize(self, width, height);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        GpuRenderer::needs_redraw(self)
-    }
-
-    fn requires_redraw_poll(&self) -> bool {
-        GpuRenderer::requires_redraw_poll(self)
+    fn render(&mut self, frame: &mut GpuFrame) {
+        GpuView::render(self, frame);
     }
 }
 
@@ -687,7 +735,7 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
 /// on-demand scheduling by default.
 ///
 /// Native backends render when the surface is dirty (size/input updates) and
-/// keep rendering while [`GpuRenderer::needs_redraw`] returns `true`.
+/// keep rendering while [`GpuView::needs_redraw`] returns `true`.
 /// It stretches to fill available space by default, similar to `SwiftUI`'s
 /// `Color`.
 ///
@@ -708,8 +756,8 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
 ///     .frame(width: 400.0, height: 300.0)
 /// ```
 pub struct GpuSurface {
-    /// The renderer that handles GPU drawing (type-erased).
-    renderer: Box<dyn GpuRendererImpl>,
+    /// The GPU view that handles rendering (type-erased).
+    renderer: Box<dyn GpuViewImpl>,
     /// Preferred maximum MSAA sample count for this surface.
     ///
     /// Backends use this as the cap when selecting a supported sample count.
@@ -744,11 +792,11 @@ impl GpuSurface {
         NonZeroU32::new(samples).unwrap_or(FALLBACK)
     }
 
-    /// Creates a new GPU surface with the provided renderer.
+    /// Creates a new GPU surface with the provided GPU view.
     ///
     /// # Arguments
     ///
-    /// * `renderer` - An implementation of `GpuRenderer` that handles setup and rendering.
+    /// * `view` - An implementation of `GpuView` that handles setup and rendering.
     ///
     /// # Example
     ///
@@ -756,21 +804,12 @@ impl GpuSurface {
     /// let surface = GpuSurface::new(MyRenderer::default());
     /// ```
     #[must_use]
-    pub fn new<R: GpuRenderer>(renderer: R) -> Self {
+    pub fn new<R: GpuView>(view: R) -> Self {
         Self {
-            renderer: Box::new(renderer),
+            renderer: Box::new(view),
             msaa_max_samples: Self::default_msaa_max_samples(),
             surface_prefers_hdr: None,
         }
-    }
-
-    /// Creates a new GPU surface from a [`GpuView`].
-    ///
-    /// This allows environment-aware renderer construction.
-    #[must_use]
-    pub fn from_gpu_view<V: GpuView>(view: V, env: &waterui_core::Environment) -> Self {
-        let mut env = env.clone();
-        Self::new(view.gpu_body(&mut env))
     }
 
     /// Sets the preferred maximum MSAA sample count for this surface.
@@ -821,6 +860,7 @@ impl GpuSurface {
     pub fn render_offscreen(
         mut self,
         config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
         if !matches!(
             config.format,
@@ -865,9 +905,9 @@ impl GpuSurface {
             surface_format: config.format,
             msaa_samples,
             pipeline_cache: guard.pipeline_cache.as_ref(),
+            redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(self.setup(&ctx), "gpu_surface::render_offscreen::setup");
-        self.resize(width, height);
+        crate::ready_now_or_panic(self.setup(&ctx, env), "gpu_surface::render_offscreen::setup");
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface"),
@@ -884,7 +924,7 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame = GpuFrame {
+        let mut frame = GpuFrame {
             device,
             queue,
             texture: &texture,
@@ -894,8 +934,9 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            redraw_requested: false,
         };
-        self.render(&frame);
+        self.render(&mut frame);
 
         let rgba8 = readback_texture_rgba8(device, queue, &texture, width, height)?;
         Ok(OffscreenRenderOutput {
@@ -911,6 +952,7 @@ impl GpuSurface {
     pub fn render_offscreen_hdr(
         mut self,
         config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
         if config.format != wgpu::TextureFormat::Rgba16Float {
             return Err(OffscreenRenderError::UnsupportedReadbackFormat(
@@ -952,9 +994,9 @@ impl GpuSurface {
             surface_format: config.format,
             msaa_samples,
             pipeline_cache: guard.pipeline_cache.as_ref(),
+            redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(self.setup(&ctx), "gpu_surface::render_offscreen_hdr::setup");
-        self.resize(width, height);
+        crate::ready_now_or_panic(self.setup(&ctx, env), "gpu_surface::render_offscreen_hdr::setup");
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface_hdr"),
@@ -971,7 +1013,7 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let frame = GpuFrame {
+        let mut frame = GpuFrame {
             device,
             queue,
             texture: &texture,
@@ -981,8 +1023,9 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            redraw_requested: false,
         };
-        self.render(&frame);
+        self.render(&mut frame);
 
         let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height)?;
         Ok(OffscreenRenderOutputHdr {
@@ -992,31 +1035,14 @@ impl GpuSurface {
         })
     }
 
-    /// Calls `setup` on the renderer, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a> {
-        self.renderer.setup(ctx)
+    /// Calls `setup` on the GPU view, returning a future that completes when ready.
+    pub fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a> {
+        self.renderer.setup(ctx, env)
     }
 
-    /// Calls `render` on the renderer.
-    pub fn render(&mut self, frame: &GpuFrame) {
+    /// Calls `render` on the GPU view.
+    pub fn render(&mut self, frame: &mut GpuFrame) {
         self.renderer.render(frame);
-    }
-
-    /// Returns whether another frame should be scheduled immediately.
-    #[must_use]
-    pub fn needs_redraw(&self) -> bool {
-        self.renderer.needs_redraw()
-    }
-
-    /// Returns whether backend should keep lightweight redraw polling enabled.
-    #[must_use]
-    pub fn requires_redraw_poll(&self) -> bool {
-        self.renderer.requires_redraw_poll()
-    }
-
-    /// Calls `resize` on the renderer.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.renderer.resize(width, height);
     }
 }
 

@@ -65,7 +65,7 @@ use vello::{kurbo, peniko};
 
 use crate::canvas::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::canvas::state::{DrawingState, FillStyle, StrokeStyle};
-use crate::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::{GpuContext, GpuFrame, GpuView, GpuSurface};
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -840,8 +840,8 @@ impl CanvasRenderer {
     }
 }
 
-impl GpuRenderer for CanvasRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for CanvasRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let renderer = vello::Renderer::new(
             ctx.device,
             vello::RendererOptions {
@@ -937,13 +937,8 @@ impl GpuRenderer for CanvasRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        // Mark that we need to recreate the intermediate texture
-        self.intermediate_size = (0, 0);
-        let _ = (width, height);
-    }
     #[allow(clippy::too_many_lines)]
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let Some(renderer) = &mut self.renderer else {
             return;
         };

@@ -1402,6 +1402,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
     _surface: JObject<'local>,
     _width: jint,
     _height: jint,
+    _wui_env_ptr: jlong,
 ) -> jlong {
     android_only_jni_stub("WatcherJni.gpuSurfaceInit")
 }
@@ -1415,8 +1416,10 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
     surface: JObject<'local>,
     width: jint,
     height: jint,
+    wui_env_ptr: jlong,
 ) -> jlong {
-    // Note: Kotlin calls this init entry point as `gpuSurfaceInit(rendererPtr, surface, w, h)`
+    // Note: Kotlin calls this init entry point as
+    // `gpuSurfaceInit(rendererPtr, surface, w, h, envPtr)`
     // where `rendererPtr` is the boxed `GpuSurface` pointer (not a WuiGpuSurface struct).
     // Reconstruct a temporary WuiGpuSurface for the C-FFI init function.
     let env_ptr = env.get_native_interface();
@@ -1436,6 +1439,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
                 window.as_void_ptr(),
                 width as u32,
                 height as u32,
+                wui_env_ptr as *mut crate::WuiEnv,
             )
         },
         "gpuSurfaceInit",
