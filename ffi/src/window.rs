@@ -249,9 +249,6 @@ pub unsafe extern "C" fn waterui_env_install_window_manager(
     env: *mut WuiEnv,
     show_fn: WindowShowFn,
 ) {
-    if env.is_null() {
-        return;
-    }
     let env_ref = unsafe { &mut *env };
 
     let ffi_manager = FFIWindowManager { show_fn };

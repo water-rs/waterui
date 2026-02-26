@@ -172,7 +172,7 @@ impl BarcodeRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("QR render pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
-            immediate_size: 0,
+            push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -205,7 +205,7 @@ impl BarcodeRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            multiview: None,
             cache: pipeline_cache,
         });
 
@@ -320,17 +320,16 @@ impl GpuRenderer for BarcodeRenderer {
                 label: Some("QR render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
             });
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, &bind_group, &[]);
