@@ -10,7 +10,7 @@ use encase::{ShaderSize, UniformBuffer};
 use std::borrow::Cow;
 use waterui_graphics::{
     color::ResolvedColor,
-    gpu_surface::{GpuContext, GpuFrame, GpuRenderer},
+    gpu_surface::{GpuContext, GpuFrame, GpuView},
     wgpu,
 };
 
@@ -143,8 +143,8 @@ impl ParticleRenderer {
     }
 }
 
-impl GpuRenderer for ParticleRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for ParticleRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let device = ctx.device;
 
         // 1. Create Buffers using encase size calculation
@@ -352,7 +352,7 @@ impl GpuRenderer for ParticleRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         self.update_uniforms(frame.queue, frame.width, frame.height);
 
         let mut encoder = frame
@@ -402,9 +402,6 @@ impl GpuRenderer for ParticleRenderer {
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
+        frame.request_redraw();
     }
 }
