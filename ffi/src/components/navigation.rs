@@ -160,7 +160,8 @@ pub struct WuiTab {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_tab_content(handler: *mut WuiTabContent) -> WuiNavigationView {
     unsafe {
-        let view = (&*handler).build();
+        let handler = crate::expect_non_null(handler, "waterui_tab_content", "handler");
+        let view = handler.build();
         IntoFFI::into_ffi(view)
     }
 }
@@ -168,8 +169,11 @@ pub unsafe extern "C" fn waterui_tab_content(handler: *mut WuiTabContent) -> Wui
 impl IntoFFI for Tab<Id> {
     type FFI = WuiTab;
     fn into_ffi(self) -> Self::FFI {
+        let id_i32 = i32::from(self.label.tag);
+        let id = u64::try_from(id_i32)
+            .expect("tab id must be positive when converting to FFI u64 identifier");
         WuiTab {
-            id: i32::from(self.label.tag) as u64,
+            id,
             label: self.label.content.into_ffi(),
             content: self.content.into_ffi(),
         }
@@ -280,10 +284,17 @@ pub unsafe extern "C" fn waterui_env_install_navigation_controller(
 ) {
     // SAFETY: Caller guarantees pointers are valid
     unsafe {
+        let env =
+            crate::expect_non_null_mut(env, "waterui_env_install_navigation_controller", "env");
+        crate::expect_non_null_mut(
+            controller,
+            "waterui_env_install_navigation_controller",
+            "controller",
+        );
         let controller = *Box::from_raw(controller);
         // NavigationController::new wraps in Rc<RefCell<...>> internally
         let rust_controller = NavigationController::new(controller);
-        (*env).insert(rust_controller);
+        env.insert(rust_controller);
     }
 }
 
@@ -299,6 +310,11 @@ pub unsafe extern "C" fn waterui_drop_navigation_controller(
 ) {
     // SAFETY: Caller guarantees pointer is valid and not previously dropped
     unsafe {
+        crate::expect_non_null_mut(
+            controller,
+            "waterui_drop_navigation_controller",
+            "controller",
+        );
         drop(Box::from_raw(controller));
     }
 }
@@ -313,11 +329,11 @@ pub unsafe extern "C" fn waterui_drop_navigation_controller(
 /// - `env` must be a valid pointer to a `WuiEnv`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_has_navigation_controller(env: *const WuiEnv) -> bool {
-    if env.is_null() {
-        return false;
-    }
     // SAFETY: Caller guarantees pointer is valid
-    unsafe { (*env).get::<NavigationController>().is_some() }
+    unsafe {
+        let env = crate::expect_non_null(env, "waterui_env_has_navigation_controller", "env");
+        env.get::<NavigationController>().is_some()
+    }
 }
 
 /// Pops the top view from the navigation stack.
@@ -329,12 +345,10 @@ pub unsafe extern "C" fn waterui_env_has_navigation_controller(env: *const WuiEn
 /// - `env` must be a valid pointer to a `WuiEnv`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_navigation_pop(env: *const WuiEnv) {
-    if env.is_null() {
-        return;
-    }
     // SAFETY: Caller guarantees pointer is valid
     unsafe {
-        if let Some(controller) = (*env).get::<NavigationController>() {
+        let env = crate::expect_non_null(env, "waterui_navigation_pop", "env");
+        if let Some(controller) = env.get::<NavigationController>() {
             controller.pop();
         }
     }

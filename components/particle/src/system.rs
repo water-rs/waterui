@@ -141,6 +141,15 @@ impl ParticleSystem {
         self
     }
 
+    /// Set velocity damping factor.
+    ///
+    /// `1.0` keeps velocity unchanged, lower values damp motion each frame.
+    #[must_use]
+    pub fn drag(mut self, value: f32) -> Self {
+        self.config.environment.drag = value;
+        self
+    }
+
     /// Set emitter as a circle.
     #[must_use]
     pub fn emit_from_circle(mut self, radius: f32) -> Self {
@@ -177,6 +186,7 @@ impl View for ParticleSystem {
             gravity: self.config.environment.gravity,
             wind: self.config.environment.wind,
             turbulence: self.config.environment.turbulence,
+            drag: self.config.environment.drag,
             life_range: [
                 self.config.particle.life.start,
                 self.config.particle.life.end,

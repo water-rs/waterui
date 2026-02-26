@@ -1,11 +1,16 @@
 [submodule "backends/android"]
 	path = backends/android
 	url = https://github.com/water-rs/android-backend.git
-	branch = .
+	branch = dev
 [submodule "backends/apple"]
 	path = backends/apple
 	url = https://github.com/water-rs/apple-backend.git
-	branch = .
+	branch = dev
 [submodule "kit"]
 	path = kit
-	url = https://github.com/water-rs/kit.git
+	url = https://github.com/water-rs/waterkit.git
+	branch = dev
+[submodule "utils/nami"]
+	path = utils/nami
+	url = https://github.com/water-rs/nami.git
+	branch = dev

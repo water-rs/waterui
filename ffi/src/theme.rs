@@ -130,10 +130,11 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
     env: *mut WuiEnv,
     signal: *mut WuiComputed<theme::ColorScheme>,
 ) {
-    if env.is_null() || signal.is_null() {
-        return;
+    let env =
+        unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_color_scheme", "env") };
+    unsafe {
+        crate::expect_non_null_mut(signal, "waterui_theme_install_color_scheme", "signal");
     }
-    let env = unsafe { &mut *env };
     let computed = unsafe { Box::from_raw(signal) }.0;
     install_color_scheme(env, computed);
 }
@@ -146,10 +147,7 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
 pub unsafe extern "C" fn waterui_theme_color_scheme(
     env: *const WuiEnv,
 ) -> *mut WuiComputed<theme::ColorScheme> {
-    if env.is_null() {
-        return core::ptr::null_mut();
-    }
-    let env = unsafe { &*env };
+    let env = unsafe { crate::expect_non_null(env, "waterui_theme_color_scheme", "env") };
     let computed = theme::current_color_scheme(env);
     computed.into_ffi()
 }
@@ -194,10 +192,10 @@ pub unsafe extern "C" fn waterui_theme_install_color(
     slot: WuiColorSlot,
     signal: *mut WuiComputed<ResolvedColor>,
 ) {
-    if env.is_null() || signal.is_null() {
-        return;
+    let env = unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_color", "env") };
+    unsafe {
+        crate::expect_non_null_mut(signal, "waterui_theme_install_color", "signal");
     }
-    let env = unsafe { &mut *env };
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -229,10 +227,7 @@ pub unsafe extern "C" fn waterui_theme_color(
     env: *const WuiEnv,
     slot: WuiColorSlot,
 ) -> *mut WuiComputed<ResolvedColor> {
-    if env.is_null() {
-        return core::ptr::null_mut();
-    }
-    let env = unsafe { &*env };
+    let env = unsafe { crate::expect_non_null(env, "waterui_theme_color", "env") };
 
     let computed = match slot {
         WuiColorSlot::Background => color::Background.resolve(env).computed(),
@@ -284,10 +279,10 @@ pub unsafe extern "C" fn waterui_theme_install_font(
     slot: WuiFontSlot,
     signal: *mut WuiComputed<ResolvedFont>,
 ) {
-    if env.is_null() || signal.is_null() {
-        return;
+    let env = unsafe { crate::expect_non_null_mut(env, "waterui_theme_install_font", "env") };
+    unsafe {
+        crate::expect_non_null_mut(signal, "waterui_theme_install_font", "signal");
     }
-    let env = unsafe { &mut *env };
     let computed = unsafe { Box::from_raw(signal) }.0;
 
     match slot {
@@ -311,10 +306,7 @@ pub unsafe extern "C" fn waterui_theme_font(
     env: *const WuiEnv,
     slot: WuiFontSlot,
 ) -> *mut WuiComputed<ResolvedFont> {
-    if env.is_null() {
-        return core::ptr::null_mut();
-    }
-    let env = unsafe { &*env };
+    let env = unsafe { crate::expect_non_null(env, "waterui_theme_font", "env") };
 
     let computed = match slot {
         WuiFontSlot::Body => Body.resolve(env).computed(),
@@ -369,10 +361,7 @@ pub unsafe extern "C" fn waterui_env_install_theme(
     subheadline: *mut WuiComputed<ResolvedFont>,
     caption: *mut WuiComputed<ResolvedFont>,
 ) {
-    if env.is_null() {
-        return;
-    }
-    let env = unsafe { &mut *env };
+    let env = unsafe { crate::expect_non_null_mut(env, "waterui_env_install_theme", "env") };
 
     // Install colors
     if let Some(c) = take_computed(background) {
@@ -430,10 +419,7 @@ macro_rules! theme_color_fn {
         /// `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fn_name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedColor> {
-            if env.is_null() {
-                return core::ptr::null_mut();
-            }
-            let env = unsafe { &*env };
+            let env = unsafe { crate::expect_non_null(env, stringify!($fn_name), "env") };
             let computed = $token.resolve(env).computed();
             computed.into_ffi()
         }
@@ -448,10 +434,7 @@ macro_rules! theme_font_fn {
         /// `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fn_name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedFont> {
-            if env.is_null() {
-                return core::ptr::null_mut();
-            }
-            let env = unsafe { &*env };
+            let env = unsafe { crate::expect_non_null(env, stringify!($fn_name), "env") };
             let computed = $token.resolve(env).computed();
             computed.into_ffi()
         }
@@ -493,9 +476,11 @@ pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
     value: WuiColorScheme,
 ) {
     unsafe {
+        let watcher =
+            crate::expect_non_null(watcher, "waterui_call_watcher_color_scheme", "watcher");
         let rust_value: theme::ColorScheme = value.into();
         let metadata = waterui::reactive::watcher::Metadata::default();
-        (*watcher).call(rust_value, metadata);
+        watcher.call(rust_value, metadata);
     }
 }
 
@@ -507,6 +492,7 @@ pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
     watcher: *mut WuiWatcher<theme::ColorScheme>,
 ) {
     unsafe {
+        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_color_scheme", "watcher");
         drop(Box::from_raw(watcher));
     }
 }
@@ -521,9 +507,11 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
     value: WuiResolvedColor,
 ) {
     unsafe {
+        let watcher =
+            crate::expect_non_null(watcher, "waterui_call_watcher_resolved_color", "watcher");
         let rust_value = value.into_rust();
         let metadata = waterui::reactive::watcher::Metadata::default();
-        (*watcher).call(rust_value, metadata);
+        watcher.call(rust_value, metadata);
     }
 }
 
@@ -535,6 +523,7 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
     watcher: *mut WuiWatcher<ResolvedColor>,
 ) {
     unsafe {
+        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_resolved_color", "watcher");
         drop(Box::from_raw(watcher));
     }
 }
@@ -549,9 +538,11 @@ pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
     value: WuiResolvedFont,
 ) {
     unsafe {
+        let watcher =
+            crate::expect_non_null(watcher, "waterui_call_watcher_resolved_font", "watcher");
         let rust_value = value.into_rust();
         let metadata = waterui::reactive::watcher::Metadata::default();
-        (*watcher).call(rust_value, metadata);
+        watcher.call(rust_value, metadata);
     }
 }
 
@@ -563,6 +554,7 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
     watcher: *mut WuiWatcher<ResolvedFont>,
 ) {
     unsafe {
+        crate::expect_non_null_mut(watcher, "waterui_drop_watcher_resolved_font", "watcher");
         drop(Box::from_raw(watcher));
     }
 }

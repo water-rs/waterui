@@ -50,8 +50,6 @@ impl<T: NativeView> Native<T> {
 }
 
 impl<T: 'static + NativeView> View for Native<T> {
-    #[allow(unused)]
-    #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
         self.fallback
             .unwrap_or_else(|| panic!("Native view ({})", type_name::<T>()))

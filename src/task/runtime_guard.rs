@@ -361,9 +361,27 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
 fn detect_max_refresh_rate_hz() -> f64 {
     match waterkit_screen::max_refresh_rate_hz() {
         Ok(hz) if hz.is_finite() && hz > 0.0 => hz as f64,
-        Ok(_) | Err(_) => {
+        Ok(hz) => {
+            tracing::debug!(
+                target: "waterui::runtime_guard",
+                invalid_refresh_hz = hz,
+                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
+                "Display refresh rate metadata was invalid; using fallback"
+            );
+            FALLBACK_REFRESH_RATE_HZ
+        }
+        Err(waterkit_screen::Error::Unsupported | waterkit_screen::Error::MonitorNotFound) => {
+            tracing::debug!(
+                target: "waterui::runtime_guard",
+                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
+                "Display refresh rate metadata is unavailable; using fallback"
+            );
+            FALLBACK_REFRESH_RATE_HZ
+        }
+        Err(err) => {
             tracing::info!(
                 target: "waterui::runtime_guard",
+                error = ?err,
                 fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
                 "Failed to read display refresh rate; using fallback"
             );

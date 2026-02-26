@@ -538,7 +538,10 @@ pub trait ViewExt: View + Sized {
         mut action: impl FnMut() + 'static,
     ) -> Metadata<GestureObserver> {
         self.gesture(TapGesture::new(), move || {
-            let _ = Haptic::impact(intensity);
+            spawn_local(async move {
+                let _ = Haptic::impact(intensity).await;
+            })
+            .detach();
             action();
         })
     }

@@ -350,19 +350,6 @@ where
     }
 }
 
-/// Represents a single transformed item, pairing data with a generator function to produce a view.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct ForEachItem<T, F, V>
-where
-    F: Fn(T) -> V,
-    V: View,
-{
-    data: T,
-
-    generator: Rc<F>,
-}
-
 #[derive(Clone)]
 struct CollectionLenSignal<C>(C);
 
@@ -379,7 +366,7 @@ where
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
         self.0.watch(.., move |ctx| {
-            let len = ctx.clone().into_value().len();
+            let len = ctx.value().len();
             watcher(ctx.map(move |_| len));
         })
     }

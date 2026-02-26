@@ -63,12 +63,12 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
     handler: *mut WuiLifeCycleHookHandler,
     env: *const crate::WuiEnv,
 ) {
-    if handler.is_null() || env.is_null() {
-        return;
-    }
+    let handler =
+        unsafe { crate::expect_non_null_mut(handler, "waterui_call_lifecycle_hook", "handler") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_lifecycle_hook", "env") };
     let _ = crate::ffi_boundary("waterui_call_lifecycle_hook", || unsafe {
         let hook = alloc::boxed::Box::from_raw(handler);
-        hook.0.handle(&*env);
+        hook.0.handle(env);
     });
 }
 
@@ -79,8 +79,8 @@ pub unsafe extern "C" fn waterui_call_lifecycle_hook(
 /// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleHookHandler) {
-    if handler.is_null() {
-        return;
+    unsafe {
+        crate::expect_non_null_mut(handler, "waterui_drop_lifecycle_hook", "handler");
     }
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));
@@ -145,12 +145,11 @@ pub unsafe extern "C" fn waterui_call_on_event(
     handler: *mut WuiOnEventHandler,
     env: *const crate::WuiEnv,
 ) {
-    if handler.is_null() || env.is_null() {
-        return;
-    }
-    let _ = crate::ffi_boundary("waterui_call_on_event", || unsafe {
-        let on_event = &mut *handler;
-        on_event.0.handle(&*env);
+    let handler =
+        unsafe { crate::expect_non_null_mut(handler, "waterui_call_on_event", "handler") };
+    let env = unsafe { crate::expect_non_null(env, "waterui_call_on_event", "env") };
+    let _ = crate::ffi_boundary("waterui_call_on_event", || {
+        handler.0.handle(env);
     });
 }
 
@@ -161,8 +160,8 @@ pub unsafe extern "C" fn waterui_call_on_event(
 /// * `handler` must be a valid pointer to a WuiOnEventHandler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_on_event(handler: *mut WuiOnEventHandler) {
-    if handler.is_null() {
-        return;
+    unsafe {
+        crate::expect_non_null_mut(handler, "waterui_drop_on_event", "handler");
     }
     unsafe {
         drop(alloc::boxed::Box::from_raw(handler));

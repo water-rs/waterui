@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs::{self, File},
     hash::{Hash, Hasher},
     io::{Read, Write},
@@ -11,7 +12,7 @@ use std::{
 
 use executor_core::spawn_local;
 use waterkit_audio::{AudioPlayer, MediaMetadata, MediaSession, PlaybackState};
-use waterkit_codec::{CodecType, Decoder};
+use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
 use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
@@ -887,6 +888,8 @@ struct VideoRenderer {
     duration: Duration,
     source_path: Option<PathBuf>,
     audio_player: Option<AudioPlayer>,
+    pending_audio_open: Option<PendingAudioOpen>,
+    audio_open_generation: u64,
     audio_failed: bool,
     last_audio_retry_at: Option<Instant>,
     last_applied_volume: Option<f32>,
@@ -909,6 +912,10 @@ struct VideoRenderer {
     source_asset: SourceAssetState,
     source_error_reported: bool,
     download_retry_at: Option<Instant>,
+}
+
+struct PendingAudioOpen {
+    receiver: Receiver<(u64, Result<AudioPlayer, String>)>,
 }
 
 impl core::fmt::Debug for VideoRenderer {
@@ -966,6 +973,8 @@ impl VideoRenderer {
             duration: Duration::ZERO,
             source_path: None,
             audio_player: None,
+            pending_audio_open: None,
+            audio_open_generation: 0,
             audio_failed: false,
             last_audio_retry_at: None,
             last_applied_volume: None,
@@ -1108,7 +1117,7 @@ impl VideoRenderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Video pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
-            immediate_size: 0,
+            push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1156,7 +1165,7 @@ impl VideoRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 
@@ -1167,7 +1176,7 @@ impl VideoRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -1309,10 +1318,13 @@ impl VideoRenderer {
         }
     }
 
-    fn replace_audio_player(&mut self, source_path: &Path) {
+    fn start_audio_player_open(&mut self, source_path: &Path) {
         if let Some(player) = self.audio_player.take() {
             player.stop();
         }
+        self.pending_audio_open = None;
+        self.audio_open_generation = self.audio_open_generation.wrapping_add(1);
+        let generation = self.audio_open_generation;
 
         let now = Instant::now();
         self.audio_failed = false;
@@ -1322,40 +1334,60 @@ impl VideoRenderer {
         self.last_applied_preserve_pitch = None;
 
         let remote_url = is_remote_url(&self.source).then(|| self.source.as_str().to_owned());
-        let open_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            if let Some(url) = remote_url.as_deref()
-                && let Ok(player) = futures::executor::block_on(AudioPlayer::open_url(url))
-            {
-                return Ok(player);
+        let source_path = source_path.to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let open_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(any(target_os = "ios", target_os = "macos"))]
+                if let Some(url) = remote_url.as_deref()
+                    && let Ok(player) = futures::executor::block_on(AudioPlayer::open_url(url))
+                {
+                    return Ok(player);
+                }
+
+                #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+                let _ = &remote_url;
+
+                AudioPlayer::open(&source_path).map_err(|error| error.to_string())
+            }))
+            .unwrap_or_else(|_| Err(String::from("Audio player initialization panicked")));
+            let _ = sender.send((generation, open_result));
+        });
+        self.pending_audio_open = Some(PendingAudioOpen { receiver });
+    }
+
+    fn poll_pending_audio_open(&mut self) {
+        let Some(pending) = self.pending_audio_open.as_ref() else {
+            return;
+        };
+        let open_result = match pending.receiver.try_recv() {
+            Ok((generation, result)) => {
+                self.pending_audio_open = None;
+                if generation != self.audio_open_generation {
+                    return;
+                }
+                result
             }
-
-            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-            let _ = &remote_url;
-
-            AudioPlayer::open(source_path).map_err(|error| error.to_string())
-        }))
-        .unwrap_or_else(|_| Err(String::from("Audio player initialization panicked")));
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.pending_audio_open = None;
+                self.on_audio_player_open_failed(String::from(
+                    "Audio player initialization channel disconnected",
+                ));
+                return;
+            }
+        };
 
         match open_result {
             Ok(player) => self.on_audio_player_ready(player),
-            Err(error) => {
-                tracing::warn!("[VideoFallback] audio player open failed: {error}");
-                self.audio_player = None;
-                self.audio_failed = true;
-                self.last_applied_volume = None;
-                self.last_applied_playback_rate = None;
-                self.last_applied_preserve_pitch = None;
-                self.emit_event(Event::Error {
-                    message: format!("Audio playback unavailable: {error}"),
-                });
-            }
+            Err(error) => self.on_audio_player_open_failed(error),
         }
     }
 
     fn on_audio_player_ready(&mut self, player: AudioPlayer) {
         tracing::info!("[VideoFallback] audio player ready");
         self.audio_player = Some(player);
+        self.pending_audio_open = None;
         if let Some(audio) = self.audio_player.as_ref() {
             if let Some(source) = audio.source_format() {
                 tracing::info!(
@@ -1383,6 +1415,18 @@ impl VideoRenderer {
         self.seek_audio_to(target_position, should_play);
     }
 
+    fn on_audio_player_open_failed(&mut self, error: String) {
+        tracing::warn!("[VideoFallback] audio player open failed: {error}");
+        self.audio_player = None;
+        self.audio_failed = true;
+        self.last_applied_volume = None;
+        self.last_applied_playback_rate = None;
+        self.last_applied_preserve_pitch = None;
+        self.emit_event(Event::Error {
+            message: format!("Audio playback unavailable: {error}"),
+        });
+    }
+
     fn ensure_audio_player(&mut self, source_path: &Path) {
         let source_changed = self
             .source_path
@@ -1391,12 +1435,12 @@ impl VideoRenderer {
 
         if source_changed {
             self.audio_failed = false;
-            self.replace_audio_player(source_path);
+            self.start_audio_player_open(source_path);
             return;
         }
 
-        if self.audio_player.is_none() && !self.audio_failed {
-            self.replace_audio_player(source_path);
+        if self.audio_player.is_none() && self.pending_audio_open.is_none() && !self.audio_failed {
+            self.start_audio_player_open(source_path);
         } else {
             self.sync_audio_volume();
             self.sync_audio_playback_params();
@@ -1405,7 +1449,7 @@ impl VideoRenderer {
     }
 
     fn retry_audio_player_if_needed(&mut self) {
-        if !self.audio_failed || self.audio_player.is_some() {
+        if !self.audio_failed || self.audio_player.is_some() || self.pending_audio_open.is_some() {
             return;
         }
 
@@ -1431,7 +1475,7 @@ impl VideoRenderer {
         }
 
         self.audio_failed = false;
-        self.replace_audio_player(&source_path);
+        self.start_audio_player_open(&source_path);
     }
 
     fn start_decode_worker(&mut self, source_path: PathBuf, start_progress: f64) {
@@ -2115,6 +2159,7 @@ impl VideoRenderer {
         let should_play = self.should_play();
         self.update_playing_state(should_play);
         self.sync_playback_rate(should_play);
+        self.poll_pending_audio_open();
         self.retry_audio_player_if_needed();
         self.sync_audio_volume();
         self.sync_audio_playback_params();
@@ -2198,16 +2243,15 @@ impl VideoRenderer {
                 label: Some("Video render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(pipeline);
@@ -2296,9 +2340,17 @@ struct DecodedVideoFrame {
     height: u32,
 }
 
+#[derive(Debug)]
+struct PendingDecodedFrame {
+    frame: DecodedFrame,
+    pts: Duration,
+    progress: f64,
+}
+
 struct DecodeState {
     reader: VideoReader,
     decoder: Decoder,
+    pending_decoded: VecDeque<PendingDecodedFrame>,
     width: u32,
     height: u32,
     timescale: u32,
@@ -2332,6 +2384,7 @@ impl DecodeState {
             total_samples: sample_count,
             reader,
             decoder,
+            pending_decoded: VecDeque::new(),
             width,
             height,
             duration,
@@ -2353,6 +2406,7 @@ impl DecodeState {
         let keyframe_index = self.reader.nearest_keyframe_at_or_before(target_index);
 
         self.reader.seek_to_sample(keyframe_index);
+        self.pending_decoded.clear();
 
         while self.reader.current_index() < target_index {
             let Some((sample_data, _, _)) = self.reader.read_sample_ref() else {
@@ -2374,6 +2428,10 @@ impl DecodeState {
     }
 
     fn next_frame(&mut self) -> Result<Option<DecodedVideoFrame>, String> {
+        if let Some(frame) = self.pending_decoded.pop_front() {
+            return Ok(Some(self.materialize_frame(frame)));
+        }
+
         loop {
             let sample_index = self.reader.current_index() as u32;
             let Some((sample_data, pts, _)) = self.reader.read_sample_ref() else {
@@ -2388,26 +2446,43 @@ impl DecodeState {
             };
 
             let mut stream = self.decoder.decode(sample_data);
-            if let Some(result) = stream.next() {
+            while let Some(result) = stream.next() {
                 let decoded = result.map_err(|error| error.to_string())?;
-                let mut nv12 = vec![0_u8; (self.width * self.height * 3 / 2) as usize];
-                decoded.copy_to_buffer(&mut nv12);
+                let decoded_pts = if decoded.timestamp_ns() > 0 {
+                    Duration::from_nanos(decoded.timestamp_ns())
+                } else {
+                    pts
+                };
+                self.pending_decoded.push_back(PendingDecodedFrame {
+                    frame: decoded,
+                    pts: decoded_pts,
+                    progress,
+                });
+            }
+
+            if let Some(frame) = self.pending_decoded.pop_front() {
                 if sample_index % 240 == 0 {
                     tracing::info!(
                         "[VideoFallback] decoded sample_index={} pts={:.3}s progress={:.3}",
                         sample_index,
-                        pts.as_secs_f64(),
+                        frame.pts.as_secs_f64(),
                         progress
                     );
                 }
-                return Ok(Some(DecodedVideoFrame {
-                    nv12,
-                    pts,
-                    progress,
-                    width: self.width,
-                    height: self.height,
-                }));
+                return Ok(Some(self.materialize_frame(frame)));
             }
+        }
+    }
+
+    fn materialize_frame(&self, pending: PendingDecodedFrame) -> DecodedVideoFrame {
+        let mut nv12 = vec![0_u8; (self.width * self.height * 3 / 2) as usize];
+        pending.frame.copy_to_buffer(&mut nv12);
+        DecodedVideoFrame {
+            nv12,
+            pts: pending.pts,
+            progress: pending.progress,
+            width: self.width,
+            height: self.height,
         }
     }
 }
@@ -2497,7 +2572,7 @@ fn download_video_to_path(
                 if should_probe {
                     file.flush().map_err(|error| error.to_string())?;
                     last_probe = bytes_written;
-                    if VideoReader::open(destination).is_ok() {
+                    if VideoReader::probe(destination).is_ok() {
                         ready_sent = true;
                         let _ = updates.send(DownloadUpdate::Ready);
                     }
@@ -2506,7 +2581,7 @@ fn download_video_to_path(
         }
 
         file.flush().map_err(|error| error.to_string())?;
-        if !ready_sent && VideoReader::open(destination).is_ok() {
+        if !ready_sent && VideoReader::probe(destination).is_ok() {
             let _ = updates.send(DownloadUpdate::Ready);
         }
         let _ = updates.send(DownloadUpdate::Finished);

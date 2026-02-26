@@ -26,13 +26,16 @@ pub use native::{Native, NativeView};
 #[derive(Debug, Clone)]
 pub struct With<V, T> {
     view: V,
-    #[allow(unused)]
     value: T,
 }
 
 impl<V: View, T: 'static> View for With<V, T> {
     fn body(self, _env: &crate::Environment) -> impl View {
-        self.view
+        let With {
+            view,
+            value: _value,
+        } = self;
+        view
     }
 }
 

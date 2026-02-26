@@ -175,7 +175,7 @@ impl CandlestickRenderer {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Candlestick Chart Pipeline Layout"),
                 bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             });
 
         ctx.device
@@ -204,7 +204,7 @@ impl CandlestickRenderer {
                 },
                 depth_stencil: None,
                 multisample: multisample_state(ctx.msaa_samples),
-                multiview_mask: None,
+                multiview: None,
                 cache: ctx.pipeline_cache,
             })
     }
@@ -337,12 +337,12 @@ impl GpuRenderer for CandlestickRenderer {
                     label: Some("Candlestick Chart Clear Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &frame.view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
-                        depth_slice: None,
                     })],
                     ..Default::default()
                 });
@@ -436,12 +436,12 @@ impl GpuRenderer for CandlestickRenderer {
                 label: Some("Candlestick Chart Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color_view,
+                    depth_slice: None,
                     resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 ..Default::default()
             });

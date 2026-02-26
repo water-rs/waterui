@@ -115,7 +115,6 @@ pub trait FormBuilder: Sized {
 // TextField has prompt, so handle it specially
 impl FormBuilder for Str {
     type View = waterui_controls::TextField;
-    #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
         let mut field = waterui_controls::TextField::new(binding).label(label);
         if !placeholder.is_empty() {
@@ -147,8 +146,7 @@ impl FormBuilder for alloc::string::String {
 // Other components don't have prompt
 impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
-    #[allow(unused_variables)]
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
         waterui_controls::Stepper::new(binding)
             .label(label)
             .range(Self::MIN..=Self::MAX)
@@ -157,32 +155,28 @@ impl FormBuilder for i32 {
 
 impl FormBuilder for bool {
     type View = waterui_controls::Toggle;
-    #[allow(unused_variables)]
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
         waterui_controls::Toggle::new(binding).label(label)
     }
 }
 
 impl FormBuilder for Color {
     type View = picker::ColorPicker;
-    #[allow(unused_variables)]
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
         picker::ColorPicker::new(binding).label(label)
     }
 }
 
 impl FormBuilder for f64 {
     type View = waterui_controls::Slider;
-    #[allow(unused_variables)]
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(0.0..=1.0, binding).label(label)
     }
 }
 
 impl FormBuilder for f32 {
     type View = waterui_controls::Slider;
-    #[allow(unused_variables)]
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(
             0.0..=1.0,
             #[allow(clippy::cast_possible_truncation)]
