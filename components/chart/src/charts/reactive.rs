@@ -11,7 +11,7 @@ use core::future::Future;
 use nami::Signal;
 use std::sync::Mutex;
 use std::time::Instant;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
 use crate::animation::{AnimationConfig, ChartAnimator};
 use crate::renderer::ChartRenderer;
@@ -101,12 +101,12 @@ where
     }
 }
 
-impl<R, S> GpuRenderer for SignalRenderer<R, S>
+impl<R, S> GpuView for SignalRenderer<R, S>
 where
     R: ChartRenderer,
     S: Signal<Output = R::Data> + Clone + 'static,
 {
-    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+    fn setup(&mut self, ctx: &GpuContext, env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
         self.clock_origin = Instant::now();
 
         // Seed initial data before setup so buffers are sized correctly.
@@ -130,10 +130,10 @@ where
 
         self.setup_complete = true;
 
-        self.inner.setup(ctx)
+        self.inner.setup(ctx, env)
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Check for pending data updates
         let needs_update = self.pending_update.lock().ok().map_or(false, |mut guard| {
             let pending = *guard;
@@ -162,19 +162,12 @@ where
 
         // Render the chart
         self.inner.render(frame);
-    }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        self.inner.resize(width, height);
-    }
-
-    fn needs_redraw(&self) -> bool {
+        // Request continuous redraw while animation is active or updates are pending
         let pending = self.pending_update.lock().ok().is_some_and(|guard| *guard);
-        pending || self.animator.is_animating() || ChartRenderer::needs_redraw(&self.inner)
-    }
-
-    fn requires_redraw_poll(&self) -> bool {
-        true
+        if pending || self.animator.is_animating() || ChartRenderer::needs_redraw(&self.inner) {
+            frame.request_redraw();
+        }
     }
 }
 

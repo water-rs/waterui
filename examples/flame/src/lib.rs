@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, bytemuck, wgpu};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -301,8 +301,8 @@ impl FlameRenderer {
     }
 }
 
-impl GpuRenderer for FlameRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for FlameRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 
@@ -591,7 +591,7 @@ impl GpuRenderer for FlameRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         if self.final_format != Some(frame.format) {
             // Surface format changed (unexpected) — force re-setup on next frame.
             self.flame_pipeline = None;
@@ -814,10 +814,7 @@ impl GpuRenderer for FlameRenderer {
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
+        frame.request_redraw();
     }
 }
 

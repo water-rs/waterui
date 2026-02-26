@@ -1,10 +1,10 @@
 //! Chart renderer trait and base utilities.
 //!
-//! The `ChartRenderer` trait extends `GpuRenderer` with chart-specific functionality
+//! The `ChartRenderer` trait extends `GpuView` with chart-specific functionality
 //! for data updates, animation, and hit-testing.
 
 use waterui_core::layout::Point;
-use waterui_graphics::{GpuRenderer, wgpu};
+use waterui_graphics::{GpuView, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::DataBounds;
@@ -40,7 +40,7 @@ pub use scatter::ScatterChartRenderer;
 
 /// Extended GPU renderer for chart components.
 ///
-/// This trait extends `GpuRenderer` with chart-specific methods for:
+/// This trait extends `GpuView` with chart-specific methods for:
 /// - Updating data with GPU buffer synchronization
 /// - Animation state management
 /// - Hit-testing for interactivity
@@ -91,7 +91,7 @@ pub use scatter::ScatterChartRenderer;
 ///     }
 /// }
 /// ```
-pub trait ChartRenderer: GpuRenderer {
+pub trait ChartRenderer: GpuView {
     /// The input data type for this chart.
     type Data;
 

@@ -27,7 +27,7 @@ use core::time::Duration;
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
-use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface};
 
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
 const MORPH_SHADER_SOURCE: &str = include_str!("shaders/morph.wgsl");
@@ -918,8 +918,8 @@ impl MorphShapeRenderer {
     }
 }
 
-impl GpuRenderer for MorphShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for MorphShapeRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
             ctx.device,
             MORPH_SHADER_LABEL,
@@ -1012,7 +1012,7 @@ impl GpuRenderer for MorphShapeRenderer {
         async {}
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         if let Some(target_fmt) = self.pipeline_format {
             if target_fmt != frame.format {
                 return;
@@ -1086,22 +1086,14 @@ impl GpuRenderer for MorphShapeRenderer {
         }
 
         frame.queue.submit(core::iter::once(encoder.finish()));
-    }
 
-    fn needs_redraw(&self) -> bool {
-        if self.progress.is_some() {
-            // Explicit progress is driven by external reactive updates. Keep redraws
-            // active so we continuously sample the signal while it changes.
-            return true;
+        // Request continuous redraw while animation is active
+        let animation_active = self.progress.is_some()
+            || self.animation.repeat
+            || self.start_time.elapsed() < self.animation.duration;
+        if animation_active {
+            frame.request_redraw();
         }
-        if self.animation.repeat {
-            return true;
-        }
-        self.start_time.elapsed() < self.animation.duration
-    }
-
-    fn requires_redraw_poll(&self) -> bool {
-        self.progress.is_some()
     }
 }
 
@@ -1300,8 +1292,8 @@ impl LyonShapeRenderer {
     }
 }
 
-impl GpuRenderer for LyonShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for LyonShapeRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         tracing::debug!("[Shape] setup called, format: {:?}", ctx.surface_format);
 
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
@@ -1464,12 +1456,7 @@ impl GpuRenderer for LyonShapeRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn resize(&mut self, _width: u32, _height: u32) {
-        // Mark for re-tessellation
-        self.cached_size = (0, 0);
-    }
-
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         let Some(pipeline) = &self.pipeline else {
             tracing::warn!("[Shape] no pipeline");
             return;
@@ -1638,8 +1625,8 @@ struct SdfUniforms {
     radii: [f32; 4],      // 16 bytes, offset 32
 } // Total: 48 bytes
 
-impl GpuRenderer for SdfShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for SdfShapeRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         tracing::info!(
             "[SDF Shape] setup called, format: {:?}, kind: {:?}",
             ctx.surface_format,
@@ -1779,7 +1766,7 @@ impl GpuRenderer for SdfShapeRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         if let Some(target_fmt) = self.pipeline_format {
             if target_fmt != frame.format {
                 tracing::warn!(
