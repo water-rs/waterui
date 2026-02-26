@@ -43,11 +43,11 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuView, GpuSurface};
 
 /// A simplified GPU surface that renders a custom fragment shader.
 ///
-/// Unlike `GpuSurface` which requires implementing `GpuRenderer`,
+/// Unlike `GpuSurface` which requires implementing `GpuView`,
 /// `ShaderSurface` only needs a WGSL fragment shader string.
 /// All pipeline setup and rendering is handled automatically.
 pub struct ShaderSurface {
@@ -244,8 +244,8 @@ fn shader_source_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
-impl GpuRenderer for ShaderRenderer {
-    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+impl GpuView for ShaderRenderer {
+    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ShaderSurface] setup() called with format: {:?}",
             ctx.surface_format
@@ -392,7 +392,7 @@ impl GpuRenderer for ShaderRenderer {
         async {} // Sync renderer - immediately ready
     }
 
-    fn render(&mut self, frame: &GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame) {
         // Check if pipeline format matches current frame format
         if let Some(pipeline_fmt) = self.pipeline_format
             && pipeline_fmt != frame.format
@@ -468,9 +468,6 @@ impl GpuRenderer for ShaderRenderer {
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
+        frame.request_redraw();
     }
 }
