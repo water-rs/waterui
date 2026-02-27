@@ -4289,6 +4289,10 @@ struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
                                                                 struct WuiWatcherMetadata*),
                                                    void (*drop)(void*));
 
+struct WuiResolvedColor waterui_force_as_resolved_color(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_resolved_color_id(void);
+
 /**
  * Creates a new linear sRGBA color with optional HDR headroom.
  *

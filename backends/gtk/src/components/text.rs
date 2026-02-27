@@ -6,14 +6,13 @@ use nami::Signal;
 use std::fmt::Write;
 use waterui_core::resolve::Resolvable;
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::ResolvedColor;
 use waterui_text::TextConfig;
 use waterui_text::font::{FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::{resolved_color_to_hex, store_watcher_guard};
 
 impl GtkComponent for Native<TextConfig> {
     /// Renders a `WaterUI` Text component as a GTK4 Label.
@@ -138,14 +137,6 @@ fn font_weight_to_pango_value(weight: FontWeight) -> u16 {
         FontWeight::UltraBold => 800,
         FontWeight::Black => 900,
     }
-}
-
-fn resolved_color_to_hex(color: ResolvedColor) -> String {
-    let srgb = color.to_srgb_with_headroom();
-    let red = (srgb.red.clamp(0.0, 1.0) * 255.0) as u8;
-    let green = (srgb.green.clamp(0.0, 1.0) * 255.0) as u8;
-    let blue = (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8;
-    format!("#{red:02X}{green:02X}{blue:02X}")
 }
 
 fn escape_markup_text(text: &str) -> String {

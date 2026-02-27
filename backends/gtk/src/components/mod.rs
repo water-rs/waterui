@@ -1,6 +1,7 @@
 //! GTK widget implementations for `WaterUI` components.
 
 pub mod button;
+pub mod color;
 pub mod container;
 pub mod divider;
 pub mod dynamic;
