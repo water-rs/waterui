@@ -9,7 +9,7 @@ use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
 use crate::{error, header, success, warn};
-use waterui_cli::preview::protocol::{AppError, DylibId, function_path_symbol_candidates};
+use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{PreviewPlatform, PreviewSession, launch_preview_session};
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
@@ -79,8 +79,8 @@ pub async fn run(args: Args) -> Result<()> {
         .and_then(|n| n.as_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
 
-    let symbols = function_path_symbol_candidates(crate_name, &args.function_path);
-    header!("Preview: {}", symbols.join(" | "));
+    let symbol = function_path_to_symbol(crate_name, &args.function_path);
+    header!("Preview: {symbol}");
 
     // Detect sccache for compilation caching
     let sccache = Sccache;
@@ -112,13 +112,10 @@ pub async fn run(args: Args) -> Result<()> {
         }
 
         let spinner = shell::spinner("Rendering view...");
-        let (_symbol, png_data) = render_with_symbol_fallback(
+        let png_data = render_with_symbol(
             &mut session,
             &args.function_path,
-            &project_path,
-            platform,
-            &sccache_path,
-            &symbols,
+            &symbol,
             dylib.id,
             &dylib.path,
             width,
@@ -156,61 +153,26 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn render_with_symbol_fallback(
+async fn render_with_symbol(
     session: &mut PreviewSession,
     function_path: &str,
-    project_path: &std::path::Path,
-    platform: PreviewPlatform,
-    sccache_path: &Option<PathBuf>,
-    symbols: &[String],
+    symbol: &str,
     dylib_id: DylibId,
     dylib_path: &std::path::Path,
     width: f32,
     height: f32,
-) -> Result<(String, Vec<u8>)> {
-    let mut last_err: Option<AppError> = None;
-
-    for symbol in symbols {
-        match session
-            .client
-            .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
-            .await
-        {
-            Ok(data) => return Ok((symbol.clone(), data)),
-            Err(AppError::SymbolNotFound(_)) => {
-                last_err = Some(AppError::SymbolNotFound(symbol.clone()));
-            }
-            Err(err) => {
-                if should_retry_render_error(&err) {
-                    warn!("Preview app connection dropped, relaunching and retrying once...");
-                    let _ = session.shutdown().await;
-                    *session = launch_preview_session(project_path, platform, sccache_path.clone())
-                        .await?;
-                    match session
-                        .client
-                        .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
-                        .await
-                    {
-                        Ok(data) => return Ok((symbol.clone(), data)),
-                        Err(AppError::SymbolNotFound(_)) => {
-                            last_err = Some(AppError::SymbolNotFound(symbol.clone()));
-                        }
-                        Err(retry_err) => {
-                            bail!("Preview app error: {retry_err}");
-                        }
-                    }
-                } else {
-                    bail!("Preview app error: {err}");
-                }
-            }
+) -> Result<Vec<u8>> {
+    match session
+        .client
+        .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
+        .await
+    {
+        Ok(data) => Ok(data),
+        Err(AppError::SymbolNotFound(_)) => {
+            bail!("{}", missing_preview_symbol_message(function_path, symbol))
         }
+        Err(err) => bail!("Preview app error: {err}"),
     }
-
-    if matches!(last_err, Some(AppError::SymbolNotFound(_))) {
-        bail!("{}", missing_preview_symbol_message(function_path, symbols));
-    }
-
-    bail!("Preview app error: no symbol candidates resolved")
 }
 
 /// Parse frame size from "WIDTHxHEIGHT" string.
@@ -237,28 +199,9 @@ fn parse_frame(s: &str) -> Result<(f32, f32)> {
     Ok((width, height))
 }
 
-fn should_retry_render_error(err: &AppError) -> bool {
-    match err {
-        AppError::RenderFailed(msg) => {
-            msg.contains("Failed to receive response")
-                || msg.contains("unexpected end of file")
-                || msg.contains("Broken pipe")
-                || msg.contains("request timed out")
-                || msg.contains("transport error")
-        }
-        _ => false,
-    }
-}
-
-fn missing_preview_symbol_message(function_path: &str, symbols: &[String]) -> String {
-    let expected = symbols
-        .iter()
-        .map(|s| format!("`{s}`"))
-        .collect::<Vec<_>>()
-        .join(" or ");
-
+fn missing_preview_symbol_message(function_path: &str, symbol: &str) -> String {
     format!(
-        "Preview component not found: `{function_path}`\nExpected export symbol: {expected}\n\
+        "Preview component not found: `{function_path}`\nExpected export symbol: `{symbol}`\n\
 The preview function is likely missing `#[preview]` (or the name is wrong).\n\
 Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
         function_path.rsplit("::").next().unwrap_or(function_path)
@@ -270,28 +213,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_retryable_render_errors() {
-        assert!(should_retry_render_error(&AppError::RenderFailed(
-            "transport error: Failed to receive response".to_string()
-        )));
-        assert!(should_retry_render_error(&AppError::RenderFailed(
-            "request timed out".to_string()
-        )));
-        assert!(!should_retry_render_error(&AppError::SymbolNotFound(
-            "foo".to_string()
-        )));
-    }
-
-    #[test]
     fn formats_missing_preview_symbol_message() {
-        let symbols = vec![
-            "waterui_preview_app_dashboard_admin_card_preview".to_string(),
-            "waterui_preview_app_card_preview".to_string(),
-        ];
-        let message = missing_preview_symbol_message("dashboard::admin::card_preview", &symbols);
+        let symbol = "waterui_preview_app_dashboard_admin_card_preview";
+        let message = missing_preview_symbol_message("dashboard::admin::card_preview", symbol);
         assert!(message.contains("dashboard::admin::card_preview"));
         assert!(message.contains("waterui_preview_app_dashboard_admin_card_preview"));
-        assert!(message.contains("waterui_preview_app_card_preview"));
         assert!(message.contains("#[preview]"));
         assert!(message.contains("fn card_preview()"));
     }
