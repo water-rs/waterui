@@ -24,9 +24,6 @@ waterui-controls.workspace = true
 waterui-backend-core.workspace = true
 vello.workspace = true
 parley.workspace = true
-fontique.workspace = true
-peniko.workspace = true
-kurbo.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 winit = { version = "0.30", optional = true }
