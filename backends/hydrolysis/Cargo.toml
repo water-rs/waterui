@@ -25,5 +25,6 @@ parley.workspace = true
 fontique.workspace = true
 peniko.workspace = true
 kurbo.workspace = true
+wgpu.workspace = true
 
 [features]
