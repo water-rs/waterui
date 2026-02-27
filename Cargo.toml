@@ -125,10 +125,7 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27"
 encase = { version = "0.10", features = ["glam"] }
 vello = "0.7"
-parley = "0.3"
-fontique = "0.3"
-kurbo = "0.11"
-peniko = "0.3"
+parley = "0.7"
 vello_svg = "0.9.0"
 lyon = "1.0"
 wgpu-hal = { version = "27", features = ["gles", "metal"] }
