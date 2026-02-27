@@ -293,7 +293,7 @@ async fn run_capture_by_pid(
     if all_windows {
         // Capture all windows
         let dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&dir)?;
+        smol::fs::create_dir_all(&dir).await?;
 
         for (i, window) in normal_windows.iter().enumerate() {
             let filename = if window.name.is_empty() {

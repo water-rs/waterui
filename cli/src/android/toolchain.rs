@@ -272,7 +272,12 @@ impl Toolchain for Kotlin {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(&kotlinc_path) {
+            if let Ok(metadata) = smol::unblock({
+                let kotlinc_path = kotlinc_path.clone();
+                move || std::fs::metadata(&kotlinc_path)
+            })
+            .await
+            {
                 let permissions = metadata.permissions();
                 if permissions.mode() & 0o111 == 0 {
                     return Err(ToolchainError::unfixable(
