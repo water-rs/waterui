@@ -1,4 +1,6 @@
 use core::f64::consts::TAU;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use nami::Signal;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
@@ -17,6 +19,8 @@ use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
+use waterui_controls::button::ButtonConfig;
+use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
@@ -219,6 +223,8 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<FixedContainer>>(Self::render_fixed_container);
         dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
         dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
+        dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
+        dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
         dispatcher.register::<Native<ResolvedShape>>(Self::render_resolved_shape);
@@ -368,6 +374,41 @@ impl HydrolysisRenderer {
             None,
             &rect,
         );
+    }
+
+    fn render_button(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        button: Native<ButtonConfig>,
+        env: &Environment,
+    ) {
+        let button = button.into_inner();
+        Self::dispatch_any(ctx, env, button.label);
+    }
+
+    fn render_dynamic(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        dynamic: Native<Dynamic>,
+        env: &Environment,
+    ) {
+        let current = Rc::new(RefCell::new(None::<AnyView>));
+        dynamic.into_inner().connect({
+            let current = Rc::clone(&current);
+            move |update| {
+                let next = update.into_value();
+                let mut slot = current.borrow_mut();
+                if slot.is_some() {
+                    panic!("hydrolysis Dynamic update after initial dispatch is not implemented");
+                }
+                *slot = Some(next);
+            }
+        });
+        let content = current
+            .borrow_mut()
+            .take()
+            .expect("hydrolysis Dynamic must provide an initial view before dispatch");
+        Self::dispatch_any(ctx, env, content);
     }
 
     fn render_resolved_color(
