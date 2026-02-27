@@ -10,9 +10,7 @@
 
 use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_void};
-use std::future::Future;
 use std::num::NonZeroU32;
-use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +21,8 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
 use waterui_graphics::gpu_surface::{
-    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, preferred_msaa_samples,
+    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
+    preferred_msaa_samples,
 };
 
 use crate::component::GtkComponent;
@@ -65,30 +64,28 @@ struct GpuState {
     wgpu_adapter: Option<wgpu::Adapter>,
     wgpu_device: Option<wgpu::Device>,
     wgpu_queue: Option<wgpu::Queue>,
-    pending_device_request: Option<DeviceRequestFuture>,
+    device_init_in_progress: bool,
 
     surface_format: Option<wgpu::TextureFormat>,
     msaa_samples: u32,
 
     last_size: Option<PixelSize>,
     setup_done: bool,
-    pending_setup: Option<SetupFuture>,
+    setup_in_progress: bool,
 
     pointer: PointerState,
     gesture: GestureState,
     pan_active: bool,
     last_pinch_update: Option<Instant>,
+    redraw_handle: RedrawHandle,
+    env: Environment,
 
     // Used only for querying framebuffer properties.
     glow: Option<Rc<glow::Context>>,
 }
 
-type DeviceRequestFuture =
-    Pin<Box<dyn Future<Output = Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>>>>;
-type SetupFuture = Pin<Box<dyn Future<Output = GpuSurface>>>;
-
 impl GpuState {
-    fn new(gpu_surface: GpuSurface) -> Self {
+    fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
         let msaa_max_samples = gpu_surface.get_msaa_max_samples().get();
         Self {
             gpu_surface: Some(gpu_surface),
@@ -97,16 +94,18 @@ impl GpuState {
             wgpu_adapter: None,
             wgpu_device: None,
             wgpu_queue: None,
-            pending_device_request: None,
+            device_init_in_progress: false,
             surface_format: None,
             msaa_samples: 1,
             last_size: None,
             setup_done: false,
-            pending_setup: None,
+            setup_in_progress: false,
             pointer: PointerState::default(),
             gesture: GestureState::default(),
             pan_active: false,
             last_pinch_update: None,
+            redraw_handle: RedrawHandle::new(),
+            env,
             glow: None,
         }
     }
@@ -365,7 +364,6 @@ fn make_gl_loader(gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void
     }
 }
 
-#[derive(Debug)]
 fn init_wgpu_if_needed(
     area: &gtk4::GLArea,
     state: &Rc<RefCell<GpuState>>,
@@ -505,7 +503,7 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         }
     }
 
-    let (gpu_surface, device, queue, adapter, format, msaa_samples) = {
+    let (gpu_surface, device, queue, adapter, format, msaa_samples, redraw_handle, env) = {
         let mut st = state.borrow_mut();
         if st.setup_done {
             return true;
@@ -541,7 +539,16 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             panic!("GpuSurface(GL): setup requested but surface state is unavailable")
         });
         st.setup_in_progress = true;
-        (gpu_surface, device, queue, adapter, format, st.msaa_samples)
+        (
+            gpu_surface,
+            device,
+            queue,
+            adapter,
+            format,
+            st.msaa_samples,
+            st.redraw_handle.clone(),
+            st.env.clone(),
+        )
     };
 
     if gpu_debug_enabled() {
@@ -556,24 +563,28 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let queue = queue.clone();
     let adapter = adapter.clone();
     spawn(async move {
+        let mut gpu_surface = gpu_surface;
+        let mut env = env;
         let ctx = GpuContext {
-            adapter: adapter.as_ref(),
+            adapter: Some(adapter.as_ref()),
             device: &device,
             queue: &queue,
             surface_format: format,
             msaa_samples,
             pipeline_cache: None,
+            redraw_handle: redraw_handle.clone(),
         };
-        gpu_surface.setup(&ctx).await;
-        let _ = sender.send(gpu_surface);
+        gpu_surface.setup(&ctx, &mut env).await;
+        let _ = sender.send((gpu_surface, env));
     });
-    receiver.attach(None, move |gpu_surface| {
+    receiver.attach(None, move |(gpu_surface, env)| {
         let mut st = state_clone.borrow_mut();
         assert!(
             st.gpu_surface.is_none(),
             "GpuSurface(GL): setup completed but state still had a live surface"
         );
         st.gpu_surface = Some(gpu_surface);
+        st.env = env;
         st.setup_done = true;
         st.setup_in_progress = false;
         if gpu_debug_enabled() {
@@ -586,7 +597,7 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 }
 
 fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
-    let (device, queue, format, msaa_samples, mut gpu_surface, pointer, gesture, glow) = {
+    let (device, queue, format, msaa_samples, mut gpu_surface, pointer, gesture, glow, redraw_handle) = {
         let mut st = state.borrow_mut();
         let Some(device) = st.wgpu_device.clone() else {
             if gpu_debug_enabled() {
@@ -629,6 +640,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             st.pointer,
             st.gesture,
             glow,
+            st.redraw_handle.clone(),
         )
     };
 
@@ -684,21 +696,21 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let frame = GpuFrame {
-        device: &device,
-        queue: &queue,
-        texture: &texture,
+    let mut frame = GpuFrame::new(
+        &device,
+        &queue,
+        &texture,
         view,
         format,
-        width: size.width,
-        height: size.height,
+        size.width,
+        size.height,
         pointer,
         gesture,
-    };
+    );
 
     // Let the WaterUI renderer submit work.
-    gpu_surface.render(&frame);
-    let needs_redraw = gpu_surface.needs_redraw();
+    gpu_surface.render(&mut frame);
+    let needs_redraw = frame.was_redraw_requested() || redraw_handle.take_dirty();
 
     // Keep the surface alive for the next frame.
     let mut st = state.borrow_mut();
@@ -856,7 +868,7 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
     area.add_controller(zoom);
 }
 
-fn render_gpu_surface(gpu_surface: GpuSurface) -> gtk4::Widget {
+fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
     if gpu_debug_enabled() {
         eprintln!("[gtk-gpu] create GLArea widget");
     }
@@ -869,7 +881,7 @@ fn render_gpu_surface(gpu_surface: GpuSurface) -> gtk4::Widget {
     area.set_has_depth_buffer(false);
     area.set_has_stencil_buffer(false);
 
-    let state = Rc::new(RefCell::new(GpuState::new(gpu_surface)));
+    let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env)));
     install_input_controllers(&area, &state);
 
     area.connect_realize({
@@ -907,12 +919,13 @@ fn render_gpu_surface(gpu_surface: GpuSurface) -> gtk4::Widget {
             let mut st = state.borrow_mut();
             st.wgpu_queue = None;
             st.wgpu_device = None;
-            st.pending_device_request = None;
+            st.device_init_in_progress = false;
             st.wgpu_adapter = None;
             st.wgpu_instance = None;
             st.glow = None;
             st.setup_done = false;
-            st.pending_setup = None;
+            st.setup_in_progress = false;
+            st.redraw_handle = RedrawHandle::new();
             st.last_size = None;
         }
     });
@@ -933,7 +946,7 @@ fn render_gpu_surface(gpu_surface: GpuSurface) -> gtk4::Widget {
             if gpu_debug_enabled() {
                 eprintln!("[gtk-gpu] GLArea render callback: setup_if_needed");
             }
-            if !setup_if_needed(&state) {
+            if !setup_if_needed(area, &state) {
                 area.queue_render();
                 return gtk4::glib::Propagation::Stop;
             }
@@ -953,7 +966,7 @@ fn render_gpu_surface(gpu_surface: GpuSurface) -> gtk4::Widget {
 }
 
 impl GtkComponent for Native<GpuSurface> {
-    fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
-        render_gpu_surface(self.into_inner())
+    fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
+        render_gpu_surface(self.into_inner(), env.clone())
     }
 }
