@@ -6,9 +6,8 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::future::Future;
+use core::future::{Future, ready};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use waterui_core::AnyView;
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
@@ -70,89 +69,67 @@ impl CustomViewRenderer for FFIViewRenderer {
             height: size.height,
         };
 
-        Box::pin(async move {
-            // Use a oneshot channel pattern for async callback
-            let (tx, rx) = async_channel::bounded::<RenderResult>(1);
+        // Use a oneshot channel pattern for callback handoff.
+        let (tx, rx) = async_channel::bounded::<RenderResult>(1);
 
-            struct CallbackData {
-                sender: async_channel::Sender<RenderResult>,
-                finished: AtomicBool,
-            }
+        struct CallbackData {
+            sender: async_channel::Sender<RenderResult>,
+        }
 
-            // Create callback data that owns the sender.
-            // The view pointer is consumed by native (waterui_view_body) and must not be dropped here.
-            let callback_data = Box::new(CallbackData {
-                sender: tx,
-                finished: AtomicBool::new(false),
-            });
-            let callback_data = Box::into_raw(callback_data).cast::<()>();
+        // Create callback data that owns the sender.
+        // The view pointer is consumed by native (waterui_view_body) and must not be dropped here.
+        let callback_data = Box::new(CallbackData { sender: tx });
+        let callback_data = Box::into_raw(callback_data).cast::<()>();
 
-            unsafe extern "C" fn render_trampoline(
-                data: *mut (),
-                rgba_ptr: *const u8,
-                rgba_len: usize,
-                width: u32,
-                height: u32,
-            ) {
-                let data = unsafe { &*data.cast::<CallbackData>() };
+        unsafe extern "C" fn render_trampoline(
+            data: *mut (),
+            rgba_ptr: *const u8,
+            rgba_len: usize,
+            width: u32,
+            height: u32,
+        ) {
+            let data = unsafe { &*data.cast::<CallbackData>() };
 
-                assert!(
-                    !data.finished.swap(true, Ordering::AcqRel),
-                    "Native view renderer invoked callback more than once"
-                );
-
-                let expected_len = usize::try_from(width)
-                    .expect("width does not fit usize")
-                    .checked_mul(usize::try_from(height).expect("height does not fit usize"))
-                    .and_then(|pixels| pixels.checked_mul(4))
-                    .expect("RGBA byte length overflow");
-                assert_eq!(
-                    rgba_len, expected_len,
-                    "Native view renderer returned invalid RGBA length: got {}, expected {} for {}x{}",
-                    rgba_len, expected_len, width, height
-                );
-
-                // Copy the RGBA data (native owns the original buffer)
-                let rgba_data = if rgba_len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { core::slice::from_raw_parts(rgba_ptr, rgba_len) }.to_vec()
-                };
-
-                let result = RenderResult {
-                    rgba_data,
-                    width,
-                    height,
-                };
-
-                // Send result (ignore error if receiver dropped)
-                let _ = data.sender.try_send(result);
-            }
-
-            let callback = ViewRenderCallback {
-                data: callback_data,
-                call: render_trampoline,
+            // Copy the RGBA data (native owns the original buffer)
+            let rgba_data = if rgba_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { core::slice::from_raw_parts(rgba_ptr, rgba_len) }.to_vec()
             };
 
-            // Call native render function (must call callback synchronously)
-            unsafe {
-                (render_fn)(view_ptr_void, wui_size, callback);
-            }
+            let result = RenderResult {
+                rgba_data,
+                width,
+                height,
+            };
 
-            let recv_result = rx.try_recv().unwrap_or_else(|err| {
-                panic!(
-                    "Native view renderer must invoke callback synchronously before returning: \
-                     {err}"
-                );
-            });
+            // Send result (ignore error if receiver dropped)
+            let _ = data.sender.try_send(result);
+        }
 
-            // Free callback data after the callback completes.
-            unsafe {
-                drop(Box::from_raw(callback_data.cast::<CallbackData>()));
-            }
+        let callback = ViewRenderCallback {
+            data: callback_data,
+            call: render_trampoline,
+        };
 
-            recv_result
-        })
+        // Call native render function (must call callback synchronously)
+        unsafe {
+            (render_fn)(view_ptr_void, wui_size, callback);
+        }
+
+        let recv_result = rx.try_recv().unwrap_or_else(|err| {
+            panic!(
+                "Native view renderer must invoke callback synchronously before returning: \
+                 {err}"
+            );
+        });
+
+        // Free callback data after the callback completes.
+        unsafe {
+            drop(Box::from_raw(callback_data.cast::<CallbackData>()));
+        }
+
+        Box::pin(ready(recv_result))
     }
 }
 

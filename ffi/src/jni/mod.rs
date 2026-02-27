@@ -452,16 +452,16 @@ pub fn type_id_to_java<'local>(
 ) -> JObject<'local> {
     let classes = java_classes();
 
-    // TypeIdStruct has two long fields: high and low (128-bit UUID split)
-    let high = type_id.high as jlong;
+    // TypeIdStruct is (low, high) to match Kotlin WuiTypeId(low, high).
     let low = type_id.low as jlong;
+    let high = type_id.high as jlong;
 
     unsafe {
         let obj = env
             .new_object_unchecked(
                 &classes.type_id_struct_class,
                 jni::objects::JMethodID::from_raw(classes.type_id_struct_ctor),
-                &[JValue::Long(high).as_jni(), JValue::Long(low).as_jni()],
+                &[JValue::Long(low).as_jni(), JValue::Long(high).as_jni()],
             )
             .expect("Failed to create TypeIdStruct");
         obj
