@@ -31,8 +31,8 @@ use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{
-    AppliedFilter, FilterContext, FilterInput, FilterOutput, GradientType, ResolvedGradient,
-    ResolvedGradientStop,
+    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
+    OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop,
 };
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -228,6 +228,7 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
         dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
         dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
+        dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
         dispatcher.register::<Native<ResolvedShape>>(Self::render_resolved_shape);
@@ -561,6 +562,42 @@ impl HydrolysisRenderer {
             .take()
             .expect("hydrolysis Dynamic must provide an initial view before dispatch");
         Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_gpu_surface(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        surface: Native<GpuSurface>,
+        env: &Environment,
+    ) {
+        let width = (ctx.bounds.width().max(1.0).round()) as u32;
+        let height = (ctx.bounds.height().max(1.0).round()) as u32;
+        let size = OffscreenSize::try_from_pixels(width, height)
+            .expect("hydrolysis GpuSurface requires non-zero offscreen size");
+        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+        let mut local_env = env.clone();
+        let output = surface
+            .into_inner()
+            .render_offscreen(config, &mut local_env)
+            .expect("hydrolysis failed to render GpuSurface offscreen");
+
+        let image = vello::peniko::ImageData {
+            data: vello::peniko::Blob::from(output.rgba8),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: output.width,
+            height: output.height,
+        };
+        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
+            * vello::kurbo::Affine::scale_non_uniform(
+                ctx.bounds.width() / f64::from(output.width),
+                ctx.bounds.height() / f64::from(output.height),
+            );
+        let scene = unsafe { ctx.scene() };
+        scene.draw_image(
+            &vello::peniko::ImageBrush::new(image),
+            ctx.transform * image_transform,
+        );
     }
 
     fn render_resolved_color(
