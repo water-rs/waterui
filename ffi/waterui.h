@@ -4935,19 +4935,6 @@ struct WuiGpuSurfaceRenderResult waterui_gpu_surface_render(struct WuiGpuSurface
 bool waterui_gpu_surface_needs_redraw(struct WuiGpuSurfaceState *state);
 
 /**
- * Query whether backend should keep redraw polling active while idle.
- *
- * Deprecated: With the push-based `RedrawHandle` model, polling is no longer needed.
- * Always returns `false`. Backends should rely on `needs_redraw` from render results
- * and external redraw triggers instead.
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_gpu_surface_init`.
- */
-bool waterui_gpu_surface_requires_redraw_poll(struct WuiGpuSurfaceState *state);
-
-/**
  * Render a single frame into an external texture.
  *
  * This is used for GPU-based view captures (e.g., filter pipelines) so a
