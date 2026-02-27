@@ -32,5 +32,8 @@ inventory = "0.3"
 dirs = "5.0"
 rayon = "1.8"
 
+[build-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }
+
 [lints]
 workspace = true

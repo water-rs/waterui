@@ -17,7 +17,7 @@ use waterui_core::{AnyView, Environment, Native, View};
 use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
 use waterui_form::picker::PickerConfig;
 use waterui_form::secure::SecureFieldConfig;
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::{ResolvedGradient, color::ResolvedColor};
 use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::padding::Padding;
@@ -25,6 +25,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
+use waterui_shape::ResolvedShape;
 use waterui_text::TextConfig;
 use waterui_webview::WebView;
 
@@ -114,6 +115,8 @@ impl GtkRenderer {
         Self::register_native::<PickerConfig>(dispatcher);
         Self::register_native::<WebView>(dispatcher);
         Self::register_native::<ResolvedColor>(dispatcher);
+        Self::register_native::<ResolvedGradient>(dispatcher);
+        Self::register_native::<ResolvedShape>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
