@@ -1360,68 +1360,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
     packed as jlong
 }
 
-#[cfg(not(target_os = "android"))]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceNeedsRedraw<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    _state_ptr: jlong,
-) -> jboolean {
-    android_only_jni_stub("WatcherJni.gpuSurfaceNeedsRedraw")
-}
-
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceNeedsRedraw<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jboolean {
-    let state_ptr = require_state_ptr::<JniGpuSurfaceState>(state_ptr, "gpuSurfaceNeedsRedraw");
-    let wrapper = unsafe { &mut *state_ptr };
-    let needs_redraw =
-        unsafe { crate::components::gpu_surface::waterui_gpu_surface_needs_redraw(wrapper.state) };
-    if needs_redraw {
-        1
-    } else {
-        0
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRequiresRedrawPoll<
-    'local,
->(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    _state_ptr: jlong,
-) -> jboolean {
-    android_only_jni_stub("WatcherJni.gpuSurfaceRequiresRedrawPoll")
-}
-
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRequiresRedrawPoll<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jboolean {
-    let state_ptr =
-        require_state_ptr::<JniGpuSurfaceState>(state_ptr, "gpuSurfaceRequiresRedrawPoll");
-    let wrapper = unsafe { &mut *state_ptr };
-    let requires_poll = unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_requires_redraw_poll(wrapper.state)
-    };
-    if requires_poll {
-        1
-    } else {
-        0
-    }
-}
-
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
