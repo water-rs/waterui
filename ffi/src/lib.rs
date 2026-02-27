@@ -90,9 +90,11 @@ pub(crate) fn pop_error_scope_now(
     scope: &'static str,
 ) -> Option<wgpu::Error> {
     use core::future::Future as _;
+    use core::pin::Pin;
     use core::task::{Context, Poll};
 
-    let mut future = std::pin::pin!(device.pop_error_scope());
+    let mut future = device.pop_error_scope();
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
     let mut cx = Context::from_waker(core::task::Waker::noop());
 
     if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
@@ -114,9 +116,11 @@ pub(crate) fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
 where
     F: core::future::Future,
 {
+    use core::pin::Pin;
     use core::task::{Context, Poll};
 
-    let mut future = std::pin::pin!(future);
+    let mut future = future;
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
     let mut cx = Context::from_waker(core::task::Waker::noop());
     match future.as_mut().poll(&mut cx) {
         Poll::Ready(output) => output,
