@@ -43,7 +43,7 @@ categories = ["gui"]
 version = "0.2.1"
 edition = "2024"
 authors = ["Lexo Liu"]
-rust-version = "1.87"
+rust-version = "1.88"
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
 repository = "https://github.com/water-rs/waterui"
@@ -124,7 +124,11 @@ waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27"
 encase = { version = "0.10", features = ["glam"] }
-vello = { git = "https://github.com/linebender/vello", branch = "main" }
+vello = "0.7"
+parley = "0.3"
+fontique = "0.3"
+kurbo = "0.11"
+peniko = "0.3"
 vello_svg = "0.9.0"
 lyon = "1.0"
 wgpu-hal = { version = "27", features = ["gles", "metal"] }
@@ -243,6 +247,3 @@ panic = "abort"    # Smaller panic handling
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-[patch.crates-io]
-vello = { git = "https://github.com/linebender/vello", branch = "main" }
