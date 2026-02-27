@@ -990,20 +990,6 @@ fn main() {
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
-        println!("Total elements: {}", elements.len());
-        for (i, el) in elements.iter().enumerate() {
-            println!("Element {}: {:?}", i, std::mem::discriminant(el));
-            match el {
-                RichTextElement::Code { language, code } => {
-                    println!("  Code: lang={language:?}, code={code:?}");
-                }
-                RichTextElement::Text(s) => {
-                    println!("  Text: {:?}", s.to_plain());
-                }
-                _ => {}
-            }
-        }
-
         // Should have a Code element
         let has_code = elements
             .iter()
@@ -1096,8 +1082,6 @@ fn main() {
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
-        println!("Elements: {elements:#?}");
-
         // Should have one Group element (inline paragraph)
         assert_eq!(elements.len(), 1);
 
@@ -1107,7 +1091,6 @@ fn main() {
         } = &elements[0]
         {
             assert!(inline, "Should be inline group");
-            println!("Inner elements: {inner:#?}");
 
             // Find the Link element
             let link = inner
@@ -1117,8 +1100,6 @@ fn main() {
 
             if let Some(RichTextElement::Link { label, url }) = link {
                 let label_text = label.to_plain();
-                println!("Link label: '{label_text}'");
-                println!("Link URL: '{url}'");
                 assert_eq!(
                     &*label_text, "WaterUI on GitHub",
                     "Link text should be complete"

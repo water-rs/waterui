@@ -179,7 +179,7 @@ impl PreviewAppClient {
         result
     }
 
-    /// Render a view symbol, returning structured app errors for fallback logic.
+    /// Render a view symbol, returning structured app errors for caller handling.
     pub async fn render_with_dylib_source(
         &mut self,
         dylib_id: DylibId,

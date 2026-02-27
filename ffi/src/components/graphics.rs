@@ -77,20 +77,6 @@ pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     let expected = stride * (height as usize);
 
     let format = RendererBufferFormat::from(format);
-    debug_assert!(
-        format == RendererBufferFormat::Rgba8888,
-        "waterui_renderer_view_render_cpu: unsupported format {:?}",
-        format
-    );
-    let bytes_per_pixel = 4usize;
-    let min_row_bytes = (width as usize) * bytes_per_pixel;
-    debug_assert!(
-        stride >= min_row_bytes,
-        "waterui_renderer_view_render_cpu: stride {} < min row bytes {} for width {}",
-        stride,
-        min_row_bytes,
-        width
-    );
 
     let buffer = unsafe { slice::from_raw_parts_mut(pixels, expected) };
     let surface = RendererCpuSurface::new(buffer, width, height, stride, format);

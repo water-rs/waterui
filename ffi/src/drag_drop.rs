@@ -158,10 +158,7 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
 
         // Convert C string to Rust String
         let c_str = core::ffi::CStr::from_ptr(data_value);
-        let value = c_str
-            .to_str()
-            .expect("waterui_call_drop_handler: `data_value` must be valid UTF-8")
-            .to_owned();
+        let value = core::str::from_utf8_unchecked(c_str.to_bytes()).to_owned();
 
         // Create DragData from the tag and value
         let data = match data_tag {

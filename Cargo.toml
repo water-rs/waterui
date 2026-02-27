@@ -225,7 +225,6 @@ arboard = "3.6.1"
 [features]
 default = []
 std = ["dep:waterkit-haptic"]
-video-rust-fallback = ["waterui-video/rust-fallback-player"]
 all = ["std"]
 
 

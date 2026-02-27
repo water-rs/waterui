@@ -58,13 +58,9 @@ impl RenderContext {
     /// # Safety
     ///
     /// The caller must ensure the renderer pointer is valid.
-    pub(crate) unsafe fn renderer(&self) -> Option<&mut GtkRenderer> {
-        if self.renderer_ptr.is_null() {
-            None
-        } else {
-            // SAFETY: Caller ensures the pointer is valid for the duration of the borrow.
-            Some(unsafe { &mut *self.renderer_ptr })
-        }
+    pub(crate) unsafe fn renderer(&self) -> &mut GtkRenderer {
+        // SAFETY: Caller guarantees the renderer pointer is initialized and valid.
+        unsafe { &mut *self.renderer_ptr }
     }
 }
 
@@ -144,7 +140,7 @@ impl GtkRenderer {
     /// Registers a handler for `Padding` that applies GTK margins.
     fn register_padding_handler(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         dispatcher.register::<Padding>(|_state, ctx, padding, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let (edges, content) = padding.into_inner();
 
             // Render the content
@@ -195,19 +191,19 @@ impl GtkRenderer {
 
         // Metadata<Environment> - use provided environment for subtree
         dispatcher.register::<Metadata<Environment>>(|_state, ctx, metadata, _env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, &metadata.value)
         });
 
         // Metadata<Retain> - just render content (the value stays alive in the struct)
         dispatcher.register::<Metadata<Retain>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
 
         // Metadata<Opacity> - apply opacity via GTK widget opacity
         dispatcher.register::<Metadata<Opacity>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             let opacity = metadata.value;
             widget.set_opacity(f64::from(opacity.value.get()));
@@ -223,7 +219,7 @@ impl GtkRenderer {
 
         // Metadata<Shadow> - apply shadow and render content
         dispatcher.register::<Metadata<Shadow>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             // TODO: Apply shadow styling (GTK CSS or custom drawing)
             widget
@@ -231,7 +227,7 @@ impl GtkRenderer {
 
         // Metadata<Focused> - handle focus state
         dispatcher.register::<Metadata<Focused>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             // TODO: Set up focus handling
             widget
@@ -239,19 +235,19 @@ impl GtkRenderer {
 
         // Metadata<Secure> - mark content as secure (e.g., password fields)
         dispatcher.register::<Metadata<Secure>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
 
         // Metadata<StandardDynamicRange> - render content with SDR color handling
         dispatcher.register::<Metadata<StandardDynamicRange>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
 
         // Metadata<HighDynamicRange> - render content with HDR color handling
         dispatcher.register::<Metadata<HighDynamicRange>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
 
@@ -261,7 +257,7 @@ impl GtkRenderer {
             use std::rc::Rc;
             use waterui_core::event::Event;
 
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
 
@@ -305,7 +301,7 @@ impl GtkRenderer {
                 TapEvent,
             };
 
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
 
             let gesture = metadata.value.gesture;
@@ -550,7 +546,7 @@ impl GtkRenderer {
 
         // Metadata<IgnoreSafeArea> - ignore safe area insets
         dispatcher.register::<Metadata<IgnoreSafeArea>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
 
@@ -564,7 +560,7 @@ impl GtkRenderer {
         dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
     ) {
         dispatcher.register::<IgnorableMetadata<T>>(|_state, ctx, metadata, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             renderer.render_any(metadata.content, env)
         });
     }
@@ -581,7 +577,7 @@ impl GtkRenderer {
     /// Registers a `GtkComponent` view type with the dispatcher.
     fn register<V: GtkComponent>(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         dispatcher.register::<V>(|_state, ctx, view, env| {
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let renderer = unsafe { ctx.renderer() };
             view.render(env, renderer)
         });
     }
