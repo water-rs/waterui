@@ -1,4 +1,5 @@
 use core::f64::consts::TAU;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -28,7 +29,7 @@ use waterui_core::event::{LifeCycleHook, OnEvent};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GradientType, ResolvedGradient,
     ResolvedGradientStop,
@@ -39,6 +40,8 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::stack::Axis as StackAxis;
 use waterui_layout::spacer::Spacer;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
+use waterui_text::font::FontWeight as TextFontWeight;
+use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::TextConfig;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
@@ -217,8 +220,8 @@ impl HydrolysisRenderer {
     fn register_core_handlers(dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>) {
         dispatcher.register::<Native<()>>(|_state, _ctx, _unit, _env| ());
         dispatcher.register::<Native<Spacer>>(|_state, _ctx, _spacer, _env| ());
-        dispatcher.register::<Str>(|_state, _ctx, _str, _env| ());
-        dispatcher.register::<Native<TextConfig>>(|_state, _ctx, _text, _env| ());
+        dispatcher.register::<Str>(Self::render_str);
+        dispatcher.register::<Native<TextConfig>>(Self::render_text_config);
 
         dispatcher.register::<Native<FixedContainer>>(Self::render_fixed_container);
         dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
@@ -374,6 +377,155 @@ impl HydrolysisRenderer {
             None,
             &rect,
         );
+    }
+
+    fn render_str(state: &mut HydroState, ctx: RenderContext, text: Str, env: &Environment) {
+        Self::render_styled_text(state, ctx, StyledStr::plain(text), env);
+    }
+
+    fn render_text_config(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        text: Native<TextConfig>,
+        env: &Environment,
+    ) {
+        let styled = text.into_inner().content.get();
+        Self::render_styled_text(state, ctx, styled, env);
+    }
+
+    fn render_styled_text(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        styled: StyledStr,
+        env: &Environment,
+    ) {
+        let mut plain = String::new();
+        let mut spans = Vec::with_capacity(styled.chunks().len());
+        for (chunk, style) in styled.chunks() {
+            let start = plain.len();
+            plain.push_str(chunk.as_str());
+            let end = plain.len();
+            spans.push((start..end, style.clone()));
+        }
+        if plain.is_empty() {
+            return;
+        }
+
+        let mut family_storage = Vec::new();
+        let default_font = waterui_text::font::Font::default().resolve(env).get();
+        let default_brush = resolved_color_to_rgba8(Color::srgb(0, 0, 0).resolve(env).get());
+        let mut builder = state
+            .layout_cx
+            .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
+        builder.push_default(parley::StyleProperty::Brush(default_brush));
+        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
+        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+            default_font.weight,
+        )));
+        if let Some(family) = default_font.family {
+            family_storage.push(family.to_string());
+            let family_name = family_storage
+                .last()
+                .expect("default font family storage must contain the pushed value");
+            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
+                parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
+            )));
+        }
+
+        for (range, style) in spans {
+            Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
+        }
+
+        let mut layout = builder.build(&plain);
+        let max_width = Some(ctx.bounds.width() as f32);
+        layout.break_all_lines(max_width);
+        layout.align(
+            max_width,
+            parley::Alignment::Start,
+            parley::AlignmentOptions::default(),
+        );
+
+        let text_transform =
+            ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+        let scene = unsafe { ctx.scene() };
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let style = glyph_run.style();
+                    let brush = rgba8_to_peniko(style.brush);
+                    let normalized_coords: Vec<vello::NormalizedCoord> =
+                        run.normalized_coords().to_vec();
+
+                    let mut run_x = glyph_run.offset();
+                    let run_y = glyph_run.baseline();
+                    let glyphs = glyph_run.glyphs().map(move |glyph| {
+                        let x = run_x + glyph.x;
+                        let y = run_y - glyph.y;
+                        run_x += glyph.advance;
+                        vello::Glyph {
+                            id: glyph.id,
+                            x,
+                            y,
+                        }
+                    });
+
+                    scene
+                        .draw_glyphs(run.font())
+                        .brush(brush)
+                        .transform(text_transform)
+                        .font_size(run.font_size())
+                        .normalized_coords(&normalized_coords)
+                        .draw(vello::peniko::Fill::NonZero, glyphs);
+                }
+            }
+        }
+    }
+
+    fn push_text_style(
+        builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
+        family_storage: &mut Vec<String>,
+        style: TextStyle,
+        range: std::ops::Range<usize>,
+        env: &Environment,
+    ) {
+        let resolved_font = style.font.resolve(env).get();
+        builder.push(parley::StyleProperty::FontSize(resolved_font.size), range.clone());
+        builder.push(
+            parley::StyleProperty::FontWeight(parley_font_weight(resolved_font.weight)),
+            range.clone(),
+        );
+        if let Some(family) = resolved_font.family {
+            family_storage.push(family.to_string());
+            let family_name = family_storage
+                .last()
+                .expect("font family storage must contain the pushed value");
+            builder.push(
+                parley::StyleProperty::FontStack(parley::FontStack::Single(
+                    parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
+                )),
+                range.clone(),
+            );
+        }
+        builder.push(
+            parley::StyleProperty::FontStyle(if style.italic {
+                parley::FontStyle::Italic
+            } else {
+                parley::FontStyle::Normal
+            }),
+            range.clone(),
+        );
+        builder.push(parley::StyleProperty::Underline(style.underline), range.clone());
+        builder.push(
+            parley::StyleProperty::Strikethrough(style.strikethrough),
+            range.clone(),
+        );
+        if let Some(color) = style.foreground {
+            builder.push(
+                parley::StyleProperty::Brush(resolved_color_to_rgba8(color.resolve(env).get())),
+                range,
+            );
+        }
     }
 
     fn render_button(
@@ -1034,4 +1186,38 @@ fn anchor_point(bounds: vello::kurbo::Rect, anchor: waterui::style::Anchor) -> v
         bounds.x0 + bounds.width() * f64::from(anchor.x),
         bounds.y0 + bounds.height() * f64::from(anchor.y),
     )
+}
+
+fn resolved_color_to_rgba8(color: ResolvedColor) -> [u8; 4] {
+    let srgb = color.to_srgb_with_headroom();
+    [
+        (srgb.red.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.green.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
+}
+
+fn rgba8_to_peniko(color: [u8; 4]) -> vello::peniko::Color {
+    vello::peniko::Color::new([
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+        f32::from(color[3]) / 255.0,
+    ])
+}
+
+fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
+    let value = match weight {
+        TextFontWeight::Thin => 100.0,
+        TextFontWeight::UltraLight => 200.0,
+        TextFontWeight::Light => 300.0,
+        TextFontWeight::Normal => 400.0,
+        TextFontWeight::Medium => 500.0,
+        TextFontWeight::SemiBold => 600.0,
+        TextFontWeight::Bold => 700.0,
+        TextFontWeight::UltraBold => 800.0,
+        TextFontWeight::Black => 900.0,
+    };
+    parley::FontWeight::new(value)
 }
