@@ -34,6 +34,7 @@ use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
     OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop,
 };
+use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
@@ -228,6 +229,7 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
         dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
         dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
+        dispatcher.register::<Native<SystemIcon>>(Self::render_system_icon);
         dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
@@ -562,6 +564,16 @@ impl HydrolysisRenderer {
             .take()
             .expect("hydrolysis Dynamic must provide an initial view before dispatch");
         Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_system_icon(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        icon: Native<SystemIcon>,
+        env: &Environment,
+    ) {
+        let styled = StyledStr::plain(icon.into_inner().name);
+        Self::render_styled_text(state, ctx, styled, env);
     }
 
     fn render_gpu_surface(
