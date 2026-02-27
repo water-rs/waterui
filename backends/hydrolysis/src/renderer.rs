@@ -138,4 +138,23 @@ impl HydrolysisRenderer {
         let ctx = RenderContext::with_renderer(self, bounds);
         self.dispatcher.dispatch(view, env, ctx);
     }
+
+    pub fn render_scene_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        let params = vello::RenderParams {
+            base_color: vello::peniko::Color::TRANSPARENT,
+            width,
+            height,
+            antialiasing_method: vello::AaConfig::Area,
+        };
+        self.vello_renderer
+            .render_to_texture(device, queue, &self.scene, target, &params)
+            .expect("hydrolysis renderer: failed to render scene");
+    }
 }

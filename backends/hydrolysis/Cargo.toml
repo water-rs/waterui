@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
+waterui.workspace = true
 tracing.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
@@ -26,5 +27,9 @@ fontique.workspace = true
 peniko.workspace = true
 kurbo.workspace = true
 wgpu.workspace = true
+pollster.workspace = true
+winit = { version = "0.30", optional = true }
 
 [features]
+default = []
+winit = ["dep:winit"]
