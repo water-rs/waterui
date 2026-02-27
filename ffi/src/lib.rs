@@ -30,6 +30,7 @@ pub mod animation;
 pub mod array;
 pub mod closure;
 pub mod color;
+pub mod gradient;
 pub mod components;
 pub mod cursor;
 pub mod drag_drop;
@@ -41,6 +42,7 @@ pub mod id;
 pub mod locale;
 pub mod reactive;
 pub mod theme;
+pub mod shape;
 mod ty;
 pub mod views;
 use core::ptr::null_mut;
@@ -1404,8 +1406,7 @@ pub type WuiMetadataClipShape = WuiMetadata<WuiClipShape>;
 // Generate waterui_metadata_clip_shape_id() and waterui_force_as_metadata_clip_shape()
 ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
 
-// NOTE: FilledShape is now GPU-rendered via GpuSurface, no longer needs native FFI.
-// Native backends should use the GpuSurface FFI instead.
+// Filled shapes are represented by `ResolvedShape` raw views via ffi/src/shape.rs.
 
 // ========== Metadata<ContextMenu> FFI ==========
 // Used to attach context menus to views

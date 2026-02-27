@@ -104,6 +104,13 @@ typedef enum WuiMaterial {
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
 
+typedef enum WuiGradientType {
+  WuiGradientType_Linear = 0,
+  WuiGradientType_Radial = 1,
+  WuiGradientType_Angular = 2,
+  WuiGradientType_Mesh = 3,
+} WuiGradientType;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -2030,6 +2037,44 @@ typedef struct Binding_Color WuiBinding_Color;
 
 typedef struct Computed_Color WuiComputed_Color;
 
+typedef struct WuiResolvedGradientStop {
+  float position;
+  struct WuiResolvedColor color;
+} WuiResolvedGradientStop;
+
+typedef struct WuiArraySlice_WuiResolvedGradientStop {
+  struct WuiResolvedGradientStop *head;
+  uintptr_t len;
+} WuiArraySlice_WuiResolvedGradientStop;
+
+typedef struct WuiArrayVTable_WuiResolvedGradientStop {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiResolvedGradientStop (*slice)(const void*);
+} WuiArrayVTable_WuiResolvedGradientStop;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiResolvedGradientStop {
+  NonNull data;
+  struct WuiArrayVTable_WuiResolvedGradientStop vtable;
+} WuiArray_WuiResolvedGradientStop;
+
+typedef struct WuiResolvedGradient {
+  enum WuiGradientType gradient_type;
+  struct WuiArray_WuiResolvedGradientStop stops;
+  float start_x;
+  float start_y;
+  float end_x;
+  float end_y;
+  float start_value;
+  float end_value;
+} WuiResolvedGradient;
+
 typedef struct WuiArraySlice_u8 {
   uint8_t *head;
   uintptr_t len;
@@ -3328,6 +3373,20 @@ typedef struct WuiLivePhotoSource {
 
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
+typedef struct WuiShapeKind {
+  int32_t tag;
+  float top_left;
+  float top_right;
+  float bottom_right;
+  float bottom_left;
+} WuiShapeKind;
+
+typedef struct WuiResolvedShape {
+  struct WuiShapeKind kind;
+  struct WuiArray_WuiPathCommand commands;
+  struct WuiResolvedColor fill;
+} WuiResolvedShape;
+
 typedef struct WuiArraySlice_WuiId {
   struct WuiId *head;
   uintptr_t len;
@@ -4329,6 +4388,10 @@ struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, fl
  */
 WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
+
+struct WuiResolvedGradient waterui_force_as_resolved_gradient(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_resolved_gradient_id(void);
 
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
@@ -6730,6 +6793,10 @@ void waterui_call_watcher_resolved_font(const struct WuiWatcher_ResolvedFont *wa
  * The watcher pointer must be valid.
  */
 void waterui_drop_watcher_resolved_font(struct WuiWatcher_ResolvedFont *watcher);
+
+struct WuiResolvedShape waterui_force_as_resolved_shape(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_resolved_shape_id(void);
 
 /**
  * # Safety
