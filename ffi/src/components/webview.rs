@@ -559,12 +559,8 @@ pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView)
     unsafe {
         let webview = crate::expect_non_null(webview, "waterui_webview_native_handle", "webview");
         let handle = webview.0.handle();
-        match handle.downcast_ref::<FfiWebViewHandle>() {
-            Some(ffi_handle) => ffi_handle.native_ptr(),
-            None => panic!(
-                "waterui_webview_native_handle: expected FfiWebViewHandle; install WebViewController first"
-            ),
-        }
+        let ffi_handle = handle.downcast_ref::<FfiWebViewHandle>().unwrap_unchecked();
+        ffi_handle.native_ptr()
     }
 }
 

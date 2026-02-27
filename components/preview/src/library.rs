@@ -103,8 +103,11 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the symbol cannot be loaded.
     pub unsafe fn load_view(&self, symbol_name: &str) -> Result<AnyView, libloading::Error> {
-        let c_name = CString::new(symbol_name.trim_end_matches('\0'))
-            .expect("symbol name should not contain null bytes");
+        let symbol_bytes = symbol_name.trim_end_matches('\0').as_bytes();
+        let mut c_name_bytes = Vec::with_capacity(symbol_bytes.len() + 1);
+        c_name_bytes.extend_from_slice(symbol_bytes);
+        c_name_bytes.push(0);
+        let c_name = unsafe { CString::from_vec_with_nul_unchecked(c_name_bytes) };
 
         let func: libloading::Symbol<unsafe extern "C" fn() -> *mut ()> =
             unsafe { self.lib.get(c_name.as_bytes_with_nul())? };

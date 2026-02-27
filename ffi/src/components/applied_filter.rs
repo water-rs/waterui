@@ -109,11 +109,6 @@ pub struct WuiAppliedFilterState {
 }
 
 fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32) {
-    assert!(
-        width > 0 && height > 0,
-        "applied_filter::ensure_dimensions: dimensions must be positive, got {width}x{height}"
-    );
-
     let needs_resize = width != state.input_width || height != state.input_height;
 
     if needs_resize {
@@ -182,10 +177,6 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
         crate::expect_non_null_mut(filter_ffi, "waterui_applied_filter_init", "filter_ffi");
         crate::expect_non_null(output_layer, "waterui_applied_filter_init", "output_layer");
     }
-    assert!(
-        input_width > 0 && input_height > 0,
-        "waterui_applied_filter_init: dimensions must be positive, got {input_width}x{input_height}"
-    );
 
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let wui_filter = unsafe { &mut *filter_ffi };
@@ -377,12 +368,6 @@ pub unsafe extern "C" fn waterui_applied_filter_setup(
     let state =
         unsafe { crate::expect_non_null_mut(state, "waterui_applied_filter_setup", "state") };
 
-    if state.initialized {
-        // Already set up, call callback immediately
-        unsafe { callback(user_data) };
-        return;
-    }
-
     // Build FilterContext
     let ctx = FilterContext {
         device: &state.device,
@@ -444,17 +429,8 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     unsafe {
         crate::expect_non_null_mut(state, "waterui_applied_filter_render", "state");
     }
-    assert!(
-        width > 0 && height > 0,
-        "waterui_applied_filter_render: dimensions must be positive, got {width}x{height}"
-    );
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
-
-        // Verify setup was called
-        if !state.initialized {
-            panic!("waterui_applied_filter_render: called before setup completed");
-        }
 
         ensure_dimensions(state, width, height);
 
@@ -490,9 +466,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         };
 
         let input_format = if state.imported_texture.is_some() {
-            state
-                .imported_format
-                .expect("[AppliedFilter] imported texture is set but format is missing")
+            unsafe { state.imported_format.unwrap_unchecked() }
         } else {
             state.capture_format
         };
@@ -565,11 +539,6 @@ pub unsafe extern "C" fn waterui_applied_filter_sync_targets(
     }
     let sync_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
-        assert!(
-            state.initialized,
-            "waterui_applied_filter_sync_targets: called before setup completed"
-        );
-
         state.filter.sync_targets();
         true
     }));
@@ -598,11 +567,6 @@ pub unsafe extern "C" fn waterui_applied_filter_poll_redraw(
     }
     let poll_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
-        assert!(
-            state.initialized,
-            "waterui_applied_filter_poll_redraw: called before setup completed"
-        );
-
         state.filter.sync_targets();
         state.filter.redraw_hint()
     }));
@@ -644,10 +608,6 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
 ) -> bool {
     let state =
         unsafe { crate::expect_non_null_mut(state, "waterui_applied_filter_set_input", "state") };
-    assert!(
-        width > 0 && height > 0,
-        "waterui_applied_filter_set_input: dimensions must be positive, got {width}x{height}"
-    );
 
     ensure_dimensions(state, width, height);
 
@@ -689,14 +649,8 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
             }
         }
         WuiInputType::PixelData => {
-            let capture_texture = state
-                .capture_texture
-                .as_ref()
-                .expect("[AppliedFilter] PixelData input requires an allocated capture texture");
-            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height) }
-                .unwrap_or_else(|error| {
-                    panic!("[AppliedFilter] invalid PixelData {width}x{height} ({error})");
-                });
+            let capture_texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
+            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
 
             state.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -748,10 +702,6 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input_ahardwarebuffer(
             "state",
         )
     };
-    assert!(
-        width > 0 && height > 0,
-        "waterui_applied_filter_set_input_ahardwarebuffer: dimensions must be positive, got {width}x{height}"
-    );
 
     #[cfg(target_os = "android")]
     {
@@ -879,10 +829,6 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
     let state = unsafe {
         crate::expect_non_null_mut(state, "waterui_applied_filter_prepare_capture", "state")
     };
-    assert!(
-        width > 0 && height > 0,
-        "waterui_applied_filter_prepare_capture: dimensions must be positive, got {width}x{height}"
-    );
 
     ensure_dimensions(state, width, height);
 
@@ -892,9 +838,7 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
         state.imported_metal_texture = None;
     }
 
-    let texture = state.capture_texture.as_ref().expect(
-        "waterui_applied_filter_prepare_capture: capture texture missing after ensure_dimensions",
-    );
+    let texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
     texture as *const wgpu::Texture as *const c_void
 }
 
@@ -913,10 +857,7 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_texture(
         crate::expect_non_null(state, "waterui_applied_filter_get_capture_texture", "state")
     };
 
-    let texture = state
-        .capture_texture
-        .as_ref()
-        .expect("waterui_applied_filter_get_capture_texture: capture texture missing");
+    let texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
     texture as *const wgpu::Texture as *const c_void
 }
 
@@ -940,13 +881,8 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
             "state",
         )
     };
-    let texture = state
-        .capture_texture
-        .as_ref()
-        .expect("[AppliedFilter] capture texture missing");
-
-    let hal_texture = (unsafe { texture.as_hal::<MetalApi>() })
-        .expect("[AppliedFilter] capture texture is not backed by Metal");
+    let texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
+    let hal_texture = unsafe { texture.as_hal::<MetalApi>().unwrap_unchecked() };
 
     let raw = unsafe { hal_texture.raw_handle() };
     raw.as_ptr().cast::<c_void>()

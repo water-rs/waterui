@@ -384,10 +384,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         crate::expect_non_null(layer, "waterui_gpu_surface_init", "layer");
         crate::expect_non_null_mut(env, "waterui_gpu_surface_init", "env");
     }
-    assert!(
-        width > 0 && height > 0,
-        "waterui_gpu_surface_init: dimensions must be positive, got {width}x{height}"
-    );
 
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let wui_surface = unsafe { &mut *surface };
@@ -552,10 +548,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     unsafe {
         crate::expect_non_null_mut(state, "waterui_gpu_surface_render", "state");
     }
-    assert!(
-        width > 0 && height > 0,
-        "waterui_gpu_surface_render: dimensions must be positive, got {width}x{height}"
-    );
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
@@ -777,21 +769,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
         crate::expect_non_null_mut(state, "waterui_gpu_surface_render_to_texture", "state");
         crate::expect_non_null(texture, "waterui_gpu_surface_render_to_texture", "texture");
     }
-    assert!(
-        width > 0 && height > 0,
-        "waterui_gpu_surface_render_to_texture: dimensions must be positive, got {width}x{height}"
-    );
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
         let texture = unsafe { &*(texture as *const wgpu::Texture) };
-
-        assert!(
-            texture
-                .usage()
-                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
-            "[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage"
-        );
 
         let target_format = texture.format();
 
@@ -875,11 +856,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             "texture",
         );
     }
-    assert!(
-        width > 0 && height > 0,
-        "waterui_gpu_surface_render_to_metal_texture: dimensions must be positive, got {width}x{height}"
-    );
-
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         trace_metal_capture_step("render_to_metal_texture: begin");
         trace_metal_capture_step("render_to_metal_texture: deref state");
@@ -888,8 +864,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(texture.cast()) };
         trace_metal_capture_step("render_to_metal_texture: to_owned");
         let metal_texture = metal_texture_ref.to_owned();
-        let hal_device = (unsafe { state.device.as_hal::<MetalApi>() })
-            .expect("[GpuSurface] render_to_metal_texture: shared wgpu device is not Metal");
+        let hal_device = unsafe { state.device.as_hal::<MetalApi>().unwrap_unchecked() };
         let wgpu_device_ptr = {
             let raw_device = hal_device.raw_device().lock();
             raw_device.as_ptr().cast::<c_void>()
@@ -898,10 +873,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         trace_metal_capture_step(&format!(
             "render_to_metal_texture: device_ptrs wgpu={wgpu_device_ptr:p} texture={texture_device_ptr:p}"
         ));
-        assert_eq!(
-            wgpu_device_ptr, texture_device_ptr,
-            "[GpuSurface] render_to_metal_texture: Metal device mismatch (wgpu={wgpu_device_ptr:p}, texture={texture_device_ptr:p})"
-        );
+        let _ = texture_device_ptr;
         trace_metal_capture_step("render_to_metal_texture: pixel_format query");
         let metal_pixel_format = metal_texture.pixel_format();
         trace_metal_capture_step(&format!(

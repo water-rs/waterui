@@ -212,19 +212,37 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
         .join(".water")
         .join("assets");
 
-    std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| AssetError::io(format!("Failed to create cache dir: {e}")))?;
+    smol::unblock({
+        let cache_dir = cache_dir.clone();
+        move || std::fs::create_dir_all(&cache_dir)
+    })
+    .await
+    .map_err(|e| AssetError::io(format!("Failed to create cache dir: {e}")))?;
 
     let cache_path = cache_dir.join(&hash);
 
-    // If already cached, return the path
-    if cache_path.exists() {
-        if std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0) == 0 {
+    let cache_len = smol::unblock({
+        let cache_path = cache_path.clone();
+        move || match std::fs::metadata(&cache_path) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|e| AssetError::io(format!("Failed to read cached asset metadata: {e}")))?;
+
+    if let Some(cache_len) = cache_len {
+        if cache_len == 0 {
             tracing::warn!(
                 "Ignoring empty cached asset for {url}: {}",
                 cache_path.display()
             );
-            let _ = std::fs::remove_file(&cache_path);
+            let _ = smol::unblock({
+                let cache_path = cache_path.clone();
+                move || std::fs::remove_file(&cache_path)
+            })
+            .await;
         } else {
             tracing::debug!("Asset already cached: {url} -> {}", cache_path.display());
             return Ok(cache_path);
@@ -260,12 +278,32 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let temp_path = cache_dir.join(format!("{hash}.tmp-{}-{nonce}", std::process::id()));
-    std::fs::write(&temp_path, &bytes)
-        .map_err(|e| AssetError::io(format!("Failed to write temp cache file: {e}")))?;
+    smol::unblock({
+        let temp_path = temp_path.clone();
+        move || std::fs::write(&temp_path, &bytes)
+    })
+    .await
+    .map_err(|e| AssetError::io(format!("Failed to write temp cache file: {e}")))?;
 
-    if let Err(e) = std::fs::rename(&temp_path, &cache_path) {
-        let _ = std::fs::remove_file(&temp_path);
-        if cache_path.exists() {
+    let rename_result = smol::unblock({
+        let temp_path = temp_path.clone();
+        let cache_path = cache_path.clone();
+        move || std::fs::rename(&temp_path, &cache_path)
+    })
+    .await;
+
+    if let Err(e) = rename_result {
+        let _ = smol::unblock({
+            let temp_path = temp_path.clone();
+            move || std::fs::remove_file(&temp_path)
+        })
+        .await;
+        let cache_exists = smol::unblock({
+            let cache_path = cache_path.clone();
+            move || cache_path.exists()
+        })
+        .await;
+        if cache_exists {
             tracing::debug!(
                 "Asset cache race detected, reusing {}",
                 cache_path.display()
