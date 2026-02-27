@@ -27,8 +27,8 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
-fn create_bounds(width: u32, height: u32) -> kurbo::Rect {
-    kurbo::Rect::new(0.0, 0.0, width as f64, height as f64)
+fn create_bounds(width: u32, height: u32) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64)
 }
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
