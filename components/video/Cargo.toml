@@ -37,7 +37,6 @@ zenwave = { workspace = true, features = ["rustls"] }
 
 [features]
 default = []
-rust-fallback-player = []
 
 [lints]
 workspace = true
