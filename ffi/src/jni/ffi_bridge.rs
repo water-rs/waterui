@@ -248,13 +248,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_nativeInit<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) {
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_metadataLifeCycleHookId<'local>(
     env: JNIEnv<'local>,
     class: JClass<'local>,

@@ -4881,7 +4881,6 @@ struct WuiTypeId waterui_gpu_surface_id(void);
  *   - Android: `ANativeWindow*`
  * * `width` - Initial surface width in pixels
  * * `height` - Initial surface height in pixels
- * * `env` - Pointer to a valid WaterUI environment used during renderer setup
  *
  * # Returns
  *
@@ -4938,8 +4937,9 @@ bool waterui_gpu_surface_needs_redraw(struct WuiGpuSurfaceState *state);
 /**
  * Query whether backend should keep redraw polling active while idle.
  *
- * This hint is intended for renderers that rely on async signal watchers and
- * cannot wake the native backend directly.
+ * Deprecated: With the push-based `RedrawHandle` model, polling is no longer needed.
+ * Always returns `false`. Backends should rely on `needs_redraw` from render results
+ * and external redraw triggers instead.
  *
  * # Safety
  *
@@ -4988,7 +4988,7 @@ bool waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *stat
 /**
  * Setup the GpuSurface and render the first frame.
  *
- * This function performs async setup (awaited synchronously via `block_on`),
+ * This function performs setup in the synchronous FFI render path,
  * then renders the first frame. Native code should call this before showing
  * the window to ensure all visible GpuSurfaces are ready.
  *
@@ -5254,7 +5254,7 @@ struct WuiViewEffectRenderResult waterui_view_effect_render(struct WuiViewEffect
  *
  * # Returns
  *
- * Pointer to the capture wgpu::Texture, or null if not available.
+ * Pointer to the capture wgpu::Texture.
  *
  * # Safety
  *
@@ -5356,8 +5356,8 @@ struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilte
 /**
  * Setup the filter synchronously, call callback when ready.
  *
- * This function runs setup to completion using `pollster::block_on`
- * and calls the callback when setup completes.
+ * This function runs setup on the synchronous FFI path and calls the callback
+ * when setup completes.
  *
  * # Arguments
  *
@@ -5761,7 +5761,7 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
  * Installs a locale into the environment using a predefined locale enum.
  *
  * This installs a `Locale` snapshot into the environment and publishes it
- * to the shared `waterkit-regional` runtime context.
+ * to the shared regional runtime context.
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -5777,7 +5777,7 @@ void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
  * If the locale string is invalid, falls back to English ("en").
  *
  * This installs a `Locale` snapshot into the environment and publishes it
- * to the shared `waterkit-regional` runtime context.
+ * to the shared regional runtime context.
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
