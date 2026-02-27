@@ -1,4 +1,3 @@
-use nami::Signal;
 use waterui::window::{Window as WuiWindow, WindowState};
 
 /// Input button mapped from a platform pointer event.
