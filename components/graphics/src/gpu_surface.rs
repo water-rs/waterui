@@ -735,7 +735,8 @@ impl<T: GpuView> GpuViewImpl for T {
 /// on-demand scheduling by default.
 ///
 /// Native backends render when the surface is dirty (size/input updates) and
-/// keep rendering while [`GpuView::needs_redraw`] returns `true`.
+/// keep rendering while `GpuFrame::request_redraw()` (or `RedrawHandle`) asks
+/// for another frame.
 /// It stretches to fill available space by default, similar to `SwiftUI`'s
 /// `Color`.
 ///
