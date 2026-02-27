@@ -22,6 +22,7 @@ use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_controls::button::ButtonConfig;
 use waterui_core::dynamic::Dynamic;
+use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
@@ -128,12 +129,18 @@ pub struct HydrolysisRenderer {
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
     active_filter_images: Vec<vello::peniko::ImageData>,
+    button_targets: Vec<ButtonTarget>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct HydroSubview {
     stretch_axis: StretchAxis,
     intrinsic: LayoutSize,
+}
+
+struct ButtonTarget {
+    bounds: vello::kurbo::Rect,
+    action: BoxedAction<()>,
 }
 
 impl HydroSubview {
@@ -215,6 +222,7 @@ impl HydrolysisRenderer {
             vello_renderer,
             scene: vello::Scene::new(),
             active_filter_images: Vec::new(),
+            button_targets: Vec::new(),
         }
     }
 
@@ -538,6 +546,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let button = button.into_inner();
+        let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.register_button_target(hit_bounds, button.action);
+        }
         Self::dispatch_any(ctx, env, button.label);
     }
 
@@ -993,6 +1006,7 @@ impl HydrolysisRenderer {
         for image in self.active_filter_images.drain(..) {
             self.vello_renderer.unregister_texture(image);
         }
+        self.button_targets.clear();
         self.scene.reset();
     }
 
@@ -1038,6 +1052,21 @@ impl HydrolysisRenderer {
         self.vello_renderer
             .render_to_texture(device, queue, &self.scene, target, &params)
             .expect("hydrolysis renderer: failed to render scene");
+    }
+
+    pub fn handle_pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        for target in self.button_targets.iter_mut().rev() {
+            if target.bounds.contains(point) {
+                (target.action)(env);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn register_button_target(&mut self, bounds: vello::kurbo::Rect, action: BoxedAction<()>) {
+        self.button_targets.push(ButtonTarget { bounds, action });
     }
 }
 
@@ -1269,4 +1298,22 @@ fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
         TextFontWeight::Black => 900.0,
     };
     parley::FontWeight::new(value)
+}
+
+fn transformed_rect(transform: vello::kurbo::Affine, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
+    let points = [
+        transform * vello::kurbo::Point::new(rect.x0, rect.y0),
+        transform * vello::kurbo::Point::new(rect.x1, rect.y0),
+        transform * vello::kurbo::Point::new(rect.x0, rect.y1),
+        transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+    ];
+    let min_x = points.iter().fold(f64::INFINITY, |acc, point| acc.min(point.x));
+    let min_y = points.iter().fold(f64::INFINITY, |acc, point| acc.min(point.y));
+    let max_x = points
+        .iter()
+        .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.x));
+    let max_y = points
+        .iter()
+        .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
+    vello::kurbo::Rect::new(min_x, min_y, max_x, max_y)
 }
