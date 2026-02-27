@@ -44,7 +44,6 @@ zenwave = { workspace = true, features = ["rustls"] }
 [features]
 default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
-video-rust-fallback = ["waterui-video/rust-fallback-player"]
 
 
 [lints]
