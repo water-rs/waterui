@@ -130,8 +130,7 @@ configurable!(
     /// # Platform Implementation
     ///
     /// - **iOS/macOS**: native-backed raw surface by default
-    /// - **Android**: runtime-managed raw surface (Rust fallback)
-    /// - **Any platform**: Rust fallback when `waterui-video/rust-fallback-player` is enabled
+    /// - **Android**: runtime-managed raw surface
     Video,
     VideoConfig,
     |config| match config.aspect_ratio {
@@ -266,8 +265,6 @@ configurable!(
     ///
     /// - **Apple platforms**: native player controls by default
     /// - **Android**: WaterUI/Rust player controls
-    /// - **Any platform**: WaterUI/Rust player controls when
-    ///   `waterui-video/rust-fallback-player` is enabled
     VideoPlayer,
     VideoPlayerConfig,
     |config| match config.aspect_ratio {

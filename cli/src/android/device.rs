@@ -214,30 +214,37 @@ async fn run_on_android(
     let log_level = options.log_level();
 
     let (running, sender) = Running::new(move || {
-        // Use std::process::Command for synchronous execution in Drop context
-        let result = std::process::Command::new(&adb_for_kill)
-            .args([
-                "-s",
-                &identifier_for_kill,
-                "shell",
-                "am",
-                "force-stop",
-                &bundle_id_for_kill,
-            ])
-            .output();
+        let spawn_result = std::thread::Builder::new()
+            .name("waterui-android-force-stop".to_string())
+            .spawn(move || {
+                let result = std::process::Command::new(&adb_for_kill)
+                    .args([
+                        "-s",
+                        &identifier_for_kill,
+                        "shell",
+                        "am",
+                        "force-stop",
+                        &bundle_id_for_kill,
+                    ])
+                    .output();
 
-        match result {
-            Ok(output) => {
-                tracing::debug!(
-                    "Force-stop command executed: status={}, stdout={}, stderr={}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            Err(e) => {
-                error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
-            }
+                match result {
+                    Ok(output) => {
+                        tracing::debug!(
+                            "Force-stop command executed: status={}, stdout={}, stderr={}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    }
+                    Err(error) => {
+                        error!("Failed to stop app {}: {}", bundle_id_for_kill, error);
+                    }
+                }
+            });
+
+        if let Err(error) = spawn_result {
+            error!("Failed to spawn force-stop worker thread: {error}");
         }
     });
 
@@ -492,63 +499,14 @@ async fn monitor_android_process(
                 },
             );
 
-            // Fallback for older logcat versions that don't support --pid.
-            let fallback_log = if pid_log.trim().is_empty() {
-                let fallback_args = vec![
-                    "-s".to_string(),
-                    device_id.to_string(),
-                    "logcat".to_string(),
-                    "-v".to_string(),
-                    "threadtime".to_string(),
-                    "-d".to_string(),
-                    "-t".to_string(),
-                    "200".to_string(),
-                    "-s".to_string(),
-                    "AndroidRuntime:E".to_string(),
-                    "DEBUG:*".to_string(),
-                    "libc:F".to_string(),
-                ];
-                run_command_output_os(
-                    &adb,
-                    fallback_args
-                        .iter()
-                        .map(|s| std::ffi::OsStr::new(s.as_str())),
-                )
-                .await
-                .map_or_else(
-                    |err| {
-                        debug!("Failed to fetch fallback logcat: {err}");
-                        String::new()
-                    },
-                    |output| {
-                        if output.status.success() {
-                            String::from_utf8_lossy(&output.stdout).to_string()
-                        } else {
-                            debug!(
-                                "Fallback logcat exited with status {}",
-                                output.status
-                            );
-                            String::new()
-                        }
-                    },
-                )
-            } else {
-                String::new()
-            };
+            if pid_log.trim().is_empty() {
+                panic!(
+                    "PID-filtered logcat returned empty output for {bundle_id} (pid={pid}); --pid support is required"
+                );
+            }
 
-            let pid_filtered = !pid_log.trim().is_empty();
-            let log_for_detection = if pid_filtered {
-                pid_log.as_str()
-            } else {
-                fallback_log.as_str()
-            };
-
-            if android_log_looks_like_crash(log_for_detection, bundle_id, pid, pid_filtered) {
-                let crash_log = if pid_log.trim().is_empty() {
-                    fallback_log
-                } else {
-                    pid_log
-                };
+            if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
+                let crash_log = pid_log;
 
                 let error_msg = if crash_log.trim().is_empty() {
                     format!("Process {bundle_id} crashed.")
@@ -577,14 +535,12 @@ fn log_mentions_pid(log: &str, pid: u32) -> bool {
     })
 }
 
-fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32, pid_filtered: bool) -> bool {
+fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32) -> bool {
     if log.trim().is_empty() {
         return false;
     }
 
-    // When we don't have a PID-filtered dump (older logcat), ensure we don't accidentally pick up
-    // crashes from unrelated processes.
-    let relevant = pid_filtered || log.contains(bundle_id) || log_mentions_pid(log, pid);
+    let relevant = log.contains(bundle_id) || log_mentions_pid(log, pid);
     if !relevant {
         return false;
     }
@@ -610,8 +566,7 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32, pid_filter
         return true;
     }
 
-    // If we only have a global log fallback (no --pid), make sure it actually mentions this app
-    // and includes an error marker to avoid false positives from unrelated processes.
+    // Ensure log lines mention this app before applying AndroidRuntime heuristics.
     if !log.contains(bundle_id) {
         return false;
     }
@@ -885,7 +840,7 @@ impl Device for AndroidEmulator {
             emulator_cmd.process_group(0);
         }
 
-        let mut emulator_process = emulator_cmd.spawn()?;
+        let mut emulator_process = smol::unblock(move || emulator_cmd.spawn()).await?;
 
         // Wait for the emulator to boot (and match the requested AVD).
         let adb_path = AndroidSdk::adb_path()
@@ -1321,8 +1276,7 @@ mod tests {
         assert!(!android_log_looks_like_crash(
             unrelated,
             "com.example.app",
-            28184,
-            false
+            28184
         ));
     }
 
@@ -1332,8 +1286,7 @@ mod tests {
         assert!(android_log_looks_like_crash(
             log,
             "com.example.app",
-            28184,
-            false
+            28184
         ));
     }
 
@@ -1343,8 +1296,7 @@ mod tests {
         assert!(android_log_looks_like_crash(
             log,
             "com.example.app",
-            28184,
-            false
+            28184
         ));
     }
 }

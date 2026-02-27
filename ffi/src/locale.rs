@@ -151,9 +151,7 @@ pub unsafe extern "C" fn waterui_env_install_locale_string(
 
     // Convert C string to Rust &str
     let c_str = unsafe { core::ffi::CStr::from_ptr(locale_str) };
-    let locale_id = c_str
-        .to_str()
-        .expect("waterui_env_install_locale_string: locale_str must be valid UTF-8");
+    let locale_id = unsafe { core::str::from_utf8_unchecked(c_str.to_bytes()) };
     let rust_locale = parse_locale(locale_id);
     install_locale_value(env, rust_locale.clone());
     tracing::debug!("Installed locale from string {:?}", rust_locale);

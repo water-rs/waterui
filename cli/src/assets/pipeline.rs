@@ -325,7 +325,7 @@ async fn scan_assets(assets_dir: &Path) -> eyre::Result<ScannedAssets> {
         let entry = entry?;
         let path = entry.path();
         let file_name = file_name(&path)?;
-        if is_symlink(&path)? {
+        if is_symlink(&path).await? {
             scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Symlinks are not allowed in assets root".to_string(),
@@ -383,7 +383,7 @@ async fn collect_raw_assets(
     scanned: &mut ScannedAssets,
     lossy: bool,
 ) -> eyre::Result<()> {
-    if is_symlink(root)? {
+    if is_symlink(root).await? {
         scanned.errors.push(ValidationIssue {
             path: root.to_path_buf(),
             message: "Symlinks are not allowed for raw/fonts asset directories".to_string(),
@@ -431,7 +431,7 @@ async fn collect_images(
     rules: ImageRules,
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
-    if is_symlink(root)? {
+    if is_symlink(root).await? {
         scanned.errors.push(ValidationIssue {
             path: root.to_path_buf(),
             message: "Symlinks are not allowed for images directories".to_string(),
@@ -445,7 +445,7 @@ async fn collect_images(
         let entry = entry?;
         let path = entry.path();
         let name = file_name(&path)?;
-        if is_symlink(&path)? {
+        if is_symlink(&path).await? {
             scanned.errors.push(ValidationIssue {
                 path: path.clone(),
                 message: "Symlinks are not allowed under assets/images".to_string(),
@@ -506,7 +506,7 @@ async fn collect_apple_catalog_set(
     rules: ImageRules,
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
-    if is_symlink(set_dir)? {
+    if is_symlink(set_dir).await? {
         scanned.errors.push(ValidationIssue {
             path: set_dir.to_path_buf(),
             message: "Symlinks are not allowed for Apple catalog set directories".to_string(),
@@ -605,7 +605,7 @@ async fn collect_apple_imageset(
     rules: ImageRules,
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
-    if is_symlink(imageset_dir)? {
+    if is_symlink(imageset_dir).await? {
         scanned.errors.push(ValidationIssue {
             path: imageset_dir.to_path_buf(),
             message: "Symlinks are not allowed for .imageset directories".to_string(),
@@ -754,7 +754,7 @@ async fn collect_android_drawables(
     rules: ImageRules,
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
-    if is_symlink(android_root)? {
+    if is_symlink(android_root).await? {
         scanned.errors.push(ValidationIssue {
             path: android_root.to_path_buf(),
             message: "Symlinks are not allowed for images/android".to_string(),
@@ -768,7 +768,7 @@ async fn collect_android_drawables(
         let entry = entry?;
         let qualifier_path = entry.path();
         let qualifier = file_name(&qualifier_path)?;
-        if is_symlink(&qualifier_path)? {
+        if is_symlink(&qualifier_path).await? {
             scanned.errors.push(ValidationIssue {
                 path: qualifier_path.clone(),
                 message: "Symlinks are not allowed under images/android".to_string(),
@@ -865,7 +865,7 @@ async fn collect_gtk_images(
     rules: ImageRules,
     scanned: &mut ScannedAssets,
 ) -> eyre::Result<()> {
-    if is_symlink(gtk_root)? {
+    if is_symlink(gtk_root).await? {
         scanned.errors.push(ValidationIssue {
             path: gtk_root.to_path_buf(),
             message: "Symlinks are not allowed for images/gtk".to_string(),
@@ -1191,7 +1191,8 @@ async fn has_named_directory_under(root: &Path, expected_dir_name: &str) -> eyre
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path)
+            let metadata = fs::symlink_metadata(&path)
+                .await
                 .wrap_err_with(|| format!("Failed to read metadata for {}", path.display()))?;
             if metadata.file_type().is_symlink() {
                 continue;
@@ -1425,8 +1426,10 @@ async fn optimized_cache_path(
     fs::create_dir_all(&cache_dir).await?;
     let cache_path = cache_dir.join(format!("{digest}.{ext}"));
 
-    if cache_path.exists() && std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0) > 0 {
-        return Ok(cache_path);
+    if let Ok(metadata) = fs::metadata(&cache_path).await {
+        if metadata.len() > 0 {
+            return Ok(cache_path);
+        }
     }
 
     let optimized = optimize_image_bytes(&bytes, &ext, profile)?;
@@ -1498,7 +1501,8 @@ async fn list_files_recursive(root: &Path) -> eyre::Result<Vec<PathBuf>> {
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path)
+            let metadata = fs::symlink_metadata(&path)
+                .await
                 .wrap_err_with(|| format!("Failed to read metadata for {}", path.display()))?;
             if metadata.file_type().is_symlink() {
                 warn!("Skipping symlink in asset pipeline: {}", path.display());
@@ -1525,7 +1529,7 @@ async fn cleanup_empty_dirs(root: &Path) -> eyre::Result<()> {
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let path = entry.path();
-            if is_symlink(&path)? {
+            if is_symlink(&path).await? {
                 continue;
             }
             if path.is_dir() {
@@ -1557,15 +1561,16 @@ fn xml_escape(input: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn is_symlink(path: &Path) -> eyre::Result<bool> {
-    Ok(std::fs::symlink_metadata(path)
+async fn is_symlink(path: &Path) -> eyre::Result<bool> {
+    Ok(fs::symlink_metadata(path)
+        .await
         .wrap_err_with(|| format!("Failed to read metadata for {}", path.display()))?
         .file_type()
         .is_symlink())
 }
 
 async fn remove_file_if_exists(path: PathBuf) -> eyre::Result<()> {
-    if path.exists() {
+    if fs::metadata(&path).await.is_ok() {
         fs::remove_file(path).await?;
     }
     Ok(())

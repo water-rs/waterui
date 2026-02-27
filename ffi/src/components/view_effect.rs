@@ -208,10 +208,6 @@ pub unsafe extern "C" fn waterui_view_effect_init(
         crate::expect_non_null_mut(effect, "waterui_view_effect_init", "effect");
         crate::expect_non_null(output_layer, "waterui_view_effect_init", "output_layer");
     }
-    assert!(
-        input_width > 0 && input_height > 0,
-        "waterui_view_effect_init: dimensions must be positive, got {input_width}x{input_height}"
-    );
 
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let wui_effect = unsafe { &mut *effect };
@@ -400,10 +396,6 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
 ) -> bool {
     let state =
         unsafe { crate::expect_non_null_mut(state, "waterui_view_effect_set_input", "state") };
-    assert!(
-        width > 0 && height > 0,
-        "waterui_view_effect_set_input: dimensions must be positive, got {width}x{height}"
-    );
 
     // Handle dimension changes
     if width != state.input_width || height != state.input_height {
@@ -488,14 +480,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
         WuiInputType::PixelData => {
             // Copy pixel data to capture texture.
             // input_handle is a pointer to RGBA pixel data
-            let capture_texture = state
-                .capture_texture
-                .as_ref()
-                .expect("[ViewEffect] PixelData input requires an allocated capture texture");
-            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height) }
-                .unwrap_or_else(|error| {
-                    panic!("[ViewEffect] invalid PixelData {width}x{height} ({error})");
-                });
+            let capture_texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
+            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
 
             state.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -553,9 +539,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
         let state = unsafe { &mut *state };
 
         let input_format = if state.imported_texture.is_some() {
-            state
-                .imported_format
-                .expect("[ViewEffect] imported texture is set but format is missing")
+            unsafe { state.imported_format.unwrap_unchecked() }
         } else {
             state.capture_format
         };
@@ -678,10 +662,7 @@ pub unsafe extern "C" fn waterui_view_effect_get_capture_texture(
         crate::expect_non_null(state, "waterui_view_effect_get_capture_texture", "state")
     };
 
-    let texture = state
-        .capture_texture
-        .as_ref()
-        .expect("waterui_view_effect_get_capture_texture: capture texture missing");
+    let texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
     texture as *const wgpu::Texture as *const c_void
 }
 
@@ -899,11 +880,6 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_ahardwarebuffer(
             "state",
         )
     };
-    assert!(
-        width > 0 && height > 0,
-        "waterui_view_effect_set_input_ahardwarebuffer: dimensions must be positive, got {width}x{height}"
-    );
-
     #[cfg(target_os = "android")]
     {
         match android_ahb::import_ahardwarebuffer_as_wgpu_texture(

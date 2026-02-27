@@ -119,17 +119,19 @@ pub fn java_classes() -> &'static JavaClasses {
 /// # Safety
 /// Must only be called once from JNI_OnLoad.
 pub unsafe fn init(vm: *mut jni::sys::JavaVM) -> jint {
-    let vm = unsafe { JavaVM::from_raw(vm) }.expect("Failed to get JavaVM");
+    let vm = unsafe { JavaVM::from_raw(vm).unwrap_unchecked() };
 
-    let mut env = vm.get_env().expect("Failed to get JNIEnv");
+    let mut env = unsafe { vm.get_env().unwrap_unchecked() };
 
     // Cache commonly used classes
     let classes = init_classes(&mut env);
 
-    JAVA_VM.set(vm).expect("JavaVM already initialized");
-    JAVA_CLASSES
-        .set(classes)
-        .expect("JavaClasses already initialized");
+    if JAVA_VM.set(vm).is_err() {
+        panic!("JavaVM already initialized");
+    }
+    if JAVA_CLASSES.set(classes).is_err() {
+        panic!("JavaClasses already initialized");
+    }
 
     tracing::debug!("WaterUI JNI module initialized");
 

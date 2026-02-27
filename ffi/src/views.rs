@@ -26,7 +26,7 @@ pub unsafe extern "C" fn waterui_anyviews_get_id(
     unsafe {
         (&*anyviews)
             .get_id(index)
-            .expect("Out of bound")
+            .unwrap_unchecked()
             .into_inner()
             .into_ffi()
     }
