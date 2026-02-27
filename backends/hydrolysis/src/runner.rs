@@ -102,7 +102,7 @@ mod winit_runner {
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::window::{Window as NativeWindow, WindowId};
 
-    use crate::platform::{InputEvent, PlatformWindow, WinitWindow};
+    use crate::platform::{InputEvent, PlatformWindow, PointerButton, WinitWindow};
     use crate::renderer::HydrolysisRenderer;
     use crate::runner::{RuntimeWindow, render_window};
 
@@ -166,7 +166,7 @@ mod winit_runner {
             }
         }
 
-        fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>) -> bool {
+        fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
             let mut should_close = runtime.window.state.get() == WindowState::Closed;
             for event in runtime.platform.drain_events() {
                 match event {
@@ -176,6 +176,15 @@ mod winit_runner {
                     }
                     InputEvent::Resize { .. } => {
                         runtime.platform.request_redraw();
+                    }
+                    InputEvent::PointerDown {
+                        x,
+                        y,
+                        button: PointerButton::Primary,
+                    } => {
+                        if runtime.renderer.handle_pointer_down(x, y, env) {
+                            runtime.platform.request_redraw();
+                        }
                     }
                     _ => {}
                 }
@@ -220,7 +229,7 @@ mod winit_runner {
                 return;
             };
             runtime.platform.handle_window_event(&event);
-            let should_close = Self::handle_input_events(runtime);
+            let should_close = Self::handle_input_events(runtime, &self.env);
 
             if should_close {
                 self.windows.remove(&window_id);
