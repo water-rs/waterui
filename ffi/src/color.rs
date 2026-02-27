@@ -40,9 +40,8 @@ ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
 ffi_reactive!(Color, *mut WuiColor);
 
-// On Android, `ResolvedColor` is a raw view (native fill) to avoid creating a
-// `GpuSurface` for simple color blocks.
-#[cfg(target_os = "android")]
+// `ResolvedColor` is a raw view (native fill) on all backends to avoid creating
+// GPU surfaces for simple color blocks.
 ffi_view!(ResolvedColor, WuiResolvedColor, resolved_color);
 
 // JNI primitive support for Color (pointer treated as jlong)

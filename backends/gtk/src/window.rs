@@ -8,7 +8,7 @@ use waterui_core::Environment;
 use waterui_core::resolve::Resolvable;
 use waterui_graphics::color::ResolvedColor;
 
-use crate::util::store_watcher_guard;
+use crate::util::{resolved_color_to_css_rgba, store_watcher_guard};
 
 /// Creates a new application window with the specified properties.
 #[must_use]
@@ -57,13 +57,9 @@ pub fn apply_window_background(
 }
 
 fn apply_background_css(provider: &gtk4::CssProvider, resolved: ResolvedColor) {
-    let srgb = resolved.to_srgb_with_headroom();
     let css = format!(
-        ".waterui-window-background {{ background-color: rgba({}, {}, {}, {}); }}",
-        (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
-        (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
-        (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
-        resolved.opacity.clamp(0.0, 1.0)
+        ".waterui-window-background {{ background-color: {}; }}",
+        resolved_color_to_css_rgba(resolved)
     );
     provider.load_from_data(&css);
 }
