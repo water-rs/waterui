@@ -1,23 +1,48 @@
 use core::f64::consts::TAU;
 
 use nami::Signal;
-use waterui::filter::Opacity;
+use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
+use waterui::background::{Background, MaterialBackground};
+use waterui::border::Border;
+use waterui::component::focus::Focused;
+use waterui::cursor::Cursor;
+use waterui::drag_drop::{Draggable, DropDestination};
+use waterui::filter::{
+    Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation,
+};
+use waterui::gesture::GestureObserver;
+use waterui::interaction::Hittable;
+use waterui::metadata::context_menu::ContextMenu;
+use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+use waterui::style::{Offset, Rotation, Scale, Shadow};
+use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_core::layout::{
-    ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
+    Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
-use waterui_core::{AnyView, Environment, Metadata, Native, Retain, Str, View};
+use waterui_core::event::{LifeCycleHook, OnEvent};
+use waterui_core::metadata::MetadataKey;
+use waterui_core::views::Views;
+use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
 use waterui_graphics::color::ResolvedColor;
-use waterui_graphics::{GradientType, ResolvedGradient, ResolvedGradientStop};
-use waterui_layout::container::FixedContainer;
+use waterui_graphics::{
+    AppliedFilter, FilterContext, FilterInput, FilterOutput, GradientType, ResolvedGradient,
+    ResolvedGradientStop,
+};
+use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_layout::scroll::ScrollView;
+use waterui_layout::stack::Axis as StackAxis;
 use waterui_layout::spacer::Spacer;
-use waterui_shape::{PathCommand, ResolvedShape};
+use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
+    frame_device: *const wgpu::Device,
+    frame_queue: *const wgpu::Queue,
 }
 
 impl Default for HydroState {
@@ -25,7 +50,28 @@ impl Default for HydroState {
         Self {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
+            frame_device: core::ptr::null(),
+            frame_queue: core::ptr::null(),
         }
+    }
+}
+
+impl HydroState {
+    fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.frame_device = device as *const _;
+        self.frame_queue = queue as *const _;
+    }
+
+    fn clear_frame_resources(&mut self) {
+        self.frame_device = core::ptr::null();
+        self.frame_queue = core::ptr::null();
+    }
+
+    fn frame_resource_ptrs(&self) -> (*const wgpu::Device, *const wgpu::Queue) {
+        if self.frame_device.is_null() || self.frame_queue.is_null() {
+            panic!("hydrolysis frame resources are unavailable during AppliedFilter dispatch");
+        }
+        (self.frame_device, self.frame_queue)
     }
 }
 
@@ -73,6 +119,7 @@ pub struct HydrolysisRenderer {
     dispatcher: ViewDispatcher<HydroState, RenderContext, ()>,
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
+    active_filter_images: Vec<vello::peniko::ImageData>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +206,7 @@ impl HydrolysisRenderer {
             dispatcher,
             vello_renderer,
             scene: vello::Scene::new(),
+            active_filter_images: Vec::new(),
         }
     }
 
@@ -169,13 +217,92 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<TextConfig>>(|_state, _ctx, _text, _env| ());
 
         dispatcher.register::<Native<FixedContainer>>(Self::render_fixed_container);
+        dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
+        dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
         dispatcher.register::<Native<ResolvedShape>>(Self::render_resolved_shape);
+        dispatcher.register::<Divider>(Self::render_divider);
 
         dispatcher.register::<Metadata<Environment>>(Self::render_environment_metadata);
         dispatcher.register::<Metadata<Retain>>(Self::render_retain_metadata);
         dispatcher.register::<Metadata<Opacity>>(Self::render_opacity_metadata);
+        dispatcher.register::<Metadata<AppliedFilter>>(Self::render_applied_filter_metadata);
+        dispatcher.register::<Metadata<Scale>>(Self::render_scale_metadata);
+        dispatcher.register::<Metadata<Rotation>>(Self::render_rotation_metadata);
+        dispatcher.register::<Metadata<Offset>>(Self::render_offset_metadata);
+        dispatcher.register::<Metadata<ClipShape>>(Self::render_clip_shape_metadata);
+        dispatcher.register::<Metadata<Border>>(Self::render_border_metadata);
+        dispatcher.register::<Metadata<Shadow>>(Self::render_shadow_metadata);
+
+        Self::register_passthrough_metadata::<Secure>(dispatcher);
+        Self::register_passthrough_metadata::<StandardDynamicRange>(dispatcher);
+        Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
+        Self::register_passthrough_metadata::<GestureObserver>(dispatcher);
+        Self::register_passthrough_metadata::<LifeCycleHook>(dispatcher);
+        Self::register_passthrough_metadata::<OnEvent>(dispatcher);
+        Self::register_passthrough_metadata::<Cursor>(dispatcher);
+        Self::register_passthrough_metadata::<Focused>(dispatcher);
+        Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
+        Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
+        Self::register_passthrough_metadata::<Hittable>(dispatcher);
+        Self::register_passthrough_metadata::<Draggable>(dispatcher);
+        Self::register_passthrough_metadata::<DropDestination>(dispatcher);
+        Self::register_passthrough_metadata::<Blur>(dispatcher);
+        Self::register_passthrough_metadata::<Brightness>(dispatcher);
+        Self::register_passthrough_metadata::<Contrast>(dispatcher);
+        Self::register_passthrough_metadata::<Saturation>(dispatcher);
+        Self::register_passthrough_metadata::<Grayscale>(dispatcher);
+        Self::register_passthrough_metadata::<HueRotation>(dispatcher);
+        Self::register_passthrough_metadata::<Background>(dispatcher);
+
+        Self::register_passthrough_ignorable_metadata::<MaterialBackground>(dispatcher);
+        Self::register_passthrough_ignorable_metadata::<AccessibilityLabel>(dispatcher);
+        Self::register_passthrough_ignorable_metadata::<AccessibilityRole>(dispatcher);
+    }
+
+    fn register_passthrough_metadata<T: MetadataKey>(
+        dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
+    ) {
+        dispatcher.register::<Metadata<T>>(Self::render_passthrough_metadata::<T>);
+    }
+
+    fn register_passthrough_ignorable_metadata<T: MetadataKey>(
+        dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
+    ) {
+        dispatcher.register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
+    }
+
+    fn dispatch_any(ctx: RenderContext, env: &Environment, content: AnyView) {
+        let renderer = unsafe { ctx.renderer() };
+        renderer.dispatcher.dispatch(content, env, ctx);
+    }
+
+    fn render_layout_container(
+        ctx: RenderContext,
+        layout: Box<dyn Layout>,
+        children: Vec<AnyView>,
+        env: &Environment,
+    ) {
+        let subviews: Vec<HydroSubview> = children.iter().map(HydroSubview::from_view).collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+
+        let proposal =
+            ProposalSize::new(Some(ctx.bounds.width() as f32), Some(ctx.bounds.height() as f32));
+        let _ = layout.size_that_fits(proposal, &refs);
+        let bounds = LayoutRect::from_size(LayoutSize::new(
+            ctx.bounds.width() as f32,
+            ctx.bounds.height() as f32,
+        ));
+        let child_rects = layout.place(bounds, &refs);
+
+        for (child, rect) in children.into_iter().zip(child_rects) {
+            let child_transform =
+                vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
+            let child_bounds =
+                vello::kurbo::Rect::new(0.0, 0.0, f64::from(rect.width()), f64::from(rect.height()));
+            Self::dispatch_any(ctx.child(child_transform, child_bounds), env, child);
+        }
     }
 
     fn render_fixed_container(
@@ -185,30 +312,62 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let (layout, children) = container.into_inner().into_inner();
-        let subviews: Vec<HydroSubview> = children.iter().map(HydroSubview::from_view).collect();
-        let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+        Self::render_layout_container(ctx, layout, children, env);
+    }
 
-        let proposal = ProposalSize::new(Some(ctx.bounds.width() as f32), Some(ctx.bounds.height() as f32));
-        let _ = layout.size_that_fits(proposal, &refs);
-        let bounds = LayoutRect::from_size(LayoutSize::new(
-            ctx.bounds.width() as f32,
-            ctx.bounds.height() as f32,
-        ));
-        let child_rects = layout.place(bounds, &refs);
-
-        let renderer = unsafe { ctx.renderer() };
-        for (child, rect) in children.into_iter().zip(child_rects) {
-            let child_transform = vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
-            let child_bounds = vello::kurbo::Rect::new(
-                0.0,
-                0.0,
-                f64::from(rect.width()),
-                f64::from(rect.height()),
-            );
-            renderer
-                .dispatcher
-                .dispatch(child, env, ctx.child(child_transform, child_bounds));
+    fn render_lazy_container(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        container: Native<LazyContainer>,
+        env: &Environment,
+    ) {
+        let (layout, children) = container.into_inner().into_inner();
+        let count = children.len().get();
+        let mut materialized = Vec::with_capacity(count);
+        for index in 0..count {
+            let view = children.get_view(index).unwrap_or_else(|| {
+                panic!("LazyContainer failed to materialize child at index {index}")
+            });
+            materialized.push(view);
         }
+        Self::render_layout_container(ctx, layout, materialized, env);
+    }
+
+    fn render_scroll_view(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        scroll: Native<ScrollView>,
+        env: &Environment,
+    ) {
+        let (_axis, content) = scroll.into_inner().into_inner();
+        let scene = unsafe { ctx.scene() };
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &ctx.bounds,
+        );
+        Self::dispatch_any(ctx, env, content);
+        scene.pop_layer();
+    }
+
+    fn render_divider(_state: &mut HydroState, ctx: RenderContext, _divider: Divider, env: &Environment) {
+        let vertical = matches!(env.get::<StackAxis>(), Some(StackAxis::Horizontal));
+        let rect = if vertical {
+            vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x0 + 1.0, ctx.bounds.y1)
+        } else {
+            vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y0 + 1.0)
+        };
+
+        let scene = unsafe { ctx.scene() };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::new([0.75, 0.75, 0.75, 1.0]),
+            None,
+            &rect,
+        );
     }
 
     fn render_resolved_color(
@@ -297,6 +456,283 @@ impl HydrolysisRenderer {
         scene.pop_layer();
     }
 
+    fn render_applied_filter_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<AppliedFilter>,
+        env: &Environment,
+    ) {
+        let Metadata {
+            content,
+            value: mut filter,
+        } = metadata;
+        let renderer = unsafe { ctx.renderer() };
+        let (device_ptr, queue_ptr) = renderer.state().frame_resource_ptrs();
+        let device = unsafe { &*device_ptr };
+        let queue = unsafe { &*queue_ptr };
+
+        let width = (ctx.bounds.width().max(1.0).round()) as u32;
+        let height = (ctx.bounds.height().max(1.0).round()) as u32;
+        let texture_size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        let mut subtree_scene = vello::Scene::new();
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        renderer.dispatcher.dispatch(content, env, ctx);
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_applied_filter_input"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer
+            .vello_renderer
+            .render_to_texture(
+                device,
+                queue,
+                &subtree_scene,
+                &input_view,
+                &vello::RenderParams {
+                    base_color: vello::peniko::Color::TRANSPARENT,
+                    width,
+                    height,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .expect("hydrolysis AppliedFilter: failed to render subtree");
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_applied_filter_output"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let filter_context = FilterContext {
+            device,
+            queue,
+            input_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            pipeline_cache: None,
+        };
+        pollster::block_on(filter.setup(&filter_context));
+        filter.sync_targets();
+
+        let input = FilterInput {
+            device,
+            queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width,
+            height,
+        };
+        let output = FilterOutput {
+            device,
+            queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width,
+            height,
+        };
+        let _ = filter.render(&input, &output);
+
+        let image = renderer.vello_renderer.register_texture(output_texture);
+        renderer.active_filter_images.push(image.clone());
+        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
+            * vello::kurbo::Affine::scale_non_uniform(
+                ctx.bounds.width() / f64::from(width),
+                ctx.bounds.height() / f64::from(height),
+            );
+        let scene = unsafe { ctx.scene() };
+        scene.draw_image(
+            &vello::peniko::ImageBrush::new(image),
+            ctx.transform * image_transform,
+        );
+    }
+
+    fn render_scale_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Scale>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let center = anchor_point(ctx.bounds, value.anchor);
+        let transform = vello::kurbo::Affine::translate((center.x, center.y))
+            * vello::kurbo::Affine::scale_non_uniform(
+                f64::from(value.x.get()),
+                f64::from(value.y.get()),
+            )
+            * vello::kurbo::Affine::translate((-center.x, -center.y));
+        Self::dispatch_any(ctx.child(transform, ctx.bounds), env, content);
+    }
+
+    fn render_rotation_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Rotation>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let center = anchor_point(ctx.bounds, value.anchor);
+        let radians = f64::from(value.angle.get()).to_radians();
+        let transform = vello::kurbo::Affine::translate((center.x, center.y))
+            * vello::kurbo::Affine::rotate(radians)
+            * vello::kurbo::Affine::translate((-center.x, -center.y));
+        Self::dispatch_any(ctx.child(transform, ctx.bounds), env, content);
+    }
+
+    fn render_offset_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Offset>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let transform =
+            vello::kurbo::Affine::translate((f64::from(value.x.get()), f64::from(value.y.get())));
+        Self::dispatch_any(ctx.child(transform, ctx.bounds), env, content);
+    }
+
+    fn render_clip_shape_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<ClipShape>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
+        let scene = unsafe { ctx.scene() };
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip_path,
+        );
+        Self::dispatch_any(ctx, env, content);
+        scene.pop_layer();
+    }
+
+    fn render_border_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Border>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let border = value;
+        Self::dispatch_any(ctx, env, content);
+
+        if border.width <= 0.0 {
+            return;
+        }
+
+        let scene = unsafe { ctx.scene() };
+        let brush = resolved_color_to_peniko(border.color.resolve(env).get());
+        let width = f64::from(border.width);
+
+        if border.edges.all() && border.corner_radius > 0.0 {
+            let rounded = vello::kurbo::RoundedRect::from_rect(
+                ctx.bounds,
+                f64::from(border.corner_radius),
+            );
+            let stroke = vello::kurbo::Stroke::new(width);
+            scene.stroke(&stroke, ctx.transform, brush, None, &rounded);
+            return;
+        }
+
+        if border.edges.top {
+            let top = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y0 + width);
+            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &top);
+        }
+        if border.edges.bottom {
+            let bottom =
+                vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y1 - width, ctx.bounds.x1, ctx.bounds.y1);
+            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &bottom);
+        }
+        if border.edges.leading {
+            let leading =
+                vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x0 + width, ctx.bounds.y1);
+            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &leading);
+        }
+        if border.edges.trailing {
+            let trailing =
+                vello::kurbo::Rect::new(ctx.bounds.x1 - width, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
+            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &trailing);
+        }
+    }
+
+    fn render_shadow_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Shadow>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let shadow = value;
+        let spread = f64::from(shadow.radius.max(0.0));
+        let offset_x = f64::from(shadow.offset.x);
+        let offset_y = f64::from(shadow.offset.y);
+        let shadow_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0 + offset_x - spread,
+            ctx.bounds.y0 + offset_y - spread,
+            ctx.bounds.x1 + offset_x + spread,
+            ctx.bounds.y1 + offset_y + spread,
+        );
+        let shadow_color = resolved_color_to_peniko(shadow.color.resolve(env).get());
+
+        let scene = unsafe { ctx.scene() };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            shadow_color,
+            None,
+            &shadow_rect,
+        );
+        Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_passthrough_metadata<T: MetadataKey>(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<T>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let _ = value;
+        Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_passthrough_ignorable_metadata<T: MetadataKey>(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: IgnorableMetadata<T>,
+        env: &Environment,
+    ) {
+        let IgnorableMetadata { content, value } = metadata;
+        let _ = value;
+        Self::dispatch_any(ctx, env, content);
+    }
+
     #[must_use]
     pub fn state(&self) -> &HydroState {
         self.dispatcher.state()
@@ -311,6 +747,13 @@ impl HydrolysisRenderer {
         &self.scene
     }
 
+    pub fn reset_scene(&mut self) {
+        for image in self.active_filter_images.drain(..) {
+            self.vello_renderer.unregister_texture(image);
+        }
+        self.scene.reset();
+    }
+
     pub fn scene_mut(&mut self) -> &mut vello::Scene {
         &mut self.scene
     }
@@ -321,6 +764,14 @@ impl HydrolysisRenderer {
 
     pub fn dispatcher_mut(&mut self) -> &mut ViewDispatcher<HydroState, RenderContext, ()> {
         &mut self.dispatcher
+    }
+
+    pub fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.dispatcher.state_mut().set_frame_resources(device, queue);
+    }
+
+    pub fn clear_frame_resources(&mut self) {
+        self.dispatcher.state_mut().clear_frame_resources();
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -445,12 +896,16 @@ fn to_peniko_stop(stop: &ResolvedGradientStop) -> vello::peniko::ColorStop {
 }
 
 fn resolved_shape_to_path(shape: &ResolvedShape, bounds: vello::kurbo::Rect) -> vello::kurbo::BezPath {
+    path_commands_to_path(&shape.commands, bounds)
+}
+
+fn path_commands_to_path(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> vello::kurbo::BezPath {
     let width = bounds.width();
     let height = bounds.height();
     let mut path = vello::kurbo::BezPath::new();
     let mut has_current = false;
 
-    for command in &shape.commands {
+    for command in commands {
         match command {
             PathCommand::MoveTo { x, y } => {
                 path.move_to(vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height));
@@ -531,4 +986,11 @@ fn resolved_shape_to_path(shape: &ResolvedShape, bounds: vello::kurbo::Rect) -> 
     }
 
     path
+}
+
+fn anchor_point(bounds: vello::kurbo::Rect, anchor: waterui::style::Anchor) -> vello::kurbo::Point {
+    vello::kurbo::Point::new(
+        bounds.x0 + bounds.width() * f64::from(anchor.x),
+        bounds.y0 + bounds.height() * f64::from(anchor.y),
+    )
 }

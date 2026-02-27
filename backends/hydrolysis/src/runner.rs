@@ -1,11 +1,13 @@
-use std::mem;
-
 use waterui::app::App;
 use waterui::window::Window;
 use waterui_core::{AnyView, Environment};
 
-use crate::platform::{OffscreenWindow, PlatformWindow};
+use crate::platform::PlatformWindow;
+#[cfg(not(feature = "winit"))]
+use crate::platform::OffscreenWindow;
 use crate::renderer::HydrolysisRenderer;
+#[cfg(not(feature = "winit"))]
+use std::mem;
 
 struct RuntimeWindow<P: PlatformWindow> {
     window: Window,
@@ -33,17 +35,19 @@ fn create_bounds(width: u32, height: u32) -> vello::kurbo::Rect {
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
     runtime.platform.apply_properties(&runtime.window);
+    let surface = runtime.platform.surface();
+    let (width, height) = surface.size();
+    runtime
+        .renderer
+        .set_frame_resources(surface.device(), surface.queue());
 
     if let Some(content) = runtime.content.take() {
-        let (width, height) = runtime.platform.surface().size();
-        runtime.renderer.scene_mut().reset();
+        runtime.renderer.reset_scene();
         runtime
             .renderer
             .dispatch(content, env, create_bounds(width, height));
     }
 
-    let surface = runtime.platform.surface();
-    let (width, height) = surface.size();
     let frame = surface
         .acquire()
         .expect("hydrolysis runner: failed to acquire frame");
@@ -54,6 +58,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         width,
         height,
     );
+    runtime.renderer.clear_frame_resources();
     surface.present(frame);
     runtime.rendered_once = true;
 }
