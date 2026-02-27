@@ -13,13 +13,10 @@ categories = ["gui"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics.workspace = true
-lyon.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
 nami.workspace = true
 bytemuck = { version = "1.14", features = ["derive"] }
-encase.workspace = true
-glam = "0.29"
 
 [lints]
 workspace = true

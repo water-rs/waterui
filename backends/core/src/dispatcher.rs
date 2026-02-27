@@ -78,7 +78,7 @@ impl DispatchTraceGuard {
         if enabled {
             DISPATCH_DEPTH.with(|depth| {
                 let current = depth.get();
-                eprintln!("[dispatch] {}{}", "  ".repeat(current), view_name);
+                tracing::debug!("[dispatch] {}{}", "  ".repeat(current), view_name);
                 depth.set(current + 1);
             });
         }
@@ -161,7 +161,9 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
                 h_raw(state, ctx, v, env)
             }),
             boxed: Box::new(move |state, ctx, view: AnyView, env| {
-                let v = *view.downcast::<V>().expect("type mismatch in boxed dispatch");
+                let v = *view
+                    .downcast::<V>()
+                    .expect("type mismatch in boxed dispatch");
                 h_boxed(state, ctx, v, env)
             }),
         };
