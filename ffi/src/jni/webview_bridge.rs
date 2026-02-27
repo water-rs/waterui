@@ -342,24 +342,24 @@ unsafe extern "C" fn webview_drop(data: *mut ()) {
 
 pub unsafe extern "C" fn jni_create_webview() -> WuiWebViewHandle {
     crate::jni::with_jni_env(|env| {
-        let manager_class = env
-            .find_class("dev/waterui/android/components/WebViewManager")
-            .expect("WebViewManager class not found");
+        let manager_class = unsafe {
+            env.find_class("dev/waterui/android/components/WebViewManager")
+                .unwrap_unchecked()
+        };
 
-        let wrapper_obj = env
-            .call_static_method(
+        let wrapper_obj = unsafe {
+            env.call_static_method(
                 manager_class,
                 "create",
                 "()Ldev/waterui/android/components/WebViewWrapper;",
                 &[],
             )
-            .expect("WebViewManager.create failed")
+            .unwrap_unchecked()
             .l()
-            .expect("WebViewManager.create should return object");
+            .unwrap_unchecked()
+        };
 
-        let wrapper_ref = env
-            .new_global_ref(wrapper_obj)
-            .expect("Failed to create global ref for WebViewWrapper");
+        let wrapper_ref = unsafe { env.new_global_ref(wrapper_obj).unwrap_unchecked() };
 
         let handle = Box::new(AndroidWebViewHandle {
             wrapper: wrapper_ref,
