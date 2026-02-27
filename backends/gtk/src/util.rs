@@ -33,6 +33,34 @@ pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
     (red, green, blue, alpha)
 }
 
+/// Converts a resolved color to clamped SDR sRGBA float channels in `[0.0, 1.0]`.
+#[must_use]
+pub fn resolved_color_to_srgba_f64(color: ResolvedColor) -> (f64, f64, f64, f64) {
+    let srgb = color.to_srgb_with_headroom();
+    assert!(
+        srgb.red.is_finite(),
+        "resolved color red channel must be finite"
+    );
+    assert!(
+        srgb.green.is_finite(),
+        "resolved color green channel must be finite"
+    );
+    assert!(
+        srgb.blue.is_finite(),
+        "resolved color blue channel must be finite"
+    );
+    assert!(
+        color.opacity.is_finite(),
+        "resolved color opacity channel must be finite"
+    );
+    (
+        f64::from(srgb.red.clamp(0.0, 1.0)),
+        f64::from(srgb.green.clamp(0.0, 1.0)),
+        f64::from(srgb.blue.clamp(0.0, 1.0)),
+        f64::from(color.opacity.clamp(0.0, 1.0)),
+    )
+}
+
 /// Converts a resolved color to `#RRGGBB` format.
 #[must_use]
 pub fn resolved_color_to_hex(color: ResolvedColor) -> String {
