@@ -28,21 +28,38 @@ impl IntoFFI for ListItem {
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> WuiListItem {
-    unsafe {
-        let any: waterui::AnyView = crate::IntoRust::into_rust(view);
-        if any.is::<ListItem>() {
-            return any.downcast_unchecked::<ListItem>().into_ffi();
-        }
-
-        let native = any.downcast_unchecked::<waterui_core::Native<ListItem>>();
-        native.into_inner().into_ffi()
-    }
+    let any: waterui::AnyView = unsafe { crate::IntoRust::into_rust(view) };
+    unsafe { (*any.downcast_unchecked::<ListItem>()).into_ffi() }
 }
 
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_list_item_id() -> crate::WuiTypeId {
     crate::WuiTypeId::of::<ListItem>()
+}
+
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local>(
+    mut env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+) -> crate::jni::jobject {
+    let type_id = crate::WuiTypeId::of::<ListItem>();
+    crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+}
+
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListItem<'local>(
+    mut env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    view_ptr: crate::jni::jlong,
+) -> crate::jni::jobject {
+    use crate::jni::convert::jlong_to_ptr_mut;
+    let view_ptr: *mut WuiAnyView = unsafe { jlong_to_ptr_mut(view_ptr) };
+    let any: waterui::AnyView = unsafe { crate::IntoRust::into_rust(view_ptr) };
+    let ffi_struct: WuiListItem = unsafe { (*any.downcast_unchecked::<ListItem>()).into_ffi() };
+    crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
 }
 
 /// FFI representation of a list.
