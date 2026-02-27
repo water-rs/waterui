@@ -1162,6 +1162,129 @@ impl ToJavaStruct for crate::color::WuiResolvedColor {
     }
 }
 
+/// WuiResolvedGradientStop -> ResolvedGradientStopStruct(position, color)
+impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/ResolvedGradientStopStruct")
+            .expect("ResolvedGradientStopStruct class not found");
+        let color = crate::color::WuiResolvedColor {
+            red: self.color.red,
+            green: self.color.green,
+            blue: self.color.blue,
+            opacity: self.color.opacity,
+            headroom: self.color.headroom,
+        };
+        let java_color = color.to_java_struct(env);
+        env.new_object(
+            &class,
+            "(FLdev/waterui/android/runtime/ResolvedColorStruct;)V",
+            &[JValue::Float(self.position), JValue::Object(&java_color)],
+        )
+        .expect("Failed to create ResolvedGradientStopStruct")
+    }
+}
+
+/// WuiResolvedGradient -> ResolvedGradientStruct(...)
+impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let stop_class = env
+            .find_class("dev/waterui/android/runtime/ResolvedGradientStopStruct")
+            .expect("ResolvedGradientStopStruct class not found");
+        let stop_array = env
+            .new_object_array(
+                self.stops.len() as i32,
+                &stop_class,
+                JObject::null(),
+            )
+            .expect("Failed to create ResolvedGradientStopStruct array");
+
+        for (index, stop) in self.stops.as_slice().iter().enumerate() {
+            let java_stop = stop.to_java_struct(env);
+            env.set_object_array_element(&stop_array, index as i32, &java_stop)
+                .expect("Failed to set ResolvedGradientStopStruct array element");
+        }
+
+        let class = env
+            .find_class("dev/waterui/android/runtime/ResolvedGradientStruct")
+            .expect("ResolvedGradientStruct class not found");
+        env.new_object(
+            &class,
+            "(I[Ldev/waterui/android/runtime/ResolvedGradientStopStruct;FFFFFF)V",
+            &[
+                JValue::Int(self.gradient_type as i32),
+                JValue::Object(&stop_array),
+                JValue::Float(self.start_x),
+                JValue::Float(self.start_y),
+                JValue::Float(self.end_x),
+                JValue::Float(self.end_y),
+                JValue::Float(self.start_value),
+                JValue::Float(self.end_value),
+            ],
+        )
+        .expect("Failed to create ResolvedGradientStruct")
+    }
+}
+
+/// WuiShapeKind -> ShapeKindStruct(tag, topLeft, topRight, bottomRight, bottomLeft)
+impl ToJavaStruct for crate::shape::WuiShapeKind {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/ShapeKindStruct")
+            .expect("ShapeKindStruct class not found");
+        env.new_object(
+            &class,
+            "(IFFFF)V",
+            &[
+                JValue::Int(self.tag),
+                JValue::Float(self.top_left),
+                JValue::Float(self.top_right),
+                JValue::Float(self.bottom_right),
+                JValue::Float(self.bottom_left),
+            ],
+        )
+        .expect("Failed to create ShapeKindStruct")
+    }
+}
+
+/// WuiResolvedShape -> ResolvedShapeStruct(kind, commands, fill)
+impl ToJavaStruct for crate::shape::WuiResolvedShape {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let command_class = env
+            .find_class("dev/waterui/android/runtime/PathCommandStruct")
+            .expect("PathCommandStruct class not found");
+        let command_array = env
+            .new_object_array(
+                self.commands.len() as i32,
+                &command_class,
+                JObject::null(),
+            )
+            .expect("Failed to create PathCommandStruct array");
+
+        for (index, cmd) in self.commands.as_slice().iter().enumerate() {
+            let java_cmd = create_path_command_struct(env, cmd);
+            env.set_object_array_element(&command_array, index as i32, &java_cmd)
+                .expect("Failed to set PathCommandStruct array element");
+        }
+
+        let java_kind = self.kind.to_java_struct(env);
+        let java_fill = self.fill.to_java_struct(env);
+        let class = env
+            .find_class("dev/waterui/android/runtime/ResolvedShapeStruct")
+            .expect("ResolvedShapeStruct class not found");
+        env.new_object(
+            &class,
+            "(Ldev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;Ldev/waterui/android/runtime/ResolvedColorStruct;)V",
+            &[
+                JValue::Object(&java_kind),
+                JValue::Object(&command_array),
+                JValue::Object(&java_fill),
+            ],
+        )
+        .expect("Failed to create ResolvedShapeStruct")
+    }
+}
+
 /// WuiText -> TextStruct(contentPtr: Long)
 impl ToJavaStruct for crate::components::text::WuiText {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

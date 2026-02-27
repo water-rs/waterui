@@ -17,7 +17,7 @@ pub mod shader_surface;
 pub mod animated_mesh_gradient;
 /// GPU-animated flowing gradient.
 pub mod flowing_gradient;
-/// GPU-accelerated gradient rendering.
+/// Gradient primitives (native linear/radial/angular + GPU mesh gradients).
 pub mod gradient_renderer;
 
 /// Shared GPU context for efficient multi-view rendering.
@@ -47,7 +47,7 @@ pub use animated_mesh_gradient::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };
 pub use gradient_renderer::{
-    Gradient, GradientConfig, GradientRenderer, GradientType, MeshGradient,
+    Gradient, GradientConfig, GradientType, MeshGradient, ResolvedGradient, ResolvedGradientStop,
 };
 
 pub use view_effect::{
