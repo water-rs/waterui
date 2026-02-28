@@ -338,6 +338,8 @@ impl HydrolysisRenderer {
         dispatcher.register::<Metadata<ClipShape>>(Self::render_clip_shape_metadata);
         dispatcher.register::<Metadata<Border>>(Self::render_border_metadata);
         dispatcher.register::<Metadata<Shadow>>(Self::render_shadow_metadata);
+        dispatcher.register::<Metadata<Focused>>(Self::render_focused_metadata);
+        dispatcher.register::<Metadata<Hittable>>(Self::render_hittable_metadata);
         dispatcher.register::<Metadata<LifeCycleHook>>(Self::render_lifecycle_hook_metadata);
         dispatcher.register::<Metadata<OnEvent>>(Self::render_on_event_metadata);
 
@@ -346,10 +348,8 @@ impl HydrolysisRenderer {
         Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<GestureObserver>(dispatcher);
         Self::register_passthrough_metadata::<Cursor>(dispatcher);
-        Self::register_passthrough_metadata::<Focused>(dispatcher);
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
-        Self::register_passthrough_metadata::<Hittable>(dispatcher);
         Self::register_passthrough_metadata::<Draggable>(dispatcher);
         Self::register_passthrough_metadata::<DropDestination>(dispatcher);
         Self::register_passthrough_metadata::<Blur>(dispatcher);
@@ -1872,6 +1872,73 @@ impl HydrolysisRenderer {
             &shadow_rect,
         );
         Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_focused_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Focused>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let should_focus = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&value.0)
+        };
+        let renderer = unsafe { ctx.renderer() };
+        let start = renderer.text_input_targets.len();
+        Self::dispatch_any(ctx, env, content);
+        let end = renderer.text_input_targets.len();
+
+        if should_focus {
+            if start < end {
+                renderer.focused_text_input.set(Some(start));
+            }
+            return;
+        }
+
+        if matches!(
+            renderer.focused_text_input.get(),
+            Some(index) if index >= start && index < end
+        ) {
+            renderer.focused_text_input.set(None);
+        }
+    }
+
+    fn render_hittable_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<Hittable>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let enabled = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&value.enabled)
+        };
+        let renderer = unsafe { ctx.renderer() };
+        let pointer_start = renderer.pointer_targets.len();
+        let hover_start = renderer.hover_targets.len();
+        let scroll_start = renderer.scroll_targets.len();
+        let text_start = renderer.text_input_targets.len();
+
+        Self::dispatch_any(ctx, env, content);
+
+        if enabled {
+            return;
+        }
+
+        renderer.pointer_targets.truncate(pointer_start);
+        renderer.hover_targets.truncate(hover_start);
+        renderer.scroll_targets.truncate(scroll_start);
+        renderer.text_input_targets.truncate(text_start);
+
+        if matches!(
+            renderer.focused_text_input.get(),
+            Some(index) if index >= text_start
+        ) {
+            renderer.focused_text_input.set(None);
+        }
     }
 
     fn render_lifecycle_hook_metadata(
