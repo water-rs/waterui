@@ -52,6 +52,8 @@ pub enum InputEvent {
         y: f32,
     },
     Scroll {
+        x: f32,
+        y: f32,
         dx: f32,
         dy: f32,
     },
@@ -292,8 +294,10 @@ impl PlatformWindow for OffscreenWindow {
             return;
         }
         let frame = window.frame.get();
-        self.surface
-            .resize(frame.width().max(1.0) as u32, frame.height().max(1.0) as u32);
+        self.surface.resize(
+            frame.width().max(1.0) as u32,
+            frame.height().max(1.0) as u32,
+        );
     }
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
@@ -509,7 +513,12 @@ mod winit_impl {
                         MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy),
                         MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32),
                     };
-                    self.pending_events.push(InputEvent::Scroll { dx, dy });
+                    self.pending_events.push(InputEvent::Scroll {
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                        dx,
+                        dy,
+                    });
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     self.modifiers = modifiers.state().into();
