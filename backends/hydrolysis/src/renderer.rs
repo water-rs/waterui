@@ -2,6 +2,7 @@ use core::f64::consts::TAU;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -28,7 +29,7 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
-use waterui_core::event::{LifeCycleHook, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
@@ -36,7 +37,7 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
 use waterui_form::picker::PickerConfig;
-use waterui_form::secure::SecureFieldConfig;
+use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
@@ -55,6 +56,7 @@ use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
+use crate::platform::{KeyCode, Modifiers, PointerButton};
 use crate::scroll::{ScrollController, ScrollMetrics};
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
@@ -144,7 +146,13 @@ pub struct HydrolysisRenderer {
     scene: vello::Scene,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
+    hover_targets: Vec<HoverTarget>,
+    text_input_targets: Vec<TextInputTarget>,
     scroll_targets: Vec<ScrollTarget>,
+    focused_text_input: Cell<Option<usize>>,
+    lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
+    lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
+    lifecycle_disappear_slot: usize,
     rebuild_requested: Rc<Cell<bool>>,
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
@@ -163,9 +171,41 @@ struct PointerTarget {
     action: Box<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>,
 }
 
+struct HoverTarget {
+    bounds: vello::kurbo::Rect,
+    hovering: bool,
+    on_enter: Option<Box<dyn FnMut(&Environment) -> bool>>,
+    on_exit: Option<Box<dyn FnMut(&Environment) -> bool>>,
+}
+
+enum TextInputCommand {
+    Insert(String),
+    Backspace,
+}
+
+struct TextInputTarget {
+    bounds: vello::kurbo::Rect,
+    action: Box<dyn FnMut(TextInputCommand) -> bool>,
+}
+
 struct ScrollTarget {
     bounds: vello::kurbo::Rect,
     action: Box<dyn FnMut(f32, f32) -> bool>,
+}
+
+struct DeferredLifeCycleHook {
+    env: Environment,
+    hook: LifeCycleHook,
+}
+
+impl DeferredLifeCycleHook {
+    fn new(hook: LifeCycleHook, env: Environment) -> Self {
+        Self { env, hook }
+    }
+
+    fn call(self) {
+        self.hook.handle(&self.env);
+    }
 }
 
 impl HydroSubview {
@@ -248,7 +288,13 @@ impl HydrolysisRenderer {
             scene: vello::Scene::new(),
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
+            hover_targets: Vec::new(),
+            text_input_targets: Vec::new(),
             scroll_targets: Vec::new(),
+            focused_text_input: Cell::new(None),
+            lifecycle_disappear_previous: BTreeMap::new(),
+            lifecycle_disappear_current: BTreeMap::new(),
+            lifecycle_disappear_slot: 0,
             rebuild_requested: Rc::new(Cell::new(false)),
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
@@ -292,13 +338,13 @@ impl HydrolysisRenderer {
         dispatcher.register::<Metadata<ClipShape>>(Self::render_clip_shape_metadata);
         dispatcher.register::<Metadata<Border>>(Self::render_border_metadata);
         dispatcher.register::<Metadata<Shadow>>(Self::render_shadow_metadata);
+        dispatcher.register::<Metadata<LifeCycleHook>>(Self::render_lifecycle_hook_metadata);
+        dispatcher.register::<Metadata<OnEvent>>(Self::render_on_event_metadata);
 
         Self::register_passthrough_metadata::<Secure>(dispatcher);
         Self::register_passthrough_metadata::<StandardDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<GestureObserver>(dispatcher);
-        Self::register_passthrough_metadata::<LifeCycleHook>(dispatcher);
-        Self::register_passthrough_metadata::<OnEvent>(dispatcher);
         Self::register_passthrough_metadata::<Cursor>(dispatcher);
         Self::register_passthrough_metadata::<Focused>(dispatcher);
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
@@ -349,6 +395,23 @@ impl HydrolysisRenderer {
         let child_transform = vello::kurbo::Affine::translate((rect.x0, rect.y0));
         let child_bounds = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
         Self::dispatch_any(ctx.child(child_transform, child_bounds), env, content);
+    }
+
+    fn watch_signal<S>(&mut self, signal: &S)
+    where
+        S: Signal + Clone + 'static,
+    {
+        let rebuild_requested = Rc::clone(&self.rebuild_requested);
+        let guard = signal.watch(move |_| rebuild_requested.set(true));
+        self.current_frame_retain.push(Retain::new(guard));
+    }
+
+    fn read_signal<S>(&mut self, signal: &S) -> S::Output
+    where
+        S: Signal + Clone + 'static,
+    {
+        self.watch_signal(signal);
+        signal.get()
     }
 
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
@@ -560,7 +623,10 @@ impl HydrolysisRenderer {
         text: Native<TextConfig>,
         env: &Environment,
     ) {
-        let styled = text.into_inner().content.get();
+        let styled = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&text.into_inner().content)
+        };
         Self::render_styled_text(state, ctx, styled, env);
     }
 
@@ -850,7 +916,12 @@ impl HydrolysisRenderer {
             track_center_y + 2.0,
         );
 
-        let clamped = slider.value.get().clamp(range_start, range_end);
+        let clamped = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer
+                .read_signal(&slider.value)
+                .clamp(range_start, range_end)
+        };
         let progress = (clamped - range_start) / span;
         let fill_right = track_left + (track_right - track_left) * progress;
         let fill_rect = vello::kurbo::Rect::new(
@@ -1005,7 +1076,10 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let progress = progress.into_inner();
-        let clamped = progress.value.get().clamp(0.0, 1.0) as f64;
+        let clamped = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&progress.value).clamp(0.0, 1.0) as f64
+        };
 
         match progress.style {
             ProgressStyle::Linear => {
@@ -1140,8 +1214,14 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let prompt = text_field.prompt.content().get().to_plain();
-        let value = text_field.value.get().to_plain();
+        let prompt_signal = text_field.prompt.content();
+        let (prompt, value) = {
+            let renderer = unsafe { ctx.renderer() };
+            (
+                renderer.read_signal(&prompt_signal).to_plain(),
+                renderer.read_signal(&text_field.value).to_plain(),
+            )
+        };
         let display = if value.is_empty() { prompt } else { value };
         let text_bounds = inset_rect(field_rect, 8.0, 6.0);
         Self::render_styled_text(
@@ -1153,6 +1233,29 @@ impl HydrolysisRenderer {
             StyledStr::plain(display),
             env,
         );
+
+        let value_binding = text_field.value;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_text_input_target(transformed_rect(ctx.transform, field_rect), move |command| {
+            let mut plain = value_binding.get().to_plain().to_string();
+            match command {
+                TextInputCommand::Insert(text) => {
+                    if text.is_empty() {
+                        return false;
+                    }
+                    plain.push_str(text.as_str());
+                    value_binding.set(StyledStr::plain(plain));
+                    true
+                }
+                TextInputCommand::Backspace => {
+                    if plain.pop().is_none() {
+                        return false;
+                    }
+                    value_binding.set(StyledStr::plain(plain));
+                    true
+                }
+            }
+        });
     }
 
     fn render_secure_field(
@@ -1186,7 +1289,11 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let masked = "*".repeat(secure_field.value.get().expose().chars().count());
+        let masked = {
+            let renderer = unsafe { ctx.renderer() };
+            let count = renderer.read_signal(&secure_field.value).expose().chars().count();
+            "*".repeat(count)
+        };
         let text_bounds = inset_rect(field_rect, 8.0, 6.0);
         Self::render_styled_text(
             state,
@@ -1197,6 +1304,29 @@ impl HydrolysisRenderer {
             StyledStr::plain(masked),
             env,
         );
+
+        let value_binding = secure_field.value;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_text_input_target(transformed_rect(ctx.transform, field_rect), move |command| {
+            let mut plain = value_binding.get().expose().to_owned();
+            match command {
+                TextInputCommand::Insert(text) => {
+                    if text.is_empty() {
+                        return false;
+                    }
+                    plain.push_str(text.as_str());
+                }
+                TextInputCommand::Backspace => {
+                    if plain.pop().is_none() {
+                        return false;
+                    }
+                }
+            }
+            let mut next = FormSecure::default();
+            next.set(plain);
+            value_binding.set(next);
+            true
+        });
     }
 
     fn render_picker(
@@ -1206,17 +1336,27 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let picker = picker.into_inner();
-        let items = picker.items.get();
+        let items = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&picker.items)
+        };
         if items.is_empty() {
             panic!("hydrolysis picker requires at least one item");
         }
 
-        let selected = picker.selection.get();
+        let selected = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&picker.selection)
+        };
         let selected_index = items
             .iter()
             .position(|item| item.tag == selected)
             .unwrap_or(0);
-        let selected_text = items[selected_index].content.content().get().to_plain();
+        let selected_text = {
+            let selected_signal = items[selected_index].content.content();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&selected_signal).to_plain()
+        };
         let ids: Vec<_> = items.iter().map(|item| item.tag).collect();
 
         let scene = unsafe { ctx.scene() };
@@ -1520,7 +1660,10 @@ impl HydrolysisRenderer {
             width,
             height,
         };
-        let _ = filter.render(&input, &output);
+        let needs_redraw = filter.render(&input, &output) || filter.redraw_hint();
+        if needs_redraw {
+            renderer.request_rebuild();
+        }
 
         let image = renderer.vello_renderer.register_texture(output_texture);
         renderer.active_filter_images.push(image.clone());
@@ -1731,6 +1874,58 @@ impl HydrolysisRenderer {
         Self::dispatch_any(ctx, env, content);
     }
 
+    fn render_lifecycle_hook_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<LifeCycleHook>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        match value.lifecycle() {
+            LifeCycle::Appear => value.handle(env),
+            LifeCycle::Disappear => {
+                let renderer = unsafe { ctx.renderer() };
+                let slot = renderer.lifecycle_disappear_slot;
+                renderer.lifecycle_disappear_slot += 1;
+                renderer
+                    .lifecycle_disappear_current
+                    .insert(slot, DeferredLifeCycleHook::new(value, env.clone()));
+            }
+            _ => panic!("hydrolysis lifecycle variant is not supported"),
+        }
+        Self::dispatch_any(ctx, env, content);
+    }
+
+    fn render_on_event_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<OnEvent>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let event = value.event();
+        let bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let renderer = unsafe { ctx.renderer() };
+        match event {
+            Event::HoverEnter => {
+                let mut handler = value;
+                renderer.register_hover_enter_target(bounds, move |env| {
+                    handler.handle(env);
+                    true
+                });
+            }
+            Event::HoverExit => {
+                let mut handler = value;
+                renderer.register_hover_exit_target(bounds, move |env| {
+                    handler.handle(env);
+                    true
+                });
+            }
+            _ => panic!("hydrolysis event variant is not supported"),
+        }
+        Self::dispatch_any(ctx, env, content);
+    }
+
     fn render_passthrough_metadata<T: MetadataKey>(
         _state: &mut HydroState,
         ctx: RenderContext,
@@ -1827,18 +2022,38 @@ impl HydrolysisRenderer {
             self.vello_renderer.unregister_texture(image);
         }
         self.pointer_targets.clear();
+        self.hover_targets.clear();
+        self.text_input_targets.clear();
         self.scroll_targets.clear();
         self.scene.reset();
     }
 
     pub fn begin_rebuild_frame(&mut self) {
         self.current_frame_retain.clear();
+        self.lifecycle_disappear_current.clear();
+        self.lifecycle_disappear_slot = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
     }
 
     pub fn finish_rebuild_frame(&mut self) {
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
+
+        let previous_hooks = core::mem::take(&mut self.lifecycle_disappear_previous);
+        for (slot, hook) in previous_hooks {
+            if !self.lifecycle_disappear_current.contains_key(&slot) {
+                hook.call();
+            }
+        }
+        self.lifecycle_disappear_previous = core::mem::take(&mut self.lifecycle_disappear_current);
+
+        if matches!(
+            self.focused_text_input.get(),
+            Some(index) if index >= self.text_input_targets.len()
+        ) {
+            self.focused_text_input.set(None);
+        }
+
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
     }
@@ -1901,14 +2116,92 @@ impl HydrolysisRenderer {
             .expect("hydrolysis renderer: failed to render scene");
     }
 
-    pub fn handle_pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+    pub fn handle_pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        _button: PointerButton,
+        env: &Environment,
+    ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let mut rebuild_requested = false;
+
+        let focused = self
+            .text_input_targets
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, target)| target.bounds.contains(point))
+            .map(|(index, _)| index);
+        if self.focused_text_input.get() != focused {
+            self.focused_text_input.set(focused);
+            rebuild_requested = true;
+        }
+
         for target in self.pointer_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
-                return (target.action)(point, env);
+                return (target.action)(point, env) || rebuild_requested;
             }
         }
-        false
+        rebuild_requested
+    }
+
+    pub fn handle_pointer_up(
+        &mut self,
+        x: f32,
+        y: f32,
+        _button: PointerButton,
+        env: &Environment,
+    ) -> bool {
+        self.handle_pointer_move(x, y, env)
+    }
+
+    pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let mut rebuild_requested = false;
+        for target in &mut self.hover_targets {
+            let contains = target.bounds.contains(point);
+            if contains && !target.hovering {
+                target.hovering = true;
+                if let Some(on_enter) = target.on_enter.as_mut() {
+                    rebuild_requested |= on_enter(env);
+                }
+            } else if !contains && target.hovering {
+                target.hovering = false;
+                if let Some(on_exit) = target.on_exit.as_mut() {
+                    rebuild_requested |= on_exit(env);
+                }
+            }
+        }
+        rebuild_requested
+    }
+
+    pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
+        let Some(index) = self.focused_text_input.get() else {
+            return false;
+        };
+        if index >= self.text_input_targets.len() {
+            self.focused_text_input.set(None);
+            return false;
+        }
+
+        let target = &mut self.text_input_targets[index];
+        match key {
+            KeyCode::Character(value) => {
+                if modifiers.control || modifiers.alt || modifiers.super_key || value.is_empty() {
+                    return false;
+                }
+                (target.action)(TextInputCommand::Insert(value.clone()))
+            }
+            KeyCode::Named(value) => {
+                if value == "Backspace" {
+                    (target.action)(TextInputCommand::Backspace)
+                } else {
+                    false
+                }
+            }
+            KeyCode::Unidentified => false,
+        }
     }
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
@@ -1931,6 +2224,40 @@ impl HydrolysisRenderer {
         });
     }
 
+    fn register_hover_enter_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(&Environment) -> bool,
+    {
+        self.hover_targets.push(HoverTarget {
+            bounds,
+            hovering: false,
+            on_enter: Some(Box::new(action)),
+            on_exit: None,
+        });
+    }
+
+    fn register_hover_exit_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(&Environment) -> bool,
+    {
+        self.hover_targets.push(HoverTarget {
+            bounds,
+            hovering: false,
+            on_enter: None,
+            on_exit: Some(Box::new(action)),
+        });
+    }
+
+    fn register_text_input_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(TextInputCommand) -> bool,
+    {
+        self.text_input_targets.push(TextInputTarget {
+            bounds,
+            action: Box::new(action),
+        });
+    }
+
     fn register_scroll_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(f32, f32) -> bool,
@@ -1939,6 +2266,17 @@ impl HydrolysisRenderer {
             bounds,
             action: Box::new(action),
         });
+    }
+}
+
+impl Drop for HydrolysisRenderer {
+    fn drop(&mut self) {
+        for (_, hook) in core::mem::take(&mut self.lifecycle_disappear_previous) {
+            hook.call();
+        }
+        for (_, hook) in core::mem::take(&mut self.lifecycle_disappear_current) {
+            hook.call();
+        }
     }
 }
 
