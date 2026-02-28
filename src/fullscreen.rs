@@ -28,7 +28,7 @@ impl FullScreenOverlayManager {
     /// # Returns
     ///
     /// A tuple containing the manager and the overlay view.
-    pub fn new() -> (Self, impl View) {
+    pub fn new() -> (Self, impl View + Clone) {
         let (handler, dynamic) = Dynamic::new();
         handler.set(()); // Initially empty
         (Self { handler }, dynamic)

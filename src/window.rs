@@ -22,6 +22,7 @@
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
+use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
@@ -53,8 +54,8 @@ pub struct Window {
     ///
     /// Notice that it may not be supported on all platforms.
     pub frame: Binding<Rect>,
-    /// The content of the window.
-    pub content: AnyView,
+    /// The root view builder for the window content.
+    pub content: AnyViewBuilder<AnyView>,
     /// The current state of the window.
     pub state: Binding<WindowState>,
     /// Optional toolbar content for the window.
@@ -174,21 +175,24 @@ impl Window {
     ///
     /// Notice that would not show this window immediately
     #[must_use]
-    pub fn new(title: impl IntoComputed<Str>, content: impl View) -> Self {
+    pub fn new(title: impl IntoComputed<Str>, content: impl ViewBuilder) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
         let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+        let content = AnyViewBuilder::new(move || {
+            AnyView::new(
+                zstack((content.build(), overlay_view.clone(), snackbar_view.clone()))
+                    .with(overlay_manager.clone())
+                    .with(snackbar_manager.clone()),
+            )
+        });
 
         Self {
             title: title.into_computed(),
             closable: true,
             resizable: true,
             frame: Binding::container(default_frame),
-            content: AnyView::new(
-                zstack((content, overlay_view, snackbar_view))
-                    .with(overlay_manager)
-                    .with(snackbar_manager),
-            ),
+            content,
             state: Binding::default(),
             toolbar: None,
             style: WindowStyle::default(),
@@ -246,13 +250,22 @@ impl Window {
             WindowBackgroundInput::Material(material) => {
                 // Keep window opaque, wrap content with MaterialBackground metadata
                 self.background = WindowBackground::Opaque;
-                self.content = AnyView::new(IgnorableMetadata::new(
-                    self.content,
-                    MaterialBackground(material),
-                ));
+                let content = self.content;
+                self.content = AnyViewBuilder::new(move || {
+                    AnyView::new(IgnorableMetadata::new(
+                        content.build(),
+                        MaterialBackground(material),
+                    ))
+                });
             }
         }
         self
+    }
+
+    /// Builds the current window content tree.
+    #[must_use]
+    pub fn build_content(&self) -> AnyView {
+        self.content.build()
     }
 
     /// Set the state binding for the window.

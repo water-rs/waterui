@@ -263,7 +263,7 @@ impl SnackbarManager {
     ///
     /// A tuple containing the manager and the overlay view.
     #[must_use]
-    pub fn new() -> (Self, impl View) {
+    pub fn new() -> (Self, impl View + Clone) {
         let (handler, dynamic) = Dynamic::new();
         handler.set(()); // Initially empty
 

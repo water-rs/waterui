@@ -1,30 +1,26 @@
 use waterui::app::App;
 use waterui::window::Window;
-use waterui_core::{AnyView, Environment};
+use waterui_core::Environment;
 
-use crate::platform::PlatformWindow;
 #[cfg(not(feature = "winit"))]
 use crate::platform::OffscreenWindow;
+use crate::platform::PlatformWindow;
 use crate::renderer::HydrolysisRenderer;
-#[cfg(not(feature = "winit"))]
-use std::mem;
 
 struct RuntimeWindow<P: PlatformWindow> {
     window: Window,
-    content: Option<AnyView>,
     platform: P,
     renderer: HydrolysisRenderer,
-    rendered_once: bool,
+    needs_rebuild: bool,
 }
 
 impl<P: PlatformWindow> RuntimeWindow<P> {
-    fn new(window: Window, content: AnyView, platform: P, renderer: HydrolysisRenderer) -> Self {
+    fn new(window: Window, platform: P, renderer: HydrolysisRenderer) -> Self {
         Self {
             window,
-            content: Some(content),
             platform,
             renderer,
-            rendered_once: false,
+            needs_rebuild: true,
         }
     }
 }
@@ -41,11 +37,16 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         .renderer
         .set_frame_resources(surface.device(), surface.queue());
 
-    if let Some(content) = runtime.content.take() {
+    let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+    if should_rebuild {
         runtime.renderer.reset_scene();
+        runtime.renderer.begin_rebuild_frame();
+        let content = runtime.window.build_content();
         runtime
             .renderer
             .dispatch(content, env, create_bounds(width, height));
+        runtime.renderer.finish_rebuild_frame();
+        runtime.needs_rebuild = false;
     }
 
     let frame = surface
@@ -60,7 +61,6 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     );
     runtime.renderer.clear_frame_resources();
     surface.present(frame);
-    runtime.rendered_once = true;
 }
 
 #[cfg(not(feature = "winit"))]
@@ -76,8 +76,7 @@ pub fn run(app: App) {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
-        let content = mem::take(&mut window.content);
-        let mut runtime = RuntimeWindow::new(window, content, platform, renderer);
+        let mut runtime = RuntimeWindow::new(window, platform, renderer);
         render_window(&mut runtime, &env);
     }
 }
@@ -131,7 +130,7 @@ mod winit_runner {
         fn create_runtime_window(
             &mut self,
             event_loop: &ActiveEventLoop,
-            mut window: Window,
+            window: Window,
         ) -> RuntimeWindow<WinitWindow> {
             let frame = window.frame.get();
             let attributes = NativeWindow::default_attributes()
@@ -153,8 +152,7 @@ mod winit_runner {
                 let surface = platform.surface();
                 HydrolysisRenderer::new(surface.device())
             };
-            let content = mem::take(&mut window.content);
-            RuntimeWindow::new(window, content, platform, renderer)
+            RuntimeWindow::new(window, platform, renderer)
         }
 
         fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
@@ -166,7 +164,10 @@ mod winit_runner {
             }
         }
 
-        fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
+        fn handle_input_events(
+            runtime: &mut RuntimeWindow<WinitWindow>,
+            env: &Environment,
+        ) -> bool {
             let mut should_close = runtime.window.state.get() == WindowState::Closed;
             for event in runtime.platform.drain_events() {
                 match event {
@@ -175,7 +176,7 @@ mod winit_runner {
                         should_close = true;
                     }
                     InputEvent::Resize { .. } => {
-                        runtime.platform.request_redraw();
+                        runtime.needs_rebuild = true;
                     }
                     InputEvent::PointerDown {
                         x,
@@ -183,7 +184,7 @@ mod winit_runner {
                         button: PointerButton::Primary,
                     } => {
                         if runtime.renderer.handle_pointer_down(x, y, env) {
-                            runtime.platform.request_redraw();
+                            runtime.needs_rebuild = true;
                         }
                     }
                     _ => {}
@@ -246,8 +247,11 @@ mod winit_runner {
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.mount_pending_windows(event_loop);
-            for runtime in self.windows.values() {
-                if !runtime.rendered_once {
+            for runtime in self.windows.values_mut() {
+                if runtime.renderer.take_rebuild_request() {
+                    runtime.needs_rebuild = true;
+                }
+                if runtime.needs_rebuild {
                     runtime.platform.request_redraw();
                 }
             }

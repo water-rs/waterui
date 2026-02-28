@@ -1,7 +1,7 @@
 //! A `WaterUI` application representation.
 
 use nami::signal::IntoComputed;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, handler::ViewBuilder};
 use waterui_str::Str;
 
 use crate::window::Window;
@@ -19,7 +19,7 @@ pub struct App {
 
 impl App {
     /// Create a new application with the given main content view and environment.
-    pub fn new(content: impl View, env: Environment) -> Self {
+    pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
         Self::new_with_windows([Window::new("WaterUI App", content)], env)
     }
 
@@ -58,9 +58,7 @@ impl App {
     }
 
     /// Get a mutable iterator over all windows (main window first).
-    pub fn windows_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut Window> + DoubleEndedIterator {
+    pub fn windows_mut(&mut self) -> impl Iterator<Item = &mut Window> + DoubleEndedIterator {
         std::iter::once(&mut self.main_window).chain(self.windows.iter_mut())
     }
 
