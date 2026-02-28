@@ -104,7 +104,7 @@ mod winit_runner {
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::window::{Window as NativeWindow, WindowId};
 
-    use crate::platform::{InputEvent, PlatformWindow, PointerButton, WinitWindow};
+    use crate::platform::{InputEvent, KeyState, PlatformWindow, WinitWindow};
     use crate::renderer::HydrolysisRenderer;
     use crate::runner::{RuntimeWindow, render_window};
 
@@ -181,17 +181,32 @@ mod winit_runner {
                     InputEvent::Resize { .. } => {
                         runtime.needs_rebuild = true;
                     }
-                    InputEvent::PointerDown {
-                        x,
-                        y,
-                        button: PointerButton::Primary,
-                    } => {
-                        if runtime.renderer.handle_pointer_down(x, y, env) {
+                    InputEvent::PointerDown { x, y, button } => {
+                        if runtime.renderer.handle_pointer_down(x, y, button, env) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::PointerUp { x, y, button } => {
+                        if runtime.renderer.handle_pointer_up(x, y, button, env) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::PointerMove { x, y } => {
+                        if runtime.renderer.handle_pointer_move(x, y, env) {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::Scroll { x, y, dx, dy } => {
                         if runtime.renderer.handle_scroll(x, y, dx, dy) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::Key {
+                        key,
+                        state: KeyState::Pressed,
+                        modifiers,
+                    } => {
+                        if runtime.renderer.handle_key(&key, modifiers) {
                             runtime.needs_rebuild = true;
                         }
                     }

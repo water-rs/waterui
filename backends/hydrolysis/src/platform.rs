@@ -21,6 +21,7 @@ pub enum KeyState {
 /// Platform-agnostic key identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyCode {
+    Character(String),
     Named(String),
     Unidentified,
 }
@@ -606,7 +607,7 @@ mod winit_impl {
 
     fn map_key(key: &Key) -> KeyCode {
         match key {
-            Key::Character(value) => KeyCode::Named(value.to_string()),
+            Key::Character(value) => KeyCode::Character(value.to_string()),
             Key::Named(value) => KeyCode::Named(format!("{value:?}")),
             _ => KeyCode::Unidentified,
         }
