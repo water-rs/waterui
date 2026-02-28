@@ -1,6 +1,5 @@
 //! GTK Application setup and lifecycle management.
 
-use std::cell::RefCell;
 use std::future::Future;
 
 use executor_core::{
@@ -96,20 +95,20 @@ impl GtkApp {
     ///
     /// This extracts the main window's content and environment from the App
     /// and renders it using GTK.
-    pub fn run_app(self, mut waterui_app: App) -> i32 {
-        let main_window = waterui_app.main_window_mut();
+    pub fn run_app(self, waterui_app: App) -> i32 {
+        let (windows, mut env) = waterui_app.into_parts();
+        let main_window = windows
+            .into_iter()
+            .next()
+            .expect("GtkApp::run_app requires at least one window");
         let title = main_window.title.clone();
         let background = main_window.background.clone();
-        // Use RefCell to allow taking the content once (AnyView is not Clone)
-        // Take ownership of the content using mem::take
-        let content = RefCell::new(Some(std::mem::take(&mut main_window.content)));
-        let mut env = waterui_app.env;
+        let content = main_window.content;
         ensure_webview_controller(&mut env);
 
         self.app.connect_activate(move |app| {
             init_main_thread_executors();
-            // Take the content or use default if already taken (re-activation)
-            let content = content.borrow_mut().take().unwrap_or_default();
+            let content = content.build();
 
             let initial_title: String = title.get().as_str().to_owned();
             let window = create_window(app, &initial_title, 800, 600);
