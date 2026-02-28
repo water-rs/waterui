@@ -37,6 +37,9 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         .renderer
         .set_frame_resources(surface.device(), surface.queue());
 
+    if runtime.renderer.advance_animations() {
+        runtime.needs_rebuild = true;
+    }
     let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
     if should_rebuild {
         runtime.renderer.reset_scene();
@@ -66,7 +69,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 #[cfg(not(feature = "winit"))]
 pub fn run(app: App) {
     let (windows, env) = app.into_parts();
-    for mut window in windows {
+    for window in windows {
         let frame = window.frame.get();
         let width = frame.width().max(1.0) as u32;
         let height = frame.height().max(1.0) as u32;
@@ -248,6 +251,9 @@ mod winit_runner {
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.mount_pending_windows(event_loop);
             for runtime in self.windows.values_mut() {
+                if runtime.renderer.advance_animations() {
+                    runtime.needs_rebuild = true;
+                }
                 if runtime.renderer.take_rebuild_request() {
                     runtime.needs_rebuild = true;
                 }
