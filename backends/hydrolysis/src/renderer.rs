@@ -7,6 +7,7 @@ use nami::Signal;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
+use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::focus::Focused;
 use waterui::cursor::Cursor;
 use waterui::drag_drop::{Draggable, DropDestination};
@@ -21,8 +22,11 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_controls::button::ButtonConfig;
+use waterui_controls::slider::SliderConfig;
+use waterui_controls::stepper::StepperConfig;
+use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
-use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
@@ -41,6 +45,8 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::stack::Axis as StackAxis;
 use waterui_layout::spacer::Spacer;
+use waterui_form::picker::PickerConfig;
+use waterui_form::secure::SecureFieldConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
@@ -129,7 +135,7 @@ pub struct HydrolysisRenderer {
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
     active_filter_images: Vec<vello::peniko::ImageData>,
-    button_targets: Vec<ButtonTarget>,
+    pointer_targets: Vec<PointerTarget>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -138,9 +144,9 @@ struct HydroSubview {
     intrinsic: LayoutSize,
 }
 
-struct ButtonTarget {
+struct PointerTarget {
     bounds: vello::kurbo::Rect,
-    action: BoxedAction<()>,
+    action: Box<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>,
 }
 
 impl HydroSubview {
@@ -222,7 +228,7 @@ impl HydrolysisRenderer {
             vello_renderer,
             scene: vello::Scene::new(),
             active_filter_images: Vec::new(),
-            button_targets: Vec::new(),
+            pointer_targets: Vec::new(),
         }
     }
 
@@ -236,6 +242,13 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
         dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
         dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
+        dispatcher.register::<Native<ToggleConfig>>(Self::render_toggle);
+        dispatcher.register::<Native<SliderConfig>>(Self::render_slider);
+        dispatcher.register::<Native<StepperConfig>>(Self::render_stepper);
+        dispatcher.register::<Native<ProgressConfig>>(Self::render_progress);
+        dispatcher.register::<Native<TextFieldConfig>>(Self::render_text_field);
+        dispatcher.register::<Native<SecureFieldConfig>>(Self::render_secure_field);
+        dispatcher.register::<Native<PickerConfig>>(Self::render_picker);
         dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
         dispatcher.register::<Native<SystemIcon>>(Self::render_system_icon);
         dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
@@ -296,6 +309,15 @@ impl HydrolysisRenderer {
     fn dispatch_any(ctx: RenderContext, env: &Environment, content: AnyView) {
         let renderer = unsafe { ctx.renderer() };
         renderer.dispatcher.dispatch(content, env, ctx);
+    }
+
+    fn dispatch_in_rect(ctx: RenderContext, env: &Environment, content: AnyView, rect: vello::kurbo::Rect) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let child_transform = vello::kurbo::Affine::translate((rect.x0, rect.y0));
+        let child_bounds = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
+        Self::dispatch_any(ctx.child(child_transform, child_bounds), env, content);
     }
 
     fn render_layout_container(
@@ -575,9 +597,466 @@ impl HydrolysisRenderer {
         let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
         {
             let renderer = unsafe { ctx.renderer() };
-            renderer.register_button_target(hit_bounds, button.action);
+            let mut action = button.action;
+            renderer.register_pointer_target(hit_bounds, move |_point, env| {
+                action(env);
+                true
+            });
         }
         Self::dispatch_any(ctx, env, button.label);
+    }
+
+    fn render_toggle(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        toggle: Native<ToggleConfig>,
+        env: &Environment,
+    ) {
+        let toggle = toggle.into_inner();
+        let switch_width = 51.0;
+        let switch_height = 31.0;
+        let spacing = 8.0;
+        let switch_x0 = (ctx.bounds.x1 - switch_width).max(ctx.bounds.x0);
+        let switch_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - switch_height) / 2.0).max(0.0);
+        let switch_bounds = vello::kurbo::Rect::new(
+            switch_x0,
+            switch_y0,
+            switch_x0 + switch_width,
+            switch_y0 + switch_height,
+        );
+        let label_bounds = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0,
+            (switch_x0 - spacing).max(ctx.bounds.x0),
+            ctx.bounds.y1,
+        );
+        if label_bounds.width() > 0.0 {
+            Self::dispatch_in_rect(ctx, env, toggle.label, label_bounds);
+        }
+
+        let is_on = toggle.toggle.get();
+        let track_color = if is_on {
+            vello::peniko::Color::new([0.20392157, 0.78039217, 0.34901962, 1.0])
+        } else {
+            vello::peniko::Color::new([0.7058824, 0.7058824, 0.7254902, 1.0])
+        };
+        let thumb_center_x = if is_on {
+            switch_bounds.x1 - 15.0
+        } else {
+            switch_bounds.x0 + 15.0
+        };
+        let thumb_center = vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
+        let track = vello::kurbo::RoundedRect::from_rect(switch_bounds, 15.5);
+        let thumb = vello::kurbo::Circle::new(thumb_center, 13.0);
+
+        let scene = unsafe { ctx.scene() };
+        scene.fill(vello::peniko::Fill::NonZero, ctx.transform, track_color, None, &track);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::WHITE,
+            None,
+            &thumb,
+        );
+
+        let hit_bounds = transformed_rect(ctx.transform, switch_bounds);
+        let toggle_binding = toggle.toggle;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(hit_bounds, move |_point, _env| {
+            let next = !toggle_binding.get();
+            toggle_binding.set(next);
+            true
+        });
+    }
+
+    fn render_slider(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        slider: Native<SliderConfig>,
+        env: &Environment,
+    ) {
+        let slider = slider.into_inner();
+        let label_height = if ctx.bounds.height() >= 36.0 { 20.0 } else { 0.0 };
+        if label_height > 0.0 {
+            let label_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+            );
+            Self::dispatch_in_rect(ctx, env, slider.label, label_rect);
+        }
+
+        let range_start = *slider.range.start();
+        let range_end = *slider.range.end();
+        let span = range_end - range_start;
+        if span <= 0.0 {
+            panic!("hydrolysis slider requires range start < end");
+        }
+
+        let track_left = ctx.bounds.x0 + 12.0;
+        let track_right = ctx.bounds.x1 - 12.0;
+        let track_center_y = ctx.bounds.y1 - ((ctx.bounds.height() - label_height) / 2.0).max(10.0);
+        let track_rect = vello::kurbo::Rect::new(
+            track_left,
+            track_center_y - 2.0,
+            track_right,
+            track_center_y + 2.0,
+        );
+
+        let clamped = slider.value.get().clamp(range_start, range_end);
+        let progress = (clamped - range_start) / span;
+        let fill_right = track_left + (track_right - track_left) * progress;
+        let fill_rect =
+            vello::kurbo::Rect::new(track_left, track_center_y - 2.0, fill_right, track_center_y + 2.0);
+        let thumb = vello::kurbo::Circle::new(vello::kurbo::Point::new(fill_right, track_center_y), 7.0);
+
+        let scene = unsafe { ctx.scene() };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::new([0.75, 0.75, 0.78, 1.0]),
+            None,
+            &track_rect,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::new([0.20392157, 0.53333336, 0.94509804, 1.0]),
+            None,
+            &fill_rect,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::WHITE,
+            None,
+            &thumb,
+        );
+
+        let hit_bounds = transformed_rect(
+            ctx.transform,
+            vello::kurbo::Rect::new(track_left, track_center_y - 14.0, track_right, track_center_y + 14.0),
+        );
+        let value_binding = slider.value;
+        let usable_track = track_right - track_left;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(hit_bounds, move |point, _env| {
+            let x = point.x.clamp(track_left, track_right);
+            let t = (x - track_left) / usable_track;
+            value_binding.set(range_start + span * t);
+            true
+        });
+    }
+
+    fn render_stepper(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        stepper: Native<StepperConfig>,
+        env: &Environment,
+    ) {
+        let stepper = stepper.into_inner();
+        let button_size = ctx.bounds.height().clamp(24.0, 32.0);
+        let spacing = 4.0;
+        let controls_width = button_size * 2.0 + spacing;
+        let controls_x0 = (ctx.bounds.x1 - controls_width).max(ctx.bounds.x0);
+
+        let label_bounds = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, controls_x0, ctx.bounds.y1);
+        if label_bounds.width() > 0.0 {
+            Self::dispatch_in_rect(ctx, env, stepper.label, label_bounds);
+        }
+
+        let button_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - button_size) / 2.0).max(0.0);
+        let minus_bounds = vello::kurbo::Rect::new(
+            controls_x0,
+            button_y0,
+            controls_x0 + button_size,
+            button_y0 + button_size,
+        );
+        let plus_bounds = vello::kurbo::Rect::new(
+            controls_x0 + button_size + spacing,
+            button_y0,
+            controls_x0 + controls_width,
+            button_y0 + button_size,
+        );
+        let scene = unsafe { ctx.scene() };
+        draw_stepper_button(scene, ctx.transform, minus_bounds);
+        draw_stepper_button(scene, ctx.transform, plus_bounds);
+
+        let line_color = vello::peniko::Color::new([0.2, 0.2, 0.22, 1.0]);
+        let minus_line = vello::kurbo::Line::new(
+            (minus_bounds.x0 + 6.0, minus_bounds.y0 + button_size / 2.0),
+            (minus_bounds.x1 - 6.0, minus_bounds.y0 + button_size / 2.0),
+        );
+        let plus_horizontal = vello::kurbo::Line::new(
+            (plus_bounds.x0 + 6.0, plus_bounds.y0 + button_size / 2.0),
+            (plus_bounds.x1 - 6.0, plus_bounds.y0 + button_size / 2.0),
+        );
+        let plus_vertical = vello::kurbo::Line::new(
+            (plus_bounds.x0 + button_size / 2.0, plus_bounds.y0 + 6.0),
+            (plus_bounds.x0 + button_size / 2.0, plus_bounds.y1 - 6.0),
+        );
+        let stroke = vello::kurbo::Stroke::new(2.0);
+        scene.stroke(&stroke, ctx.transform, line_color, None, &minus_line);
+        scene.stroke(&stroke, ctx.transform, line_color, None, &plus_horizontal);
+        scene.stroke(&stroke, ctx.transform, line_color, None, &plus_vertical);
+
+        let range_start = *stepper.range.start();
+        let range_end = *stepper.range.end();
+        if range_start > range_end {
+            panic!("hydrolysis stepper requires an ordered range");
+        }
+
+        let value_binding_minus = stepper.value.clone();
+        let value_binding_plus = stepper.value;
+        let step_signal_minus = stepper.step.clone();
+        let step_signal_plus = stepper.step;
+
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(
+            transformed_rect(ctx.transform, minus_bounds),
+            move |_point, _env| {
+                let step = step_signal_minus.get();
+                if step <= 0 {
+                    panic!("hydrolysis stepper requires positive step");
+                }
+                let current = value_binding_minus.get();
+                let next = current.saturating_sub(step).clamp(range_start, range_end);
+                value_binding_minus.set(next);
+                true
+            },
+        );
+        renderer.register_pointer_target(transformed_rect(ctx.transform, plus_bounds), move |_point, _env| {
+            let step = step_signal_plus.get();
+            if step <= 0 {
+                panic!("hydrolysis stepper requires positive step");
+            }
+            let current = value_binding_plus.get();
+            let next = current.saturating_add(step).clamp(range_start, range_end);
+            value_binding_plus.set(next);
+            true
+        });
+    }
+
+    fn render_progress(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        progress: Native<ProgressConfig>,
+        env: &Environment,
+    ) {
+        let progress = progress.into_inner();
+        let clamped = progress.value.get().clamp(0.0, 1.0) as f64;
+
+        match progress.style {
+            ProgressStyle::Linear => {
+                let label_height = if ctx.bounds.height() >= 40.0 { 18.0 } else { 0.0 };
+                if label_height > 0.0 {
+                    let label_rect = vello::kurbo::Rect::new(
+                        ctx.bounds.x0,
+                        ctx.bounds.y0,
+                        ctx.bounds.x1,
+                        (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+                    );
+                    Self::dispatch_in_rect(ctx, env, progress.label, label_rect);
+                }
+
+                let bar_y = ctx.bounds.y0 + label_height + 10.0;
+                let bar = vello::kurbo::RoundedRect::from_rect(
+                    vello::kurbo::Rect::new(ctx.bounds.x0 + 8.0, bar_y, ctx.bounds.x1 - 8.0, bar_y + 8.0),
+                    4.0,
+                );
+                let width = bar.rect().width() * clamped;
+                let fill = vello::kurbo::RoundedRect::from_rect(
+                    vello::kurbo::Rect::new(bar.rect().x0, bar.rect().y0, bar.rect().x0 + width, bar.rect().y1),
+                    4.0,
+                );
+                let scene = unsafe { ctx.scene() };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.84, 0.84, 0.87, 1.0]),
+                    None,
+                    &bar,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.20392157, 0.53333336, 0.94509804, 1.0]),
+                    None,
+                    &fill,
+                );
+
+                let value_label_rect = vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    bar.rect().y1 + 6.0,
+                    ctx.bounds.x1,
+                    ctx.bounds.y1,
+                );
+                if value_label_rect.height() > 0.0 {
+                    Self::dispatch_in_rect(ctx, env, progress.value_label, value_label_rect);
+                }
+            }
+            ProgressStyle::Circular => {
+                let center = vello::kurbo::Point::new(
+                    ctx.bounds.x0 + ctx.bounds.width() / 2.0,
+                    ctx.bounds.y0 + ctx.bounds.height() / 2.0,
+                );
+                let radius = (ctx.bounds.width().min(ctx.bounds.height()) / 2.0 - 6.0).max(2.0);
+                let track = vello::kurbo::Circle::new(center, radius);
+                let arc = circle_arc_path(center, radius, -core::f64::consts::FRAC_PI_2, TAU * clamped);
+                let scene = unsafe { ctx.scene() };
+                let stroke = vello::kurbo::Stroke::new(5.0);
+                scene.stroke(
+                    &stroke,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.84, 0.84, 0.87, 1.0]),
+                    None,
+                    &track,
+                );
+                scene.stroke(
+                    &stroke,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.20392157, 0.53333336, 0.94509804, 1.0]),
+                    None,
+                    &arc,
+                );
+                let label_rect = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y1 + 4.0, ctx.bounds.x1, ctx.bounds.y1);
+                let _ = label_rect;
+            }
+            _ => {
+                panic!("hydrolysis ProgressStyle variant is not implemented");
+            }
+        }
+    }
+
+    fn render_text_field(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        text_field: Native<TextFieldConfig>,
+        env: &Environment,
+    ) {
+        let text_field = text_field.into_inner();
+        let label_height = if ctx.bounds.height() >= 36.0 { 18.0 } else { 0.0 };
+        if label_height > 0.0 {
+            let label_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+            );
+            Self::dispatch_in_rect(ctx, env, text_field.label, label_rect);
+        }
+
+        let field_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0 + label_height,
+            ctx.bounds.x1,
+            ctx.bounds.y1,
+        );
+        let scene = unsafe { ctx.scene() };
+        draw_input_field(scene, ctx.transform, field_rect);
+
+        let prompt = text_field.prompt.content().get().to_plain();
+        let value = text_field.value.get().to_plain();
+        let display = if value.is_empty() { prompt } else { value };
+        let text_bounds = inset_rect(field_rect, 8.0, 6.0);
+        Self::render_styled_text(
+            state,
+            ctx.child(
+                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+            ),
+            StyledStr::plain(display),
+            env,
+        );
+    }
+
+    fn render_secure_field(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        secure_field: Native<SecureFieldConfig>,
+        env: &Environment,
+    ) {
+        let secure_field = secure_field.into_inner();
+        let label_height = if ctx.bounds.height() >= 36.0 { 18.0 } else { 0.0 };
+        if label_height > 0.0 {
+            let label_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+            );
+            Self::dispatch_in_rect(ctx, env, secure_field.label, label_rect);
+        }
+
+        let field_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0 + label_height,
+            ctx.bounds.x1,
+            ctx.bounds.y1,
+        );
+        let scene = unsafe { ctx.scene() };
+        draw_input_field(scene, ctx.transform, field_rect);
+
+        let masked = "*".repeat(secure_field.value.get().expose().chars().count());
+        let text_bounds = inset_rect(field_rect, 8.0, 6.0);
+        Self::render_styled_text(
+            state,
+            ctx.child(
+                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+            ),
+            StyledStr::plain(masked),
+            env,
+        );
+    }
+
+    fn render_picker(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        picker: Native<PickerConfig>,
+        env: &Environment,
+    ) {
+        let picker = picker.into_inner();
+        let items = picker.items.get();
+        if items.is_empty() {
+            panic!("hydrolysis picker requires at least one item");
+        }
+
+        let selected = picker.selection.get();
+        let selected_index = items
+            .iter()
+            .position(|item| item.tag == selected)
+            .unwrap_or(0);
+        let selected_text = items[selected_index].content.content().get().to_plain();
+        let ids: Vec<_> = items.iter().map(|item| item.tag).collect();
+
+        let scene = unsafe { ctx.scene() };
+        draw_input_field(scene, ctx.transform, ctx.bounds);
+
+        let text_bounds = inset_rect(ctx.bounds, 8.0, 6.0);
+        Self::render_styled_text(
+            state,
+            ctx.child(
+                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+            ),
+            StyledStr::plain(selected_text),
+            env,
+        );
+
+        let selection_binding = picker.selection;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(transformed_rect(ctx.transform, ctx.bounds), move |_point, _env| {
+            let current = selection_binding.get();
+            let index = ids
+                .iter()
+                .position(|id| *id == current)
+                .unwrap_or(0);
+            let next = ids[(index + 1) % ids.len()];
+            selection_binding.set(next);
+            true
+        });
     }
 
     fn render_dynamic(
@@ -1032,7 +1511,7 @@ impl HydrolysisRenderer {
         for image in self.active_filter_images.drain(..) {
             self.vello_renderer.unregister_texture(image);
         }
-        self.button_targets.clear();
+        self.pointer_targets.clear();
         self.scene.reset();
     }
 
@@ -1082,17 +1561,25 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        for target in self.button_targets.iter_mut().rev() {
+        for target in self.pointer_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
-                (target.action)(env);
-                return true;
+                return (target.action)(point, env);
             }
         }
         false
     }
 
-    fn register_button_target(&mut self, bounds: vello::kurbo::Rect, action: BoxedAction<()>) {
-        self.button_targets.push(ButtonTarget { bounds, action });
+    fn register_pointer_target<F>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        action: F,
+    ) where
+        F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
+    {
+        self.pointer_targets.push(PointerTarget {
+            bounds,
+            action: Box::new(action),
+        });
     }
 }
 
@@ -1358,4 +1845,76 @@ fn transformed_rect(transform: vello::kurbo::Affine, rect: vello::kurbo::Rect) -
         .iter()
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
     vello::kurbo::Rect::new(min_x, min_y, max_x, max_y)
+}
+
+fn inset_rect(rect: vello::kurbo::Rect, dx: f64, dy: f64) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        rect.x0 + dx,
+        rect.y0 + dy,
+        (rect.x1 - dx).max(rect.x0 + dx),
+        (rect.y1 - dy).max(rect.y0 + dy),
+    )
+}
+
+fn circle_arc_path(
+    center: vello::kurbo::Point,
+    radius: f64,
+    start_angle: f64,
+    sweep: f64,
+) -> vello::kurbo::BezPath {
+    let mut path = vello::kurbo::BezPath::new();
+    if sweep == 0.0 {
+        return path;
+    }
+    let segments = 64usize;
+    let step = sweep / segments as f64;
+    let mut angle = start_angle;
+    path.move_to(vello::kurbo::Point::new(
+        center.x + radius * angle.cos(),
+        center.y + radius * angle.sin(),
+    ));
+    for _ in 0..segments {
+        angle += step;
+        path.line_to(vello::kurbo::Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        ));
+    }
+    path
+}
+
+fn draw_input_field(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+) {
+    let rounded = vello::kurbo::RoundedRect::from_rect(bounds, 6.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        vello::peniko::Color::new([1.0, 1.0, 1.0, 1.0]),
+        None,
+        &rounded,
+    );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        vello::peniko::Color::new([0.75, 0.75, 0.78, 1.0]),
+        None,
+        &rounded,
+    );
+}
+
+fn draw_stepper_button(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+) {
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        vello::peniko::Color::new([0.93, 0.93, 0.95, 1.0]),
+        None,
+        &vello::kurbo::RoundedRect::from_rect(bounds, 6.0),
+    );
 }
