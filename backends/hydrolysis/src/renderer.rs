@@ -16,7 +16,7 @@ use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::cursor::Cursor;
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
-use waterui::gesture::GestureObserver;
+use waterui::gesture::{Gesture, GestureObserver, GesturePoint, TapEvent};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
@@ -340,13 +340,13 @@ impl HydrolysisRenderer {
         dispatcher.register::<Metadata<Shadow>>(Self::render_shadow_metadata);
         dispatcher.register::<Metadata<Focused>>(Self::render_focused_metadata);
         dispatcher.register::<Metadata<Hittable>>(Self::render_hittable_metadata);
+        dispatcher.register::<Metadata<GestureObserver>>(Self::render_gesture_observer_metadata);
         dispatcher.register::<Metadata<LifeCycleHook>>(Self::render_lifecycle_hook_metadata);
         dispatcher.register::<Metadata<OnEvent>>(Self::render_on_event_metadata);
 
         Self::register_passthrough_metadata::<Secure>(dispatcher);
         Self::register_passthrough_metadata::<StandardDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
-        Self::register_passthrough_metadata::<GestureObserver>(dispatcher);
         Self::register_passthrough_metadata::<Cursor>(dispatcher);
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
@@ -1939,6 +1939,42 @@ impl HydrolysisRenderer {
         ) {
             renderer.focused_text_input.set(None);
         }
+    }
+
+    fn render_gesture_observer_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<GestureObserver>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let GestureObserver {
+            gesture,
+            mut action,
+            ..
+        } = value;
+        let bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let renderer = unsafe { ctx.renderer() };
+
+        match gesture {
+            Gesture::Tap(tap) => {
+                if tap.count != 1 {
+                    panic!("hydrolysis tap gesture currently supports count == 1");
+                }
+                renderer.register_pointer_target(bounds, move |point, env| {
+                    let mut local_env = env.clone();
+                    local_env.insert(TapEvent {
+                        location: GesturePoint::new(point.x as f32, point.y as f32),
+                        count: 1,
+                    });
+                    action(&local_env);
+                    true
+                });
+            }
+            _ => panic!("hydrolysis gesture variant is not implemented"),
+        }
+
+        Self::dispatch_any(ctx, env, content);
     }
 
     fn render_lifecycle_hook_metadata(
