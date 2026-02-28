@@ -47,6 +47,17 @@ impl<T: NativeView> Native<T> {
     pub fn into_inner(self) -> T {
         self.native
     }
+
+    /// Returns a shared reference to the wrapped native component.
+    #[must_use]
+    pub fn as_inner(&self) -> &T {
+        &self.native
+    }
+
+    /// Returns a mutable reference to the wrapped native component.
+    pub fn as_inner_mut(&mut self) -> &mut T {
+        &mut self.native
+    }
 }
 
 impl<T: 'static + NativeView> View for Native<T> {
