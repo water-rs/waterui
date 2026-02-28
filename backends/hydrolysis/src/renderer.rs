@@ -1,19 +1,17 @@
 use core::f64::consts::TAU;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nami::Signal;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::focus::Focused;
+use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::cursor::Cursor;
 use waterui::drag_drop::{Draggable, DropDestination};
-use waterui::filter::{
-    Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation,
-};
+use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
 use waterui::gesture::GestureObserver;
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ContextMenu;
@@ -27,13 +25,15 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
+use waterui_core::event::{LifeCycleHook, OnEvent};
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
-use waterui_core::event::{LifeCycleHook, OnEvent};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
+use waterui_form::picker::PickerConfig;
+use waterui_form::secure::SecureFieldConfig;
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
@@ -43,14 +43,12 @@ use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
-use waterui_layout::stack::Axis as StackAxis;
 use waterui_layout::spacer::Spacer;
-use waterui_form::picker::PickerConfig;
-use waterui_form::secure::SecureFieldConfig;
+use waterui_layout::stack::Axis as StackAxis;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
+use waterui_text::TextConfig;
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
-use waterui_text::TextConfig;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -99,7 +97,10 @@ pub struct RenderContext {
 }
 
 impl RenderContext {
-    pub(crate) fn with_renderer(renderer: &mut HydrolysisRenderer, bounds: vello::kurbo::Rect) -> Self {
+    pub(crate) fn with_renderer(
+        renderer: &mut HydrolysisRenderer,
+        bounds: vello::kurbo::Rect,
+    ) -> Self {
         Self {
             renderer_ptr: renderer as *mut HydrolysisRenderer,
             transform: vello::kurbo::Affine::IDENTITY,
@@ -136,6 +137,9 @@ pub struct HydrolysisRenderer {
     scene: vello::Scene,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
+    rebuild_requested: Rc<Cell<bool>>,
+    current_frame_retain: Vec<Retain>,
+    previous_frame_retain: Vec<Retain>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -163,17 +167,17 @@ impl SubView for HydroSubview {
         let width = if self.stretch_axis.stretches_horizontal() {
             proposal.width.unwrap_or(self.intrinsic.width)
         } else {
-            proposal
-                .width
-                .map_or(self.intrinsic.width, |value| self.intrinsic.width.min(value))
+            proposal.width.map_or(self.intrinsic.width, |value| {
+                self.intrinsic.width.min(value)
+            })
         };
 
         let height = if self.stretch_axis.stretches_vertical() {
             proposal.height.unwrap_or(self.intrinsic.height)
         } else {
-            proposal
-                .height
-                .map_or(self.intrinsic.height, |value| self.intrinsic.height.min(value))
+            proposal.height.map_or(self.intrinsic.height, |value| {
+                self.intrinsic.height.min(value)
+            })
         };
 
         LayoutSize::new(width, height)
@@ -229,6 +233,9 @@ impl HydrolysisRenderer {
             scene: vello::Scene::new(),
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
+            rebuild_requested: Rc::new(Cell::new(false)),
+            current_frame_retain: Vec::new(),
+            previous_frame_retain: Vec::new(),
         }
     }
 
@@ -303,7 +310,8 @@ impl HydrolysisRenderer {
     fn register_passthrough_ignorable_metadata<T: MetadataKey>(
         dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
     ) {
-        dispatcher.register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
+        dispatcher
+            .register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
     }
 
     fn dispatch_any(ctx: RenderContext, env: &Environment, content: AnyView) {
@@ -311,7 +319,12 @@ impl HydrolysisRenderer {
         renderer.dispatcher.dispatch(content, env, ctx);
     }
 
-    fn dispatch_in_rect(ctx: RenderContext, env: &Environment, content: AnyView, rect: vello::kurbo::Rect) {
+    fn dispatch_in_rect(
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+        rect: vello::kurbo::Rect,
+    ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
@@ -333,8 +346,10 @@ impl HydrolysisRenderer {
         }
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
 
-        let proposal =
-            ProposalSize::new(Some(ctx.bounds.width() as f32), Some(ctx.bounds.height() as f32));
+        let proposal = ProposalSize::new(
+            Some(ctx.bounds.width() as f32),
+            Some(ctx.bounds.height() as f32),
+        );
         let _ = layout.size_that_fits(proposal, &refs);
         let bounds = LayoutRect::from_size(LayoutSize::new(
             ctx.bounds.width() as f32,
@@ -345,8 +360,12 @@ impl HydrolysisRenderer {
         for (child, rect) in children.into_iter().zip(child_rects) {
             let child_transform =
                 vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
-            let child_bounds =
-                vello::kurbo::Rect::new(0.0, 0.0, f64::from(rect.width()), f64::from(rect.height()));
+            let child_bounds = vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                f64::from(rect.width()),
+                f64::from(rect.height()),
+            );
             Self::dispatch_any(ctx.child(child_transform, child_bounds), env, child);
         }
     }
@@ -398,12 +417,27 @@ impl HydrolysisRenderer {
         scene.pop_layer();
     }
 
-    fn render_divider(_state: &mut HydroState, ctx: RenderContext, _divider: Divider, env: &Environment) {
+    fn render_divider(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        _divider: Divider,
+        env: &Environment,
+    ) {
         let vertical = matches!(env.get::<StackAxis>(), Some(StackAxis::Horizontal));
         let rect = if vertical {
-            vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x0 + 1.0, ctx.bounds.y1)
+            vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x0 + 1.0,
+                ctx.bounds.y1,
+            )
         } else {
-            vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y0 + 1.0)
+            vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                ctx.bounds.y0 + 1.0,
+            )
         };
 
         let scene = unsafe { ctx.scene() };
@@ -459,11 +493,7 @@ impl HydrolysisRenderer {
                         let x = run_x + glyph.x;
                         let y = run_y - glyph.y;
                         run_x += glyph.advance;
-                        vello::Glyph {
-                            id: glyph.id,
-                            x,
-                            y,
-                        }
+                        vello::Glyph { id: glyph.id, x, y }
                     });
 
                     scene
@@ -549,7 +579,10 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let resolved_font = style.font.resolve(env).get();
-        builder.push(parley::StyleProperty::FontSize(resolved_font.size), range.clone());
+        builder.push(
+            parley::StyleProperty::FontSize(resolved_font.size),
+            range.clone(),
+        );
         builder.push(
             parley::StyleProperty::FontWeight(parley_font_weight(resolved_font.weight)),
             range.clone(),
@@ -574,7 +607,10 @@ impl HydrolysisRenderer {
             }),
             range.clone(),
         );
-        builder.push(parley::StyleProperty::Underline(style.underline), range.clone());
+        builder.push(
+            parley::StyleProperty::Underline(style.underline),
+            range.clone(),
+        );
         builder.push(
             parley::StyleProperty::Strikethrough(style.strikethrough),
             range.clone(),
@@ -645,12 +681,19 @@ impl HydrolysisRenderer {
         } else {
             switch_bounds.x0 + 15.0
         };
-        let thumb_center = vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
+        let thumb_center =
+            vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
         let track = vello::kurbo::RoundedRect::from_rect(switch_bounds, 15.5);
         let thumb = vello::kurbo::Circle::new(thumb_center, 13.0);
 
         let scene = unsafe { ctx.scene() };
-        scene.fill(vello::peniko::Fill::NonZero, ctx.transform, track_color, None, &track);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            track_color,
+            None,
+            &track,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
@@ -676,7 +719,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let slider = slider.into_inner();
-        let label_height = if ctx.bounds.height() >= 36.0 { 20.0 } else { 0.0 };
+        let label_height = if ctx.bounds.height() >= 36.0 {
+            20.0
+        } else {
+            0.0
+        };
         if label_height > 0.0 {
             let label_rect = vello::kurbo::Rect::new(
                 ctx.bounds.x0,
@@ -707,9 +754,14 @@ impl HydrolysisRenderer {
         let clamped = slider.value.get().clamp(range_start, range_end);
         let progress = (clamped - range_start) / span;
         let fill_right = track_left + (track_right - track_left) * progress;
-        let fill_rect =
-            vello::kurbo::Rect::new(track_left, track_center_y - 2.0, fill_right, track_center_y + 2.0);
-        let thumb = vello::kurbo::Circle::new(vello::kurbo::Point::new(fill_right, track_center_y), 7.0);
+        let fill_rect = vello::kurbo::Rect::new(
+            track_left,
+            track_center_y - 2.0,
+            fill_right,
+            track_center_y + 2.0,
+        );
+        let thumb =
+            vello::kurbo::Circle::new(vello::kurbo::Point::new(fill_right, track_center_y), 7.0);
 
         let scene = unsafe { ctx.scene() };
         scene.fill(
@@ -736,7 +788,12 @@ impl HydrolysisRenderer {
 
         let hit_bounds = transformed_rect(
             ctx.transform,
-            vello::kurbo::Rect::new(track_left, track_center_y - 14.0, track_right, track_center_y + 14.0),
+            vello::kurbo::Rect::new(
+                track_left,
+                track_center_y - 14.0,
+                track_right,
+                track_center_y + 14.0,
+            ),
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
@@ -761,7 +818,8 @@ impl HydrolysisRenderer {
         let controls_width = button_size * 2.0 + spacing;
         let controls_x0 = (ctx.bounds.x1 - controls_width).max(ctx.bounds.x0);
 
-        let label_bounds = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, controls_x0, ctx.bounds.y1);
+        let label_bounds =
+            vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, controls_x0, ctx.bounds.y1);
         if label_bounds.width() > 0.0 {
             Self::dispatch_in_rect(ctx, env, stepper.label, label_bounds);
         }
@@ -826,16 +884,19 @@ impl HydrolysisRenderer {
                 true
             },
         );
-        renderer.register_pointer_target(transformed_rect(ctx.transform, plus_bounds), move |_point, _env| {
-            let step = step_signal_plus.get();
-            if step <= 0 {
-                panic!("hydrolysis stepper requires positive step");
-            }
-            let current = value_binding_plus.get();
-            let next = current.saturating_add(step).clamp(range_start, range_end);
-            value_binding_plus.set(next);
-            true
-        });
+        renderer.register_pointer_target(
+            transformed_rect(ctx.transform, plus_bounds),
+            move |_point, _env| {
+                let step = step_signal_plus.get();
+                if step <= 0 {
+                    panic!("hydrolysis stepper requires positive step");
+                }
+                let current = value_binding_plus.get();
+                let next = current.saturating_add(step).clamp(range_start, range_end);
+                value_binding_plus.set(next);
+                true
+            },
+        );
     }
 
     fn render_progress(
@@ -849,7 +910,11 @@ impl HydrolysisRenderer {
 
         match progress.style {
             ProgressStyle::Linear => {
-                let label_height = if ctx.bounds.height() >= 40.0 { 18.0 } else { 0.0 };
+                let label_height = if ctx.bounds.height() >= 40.0 {
+                    18.0
+                } else {
+                    0.0
+                };
                 if label_height > 0.0 {
                     let label_rect = vello::kurbo::Rect::new(
                         ctx.bounds.x0,
@@ -862,12 +927,22 @@ impl HydrolysisRenderer {
 
                 let bar_y = ctx.bounds.y0 + label_height + 10.0;
                 let bar = vello::kurbo::RoundedRect::from_rect(
-                    vello::kurbo::Rect::new(ctx.bounds.x0 + 8.0, bar_y, ctx.bounds.x1 - 8.0, bar_y + 8.0),
+                    vello::kurbo::Rect::new(
+                        ctx.bounds.x0 + 8.0,
+                        bar_y,
+                        ctx.bounds.x1 - 8.0,
+                        bar_y + 8.0,
+                    ),
                     4.0,
                 );
                 let width = bar.rect().width() * clamped;
                 let fill = vello::kurbo::RoundedRect::from_rect(
-                    vello::kurbo::Rect::new(bar.rect().x0, bar.rect().y0, bar.rect().x0 + width, bar.rect().y1),
+                    vello::kurbo::Rect::new(
+                        bar.rect().x0,
+                        bar.rect().y0,
+                        bar.rect().x0 + width,
+                        bar.rect().y1,
+                    ),
                     4.0,
                 );
                 let scene = unsafe { ctx.scene() };
@@ -903,7 +978,8 @@ impl HydrolysisRenderer {
                 );
                 let radius = (ctx.bounds.width().min(ctx.bounds.height()) / 2.0 - 6.0).max(2.0);
                 let track = vello::kurbo::Circle::new(center, radius);
-                let arc = circle_arc_path(center, radius, -core::f64::consts::FRAC_PI_2, TAU * clamped);
+                let arc =
+                    circle_arc_path(center, radius, -core::f64::consts::FRAC_PI_2, TAU * clamped);
                 let scene = unsafe { ctx.scene() };
                 let stroke = vello::kurbo::Stroke::new(5.0);
                 scene.stroke(
@@ -920,7 +996,12 @@ impl HydrolysisRenderer {
                     None,
                     &arc,
                 );
-                let label_rect = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y1 + 4.0, ctx.bounds.x1, ctx.bounds.y1);
+                let label_rect = vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    ctx.bounds.y1 + 4.0,
+                    ctx.bounds.x1,
+                    ctx.bounds.y1,
+                );
                 let _ = label_rect;
             }
             _ => {
@@ -936,7 +1017,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let text_field = text_field.into_inner();
-        let label_height = if ctx.bounds.height() >= 36.0 { 18.0 } else { 0.0 };
+        let label_height = if ctx.bounds.height() >= 36.0 {
+            18.0
+        } else {
+            0.0
+        };
         if label_height > 0.0 {
             let label_rect = vello::kurbo::Rect::new(
                 ctx.bounds.x0,
@@ -978,7 +1063,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let secure_field = secure_field.into_inner();
-        let label_height = if ctx.bounds.height() >= 36.0 { 18.0 } else { 0.0 };
+        let label_height = if ctx.bounds.height() >= 36.0 {
+            18.0
+        } else {
+            0.0
+        };
         if label_height > 0.0 {
             let label_rect = vello::kurbo::Rect::new(
                 ctx.bounds.x0,
@@ -1047,16 +1136,16 @@ impl HydrolysisRenderer {
 
         let selection_binding = picker.selection;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_pointer_target(transformed_rect(ctx.transform, ctx.bounds), move |_point, _env| {
-            let current = selection_binding.get();
-            let index = ids
-                .iter()
-                .position(|id| *id == current)
-                .unwrap_or(0);
-            let next = ids[(index + 1) % ids.len()];
-            selection_binding.set(next);
-            true
-        });
+        renderer.register_pointer_target(
+            transformed_rect(ctx.transform, ctx.bounds),
+            move |_point, _env| {
+                let current = selection_binding.get();
+                let index = ids.iter().position(|id| *id == current).unwrap_or(0);
+                let next = ids[(index + 1) % ids.len()];
+                selection_binding.set(next);
+                true
+            },
+        );
     }
 
     fn render_dynamic(
@@ -1066,15 +1155,20 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let current = Rc::new(RefCell::new(None::<AnyView>));
+        let is_initial = Rc::new(Cell::new(true));
+        let rebuild_requested = {
+            let renderer = unsafe { ctx.renderer() };
+            Rc::clone(&renderer.rebuild_requested)
+        };
         dynamic.into_inner().connect({
             let current = Rc::clone(&current);
+            let is_initial = Rc::clone(&is_initial);
+            let rebuild_requested = Rc::clone(&rebuild_requested);
             move |update| {
-                let next = update.into_value();
-                let mut slot = current.borrow_mut();
-                if slot.is_some() {
-                    panic!("hydrolysis Dynamic update after initial dispatch is not implemented");
+                *current.borrow_mut() = Some(update.into_value());
+                if !is_initial.replace(false) {
+                    rebuild_requested.set(true);
                 }
-                *slot = Some(next);
             }
         });
         let content = current
@@ -1138,7 +1232,13 @@ impl HydrolysisRenderer {
     ) {
         let scene = unsafe { ctx.scene() };
         let brush = resolved_color_to_peniko(color.into_inner());
-        scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &ctx.bounds);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            brush,
+            None,
+            &ctx.bounds,
+        );
     }
 
     fn render_resolved_gradient(
@@ -1168,7 +1268,13 @@ impl HydrolysisRenderer {
         let path = resolved_shape_to_path(&resolved, ctx.bounds);
         let fill = resolved_color_to_peniko(resolved.fill);
         let scene = unsafe { ctx.scene() };
-        scene.fill(vello::peniko::Fill::NonZero, ctx.transform, fill, None, &path);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            fill,
+            None,
+            &path,
+        );
     }
 
     fn render_environment_metadata(
@@ -1189,10 +1295,10 @@ impl HydrolysisRenderer {
         metadata: Metadata<Retain>,
         env: &Environment,
     ) {
-        let retain = metadata.value;
+        let Metadata { content, value } = metadata;
         let renderer = unsafe { ctx.renderer() };
-        renderer.dispatcher.dispatch(metadata.content, env, ctx);
-        drop(retain);
+        renderer.current_frame_retain.push(value);
+        renderer.dispatcher.dispatch(content, env, ctx);
     }
 
     fn render_opacity_metadata(
@@ -1411,33 +1517,72 @@ impl HydrolysisRenderer {
         let width = f64::from(border.width);
 
         if border.edges.all() && border.corner_radius > 0.0 {
-            let rounded = vello::kurbo::RoundedRect::from_rect(
-                ctx.bounds,
-                f64::from(border.corner_radius),
-            );
+            let rounded =
+                vello::kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = vello::kurbo::Stroke::new(width);
             scene.stroke(&stroke, ctx.transform, brush, None, &rounded);
             return;
         }
 
         if border.edges.top {
-            let top = vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y0 + width);
-            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &top);
+            let top = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                ctx.bounds.y0 + width,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &top,
+            );
         }
         if border.edges.bottom {
-            let bottom =
-                vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y1 - width, ctx.bounds.x1, ctx.bounds.y1);
-            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &bottom);
+            let bottom = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y1 - width,
+                ctx.bounds.x1,
+                ctx.bounds.y1,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &bottom,
+            );
         }
         if border.edges.leading {
-            let leading =
-                vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, ctx.bounds.x0 + width, ctx.bounds.y1);
-            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &leading);
+            let leading = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x0 + width,
+                ctx.bounds.y1,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &leading,
+            );
         }
         if border.edges.trailing {
-            let trailing =
-                vello::kurbo::Rect::new(ctx.bounds.x1 - width, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
-            scene.fill(vello::peniko::Fill::NonZero, ctx.transform, brush, None, &trailing);
+            let trailing = vello::kurbo::Rect::new(
+                ctx.bounds.x1 - width,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                ctx.bounds.y1,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &trailing,
+            );
         }
     }
 
@@ -1515,6 +1660,14 @@ impl HydrolysisRenderer {
         self.scene.reset();
     }
 
+    pub fn begin_rebuild_frame(&mut self) {
+        self.current_frame_retain.clear();
+    }
+
+    pub fn finish_rebuild_frame(&mut self) {
+        self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
+    }
+
     pub fn scene_mut(&mut self) -> &mut vello::Scene {
         &mut self.scene
     }
@@ -1528,11 +1681,21 @@ impl HydrolysisRenderer {
     }
 
     pub fn set_frame_resources(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.dispatcher.state_mut().set_frame_resources(device, queue);
+        self.dispatcher
+            .state_mut()
+            .set_frame_resources(device, queue);
     }
 
     pub fn clear_frame_resources(&mut self) {
         self.dispatcher.state_mut().clear_frame_resources();
+    }
+
+    pub fn request_rebuild(&self) {
+        self.rebuild_requested.set(true);
+    }
+
+    pub fn take_rebuild_request(&self) -> bool {
+        self.rebuild_requested.replace(false)
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -1569,11 +1732,8 @@ impl HydrolysisRenderer {
         false
     }
 
-    fn register_pointer_target<F>(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        action: F,
-    ) where
+    fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
         self.pointer_targets.push(PointerTarget {
@@ -1583,7 +1743,11 @@ impl HydrolysisRenderer {
     }
 }
 
-fn estimate_intrinsic_size(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
+fn estimate_intrinsic_size(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
     if let Some(text) = view.downcast_ref::<Str>() {
         return HydrolysisRenderer::measure_text_intrinsic_size(
             state,
@@ -1624,11 +1788,8 @@ fn resolved_gradient_to_brush(
     gradient: &ResolvedGradient,
     bounds: vello::kurbo::Rect,
 ) -> vello::peniko::Brush {
-    let mut stops: Vec<vello::peniko::ColorStop> = gradient
-        .stops
-        .iter()
-        .map(to_peniko_stop)
-        .collect();
+    let mut stops: Vec<vello::peniko::ColorStop> =
+        gradient.stops.iter().map(to_peniko_stop).collect();
 
     let brush = match gradient.gradient_type {
         GradientType::Linear => {
@@ -1641,13 +1802,8 @@ fn resolved_gradient_to_brush(
             let radius_scale = bounds.width().min(bounds.height()) as f32;
             let start_radius = gradient.start_value * radius_scale;
             let end_radius = gradient.end_value * radius_scale;
-            vello::peniko::Gradient::new_two_point_radial(
-                center,
-                start_radius,
-                center,
-                end_radius,
-            )
-            .with_stops(&*stops)
+            vello::peniko::Gradient::new_two_point_radial(center, start_radius, center, end_radius)
+                .with_stops(&*stops)
         }
         GradientType::Angular => {
             let sweep = gradient.end_value - gradient.start_value;
@@ -1695,11 +1851,17 @@ fn to_peniko_stop(stop: &ResolvedGradientStop) -> vello::peniko::ColorStop {
     }
 }
 
-fn resolved_shape_to_path(shape: &ResolvedShape, bounds: vello::kurbo::Rect) -> vello::kurbo::BezPath {
+fn resolved_shape_to_path(
+    shape: &ResolvedShape,
+    bounds: vello::kurbo::Rect,
+) -> vello::kurbo::BezPath {
     path_commands_to_path(&shape.commands, bounds)
 }
 
-fn path_commands_to_path(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> vello::kurbo::BezPath {
+fn path_commands_to_path(
+    commands: &[PathCommand],
+    bounds: vello::kurbo::Rect,
+) -> vello::kurbo::BezPath {
     let width = bounds.width();
     let height = bounds.height();
     let mut path = vello::kurbo::BezPath::new();
@@ -1708,14 +1870,20 @@ fn path_commands_to_path(commands: &[PathCommand], bounds: vello::kurbo::Rect) -
     for command in commands {
         match command {
             PathCommand::MoveTo { x, y } => {
-                path.move_to(vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height));
+                path.move_to(vello::kurbo::Point::new(
+                    f64::from(*x) * width,
+                    f64::from(*y) * height,
+                ));
                 has_current = true;
             }
             PathCommand::LineTo { x, y } => {
                 if !has_current {
                     panic!("PathCommand::LineTo requires an active current point");
                 }
-                path.line_to(vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height));
+                path.line_to(vello::kurbo::Point::new(
+                    f64::from(*x) * width,
+                    f64::from(*y) * height,
+                ));
             }
             PathCommand::QuadTo { cx, cy, x, y } => {
                 if !has_current {
@@ -1829,15 +1997,22 @@ fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
     parley::FontWeight::new(value)
 }
 
-fn transformed_rect(transform: vello::kurbo::Affine, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
+fn transformed_rect(
+    transform: vello::kurbo::Affine,
+    rect: vello::kurbo::Rect,
+) -> vello::kurbo::Rect {
     let points = [
         transform * vello::kurbo::Point::new(rect.x0, rect.y0),
         transform * vello::kurbo::Point::new(rect.x1, rect.y0),
         transform * vello::kurbo::Point::new(rect.x0, rect.y1),
         transform * vello::kurbo::Point::new(rect.x1, rect.y1),
     ];
-    let min_x = points.iter().fold(f64::INFINITY, |acc, point| acc.min(point.x));
-    let min_y = points.iter().fold(f64::INFINITY, |acc, point| acc.min(point.y));
+    let min_x = points
+        .iter()
+        .fold(f64::INFINITY, |acc, point| acc.min(point.x));
+    let min_y = points
+        .iter()
+        .fold(f64::INFINITY, |acc, point| acc.min(point.y));
     let max_x = points
         .iter()
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.x));
