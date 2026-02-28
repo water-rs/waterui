@@ -190,6 +190,11 @@ mod winit_runner {
                             runtime.needs_rebuild = true;
                         }
                     }
+                    InputEvent::Scroll { x, y, dx, dy } => {
+                        if runtime.renderer.handle_scroll(x, y, dx, dy) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
                     _ => {}
                 }
             }
