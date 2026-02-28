@@ -144,10 +144,10 @@ struct ButtonTarget {
 }
 
 impl HydroSubview {
-    fn from_view(view: &AnyView) -> Self {
+    fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
         Self {
             stretch_axis: view.stretch_axis(),
-            intrinsic: estimate_intrinsic_size(view),
+            intrinsic: estimate_intrinsic_size(view, state, env),
         }
     }
 }
@@ -299,12 +299,16 @@ impl HydrolysisRenderer {
     }
 
     fn render_layout_container(
+        state: &mut HydroState,
         ctx: RenderContext,
         layout: Box<dyn Layout>,
         children: Vec<AnyView>,
         env: &Environment,
     ) {
-        let subviews: Vec<HydroSubview> = children.iter().map(HydroSubview::from_view).collect();
+        let mut subviews = Vec::with_capacity(children.len());
+        for child in &children {
+            subviews.push(HydroSubview::from_view(child, state, env));
+        }
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
 
         let proposal =
@@ -326,17 +330,17 @@ impl HydrolysisRenderer {
     }
 
     fn render_fixed_container(
-        _state: &mut HydroState,
+        state: &mut HydroState,
         ctx: RenderContext,
         container: Native<FixedContainer>,
         env: &Environment,
     ) {
         let (layout, children) = container.into_inner().into_inner();
-        Self::render_layout_container(ctx, layout, children, env);
+        Self::render_layout_container(state, ctx, layout, children, env);
     }
 
     fn render_lazy_container(
-        _state: &mut HydroState,
+        state: &mut HydroState,
         ctx: RenderContext,
         container: Native<LazyContainer>,
         env: &Environment,
@@ -350,7 +354,7 @@ impl HydrolysisRenderer {
             });
             materialized.push(view);
         }
-        Self::render_layout_container(ctx, layout, materialized, env);
+        Self::render_layout_container(state, ctx, layout, materialized, env);
     }
 
     fn render_scroll_view(
@@ -410,51 +414,10 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) {
-        let mut plain = String::new();
-        let mut spans = Vec::with_capacity(styled.chunks().len());
-        for (chunk, style) in styled.chunks() {
-            let start = plain.len();
-            plain.push_str(chunk.as_str());
-            let end = plain.len();
-            spans.push((start..end, style.clone()));
-        }
-        if plain.is_empty() {
+        let layout = Self::build_text_layout(state, styled, env, Some(ctx.bounds.width() as f32));
+        if layout.is_empty() {
             return;
         }
-
-        let mut family_storage = Vec::new();
-        let default_font = waterui_text::font::Font::default().resolve(env).get();
-        let default_brush = resolved_color_to_rgba8(Color::srgb(0, 0, 0).resolve(env).get());
-        let mut builder = state
-            .layout_cx
-            .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(default_brush));
-        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
-            default_font.weight,
-        )));
-        if let Some(family) = default_font.family {
-            family_storage.push(family.to_string());
-            let family_name = family_storage
-                .last()
-                .expect("default font family storage must contain the pushed value");
-            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
-                parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
-            )));
-        }
-
-        for (range, style) in spans {
-            Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
-        }
-
-        let mut layout = builder.build(&plain);
-        let max_width = Some(ctx.bounds.width() as f32);
-        layout.break_all_lines(max_width);
-        layout.align(
-            max_width,
-            parley::Alignment::Start,
-            parley::AlignmentOptions::default(),
-        );
 
         let text_transform =
             ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
@@ -491,6 +454,69 @@ impl HydrolysisRenderer {
                 }
             }
         }
+    }
+
+    fn build_text_layout(
+        state: &mut HydroState,
+        styled: StyledStr,
+        env: &Environment,
+        max_width: Option<f32>,
+    ) -> parley::Layout<[u8; 4]> {
+        let mut plain = String::new();
+        let mut spans = Vec::with_capacity(styled.chunks().len());
+        for (chunk, style) in styled.chunks() {
+            let start = plain.len();
+            plain.push_str(chunk.as_str());
+            let end = plain.len();
+            spans.push((start..end, style.clone()));
+        }
+
+        if plain.is_empty() {
+            return parley::Layout::new();
+        }
+
+        let mut family_storage = Vec::new();
+        let default_font = waterui_text::font::Font::default().resolve(env).get();
+        let default_brush = resolved_color_to_rgba8(Color::srgb(0, 0, 0).resolve(env).get());
+        let mut builder = state
+            .layout_cx
+            .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
+        builder.push_default(parley::StyleProperty::Brush(default_brush));
+        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
+        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+            default_font.weight,
+        )));
+        if let Some(family) = default_font.family {
+            family_storage.push(family.to_string());
+            let family_name = family_storage
+                .last()
+                .expect("default font family storage must contain the pushed value");
+            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
+                parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
+            )));
+        }
+
+        for (range, style) in spans {
+            Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
+        }
+
+        let mut layout = builder.build(&plain);
+        layout.break_all_lines(max_width);
+        layout.align(
+            max_width,
+            parley::Alignment::Start,
+            parley::AlignmentOptions::default(),
+        );
+        layout
+    }
+
+    fn measure_text_intrinsic_size(
+        state: &mut HydroState,
+        styled: StyledStr,
+        env: &Environment,
+    ) -> LayoutSize {
+        let layout = Self::build_text_layout(state, styled, env, None);
+        LayoutSize::new(layout.full_width(), layout.height())
     }
 
     fn push_text_style(
@@ -1070,13 +1096,29 @@ impl HydrolysisRenderer {
     }
 }
 
-fn estimate_intrinsic_size(view: &AnyView) -> LayoutSize {
+fn estimate_intrinsic_size(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
     if let Some(text) = view.downcast_ref::<Str>() {
-        return LayoutSize::new(text.len() as f32 * 8.0, 20.0);
+        return HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(text.clone()),
+            env,
+        );
     }
 
-    if view.is::<Native<TextConfig>>() {
-        return LayoutSize::new(120.0, 20.0);
+    if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
+        return HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            text.as_inner().content.get(),
+            env,
+        );
+    }
+
+    if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
+        return HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(icon.as_inner().name.clone()),
+            env,
+        );
     }
 
     if view.stretch_axis().stretches_any() {
