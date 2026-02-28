@@ -6,6 +6,7 @@ mod animation;
 mod platform;
 mod renderer;
 mod runner;
+mod scroll;
 
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;

@@ -44,6 +44,7 @@ use waterui_graphics::{
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
@@ -54,6 +55,7 @@ use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
+use crate::scroll::{ScrollController, ScrollMetrics};
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -142,8 +144,10 @@ pub struct HydrolysisRenderer {
     scene: vello::Scene,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
+    scroll_targets: Vec<ScrollTarget>,
     rebuild_requested: Rc<Cell<bool>>,
     animation_controller: AnimationController,
+    scroll_controller: ScrollController,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
 }
@@ -157,6 +161,11 @@ struct HydroSubview {
 struct PointerTarget {
     bounds: vello::kurbo::Rect,
     action: Box<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>,
+}
+
+struct ScrollTarget {
+    bounds: vello::kurbo::Rect,
+    action: Box<dyn FnMut(f32, f32) -> bool>,
 }
 
 impl HydroSubview {
@@ -239,8 +248,10 @@ impl HydrolysisRenderer {
             scene: vello::Scene::new(),
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
+            scroll_targets: Vec::new(),
             rebuild_requested: Rc::new(Cell::new(false)),
             animation_controller: AnimationController::default(),
+            scroll_controller: ScrollController::default(),
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
         }
@@ -446,22 +457,64 @@ impl HydrolysisRenderer {
     }
 
     fn render_scroll_view(
-        _state: &mut HydroState,
+        state: &mut HydroState,
         ctx: RenderContext,
         scroll: Native<ScrollView>,
         env: &Environment,
     ) {
-        let (_axis, content) = scroll.into_inner().into_inner();
+        let (axis, content) = scroll.into_inner().into_inner();
+        let viewport = ctx.bounds;
+        let intrinsic = estimate_intrinsic_size(&content, state, env);
+        let (content_width, content_height) = match axis {
+            ScrollAxis::Horizontal => (
+                f64::from(intrinsic.width).max(viewport.width()),
+                viewport.height(),
+            ),
+            ScrollAxis::Vertical => (
+                viewport.width(),
+                f64::from(intrinsic.height).max(viewport.height()),
+            ),
+            ScrollAxis::All => (
+                f64::from(intrinsic.width).max(viewport.width()),
+                f64::from(intrinsic.height).max(viewport.height()),
+            ),
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        };
+
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.scroll_controller.bind(
+                axis,
+                viewport.width(),
+                viewport.height(),
+                content_width,
+                content_height,
+            )
+        };
+        let metrics = handle.metrics();
+
+        let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        let content_bounds = vello::kurbo::Rect::new(0.0, 0.0, content_width, content_height);
         let scene = unsafe { ctx.scene() };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             ctx.transform,
-            &ctx.bounds,
+            &viewport,
         );
-        Self::dispatch_any(ctx, env, content);
+        Self::dispatch_any(ctx.child(content_transform, content_bounds), env, content);
         scene.pop_layer();
+
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let target_handle = handle.clone();
+            renderer.register_scroll_target(transformed_rect(ctx.transform, viewport), move |dx, dy| {
+                target_handle.apply_scroll_delta(dx, dy)
+            });
+        }
+
+        Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, axis);
     }
 
     fn render_divider(
@@ -1705,6 +1758,61 @@ impl HydrolysisRenderer {
         self.dispatcher.state()
     }
 
+    fn draw_scroll_indicators(
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        viewport: vello::kurbo::Rect,
+        metrics: ScrollMetrics,
+        axis: ScrollAxis,
+    ) {
+        let indicator_color = vello::peniko::Color::new([0.4, 0.4, 0.4, 0.55]);
+        match axis {
+            ScrollAxis::Vertical | ScrollAxis::All => {
+                if metrics.max_y > 0.0 {
+                    let track_height = viewport.height();
+                    let thumb_height = (track_height * (metrics.viewport_height / metrics.content_height))
+                        .clamp(12.0, track_height);
+                    let travel = track_height - thumb_height;
+                    let progress = if metrics.max_y > 0.0 {
+                        metrics.offset_y / metrics.max_y
+                    } else {
+                        0.0
+                    };
+                    let thumb_y = viewport.y0 + travel * progress;
+                    let thumb = vello::kurbo::RoundedRect::from_rect(
+                        vello::kurbo::Rect::new(viewport.x1 - 4.0, thumb_y, viewport.x1 - 1.5, thumb_y + thumb_height),
+                        1.25,
+                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, indicator_color, None, &thumb);
+                }
+            }
+            _ => {}
+        }
+
+        match axis {
+            ScrollAxis::Horizontal | ScrollAxis::All => {
+                if metrics.max_x > 0.0 {
+                    let track_width = viewport.width();
+                    let thumb_width = (track_width * (metrics.viewport_width / metrics.content_width))
+                        .clamp(12.0, track_width);
+                    let travel = track_width - thumb_width;
+                    let progress = if metrics.max_x > 0.0 {
+                        metrics.offset_x / metrics.max_x
+                    } else {
+                        0.0
+                    };
+                    let thumb_x = viewport.x0 + travel * progress;
+                    let thumb = vello::kurbo::RoundedRect::from_rect(
+                        vello::kurbo::Rect::new(thumb_x, viewport.y1 - 4.0, thumb_x + thumb_width, viewport.y1 - 1.5),
+                        1.25,
+                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, indicator_color, None, &thumb);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn state_mut(&mut self) -> &mut HydroState {
         self.dispatcher.state_mut()
     }
@@ -1719,17 +1827,20 @@ impl HydrolysisRenderer {
             self.vello_renderer.unregister_texture(image);
         }
         self.pointer_targets.clear();
+        self.scroll_targets.clear();
         self.scene.reset();
     }
 
     pub fn begin_rebuild_frame(&mut self) {
         self.current_frame_retain.clear();
         self.animation_controller.begin_rebuild_frame();
+        self.scroll_controller.begin_rebuild_frame();
     }
 
     pub fn finish_rebuild_frame(&mut self) {
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
         self.animation_controller.finish_rebuild_frame();
+        self.scroll_controller.finish_rebuild_frame();
     }
 
     pub fn scene_mut(&mut self) -> &mut vello::Scene {
@@ -1800,11 +1911,31 @@ impl HydrolysisRenderer {
         false
     }
 
+    pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        for target in self.scroll_targets.iter_mut().rev() {
+            if target.bounds.contains(point) {
+                return (target.action)(dx, dy);
+            }
+        }
+        false
+    }
+
     fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
         self.pointer_targets.push(PointerTarget {
+            bounds,
+            action: Box::new(action),
+        });
+    }
+
+    fn register_scroll_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(f32, f32) -> bool,
+    {
+        self.scroll_targets.push(ScrollTarget {
             bounds,
             action: Box::new(action),
         });
