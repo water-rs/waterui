@@ -1,9 +1,12 @@
 use core::f64::consts::TAU;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use nami::Signal;
+use waterui::animation::Animation;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
@@ -49,6 +52,8 @@ use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
+
+use crate::animation::AnimationController;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -138,6 +143,7 @@ pub struct HydrolysisRenderer {
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     rebuild_requested: Rc<Cell<bool>>,
+    animation_controller: AnimationController,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
 }
@@ -234,6 +240,7 @@ impl HydrolysisRenderer {
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             rebuild_requested: Rc::new(Cell::new(false)),
+            animation_controller: AnimationController::default(),
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
         }
@@ -331,6 +338,46 @@ impl HydrolysisRenderer {
         let child_transform = vello::kurbo::Affine::translate((rect.x0, rect.y0));
         let child_bounds = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
         Self::dispatch_any(ctx.child(child_transform, child_bounds), env, content);
+    }
+
+    fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
+    where
+        S: Signal<Output = f32> + Clone + 'static,
+    {
+        let now = Instant::now();
+        let handle = self.animation_controller.bind_scalar(signal.get());
+        let watcher_handle = handle.clone();
+        let rebuild_requested = Rc::clone(&self.rebuild_requested);
+        let guard = signal.watch(move |update| {
+            watcher_handle.apply_update_from_context(update, Instant::now());
+            rebuild_requested.set(true);
+        });
+        self.current_frame_retain.push(Retain::new(guard));
+        handle.sample(now)
+    }
+
+    fn resolve_toggle_progress<S>(&mut self, signal: &S) -> f32
+    where
+        S: Signal<Output = bool> + Clone + 'static,
+    {
+        let now = Instant::now();
+        let handle = self
+            .animation_controller
+            .bind_scalar(if signal.get() { 1.0 } else { 0.0 });
+        let watcher_handle = handle.clone();
+        let rebuild_requested = Rc::clone(&self.rebuild_requested);
+        let default_animation = Animation::ease_in_out(Duration::from_millis(180));
+        let guard = signal.watch(move |update| {
+            let target = if *update.value() { 1.0 } else { 0.0 };
+            let animation = update
+                .metadata()
+                .try_get::<Animation>()
+                .unwrap_or_else(|| default_animation.clone());
+            watcher_handle.apply_target(target, Some(animation), Instant::now());
+            rebuild_requested.set(true);
+        });
+        self.current_frame_retain.push(Retain::new(guard));
+        handle.sample(now).clamp(0.0, 1.0)
     }
 
     fn render_layout_container(
@@ -670,17 +717,16 @@ impl HydrolysisRenderer {
             Self::dispatch_in_rect(ctx, env, toggle.label, label_bounds);
         }
 
-        let is_on = toggle.toggle.get();
-        let track_color = if is_on {
-            vello::peniko::Color::new([0.20392157, 0.78039217, 0.34901962, 1.0])
-        } else {
-            vello::peniko::Color::new([0.7058824, 0.7058824, 0.7254902, 1.0])
+        let thumb_progress = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.resolve_toggle_progress(&toggle.toggle)
         };
-        let thumb_center_x = if is_on {
-            switch_bounds.x1 - 15.0
-        } else {
-            switch_bounds.x0 + 15.0
-        };
+        let track_color = lerp_color(
+            [0.7058824, 0.7058824, 0.7254902, 1.0],
+            [0.20392157, 0.78039217, 0.34901962, 1.0],
+            thumb_progress,
+        );
+        let thumb_center_x = lerp_f64(switch_bounds.x0 + 15.0, switch_bounds.x1 - 15.0, thumb_progress);
         let thumb_center =
             vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
         let track = vello::kurbo::RoundedRect::from_rect(switch_bounds, 15.5);
@@ -1307,7 +1353,10 @@ impl HydrolysisRenderer {
         metadata: Metadata<Opacity>,
         env: &Environment,
     ) {
-        let alpha = metadata.value.value.get();
+        let alpha = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.resolve_animated_scalar(&metadata.value.value)
+        };
         let scene = unsafe { ctx.scene() };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -1442,11 +1491,15 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
-        let transform = vello::kurbo::Affine::translate((center.x, center.y))
-            * vello::kurbo::Affine::scale_non_uniform(
-                f64::from(value.x.get()),
-                f64::from(value.y.get()),
+        let (scale_x, scale_y) = {
+            let renderer = unsafe { ctx.renderer() };
+            (
+                renderer.resolve_animated_scalar(&value.x),
+                renderer.resolve_animated_scalar(&value.y),
             )
+        };
+        let transform = vello::kurbo::Affine::translate((center.x, center.y))
+            * vello::kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
             * vello::kurbo::Affine::translate((-center.x, -center.y));
         Self::dispatch_any(ctx.child(transform, ctx.bounds), env, content);
     }
@@ -1459,7 +1512,10 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let center = anchor_point(ctx.bounds, value.anchor);
-        let radians = f64::from(value.angle.get()).to_radians();
+        let radians = {
+            let renderer = unsafe { ctx.renderer() };
+            f64::from(renderer.resolve_animated_scalar(&value.angle)).to_radians()
+        };
         let transform = vello::kurbo::Affine::translate((center.x, center.y))
             * vello::kurbo::Affine::rotate(radians)
             * vello::kurbo::Affine::translate((-center.x, -center.y));
@@ -1473,8 +1529,14 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let Metadata { content, value } = metadata;
-        let transform =
-            vello::kurbo::Affine::translate((f64::from(value.x.get()), f64::from(value.y.get())));
+        let (offset_x, offset_y) = {
+            let renderer = unsafe { ctx.renderer() };
+            (
+                renderer.resolve_animated_scalar(&value.x),
+                renderer.resolve_animated_scalar(&value.y),
+            )
+        };
+        let transform = vello::kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
         Self::dispatch_any(ctx.child(transform, ctx.bounds), env, content);
     }
 
@@ -1662,10 +1724,12 @@ impl HydrolysisRenderer {
 
     pub fn begin_rebuild_frame(&mut self) {
         self.current_frame_retain.clear();
+        self.animation_controller.begin_rebuild_frame();
     }
 
     pub fn finish_rebuild_frame(&mut self) {
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
+        self.animation_controller.finish_rebuild_frame();
     }
 
     pub fn scene_mut(&mut self) -> &mut vello::Scene {
@@ -1696,6 +1760,10 @@ impl HydrolysisRenderer {
 
     pub fn take_rebuild_request(&self) -> bool {
         self.rebuild_requested.replace(false)
+    }
+
+    pub fn advance_animations(&mut self) -> bool {
+        self.animation_controller.tick(Instant::now())
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -2020,6 +2088,23 @@ fn transformed_rect(
         .iter()
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
     vello::kurbo::Rect::new(min_x, min_y, max_x, max_y)
+}
+
+fn lerp_f32(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
+}
+
+fn lerp_f64(from: f64, to: f64, t: f32) -> f64 {
+    from + (to - from) * f64::from(t)
+}
+
+fn lerp_color(from: [f32; 4], to: [f32; 4], t: f32) -> vello::peniko::Color {
+    vello::peniko::Color::new([
+        lerp_f32(from[0], to[0], t),
+        lerp_f32(from[1], to[1], t),
+        lerp_f32(from[2], to[2], t),
+        lerp_f32(from[3], to[3], t),
+    ])
 }
 
 fn inset_rect(rect: vello::kurbo::Rect, dx: f64, dy: f64) -> vello::kurbo::Rect {
