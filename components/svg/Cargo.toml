@@ -18,6 +18,8 @@ waterui-str.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
 vello_svg.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
 
 # GPU backend (Vello)
 vello.workspace = true
