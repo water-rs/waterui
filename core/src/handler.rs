@@ -198,13 +198,19 @@ where
 }
 
 /// A builder for creating views from handler functions.
-pub struct AnyViewBuilder<V = AnyView>(Box<dyn ViewBuilder<Output = V>>);
+pub struct AnyViewBuilder<V = AnyView>(Rc<dyn ViewBuilder<Output = V>>);
+
+impl<V> Clone for AnyViewBuilder<V> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
 
 impl<V: View> AnyViewBuilder<V> {
     /// Creates a new `ViewBuilder` from a handler function.
     #[must_use]
     pub fn new(handler: impl ViewBuilder<Output = V>) -> Self {
-        Self(Box::new(handler))
+        Self(Rc::new(handler))
     }
 
     /// Builds a view by invoking the underlying handler.
