@@ -10,20 +10,19 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
 
+use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jobject, jobjectArray};
-use jni::JNIEnv;
 use nami::SignalExt;
 use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
-use crate::components::layout::WuiLayout;
 use crate::IntoFFI;
 use crate::IntoRust;
+use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
@@ -167,8 +166,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'
     env_ptr: jlong,
     index: jlong,
 ) {
-    let action =
-        require_state_ptr::<crate::action::WuiIndexAction>(action_ptr, "callIndexAction");
+    let action = require_state_ptr::<crate::action::WuiIndexAction>(action_ptr, "callIndexAction");
     let wui_env = require_env_const(env_ptr, "callIndexAction");
     unsafe { crate::action::waterui_call_index_action(action, wui_env, index as usize) };
 }
@@ -466,10 +464,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor
         6 => crate::theme::WuiColorSlot::Accent,
         _ => crate::theme::WuiColorSlot::AccentForeground,
     };
-    let signal = require_state_ptr::<crate::reactive::WuiComputed<waterui_graphics::color::ResolvedColor>>(
-        signal_ptr,
-        "themeInstallColor",
-    );
+    let signal = require_state_ptr::<
+        crate::reactive::WuiComputed<waterui_graphics::color::ResolvedColor>,
+    >(signal_ptr, "themeInstallColor");
     unsafe { crate::theme::waterui_theme_install_color(wui_env, slot, signal) };
 }
 
@@ -937,9 +934,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifeCycleHook
         handler_ptr,
         "dropLifeCycleHook",
     );
-    unsafe {
-        crate::event::waterui_drop_lifecycle_hook(handler_ptr)
-    };
+    unsafe { crate::event::waterui_drop_lifecycle_hook(handler_ptr) };
 }
 
 #[unsafe(no_mangle)]
@@ -962,9 +957,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'loca
 ) {
     let handler_ptr =
         require_state_ptr::<crate::event::WuiOnEventHandler>(handler_ptr, "dropOnEvent");
-    unsafe {
-        crate::event::waterui_drop_on_event(handler_ptr)
-    };
+    unsafe { crate::event::waterui_drop_on_event(handler_ptr) };
 }
 
 // ============================================================================
@@ -1560,11 +1553,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSync
     let ok = unsafe {
         crate::components::applied_filter::waterui_applied_filter_sync_targets(wrapper.state)
     };
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1590,11 +1579,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterPoll
     let should_redraw = unsafe {
         crate::components::applied_filter::waterui_applied_filter_poll_redraw(wrapper.state)
     };
-    if should_redraw {
-        1
-    } else {
-        0
-    }
+    if should_redraw { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1655,11 +1640,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetI
         );
     }
 
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1900,11 +1881,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectSetInpu
         );
     }
 
-    if ok {
-        1
-    } else {
-        0
-    }
+    if ok { 1 } else { 0 }
 }
 
 // ============================================================================
@@ -1921,9 +1898,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_draggableGetData<
 ) -> jobject {
     let draggable_ptr =
         require_state_ptr::<crate::drag_drop::WuiDraggable>(draggable_ptr, "draggableGetData");
-    let data = unsafe {
-        crate::drag_drop::waterui_draggable_get_data(draggable_ptr as *const _)
-    };
+    let data = unsafe { crate::drag_drop::waterui_draggable_get_data(draggable_ptr as *const _) };
 
     let tag_class = env
         .find_class("dev/waterui/android/components/DragDataTag")
@@ -1967,9 +1942,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropDraggable<'lo
 ) {
     let draggable_ptr =
         require_state_ptr::<crate::drag_drop::WuiDraggable>(draggable_ptr, "dropDraggable");
-    unsafe {
-        crate::drag_drop::waterui_drop_draggable(draggable_ptr)
-    };
+    unsafe { crate::drag_drop::waterui_drop_draggable(draggable_ptr) };
 }
 
 #[unsafe(no_mangle)]
@@ -1982,9 +1955,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropDropDestinati
         drop_dest_ptr,
         "dropDropDestination",
     );
-    unsafe {
-        crate::drag_drop::waterui_drop_drop_destination(drop_dest_ptr)
-    };
+    unsafe { crate::drag_drop::waterui_drop_drop_destination(drop_dest_ptr) };
 }
 
 #[unsafe(no_mangle)]
@@ -1996,12 +1967,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropHandler<'
     data_tag: jint,
     data_value: JString<'local>,
 ) {
-    let drop_dest = require_state_ptr::<crate::drag_drop::WuiDropDestination>(
-        drop_dest_ptr,
-        "callDropHandler",
-    ) as *const crate::drag_drop::WuiDropDestination;
+    let drop_dest =
+        require_state_ptr::<crate::drag_drop::WuiDropDestination>(drop_dest_ptr, "callDropHandler")
+            as *const crate::drag_drop::WuiDropDestination;
     let wui_env = require_env_const(env_ptr, "callDropHandler");
-    let value: String = env
+    let value: waterui::Str = env
         .get_string(&data_value)
         .expect("WatcherJni.callDropHandler: failed to read data_value")
         .into();
@@ -2010,7 +1980,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropHandler<'
     } else {
         crate::drag_drop::WuiDragDataTag::Url
     };
-    let c_str = alloc::ffi::CString::new(value)
+    let c_str = alloc::ffi::CString::new(value.as_str())
         .expect("WatcherJni.callDropHandler: data_value contains interior NUL");
     unsafe { crate::drag_drop::waterui_call_drop_handler(drop_dest, wui_env, tag, c_str.as_ptr()) };
 }
