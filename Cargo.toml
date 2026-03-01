@@ -119,7 +119,7 @@ waterui-assets = { version = "0.1.0", path = "components/assets" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets-macros" }
 waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
-waterui-testing = { version = "0.1.0", path = "testing" }
+waterui-testing = { version = "0.2.1", path = "testing" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
