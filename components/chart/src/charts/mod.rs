@@ -1,7 +1,4 @@
-//! High-level chart view wrappers.
-//!
-//! Each chart type wraps a `GpuSurface` with the appropriate renderer
-//! and handles reactive data updates with animation.
+//! High-level chart view wrappers rendered with Canvas.
 
 pub mod area;
 pub mod bar;
@@ -16,7 +13,4 @@ pub mod heatmap;
 pub mod line;
 pub mod pie;
 pub mod radar;
-pub mod reactive;
 pub mod scatter;
-
-pub use reactive::SignalRenderer;
