@@ -83,10 +83,13 @@ impl ScrollController {
         }
 
         let state = Rc::clone(&self.slots[index].state);
-        let generation =
-            state
-                .borrow_mut()
-                .prepare_generation(axis, viewport_width, viewport_height, content_width, content_height);
+        let generation = state.borrow_mut().prepare_generation(
+            axis,
+            viewport_width,
+            viewport_height,
+            content_width,
+            content_height,
+        );
         ScrollHandle { state, generation }
     }
 }
@@ -168,7 +171,8 @@ impl ScrollState {
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
 
-        (self.offset_x - old_x).abs() > SCROLL_EPSILON || (self.offset_y - old_y).abs() > SCROLL_EPSILON
+        (self.offset_x - old_x).abs() > SCROLL_EPSILON
+            || (self.offset_y - old_y).abs() > SCROLL_EPSILON
     }
 
     fn clamp_offsets(&mut self) {
@@ -196,4 +200,3 @@ impl ScrollState {
 fn clamp_scroll_offset(value: f64, max: f64) -> f64 {
     value.clamp(0.0, max)
 }
-
