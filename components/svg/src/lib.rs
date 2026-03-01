@@ -1,7 +1,7 @@
 //! SVG rendering for WaterUI.
 //!
 //! This crate provides `Svg`, a view for rendering SVG content using GPU-accelerated
-//! rendering via `GpuSurface`.
+//! rendering via SceneView.
 //!
 //! SVG rendering is backed by Vello for direct GPU vector rendering.
 
@@ -9,10 +9,12 @@
 
 extern crate alloc;
 
+mod scene_renderer;
 mod vello_renderer;
 
+use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, Environment, Signal, SignalExt, View};
-use waterui_graphics::GpuSurface;
+use waterui_graphics::SceneView;
 use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
 use waterui_str::Str;
@@ -142,43 +144,43 @@ impl Svg {
         }
     }
 
-    /// Creates a GpuSurface renderer for this SVG with the given color.
-    fn to_gpu_surface(&self, color: &str) -> GpuSurface {
+    /// Creates a SceneView renderer for this SVG with the given color.
+    fn to_scene_view(&self, color: &str) -> SceneView {
         let svg_content = self.build_svg_content(color);
-        GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+        SceneView::new(scene_renderer::SvgSceneContent::new(&svg_content))
     }
 
-    /// Creates a reactive GpuSurface renderer for this SVG.
-    fn to_reactive_gpu_surface<S>(&self, color_signal: S) -> GpuSurface
+    /// Creates a reactive SceneView renderer for this SVG.
+    fn to_reactive_scene_view<S>(&self, color_signal: S) -> impl View
     where
-        S: Signal<Output = alloc::string::String>,
+        S: Signal<Output = alloc::string::String> + 'static,
     {
         let svg_template = self.build_svg_content(vello_renderer::SVG_COLOR_PLACEHOLDER);
-        GpuSurface::new(vello_renderer::ReactiveVelloSvgRenderer::new(
-            svg_template,
-            color_signal,
-        ))
+        Dynamic::watch(color_signal, move |color| {
+            let svg_content = svg_template.replace(vello_renderer::SVG_COLOR_PLACEHOLDER, &color);
+            SceneView::new(scene_renderer::SvgSceneContent::new(&svg_content))
+        })
     }
 
-    /// Wraps a GpuSurface in a frame, preserving optional intrinsic size.
-    fn frame_surface(&self, surface: GpuSurface) -> AnyView {
+    /// Wraps a view in a frame, preserving optional intrinsic size.
+    fn frame_view(&self, view: impl View) -> AnyView {
         match (self.width, self.height) {
-            (Some(w), Some(h)) => AnyView::new(Frame::new(surface).width(w).height(h)),
-            _ => AnyView::new(Frame::new(surface)),
+            (Some(w), Some(h)) => AnyView::new(Frame::new(view).width(w).height(h)),
+            _ => AnyView::new(Frame::new(view)),
         }
     }
 
-    /// Creates a framed SVG surface view for the given color.
-    fn to_framed_surface(&self, color: &str) -> AnyView {
-        self.frame_surface(self.to_gpu_surface(color))
+    /// Creates a framed SVG scene view for the given color.
+    fn to_framed_scene_view(&self, color: &str) -> AnyView {
+        self.frame_view(self.to_scene_view(color))
     }
 
-    /// Creates a framed reactive SVG surface view.
-    fn to_reactive_framed_surface<S>(&self, color_signal: S) -> AnyView
+    /// Creates a framed reactive SVG scene view.
+    fn to_reactive_framed_scene_view<S>(&self, color_signal: S) -> AnyView
     where
-        S: Signal<Output = alloc::string::String>,
+        S: Signal<Output = alloc::string::String> + 'static,
     {
-        self.frame_surface(self.to_reactive_gpu_surface(color_signal))
+        self.frame_view(self.to_reactive_scene_view(color_signal))
     }
 
     /// Format a ResolvedColor as an SVG-compatible color string.
@@ -211,7 +213,7 @@ impl View for Svg {
             let color_signal = tint
                 .resolve(env)
                 .map(|resolved| Svg::resolved_color_to_svg_color(&resolved));
-            return self.to_reactive_framed_surface(color_signal);
+            return self.to_reactive_framed_scene_view(color_signal);
         }
 
         // No explicit tint: use foreground color if present, else white.
@@ -219,7 +221,7 @@ impl View for Svg {
             .query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
             .map(Svg::resolved_color_to_svg_color)
             .unwrap_or_else(|| "#ffffff".into());
-        self.to_framed_surface(&color_hex)
+        self.to_framed_scene_view(&color_hex)
     }
 }
 
