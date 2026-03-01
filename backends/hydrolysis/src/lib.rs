@@ -12,7 +12,7 @@ mod scroll;
 pub use platform::WinitWindow;
 pub use platform::{
     InputEvent, KeyCode, KeyState, Modifiers, OffscreenSurface, OffscreenWindow, PlatformWindow,
-    PointerButton, SurfaceError, SurfaceFrame, SurfaceProvider,
+    PointerButton, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
 };
 pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 pub use runner::run;

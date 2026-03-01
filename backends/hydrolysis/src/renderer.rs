@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use nami::Signal;
-use waterui::animation::Animation;
 use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
+use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
@@ -45,8 +45,8 @@ use waterui_graphics::{
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
-use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_layout::stack::Axis as StackAxis;
@@ -56,7 +56,7 @@ use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
-use crate::platform::{KeyCode, Modifiers, PointerButton};
+use crate::platform::{KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState};
 use crate::scroll::{ScrollController, ScrollMetrics};
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
@@ -151,6 +151,7 @@ pub struct HydrolysisRenderer {
     text_input_targets: Vec<TextInputTarget>,
     scroll_targets: Vec<ScrollTarget>,
     focused_text_input: Cell<Option<usize>>,
+    ime_preedit: Option<String>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
@@ -186,6 +187,7 @@ enum TextInputCommand {
 
 struct TextInputTarget {
     bounds: vello::kurbo::Rect,
+    purpose: TextInputPurpose,
     action: Box<dyn FnMut(TextInputCommand) -> bool>,
 }
 
@@ -302,6 +304,7 @@ impl HydrolysisRenderer {
             text_input_targets: Vec::new(),
             scroll_targets: Vec::new(),
             focused_text_input: Cell::new(None),
+            ime_preedit: None,
             lifecycle_disappear_previous: BTreeMap::new(),
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
@@ -386,6 +389,15 @@ impl HydrolysisRenderer {
     ) {
         dispatcher
             .register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
+    }
+
+    fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
+        if self.focused_text_input.get() == focused {
+            return false;
+        }
+        self.focused_text_input.set(focused);
+        self.ime_preedit = None;
+        true
     }
 
     fn dispatch_any(ctx: RenderContext, env: &Environment, content: AnyView) {
@@ -566,7 +578,8 @@ impl HydrolysisRenderer {
         };
         let metrics = handle.metrics();
 
-        let content_transform = vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+        let content_transform =
+            vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         let content_bounds = vello::kurbo::Rect::new(0.0, 0.0, content_width, content_height);
         let scene = unsafe { ctx.scene() };
         scene.push_layer(
@@ -582,9 +595,10 @@ impl HydrolysisRenderer {
         {
             let renderer = unsafe { ctx.renderer() };
             let target_handle = handle.clone();
-            renderer.register_scroll_target(transformed_rect(ctx.transform, viewport), move |dx, dy| {
-                target_handle.apply_scroll_delta(dx, dy)
-            });
+            renderer.register_scroll_target(
+                transformed_rect(ctx.transform, viewport),
+                move |dx, dy| target_handle.apply_scroll_delta(dx, dy),
+            );
         }
 
         Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, axis);
@@ -855,7 +869,11 @@ impl HydrolysisRenderer {
             [0.20392157, 0.78039217, 0.34901962, 1.0],
             thumb_progress,
         );
-        let thumb_center_x = lerp_f64(switch_bounds.x0 + 15.0, switch_bounds.x1 - 15.0, thumb_progress);
+        let thumb_center_x = lerp_f64(
+            switch_bounds.x0 + 15.0,
+            switch_bounds.x1 - 15.0,
+            thumb_progress,
+        );
         let thumb_center =
             vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
         let track = vello::kurbo::RoundedRect::from_rect(switch_bounds, 15.5);
@@ -1225,14 +1243,28 @@ impl HydrolysisRenderer {
         draw_input_field(scene, ctx.transform, field_rect);
 
         let prompt_signal = text_field.prompt.content();
-        let (prompt, value) = {
+        let (prompt, value, preedit) = {
             let renderer = unsafe { ctx.renderer() };
+            let preedit =
+                if renderer.focused_text_input.get() == Some(renderer.text_input_targets.len()) {
+                    renderer.ime_preedit.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                };
             (
-                renderer.read_signal(&prompt_signal).to_plain(),
-                renderer.read_signal(&text_field.value).to_plain(),
+                renderer.read_signal(&prompt_signal).to_plain().to_string(),
+                renderer
+                    .read_signal(&text_field.value)
+                    .to_plain()
+                    .to_string(),
+                preedit,
             )
         };
-        let display = if value.is_empty() { prompt } else { value };
+        let display = if value.is_empty() && preedit.is_empty() {
+            prompt
+        } else {
+            format!("{value}{preedit}")
+        };
         let text_bounds = inset_rect(field_rect, 8.0, 6.0);
         Self::render_styled_text(
             state,
@@ -1246,26 +1278,30 @@ impl HydrolysisRenderer {
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_text_input_target(transformed_rect(ctx.transform, field_rect), move |command| {
-            let mut plain = value_binding.get().to_plain().to_string();
-            match command {
-                TextInputCommand::Insert(text) => {
-                    if text.is_empty() {
-                        return false;
+        renderer.register_text_input_target(
+            transformed_rect(ctx.transform, field_rect),
+            TextInputPurpose::Normal,
+            move |command| {
+                let mut plain = value_binding.get().to_plain().to_string();
+                match command {
+                    TextInputCommand::Insert(text) => {
+                        if text.is_empty() {
+                            return false;
+                        }
+                        plain.push_str(text.as_str());
+                        value_binding.set(StyledStr::plain(plain));
+                        true
                     }
-                    plain.push_str(text.as_str());
-                    value_binding.set(StyledStr::plain(plain));
-                    true
-                }
-                TextInputCommand::Backspace => {
-                    if plain.pop().is_none() {
-                        return false;
+                    TextInputCommand::Backspace => {
+                        if plain.pop().is_none() {
+                            return false;
+                        }
+                        value_binding.set(StyledStr::plain(plain));
+                        true
                     }
-                    value_binding.set(StyledStr::plain(plain));
-                    true
                 }
-            }
-        });
+            },
+        );
     }
 
     fn render_secure_field(
@@ -1301,7 +1337,21 @@ impl HydrolysisRenderer {
 
         let masked = {
             let renderer = unsafe { ctx.renderer() };
-            let count = renderer.read_signal(&secure_field.value).expose().chars().count();
+            let preedit_count =
+                if renderer.focused_text_input.get() == Some(renderer.text_input_targets.len()) {
+                    renderer
+                        .ime_preedit
+                        .as_ref()
+                        .map_or(0, |value| value.chars().count())
+                } else {
+                    0
+                };
+            let count = renderer
+                .read_signal(&secure_field.value)
+                .expose()
+                .chars()
+                .count()
+                + preedit_count;
             "*".repeat(count)
         };
         let text_bounds = inset_rect(field_rect, 8.0, 6.0);
@@ -1317,26 +1367,30 @@ impl HydrolysisRenderer {
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_text_input_target(transformed_rect(ctx.transform, field_rect), move |command| {
-            let mut plain = value_binding.get().expose().to_owned();
-            match command {
-                TextInputCommand::Insert(text) => {
-                    if text.is_empty() {
-                        return false;
+        renderer.register_text_input_target(
+            transformed_rect(ctx.transform, field_rect),
+            TextInputPurpose::Password,
+            move |command| {
+                let mut plain = value_binding.get().expose().to_owned();
+                match command {
+                    TextInputCommand::Insert(text) => {
+                        if text.is_empty() {
+                            return false;
+                        }
+                        plain.push_str(text.as_str());
                     }
-                    plain.push_str(text.as_str());
-                }
-                TextInputCommand::Backspace => {
-                    if plain.pop().is_none() {
-                        return false;
+                    TextInputCommand::Backspace => {
+                        if plain.pop().is_none() {
+                            return false;
+                        }
                     }
                 }
-            }
-            let mut next = FormSecure::default();
-            next.set(plain);
-            value_binding.set(next);
-            true
-        });
+                let mut next = FormSecure::default();
+                next.set(plain);
+                value_binding.set(next);
+                true
+            },
+        );
     }
 
     fn render_picker(
@@ -1902,7 +1956,7 @@ impl HydrolysisRenderer {
 
         if should_focus {
             if start < end {
-                renderer.focused_text_input.set(Some(start));
+                renderer.set_focused_text_input(Some(start));
             }
             return;
         }
@@ -1911,7 +1965,7 @@ impl HydrolysisRenderer {
             renderer.focused_text_input.get(),
             Some(index) if index >= start && index < end
         ) {
-            renderer.focused_text_input.set(None);
+            renderer.set_focused_text_input(None);
         }
     }
 
@@ -1947,7 +2001,7 @@ impl HydrolysisRenderer {
             renderer.focused_text_input.get(),
             Some(index) if index >= text_start
         ) {
-            renderer.focused_text_input.set(None);
+            renderer.set_focused_text_input(None);
         }
     }
 
@@ -2078,7 +2132,8 @@ impl HydrolysisRenderer {
             ScrollAxis::Vertical | ScrollAxis::All => {
                 if metrics.max_y > 0.0 {
                     let track_height = viewport.height();
-                    let thumb_height = (track_height * (metrics.viewport_height / metrics.content_height))
+                    let thumb_height = (track_height
+                        * (metrics.viewport_height / metrics.content_height))
                         .clamp(12.0, track_height);
                     let travel = track_height - thumb_height;
                     let progress = if metrics.max_y > 0.0 {
@@ -2088,10 +2143,21 @@ impl HydrolysisRenderer {
                     };
                     let thumb_y = viewport.y0 + travel * progress;
                     let thumb = vello::kurbo::RoundedRect::from_rect(
-                        vello::kurbo::Rect::new(viewport.x1 - 4.0, thumb_y, viewport.x1 - 1.5, thumb_y + thumb_height),
+                        vello::kurbo::Rect::new(
+                            viewport.x1 - 4.0,
+                            thumb_y,
+                            viewport.x1 - 1.5,
+                            thumb_y + thumb_height,
+                        ),
                         1.25,
                     );
-                    scene.fill(vello::peniko::Fill::NonZero, transform, indicator_color, None, &thumb);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        indicator_color,
+                        None,
+                        &thumb,
+                    );
                 }
             }
             _ => {}
@@ -2101,7 +2167,8 @@ impl HydrolysisRenderer {
             ScrollAxis::Horizontal | ScrollAxis::All => {
                 if metrics.max_x > 0.0 {
                     let track_width = viewport.width();
-                    let thumb_width = (track_width * (metrics.viewport_width / metrics.content_width))
+                    let thumb_width = (track_width
+                        * (metrics.viewport_width / metrics.content_width))
                         .clamp(12.0, track_width);
                     let travel = track_width - thumb_width;
                     let progress = if metrics.max_x > 0.0 {
@@ -2111,10 +2178,21 @@ impl HydrolysisRenderer {
                     };
                     let thumb_x = viewport.x0 + travel * progress;
                     let thumb = vello::kurbo::RoundedRect::from_rect(
-                        vello::kurbo::Rect::new(thumb_x, viewport.y1 - 4.0, thumb_x + thumb_width, viewport.y1 - 1.5),
+                        vello::kurbo::Rect::new(
+                            thumb_x,
+                            viewport.y1 - 4.0,
+                            thumb_x + thumb_width,
+                            viewport.y1 - 1.5,
+                        ),
                         1.25,
                     );
-                    scene.fill(vello::peniko::Fill::NonZero, transform, indicator_color, None, &thumb);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        indicator_color,
+                        None,
+                        &thumb,
+                    );
                 }
             }
             _ => {}
@@ -2164,7 +2242,7 @@ impl HydrolysisRenderer {
             self.focused_text_input.get(),
             Some(index) if index >= self.text_input_targets.len()
         ) {
-            self.focused_text_input.set(None);
+            self.set_focused_text_input(None);
         }
 
         self.animation_controller.finish_rebuild_frame();
@@ -2199,6 +2277,19 @@ impl HydrolysisRenderer {
 
     pub fn take_rebuild_request(&self) -> bool {
         self.rebuild_requested.replace(false)
+    }
+
+    #[must_use]
+    pub fn focused_text_input_state(&self) -> Option<TextInputState> {
+        let index = self.focused_text_input.get()?;
+        let target = self.text_input_targets.get(index)?;
+        Some(TextInputState {
+            x: target.bounds.x0,
+            y: target.bounds.y0,
+            width: target.bounds.width().max(1.0),
+            height: target.bounds.height().max(1.0),
+            purpose: target.purpose,
+        })
     }
 
     pub fn advance_animations(&mut self) -> bool {
@@ -2237,9 +2328,10 @@ impl HydrolysisRenderer {
         height: u32,
     ) {
         let size = (width, height);
-        let needs_recreate = self.surface_blit.as_ref().is_none_or(|state| {
-            state.target_format != target_format || state.size != size
-        });
+        let needs_recreate = self
+            .surface_blit
+            .as_ref()
+            .is_none_or(|state| state.target_format != target_format || state.size != size);
 
         if !needs_recreate {
             return;
@@ -2333,8 +2425,7 @@ impl HydrolysisRenderer {
             .rev()
             .find(|(_, target)| target.bounds.contains(point))
             .map(|(index, _)| index);
-        if self.focused_text_input.get() != focused {
-            self.focused_text_input.set(focused);
+        if self.set_focused_text_input(focused) {
             rebuild_requested = true;
         }
 
@@ -2376,31 +2467,63 @@ impl HydrolysisRenderer {
         rebuild_requested
     }
 
-    pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
+    fn dispatch_text_input_command(&mut self, command: TextInputCommand) -> bool {
         let Some(index) = self.focused_text_input.get() else {
             return false;
         };
         if index >= self.text_input_targets.len() {
-            self.focused_text_input.set(None);
+            self.set_focused_text_input(None);
             return false;
         }
 
         let target = &mut self.text_input_targets[index];
+        (target.action)(command)
+    }
+
+    pub fn handle_text_input(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.ime_preedit = None;
+        self.dispatch_text_input_command(TextInputCommand::Insert(text.to_owned()))
+    }
+
+    pub fn handle_ime_preedit(&mut self, text: &str) -> bool {
+        if self.focused_text_input.get().is_none() {
+            return false;
+        }
+        let next = if text.is_empty() {
+            None
+        } else {
+            Some(text.to_owned())
+        };
+        if self.ime_preedit == next {
+            return false;
+        }
+        self.ime_preedit = next;
+        true
+    }
+
+    pub fn handle_ime_commit(&mut self, text: &str) -> bool {
+        self.ime_preedit = None;
+        self.handle_text_input(text)
+    }
+
+    pub fn handle_ime_disabled(&mut self) -> bool {
+        self.ime_preedit.take().is_some()
+    }
+
+    pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
+        if modifiers.control || modifiers.alt || modifiers.super_key {
+            return false;
+        }
+
         match key {
-            KeyCode::Character(value) => {
-                if modifiers.control || modifiers.alt || modifiers.super_key || value.is_empty() {
-                    return false;
-                }
-                (target.action)(TextInputCommand::Insert(value.clone()))
+            KeyCode::Named(value) if value == "Backspace" => {
+                self.ime_preedit = None;
+                self.dispatch_text_input_command(TextInputCommand::Backspace)
             }
-            KeyCode::Named(value) => {
-                if value == "Backspace" {
-                    (target.action)(TextInputCommand::Backspace)
-                } else {
-                    false
-                }
-            }
-            KeyCode::Unidentified => false,
+            KeyCode::Named(_) | KeyCode::Character(_) | KeyCode::Unidentified => false,
         }
     }
 
@@ -2448,12 +2571,17 @@ impl HydrolysisRenderer {
         });
     }
 
-    fn register_text_input_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
+    fn register_text_input_target<F>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        purpose: TextInputPurpose,
+        action: F,
+    ) where
         F: 'static + FnMut(TextInputCommand) -> bool,
     {
         self.text_input_targets.push(TextInputTarget {
             bounds,
+            purpose,
             action: Box::new(action),
         });
     }
