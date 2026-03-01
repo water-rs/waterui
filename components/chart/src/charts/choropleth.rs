@@ -2,14 +2,12 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
+use crate::charts::canvas::{draw_choropleth, reactive_canvas};
 use crate::data::ChoroplethData;
 use crate::params::{ChartParamError, PositiveF32};
-use crate::renderer::ChoroplethRenderer;
-
-use super::SignalRenderer;
 
 /// Choropleth map chart for geographic data visualization.
 ///
@@ -85,10 +83,13 @@ impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
 
 impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = ChoroplethRenderer::new()
-            .stroke_width(self.stroke_width)
-            .stroke_color(self.stroke_color)
-            .show_stroke(self.show_stroke);
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let stroke_width = self.stroke_width;
+        let stroke_color = self.stroke_color;
+        let show_stroke = self.show_stroke;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_choropleth(ctx, &data, stroke_width, stroke_color, show_stroke);
+            })
+        })
     }
 }

@@ -2,12 +2,11 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_contour, reactive_canvas};
 use crate::data::ContourData;
 use crate::params::{ChartParamError, PositiveF32};
-use crate::renderer::ContourRenderer;
 
 /// Contour chart for isoline visualization.
 ///
@@ -70,7 +69,11 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
 
 impl<S: Signal<Output = ContourData> + Clone + 'static> View for ContourChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = ContourRenderer::new().line_width(self.line_width);
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let line_width = self.line_width;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_contour(ctx, &data, line_width);
+            })
+        })
     }
 }
