@@ -80,7 +80,7 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
 use crate::platform::{KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState};
-use crate::scroll::{ScrollController, ScrollMetrics};
+use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -289,6 +289,10 @@ enum AccessibilityActionTarget {
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
+    },
+    Scroll {
+        handle: ScrollHandle,
+        axis: ScrollAxis,
     },
 }
 
@@ -2217,6 +2221,49 @@ impl HydrolysisRenderer {
                 move |dx, dy| target_handle.apply_scroll_delta(dx, dy),
             );
         }
+        #[cfg(feature = "winit")]
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
+            );
+            let label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            node.set_scroll_x(metrics.offset_x);
+            node.set_scroll_x_min(0.0);
+            node.set_scroll_x_max(metrics.max_x);
+            node.set_scroll_y(metrics.offset_y);
+            node.set_scroll_y_min(0.0);
+            node.set_scroll_y_max(metrics.max_y);
+            match axis {
+                ScrollAxis::Horizontal => {
+                    node.add_action(AccessibilityAction::ScrollLeft);
+                    node.add_action(AccessibilityAction::ScrollRight);
+                }
+                ScrollAxis::Vertical => {
+                    node.add_action(AccessibilityAction::ScrollUp);
+                    node.add_action(AccessibilityAction::ScrollDown);
+                }
+                ScrollAxis::All => {
+                    node.add_action(AccessibilityAction::ScrollLeft);
+                    node.add_action(AccessibilityAction::ScrollRight);
+                    node.add_action(AccessibilityAction::ScrollUp);
+                    node.add_action(AccessibilityAction::ScrollDown);
+                }
+                _ => panic!("scroll axis variant is not supported by hydrolysis"),
+            }
+            let _ = renderer.register_accessibility_node(
+                node,
+                transformed_rect(ctx.transform, viewport),
+                env,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis,
+                }),
+            );
+        }
 
         Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, axis);
     }
@@ -2843,7 +2890,7 @@ impl HydrolysisRenderer {
 
             content_rect.x1 = content_rect.x1.min(trailing_x);
             if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
-                Self::dispatch_in_rect(ctx, env, item.content, content_rect);
+                Self::dispatch_in_rect_without_accessibility(ctx, env, item.content, content_rect);
             }
 
             {
@@ -2992,7 +3039,7 @@ impl HydrolysisRenderer {
                     accessibility_table.push_child(header_node_id);
                 }
             }
-            Self::dispatch_in_rect(
+            Self::dispatch_in_rect_without_accessibility(
                 ctx,
                 env,
                 header_view,
@@ -3030,7 +3077,7 @@ impl HydrolysisRenderer {
                             accessibility_table.push_child(cell_node_id);
                         }
                     }
-                    Self::dispatch_in_rect(
+                    Self::dispatch_in_rect_without_accessibility(
                         ctx,
                         env,
                         cell_view,
@@ -5397,6 +5444,9 @@ impl HydrolysisRenderer {
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
+            AccessibilityActionTarget::Scroll { handle, axis } => {
+                handle_accessibility_scroll_action(&handle, axis, action)
+            }
         };
         if changed && focus_action {
             self.accessibility_focus = target_node;
@@ -6008,6 +6058,37 @@ fn handle_accessibility_pointer_action(
 }
 
 #[cfg(feature = "winit")]
+fn handle_accessibility_scroll_action(
+    handle: &ScrollHandle,
+    axis: ScrollAxis,
+    action: AccessibilityAction,
+) -> bool {
+    match action {
+        AccessibilityAction::ScrollLeft => match axis {
+            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(1.0, 0.0),
+            ScrollAxis::Vertical => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollRight => match axis {
+            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(-1.0, 0.0),
+            ScrollAxis::Vertical => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollUp => match axis {
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, 1.0),
+            ScrollAxis::Horizontal => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollDown => match axis {
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, -1.0),
+            ScrollAxis::Horizontal => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        _ => false,
+    }
+}
+
+#[cfg(feature = "winit")]
 fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
@@ -6245,7 +6326,10 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
         AccessibilityLabel,
-        AccessibilityRole
+        AccessibilityRole,
+        AccessibilityHidden,
+        AccessibilityChildren,
+        AccessibilityState
     );
 
     None
@@ -6371,7 +6455,10 @@ fn normalize_layout_view_with_budget(
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
         AccessibilityLabel,
-        AccessibilityRole
+        AccessibilityRole,
+        AccessibilityHidden,
+        AccessibilityChildren,
+        AccessibilityState
     );
 
     if view.is::<Native<FixedContainer>>() {
