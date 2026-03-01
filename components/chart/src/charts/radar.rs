@@ -4,12 +4,11 @@ use core::num::NonZeroU32;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_radar, reactive_canvas};
 use crate::data::RadarData;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
-use crate::renderer::RadarRenderer;
 
 /// Radar/Spider chart for multivariate data visualization.
 ///
@@ -117,10 +116,13 @@ impl<S: Signal<Output = RadarData>> RadarChart<S> {
 
 impl<S: Signal<Output = RadarData> + Clone + 'static> View for RadarChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = RadarRenderer::new()
-            .ring_count(self.ring_count)
-            .line_width(self.line_width)
-            .fill_opacity(self.fill_opacity);
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let ring_count = self.ring_count;
+        let line_width = self.line_width;
+        let fill_opacity = self.fill_opacity;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_radar(ctx, &data, ring_count, line_width, fill_opacity);
+            })
+        })
     }
 }

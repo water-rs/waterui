@@ -2,11 +2,10 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_area, reactive_canvas};
 use crate::data::AreaData;
-use crate::renderer::AreaRenderer;
 
 /// Stacked area chart for cumulative data visualization.
 ///
@@ -43,7 +42,10 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 
 impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = AreaRenderer::new();
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_area(ctx, &data);
+            })
+        })
     }
 }
