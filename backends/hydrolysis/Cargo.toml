@@ -28,8 +28,12 @@ vello.workspace = true
 parley.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
+executor-core.workspace = true
+native-executor.workspace = true
 winit = { version = "0.30", optional = true }
+accesskit = { version = "0.24", optional = true }
+accesskit_winit = { version = "0.32.1", optional = true }
 
 [features]
 default = []
-winit = ["dep:winit"]
+winit = ["dep:winit", "dep:accesskit", "dep:accesskit_winit"]
