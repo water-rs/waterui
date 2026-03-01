@@ -20,11 +20,11 @@ waterui-layout.workspace = true
 waterui-shape.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
-wgpu.workspace = true
 bytemuck = { version = "1.14", features = ["derive"] }
-encase.workspace = true
-glam = "0.29"
 tracing.workspace = true
+
+[dev-dependencies]
+waterui-testing.workspace = true
 
 [lints]
 workspace = true
