@@ -32,7 +32,10 @@ use waterui_navigation::NavigationView;
 use waterui_str::Str;
 
 use crate::{
-    accessibility::{self, AccessibilityLabel, AccessibilityRole},
+    accessibility::{
+        self, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
+        AccessibilityState,
+    },
     background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
@@ -444,6 +447,24 @@ pub trait ViewExt: View + Sized {
         role: accessibility::AccessibilityRole,
     ) -> IgnorableMetadata<AccessibilityRole> {
         IgnorableMetadata::new(self, role)
+    }
+
+    /// Overrides whether this view is hidden from assistive technologies.
+    fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    }
+
+    /// Controls how descendants contribute semantics for this view.
+    fn a11y_children(
+        self,
+        behavior: accessibility::AccessibilityChildren,
+    ) -> IgnorableMetadata<AccessibilityChildren> {
+        IgnorableMetadata::new(self, behavior)
+    }
+
+    /// Applies explicit accessibility state metadata.
+    fn a11y_state(self, state: accessibility::AccessibilityState) -> IgnorableMetadata<AccessibilityState> {
+        IgnorableMetadata::new(self, state)
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
