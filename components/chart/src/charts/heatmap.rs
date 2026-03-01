@@ -2,11 +2,10 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_heatmap, reactive_canvas};
 use crate::data::HeatmapData;
-use crate::renderer::HeatmapRenderer;
 
 /// Heatmap chart for matrix visualization.
 ///
@@ -43,7 +42,10 @@ impl<S: Signal<Output = HeatmapData>> HeatmapChart<S> {
 
 impl<S: Signal<Output = HeatmapData> + Clone + 'static> View for HeatmapChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = HeatmapRenderer::new();
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_heatmap(ctx, &data);
+            })
+        })
     }
 }

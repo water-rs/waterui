@@ -6,13 +6,12 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_pie, reactive_canvas};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, DonutInnerRadius};
-use crate::renderer::PieChartRenderer;
 
 /// Pie chart visualization.
 ///
@@ -88,13 +87,13 @@ impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with styling options
-        let mut renderer = PieChartRenderer::new();
-        renderer.set_inner_radius(self.inner_radius);
-        if !self.colors.is_empty() {
-            renderer.set_colors(self.colors);
-        }
-
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let colors = self.colors;
+        let inner_radius = self.inner_radius;
+        reactive_canvas(self.data, move |data| {
+            let colors = colors.clone();
+            Canvas::new(move |ctx| {
+                draw_pie(ctx, &data, &colors, inner_radius);
+            })
+        })
     }
 }

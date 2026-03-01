@@ -7,6 +7,7 @@ pub mod area;
 pub mod bar;
 pub mod bubble;
 pub mod candlestick;
+pub mod canvas;
 pub mod choropleth;
 pub mod contour;
 pub mod depth;

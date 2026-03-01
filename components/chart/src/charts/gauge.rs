@@ -4,13 +4,12 @@ use core::f32::consts::PI;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_gauge, reactive_canvas};
 use crate::data::GaugeData;
 use crate::params::{ArcAngles, ChartParamError, GaugeRadii};
-use crate::renderer::GaugeRenderer;
 
 /// Gauge chart for speedometer-style value visualization.
 ///
@@ -138,12 +137,27 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
 
 impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = GaugeRenderer::new()
-            .arc_angles(self.start_angle, self.end_angle)
-            .radii(self.inner_radius, self.outer_radius)
-            .background_color(self.background_color)
-            .value_color(self.value_color)
-            .needle_color(self.needle_color);
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let start_angle = self.start_angle;
+        let end_angle = self.end_angle;
+        let inner_radius = self.inner_radius;
+        let outer_radius = self.outer_radius;
+        let background_color = self.background_color;
+        let value_color = self.value_color;
+        let needle_color = self.needle_color;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_gauge(
+                    ctx,
+                    &data,
+                    start_angle,
+                    end_angle,
+                    inner_radius,
+                    outer_radius,
+                    background_color,
+                    value_color,
+                    needle_color,
+                );
+            })
+        })
     }
 }

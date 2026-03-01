@@ -6,12 +6,11 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_candlestick, reactive_canvas};
 use crate::data::Candle;
-use crate::renderer::CandlestickRenderer;
 
 /// Candlestick (K-line) chart for financial data.
 ///
@@ -74,11 +73,12 @@ impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
 
 impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with colors
-        let mut renderer = CandlestickRenderer::new();
-        renderer.set_bullish_color(self.bullish_color);
-        renderer.set_bearish_color(self.bearish_color);
-
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let bullish_color = self.bullish_color;
+        let bearish_color = self.bearish_color;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_candlestick(ctx, &data, bullish_color, bearish_color);
+            })
+        })
     }
 }
