@@ -508,7 +508,8 @@ fn measure_list_intrinsic(
             .contents
             .get_view(index)
             .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
-        let content_size = measure_view_intrinsic(&item.content, state, env);
+        let content = normalize_layout_view(item.content, env);
+        let content_size = estimate_intrinsic_size(&content, state, env);
         let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
             + LIST_ROW_VERTICAL_PADDING * 2.0;
         total_height += row_height;
