@@ -1,0 +1,63 @@
+use kurbo::{Affine, BezPath, Stroke};
+use peniko::{BlendMode, Brush, Fill, ImageBrush};
+
+use crate::scene2d::Scene2D;
+
+/// Vello-backed `Scene2D` implementation.
+pub struct VelloScene2D<'a> {
+    scene: &'a mut vello::Scene,
+}
+
+impl<'a> VelloScene2D<'a> {
+    #[must_use]
+    pub const fn new(scene: &'a mut vello::Scene) -> Self {
+        Self { scene }
+    }
+
+    /// Appends an existing Vello scene directly.
+    pub fn append(&mut self, scene: &vello::Scene, transform: Option<Affine>) {
+        self.scene.append(scene, transform);
+    }
+
+    #[must_use]
+    pub const fn scene_mut(&mut self) -> &mut vello::Scene {
+        self.scene
+    }
+}
+
+impl Scene2D for VelloScene2D<'_> {
+    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &BezPath) {
+        self.scene.fill(fill, transform, brush, None, shape);
+    }
+
+    fn stroke(&mut self, stroke: &Stroke, transform: Affine, brush: &Brush, shape: &BezPath) {
+        self.scene.stroke(stroke, transform, brush, None, shape);
+    }
+
+    fn push_layer(
+        &mut self,
+        fill: Fill,
+        blend: BlendMode,
+        alpha: f32,
+        transform: Affine,
+        clip: &BezPath,
+    ) {
+        self.scene.push_layer(fill, blend, alpha, transform, clip);
+    }
+
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &BezPath) {
+        self.scene.push_clip_layer(fill, transform, clip);
+    }
+
+    fn pop_layer(&mut self) {
+        self.scene.pop_layer();
+    }
+
+    fn draw_image(&mut self, image: &ImageBrush, transform: Affine) {
+        self.scene.draw_image(image, transform);
+    }
+
+    fn reset(&mut self) {
+        self.scene.reset();
+    }
+}
