@@ -7,7 +7,7 @@ use waterui_core::layout::Point;
 use waterui_graphics::color::ResolvedColor;
 
 // Internal imports for rendering
-use vello::peniko;
+use peniko;
 
 use super::conversions::{point_to_kurbo, resolved_color_to_peniko};
 

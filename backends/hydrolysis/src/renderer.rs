@@ -49,7 +49,8 @@ use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
-    OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop,
+    OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop, SceneView,
+    VelloScene2D,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -389,6 +390,7 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
         dispatcher.register::<Native<SystemIcon>>(Self::render_system_icon);
         dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
+        dispatcher.register::<Native<SceneView>>(Self::render_scene_view);
         dispatcher.register::<Native<ViewEffectErased>>(Self::render_view_effect);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
@@ -2295,6 +2297,23 @@ impl HydrolysisRenderer {
         scene.draw_image(
             &vello::peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
+        );
+    }
+
+    fn render_scene_view(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        scene_view: Native<SceneView>,
+        _env: &Environment,
+    ) {
+        let mut scene_view = scene_view.into_inner();
+        let scene = unsafe { ctx.scene() };
+        let mut scene2d = VelloScene2D::new(scene);
+        #[allow(clippy::cast_precision_loss)]
+        scene_view.content_mut().build_scene(
+            &mut scene2d,
+            ctx.bounds.width() as f32,
+            ctx.bounds.height() as f32,
         );
     }
 
