@@ -6,10 +6,10 @@ use core::{
     ops::Range,
 };
 
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use nami::{Binding, SignalExt};
 use regex::Regex;
-use waterui_core::View;
+use waterui_core::{Str, View};
 use waterui_layout::stack::vstack;
 use waterui_text::text;
 
@@ -113,9 +113,9 @@ where
             self.view,
             text(value.map(move |v| {
                 if let Err(reason) = self.validator.validate(v) {
-                    reason.to_string()
+                    reason.to_string().into()
                 } else {
-                    String::new()
+                    Str::new()
                 }
             })),
         ))
