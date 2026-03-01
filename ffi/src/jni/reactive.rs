@@ -13,7 +13,6 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use jni::JNIEnv;
@@ -230,9 +229,9 @@ fn set_binding_str_from_bytes(env: &mut JNIEnv, binding_ptr: jlong, bytes: &JByt
     env.get_byte_array_region(bytes, 0, &mut buf)
         .expect("set_binding_str_from_bytes: failed to read byte array content");
     let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
-    let s = String::from_utf8(bytes)
+    let s = waterui::Str::from_utf8(bytes)
         .expect("set_binding_str_from_bytes: input byte array is not valid UTF-8");
-    binding.set(waterui::Str::from(s));
+    binding.set(s);
 }
 
 /// Generates JNI read/set functions for Str-based binding types (using byte array).
@@ -471,11 +470,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBindingSecure
     binding_ptr: jlong,
 ) {
     unsafe {
-        drop(Box::from_raw(require_jlong_ptr::<WuiBinding<waterui::Str>>(
-            binding_ptr,
-            "dropBindingSecure",
-            "binding",
-        )))
+        drop(Box::from_raw(
+            require_jlong_ptr::<WuiBinding<waterui::Str>>(
+                binding_ptr,
+                "dropBindingSecure",
+                "binding",
+            ),
+        ))
     };
 }
 
@@ -494,7 +495,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStr<'
 ) -> jobject {
     use waterui::Signal;
     let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<waterui::Str>>(computed_ptr, "readComputedStr", "computed")
+        &*require_jlong_ptr::<WuiComputed<waterui::Str>>(
+            computed_ptr,
+            "readComputedStr",
+            "computed",
+        )
     };
     let s: waterui::Str = computed.get();
     let jstring = env.new_string(s.as_str()).expect("Failed to create string");
