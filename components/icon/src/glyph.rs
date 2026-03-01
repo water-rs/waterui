@@ -22,15 +22,15 @@
 //! HOME.color(Color::red())
 //! ```
 
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, Str, View};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
-fn codepoint_to_string(codepoint: char) -> alloc::string::String {
+fn codepoint_to_string(codepoint: char) -> Str {
     let mut text = alloc::string::String::with_capacity(codepoint.len_utf8());
     text.push(codepoint);
-    text
+    Str::from(text)
 }
 
 /// A const-constructible icon glyph that renders as styled text with an icon font.
