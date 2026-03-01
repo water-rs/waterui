@@ -144,6 +144,7 @@ pub struct HydrolysisRenderer {
     dispatcher: ViewDispatcher<HydroState, RenderContext, ()>,
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
+    surface_blit: Option<SurfaceBlitState>,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     hover_targets: Vec<HoverTarget>,
@@ -196,6 +197,14 @@ struct ScrollTarget {
 struct DeferredLifeCycleHook {
     env: Environment,
     hook: LifeCycleHook,
+}
+
+struct SurfaceBlitState {
+    target_format: wgpu::TextureFormat,
+    size: (u32, u32),
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    blitter: wgpu::util::TextureBlitter,
 }
 
 impl DeferredLifeCycleHook {
@@ -286,6 +295,7 @@ impl HydrolysisRenderer {
             dispatcher,
             vello_renderer,
             scene: vello::Scene::new(),
+            surface_blit: None,
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             hover_targets: Vec::new(),
@@ -2217,6 +2227,93 @@ impl HydrolysisRenderer {
         self.vello_renderer
             .render_to_texture(device, queue, &self.scene, target, &params)
             .expect("hydrolysis renderer: failed to render scene");
+    }
+
+    fn ensure_surface_blit_state(
+        &mut self,
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) {
+        let size = (width, height);
+        let needs_recreate = self.surface_blit.as_ref().is_none_or(|state| {
+            state.target_format != target_format || state.size != size
+        });
+
+        if !needs_recreate {
+            return;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_surface_blit_input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let blitter = wgpu::util::TextureBlitter::new(device, target_format);
+
+        self.surface_blit = Some(SurfaceBlitState {
+            target_format,
+            size,
+            _texture: texture,
+            view,
+            blitter,
+        });
+    }
+
+    pub fn render_scene_to_surface(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) {
+        if target_format == wgpu::TextureFormat::Rgba8Unorm {
+            self.render_scene_to_texture(device, queue, target, width, height);
+            return;
+        }
+
+        if !matches!(
+            target_format.remove_srgb_suffix(),
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+        ) {
+            panic!(
+                "hydrolysis renderer: unsupported surface format for Vello path: {target_format:?}"
+            );
+        }
+
+        self.ensure_surface_blit_state(device, target_format, width, height);
+        let source_view = {
+            let state = self
+                .surface_blit
+                .as_ref()
+                .expect("hydrolysis renderer: missing surface blit state");
+            state.view.clone()
+        };
+
+        self.render_scene_to_texture(device, queue, &source_view, width, height);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis_surface_blit_encoder"),
+        });
+        self.surface_blit
+            .as_ref()
+            .expect("hydrolysis renderer: missing surface blit state")
+            .blitter
+            .copy(device, &mut encoder, &source_view, target);
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
     pub fn handle_pointer_down(
