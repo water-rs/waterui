@@ -471,25 +471,22 @@ fn measure_tabs_intrinsic(tabs: &Tabs, state: &mut HydroState, env: &Environment
         panic!("hydrolysis Tabs requires at least one tab");
     }
 
-    let selected_id = tabs.selection.get();
-    let selected_index = tabs
-        .tabs
-        .iter()
-        .position(|tab| tab.label.tag == selected_id)
-        .unwrap_or(0);
-    let selected_content =
-        normalize_layout_view(AnyView::new(tabs.tabs[selected_index].content.build()), env);
-    let content_size = measure_view_intrinsic(&selected_content, state, env);
-
+    let mut max_content_width: f64 = 0.0;
+    let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
     for tab in &tabs.tabs {
         let label_size = measure_view_intrinsic(&tab.label.content, state, env);
         bar_width += (f64::from(label_size.width) + TABS_BUTTON_HORIZONTAL_INSET * 2.0)
             .max(TABS_BUTTON_MIN_WIDTH);
+
+        let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
+        let content_size = measure_view_intrinsic(&content, state, env);
+        max_content_width = max_content_width.max(f64::from(content_size.width));
+        max_content_height = max_content_height.max(f64::from(content_size.height));
     }
 
-    let width = f64::from(content_size.width).max(bar_width);
-    let height = f64::from(content_size.height) + TABS_BAR_MIN_HEIGHT;
+    let width = max_content_width.max(bar_width);
+    let height = max_content_height + TABS_BAR_MIN_HEIGHT;
     LayoutSize::new(width as f32, height as f32)
 }
 
