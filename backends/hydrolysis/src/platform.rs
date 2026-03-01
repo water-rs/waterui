@@ -523,6 +523,11 @@ mod winit_impl {
             self.window.id()
         }
 
+        #[must_use]
+        pub fn native_window(&self) -> &NativeWindow {
+            self.window.as_ref()
+        }
+
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
             match event {
                 WindowEvent::CloseRequested => {
