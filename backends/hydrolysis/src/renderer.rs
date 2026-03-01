@@ -357,18 +357,30 @@ fn intrinsic_for_native<V: HydroNativeView>(
         .map(|native| V::intrinsic(state, native, env))
 }
 
-fn control_intrinsic_size() -> LayoutSize {
-    LayoutSize::new(44.0, 44.0)
-}
-
-fn decoration_intrinsic_size() -> LayoutSize {
-    LayoutSize::new(10.0, 10.0)
-}
-
 const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
 const TABLE_CELL_HORIZONTAL_PADDING: f64 = 18.0;
 const TABLE_HEADER_HEIGHT: f64 = 32.0;
 const TABLE_ROW_HEIGHT: f64 = 30.0;
+
+const NAVIGATION_BAR_HEIGHT_AUTOMATIC: f64 = 52.0;
+const NAVIGATION_BAR_HEIGHT_INLINE: f64 = 44.0;
+const NAVIGATION_BAR_HEIGHT_LARGE: f64 = 64.0;
+const NAVIGATION_TITLE_HEIGHT_INLINE: f64 = 24.0;
+const NAVIGATION_TITLE_HEIGHT_LARGE: f64 = 32.0;
+const NAVIGATION_BAR_HORIZONTAL_INSET: f64 = 12.0;
+const NAVIGATION_BAR_BOTTOM_INSET: f64 = 8.0;
+
+const TABS_BAR_MIN_HEIGHT: f64 = 44.0;
+const TABS_BAR_MAX_HEIGHT: f64 = 64.0;
+const TABS_BUTTON_MIN_WIDTH: f64 = 44.0;
+const TABS_BUTTON_HORIZONTAL_INSET: f64 = 8.0;
+
+const LIST_ROW_CONTENT_MIN_HEIGHT: f32 = 28.0;
+const LIST_ROW_VERTICAL_PADDING: f64 = 8.0;
+const LIST_ROW_HORIZONTAL_PADDING: f64 = 12.0;
+const LIST_MOVE_CONTROL_WIDTH: f64 = 20.0;
+const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
+const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
 
 const SLIDER_HORIZONTAL_INSET: f64 = 12.0;
 const SLIDER_HORIZONTAL_SPACING: f64 = 8.0;
@@ -377,11 +389,264 @@ const SLIDER_MIN_TRACK_WIDTH: f64 = 72.0;
 const SLIDER_TRACK_HEIGHT: f64 = 6.0;
 const SLIDER_THUMB_RADIUS: f64 = 9.0;
 
+const TOGGLE_SWITCH_WIDTH: f64 = 51.0;
+const TOGGLE_SWITCH_HEIGHT: f64 = 31.0;
+const TOGGLE_LABEL_SPACING: f64 = 8.0;
+
+const STEPPER_BUTTON_MIN_SIZE: f64 = 24.0;
+const STEPPER_BUTTON_MAX_SIZE: f64 = 32.0;
+const STEPPER_BUTTON_INTRINSIC_SIZE: f64 = 28.0;
+const STEPPER_BUTTON_SPACING: f64 = 4.0;
+const STEPPER_LABEL_SPACING: f64 = 8.0;
+
+const PROGRESS_LINEAR_LABEL_HEIGHT: f64 = 18.0;
+const PROGRESS_LINEAR_BAR_TOP_OFFSET: f64 = 10.0;
+const PROGRESS_LINEAR_BAR_HEIGHT: f64 = 8.0;
+const PROGRESS_LINEAR_BAR_HORIZONTAL_INSET: f64 = 8.0;
+const PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING: f64 = 6.0;
+const PROGRESS_LINEAR_MIN_TRACK_WIDTH: f64 = 72.0;
+const PROGRESS_CIRCULAR_DIAMETER: f64 = 32.0;
+
+const INPUT_LABEL_HEIGHT: f64 = 18.0;
+const INPUT_FIELD_MIN_WIDTH: f64 = 72.0;
+const INPUT_FIELD_MIN_HEIGHT: f64 = 30.0;
+const INPUT_FIELD_HORIZONTAL_INSET: f64 = 8.0;
+const INPUT_FIELD_VERTICAL_INSET: f64 = 6.0;
+
+const PICKER_MIN_WIDTH: f64 = 72.0;
+const PICKER_MIN_HEIGHT: f64 = 30.0;
+const PICKER_HORIZONTAL_INSET: f64 = 8.0;
+const PICKER_VERTICAL_INSET: f64 = 6.0;
+const PICKER_INDICATOR_SPACE: f64 = 18.0;
+
 struct TableMetrics {
     column_widths: Vec<f64>,
     max_rows: usize,
     table_width: f64,
     table_height: f64,
+}
+
+fn navigation_bar_height(view: &NavigationView) -> f64 {
+    if view.bar.hidden.get() {
+        0.0
+    } else {
+        match view.bar.display_mode {
+            waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+                NAVIGATION_BAR_HEIGHT_AUTOMATIC
+            }
+            waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
+            waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+        }
+    }
+}
+
+fn measure_view_intrinsic(
+    view: &AnyView,
+    state: &mut HydroState,
+    _env: &Environment,
+) -> LayoutSize {
+    estimate_intrinsic_size(view, state, _env)
+}
+
+fn measure_navigation_view_intrinsic(
+    navigation: &NavigationView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let bar_height = navigation_bar_height(navigation);
+    let title_size = if bar_height > 0.0 {
+        measure_view_intrinsic(&navigation.bar.title, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let content_size = measure_view_intrinsic(&navigation.content, state, env);
+    let width = f64::from(content_size.width)
+        .max(f64::from(title_size.width) + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0);
+    let height = f64::from(content_size.height) + bar_height;
+    LayoutSize::new(width as f32, height as f32)
+}
+
+fn measure_tabs_intrinsic(tabs: &Tabs, state: &mut HydroState, env: &Environment) -> LayoutSize {
+    if tabs.tabs.is_empty() {
+        panic!("hydrolysis Tabs requires at least one tab");
+    }
+
+    let selected_id = tabs.selection.get();
+    let selected_index = tabs
+        .tabs
+        .iter()
+        .position(|tab| tab.label.tag == selected_id)
+        .unwrap_or(0);
+    let selected_content =
+        normalize_layout_view(AnyView::new(tabs.tabs[selected_index].content.build()), env);
+    let content_size = measure_view_intrinsic(&selected_content, state, env);
+
+    let mut bar_width = 0.0;
+    for tab in &tabs.tabs {
+        let label_size = measure_view_intrinsic(&tab.label.content, state, env);
+        bar_width += (f64::from(label_size.width) + TABS_BUTTON_HORIZONTAL_INSET * 2.0)
+            .max(TABS_BUTTON_MIN_WIDTH);
+    }
+
+    let width = f64::from(content_size.width).max(bar_width);
+    let height = f64::from(content_size.height) + TABS_BAR_MIN_HEIGHT;
+    LayoutSize::new(width as f32, height as f32)
+}
+
+fn measure_list_intrinsic(
+    list: &ListConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let editing = list.editing.get();
+    let row_count = list.contents.len().get();
+    if row_count == 0 {
+        return LayoutSize::zero();
+    }
+
+    let mut max_width: f64 = 0.0;
+    let mut total_height = 0.0;
+    for index in 0..row_count {
+        let item = list
+            .contents
+            .get_view(index)
+            .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
+        let content_size = measure_view_intrinsic(&item.content, state, env);
+        let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
+            + LIST_ROW_VERTICAL_PADDING * 2.0;
+        total_height += row_height;
+
+        let mut row_width = f64::from(content_size.width) + LIST_ROW_HORIZONTAL_PADDING * 2.0;
+        if editing && list.on_move.is_some() {
+            row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+        }
+        if editing && list.on_delete.is_some() && item.deletable.get() {
+            row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+        }
+        max_width = max_width.max(row_width);
+    }
+
+    LayoutSize::new(max_width as f32, total_height as f32)
+}
+
+fn measure_button_intrinsic(
+    button: &ButtonConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    measure_view_intrinsic(&button.label, state, env)
+}
+
+fn measure_toggle_intrinsic(
+    toggle: &ToggleConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = measure_view_intrinsic(&toggle.label, state, env);
+    let label_width = f64::from(label_size.width);
+    let width = if label_width > 0.0 {
+        label_width + TOGGLE_LABEL_SPACING + TOGGLE_SWITCH_WIDTH
+    } else {
+        TOGGLE_SWITCH_WIDTH
+    };
+    let height = f64::from(label_size.height).max(TOGGLE_SWITCH_HEIGHT);
+    LayoutSize::new(width as f32, height as f32)
+}
+
+fn measure_stepper_intrinsic(
+    stepper: &StepperConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = measure_view_intrinsic(&stepper.label, state, env);
+    let controls_width = STEPPER_BUTTON_INTRINSIC_SIZE * 2.0 + STEPPER_BUTTON_SPACING;
+    let label_width = f64::from(label_size.width);
+    let width = if label_width > 0.0 {
+        label_width + STEPPER_LABEL_SPACING + controls_width
+    } else {
+        controls_width
+    };
+    let height = f64::from(label_size.height).max(STEPPER_BUTTON_INTRINSIC_SIZE);
+    LayoutSize::new(width as f32, height as f32)
+}
+
+fn measure_progress_intrinsic(
+    progress: &ProgressConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    match progress.style {
+        ProgressStyle::Linear => {
+            let label_size = measure_view_intrinsic(&progress.label, state, env);
+            let value_label_size = measure_view_intrinsic(&progress.value_label, state, env);
+            let width = f64::from(label_size.width)
+                .max(f64::from(value_label_size.width))
+                .max(PROGRESS_LINEAR_MIN_TRACK_WIDTH + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET * 2.0);
+            let height = f64::from(label_size.height)
+                + PROGRESS_LINEAR_BAR_TOP_OFFSET
+                + PROGRESS_LINEAR_BAR_HEIGHT
+                + PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING
+                + f64::from(value_label_size.height);
+            LayoutSize::new(width as f32, height as f32)
+        }
+        ProgressStyle::Circular => LayoutSize::new(
+            PROGRESS_CIRCULAR_DIAMETER as f32,
+            PROGRESS_CIRCULAR_DIAMETER as f32,
+        ),
+        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
+    }
+}
+
+fn measure_text_field_intrinsic(
+    text_field: &TextFieldConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = measure_view_intrinsic(&text_field.label, state, env);
+    let prompt = text_field.prompt.content().get();
+    let value = text_field.value.get();
+    let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size(state, prompt, env);
+    let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, value, env);
+    let content_width =
+        f64::from(prompt_size.width.max(value_size.width)) + INPUT_FIELD_HORIZONTAL_INSET * 2.0;
+    let content_height =
+        f64::from(prompt_size.height.max(value_size.height)) + INPUT_FIELD_VERTICAL_INSET * 2.0;
+
+    let field_width = content_width.max(INPUT_FIELD_MIN_WIDTH);
+    let field_height = content_height.max(INPUT_FIELD_MIN_HEIGHT);
+    let width = f64::from(label_size.width).max(field_width);
+    let height = if label_size.width > 0.0 || label_size.height > 0.0 {
+        INPUT_LABEL_HEIGHT + field_height
+    } else {
+        field_height
+    };
+    LayoutSize::new(width as f32, height as f32)
+}
+
+fn measure_secure_field_intrinsic(
+    secure_field: &SecureFieldConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = measure_view_intrinsic(&secure_field.label, state, env);
+    let secure_len = secure_field.value.get().expose().chars().count();
+    let masked = if secure_len == 0 {
+        StyledStr::plain("")
+    } else {
+        StyledStr::plain("*".repeat(secure_len))
+    };
+    let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
+    let field_width = (f64::from(value_size.width) + INPUT_FIELD_HORIZONTAL_INSET * 2.0)
+        .max(INPUT_FIELD_MIN_WIDTH);
+    let field_height = (f64::from(value_size.height) + INPUT_FIELD_VERTICAL_INSET * 2.0)
+        .max(INPUT_FIELD_MIN_HEIGHT);
+    let width = f64::from(label_size.width).max(field_width);
+    let height = if label_size.width > 0.0 || label_size.height > 0.0 {
+        INPUT_LABEL_HEIGHT + field_height
+    } else {
+        field_height
+    };
+    LayoutSize::new(width as f32, height as f32)
 }
 
 fn measure_table_metrics(
@@ -425,9 +690,9 @@ fn measure_slider_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    let label_size = estimate_intrinsic_size(&slider.label, state, env);
-    let min_label_size = estimate_intrinsic_size(&slider.min_value_label, state, env);
-    let max_label_size = estimate_intrinsic_size(&slider.max_value_label, state, env);
+    let label_size = measure_view_intrinsic(&slider.label, state, env);
+    let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
+    let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
 
     let control_row_height = (SLIDER_THUMB_RADIUS * 2.0)
         .max(f64::from(min_label_size.height))
@@ -448,6 +713,31 @@ fn measure_slider_intrinsic(
             + SLIDER_HORIZONTAL_INSET * 2.0,
     );
     LayoutSize::new(min_width as f32, intrinsic_height as f32)
+}
+
+fn measure_picker_intrinsic(
+    picker: &PickerConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let items = picker.items.get();
+    if items.is_empty() {
+        panic!("hydrolysis picker requires at least one item");
+    }
+
+    let mut max_item_width: f64 = 0.0;
+    let mut max_item_height: f64 = 0.0;
+    for item in items {
+        let styled = item.content.content().get();
+        let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+        max_item_width = max_item_width.max(f64::from(size.width));
+        max_item_height = max_item_height.max(f64::from(size.height));
+    }
+
+    let width = (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
+        .max(PICKER_MIN_WIDTH);
+    let height = (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
+    LayoutSize::new(width as f32, height as f32)
 }
 
 macro_rules! hydro_native_view_types {
@@ -479,25 +769,6 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedColor>);
         $macro!(Native<ResolvedGradient>);
         $macro!(Native<ResolvedShape>);
-    };
-}
-
-macro_rules! impl_hydro_native_with_constant_intrinsic {
-    ($inner:ty, $render:path, $size:expr) => {
-        impl HydroNativeView for Native<$inner> {
-            fn render(
-                state: &mut HydroState,
-                ctx: RenderContext,
-                view: Self,
-                env: &Environment,
-            ) {
-                $render(state, ctx, view, env);
-            }
-
-            fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
-                $size
-            }
-        }
     };
 }
 
@@ -568,66 +839,115 @@ impl HydroNativeView for Native<ScrollView> {
     }
 }
 
-impl_hydro_native_with_constant_intrinsic!(
-    NavigationView,
-    HydrolysisRenderer::render_navigation_view,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    NavigationStack<(), ()>,
-    HydrolysisRenderer::render_navigation_stack,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    Tabs,
-    HydrolysisRenderer::render_tabs,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ListConfig,
-    HydrolysisRenderer::render_list,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ButtonConfig,
-    HydrolysisRenderer::render_button,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ToggleConfig,
-    HydrolysisRenderer::render_toggle,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    StepperConfig,
-    HydrolysisRenderer::render_stepper,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ProgressConfig,
-    HydrolysisRenderer::render_progress,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    TextFieldConfig,
-    HydrolysisRenderer::render_text_field,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    SecureFieldConfig,
-    HydrolysisRenderer::render_secure_field,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    PickerConfig,
-    HydrolysisRenderer::render_picker,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    Dynamic,
-    HydrolysisRenderer::render_dynamic,
-    control_intrinsic_size()
-);
+impl HydroNativeView for Native<NavigationView> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_navigation_view(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_navigation_view_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<NavigationStack<(), ()>> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_navigation_stack(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<Tabs> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_tabs(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_tabs_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ListConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_list(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_list_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ButtonConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_button(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_button_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ToggleConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_toggle(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_toggle_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<StepperConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_stepper(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_stepper_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ProgressConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_progress(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_progress_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<TextFieldConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_text_field(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_text_field_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<SecureFieldConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_secure_field(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_secure_field_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<Dynamic> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_dynamic(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
 
 impl HydroNativeView for Native<SystemIcon> {
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
@@ -668,36 +988,75 @@ impl HydroNativeView for Native<SliderConfig> {
     }
 }
 
-impl_hydro_native_with_constant_intrinsic!(
-    GpuSurface,
-    HydrolysisRenderer::render_gpu_surface,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    SceneView,
-    HydrolysisRenderer::render_scene_view,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ViewEffectErased,
-    HydrolysisRenderer::render_view_effect,
-    control_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ResolvedColor,
-    HydrolysisRenderer::render_resolved_color,
-    decoration_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ResolvedGradient,
-    HydrolysisRenderer::render_resolved_gradient,
-    decoration_intrinsic_size()
-);
-impl_hydro_native_with_constant_intrinsic!(
-    ResolvedShape,
-    HydrolysisRenderer::render_resolved_shape,
-    decoration_intrinsic_size()
-);
+impl HydroNativeView for Native<PickerConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_picker(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_picker_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<GpuSurface> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_gpu_surface(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<SceneView> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_scene_view(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<ViewEffectErased> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_view_effect(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_view_intrinsic(view.as_inner().content(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ResolvedColor> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_resolved_color(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<ResolvedGradient> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_resolved_gradient(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<ResolvedShape> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_resolved_shape(state, ctx, view, env);
+    }
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
 
 impl HydrolysisRenderer {
     #[must_use]
@@ -1060,17 +1419,22 @@ impl HydrolysisRenderer {
     ) {
         let navigation = navigation.into_inner();
         let NavigationView { bar, content } = navigation;
-        let bar_hidden = {
+        let bar_height = if {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&bar.hidden)
-        };
-        let bar_height = if bar_hidden {
+        } {
             0.0
         } else {
             match bar.display_mode {
-                waterui::navigation::NavigationTitleDisplayMode::Automatic => 52.0,
-                waterui::navigation::NavigationTitleDisplayMode::Inline => 44.0,
-                waterui::navigation::NavigationTitleDisplayMode::Large => 64.0,
+                waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+                    NAVIGATION_BAR_HEIGHT_AUTOMATIC
+                }
+                waterui::navigation::NavigationTitleDisplayMode::Inline => {
+                    NAVIGATION_BAR_HEIGHT_INLINE
+                }
+                waterui::navigation::NavigationTitleDisplayMode::Large => {
+                    NAVIGATION_BAR_HEIGHT_LARGE
+                }
             }
         };
 
@@ -1114,15 +1478,15 @@ impl HydrolysisRenderer {
                 bar.display_mode,
                 waterui::navigation::NavigationTitleDisplayMode::Large
             ) {
-                32.0
+                NAVIGATION_TITLE_HEIGHT_LARGE
             } else {
-                24.0
+                NAVIGATION_TITLE_HEIGHT_INLINE
             };
             let title_rect = vello::kurbo::Rect::new(
-                bar_rect.x0 + 12.0,
-                bar_rect.y1 - title_height - 8.0,
-                bar_rect.x1 - 12.0,
-                bar_rect.y1 - 8.0,
+                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y1 - title_height - NAVIGATION_BAR_BOTTOM_INSET,
+                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y1 - NAVIGATION_BAR_BOTTOM_INSET,
             );
             if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
                 Self::dispatch_in_rect(ctx, env, bar.title, title_rect);
@@ -1261,7 +1625,8 @@ impl HydrolysisRenderer {
             selection.set(tabs.tabs[selected_index].label.tag);
         }
 
-        let bar_height = (ctx.bounds.height() * 0.12).clamp(44.0, 64.0);
+        let bar_height =
+            (ctx.bounds.height() * 0.12).clamp(TABS_BAR_MIN_HEIGHT, TABS_BAR_MAX_HEIGHT);
         let (bar_rect, content_rect) = match position {
             TabPosition::Top => (
                 vello::kurbo::Rect::new(
@@ -1339,7 +1704,7 @@ impl HydrolysisRenderer {
                     );
                 }
             }
-            let label_rect = inset_rect(button_rect, 8.0, 8.0);
+            let label_rect = inset_rect(button_rect, TABS_BUTTON_HORIZONTAL_INSET, 8.0);
             let tab_id = tab.label.tag;
             if label_rect.width() > 0.0 && label_rect.height() > 0.0 {
                 Self::dispatch_in_rect(ctx, env, tab.label.content, label_rect);
@@ -1391,7 +1756,8 @@ impl HydrolysisRenderer {
             });
             item.content = normalize_layout_view(item.content, env);
             let intrinsic = estimate_intrinsic_size(&item.content, state, env);
-            let row_height = f64::from(intrinsic.height.max(28.0)) + 16.0;
+            let row_height = f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
+                + LIST_ROW_VERTICAL_PADDING * 2.0;
             rows.push((index, item, row_height));
         }
 
@@ -1451,11 +1817,15 @@ impl HydrolysisRenderer {
                 let renderer = unsafe { ctx.renderer() };
                 renderer.read_signal(&item.deletable)
             };
-            let mut content_rect = inset_rect(row_rect, 12.0, 8.0);
+            let mut content_rect = inset_rect(
+                row_rect,
+                LIST_ROW_HORIZONTAL_PADDING,
+                LIST_ROW_VERTICAL_PADDING,
+            );
             let mut trailing_x = row_rect.x1 - 8.0;
 
             if editing && move_action.is_some() {
-                let control_width = 20.0;
+                let control_width = LIST_MOVE_CONTROL_WIDTH;
                 let control_height = (row_height - 12.0).max(12.0);
                 let control_rect = vello::kurbo::Rect::new(
                     trailing_x - control_width,
@@ -1463,7 +1833,7 @@ impl HydrolysisRenderer {
                     trailing_x,
                     row_rect.y0 + 6.0 + control_height,
                 );
-                trailing_x -= control_width + 6.0;
+                trailing_x -= control_width + LIST_TRAILING_CONTROL_SPACING;
                 {
                     let scene = unsafe { ctx.scene() };
                     draw_stepper_button(scene, ctx.transform, control_rect);
@@ -1519,12 +1889,12 @@ impl HydrolysisRenderer {
 
             if editing && deletable && delete_action.is_some() {
                 let delete_rect = vello::kurbo::Rect::new(
-                    trailing_x - 26.0,
+                    trailing_x - LIST_DELETE_CONTROL_WIDTH,
                     row_rect.y0 + 6.0,
                     trailing_x,
                     row_rect.y1 - 6.0,
                 );
-                trailing_x = delete_rect.x0 - 6.0;
+                trailing_x = delete_rect.x0 - LIST_TRAILING_CONTROL_SPACING;
                 {
                     let scene = unsafe { ctx.scene() };
                     scene.fill(
@@ -1957,9 +2327,9 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let toggle = toggle.into_inner();
-        let switch_width = 51.0;
-        let switch_height = 31.0;
-        let spacing = 8.0;
+        let switch_width = TOGGLE_SWITCH_WIDTH;
+        let switch_height = TOGGLE_SWITCH_HEIGHT;
+        let spacing = TOGGLE_LABEL_SPACING;
         let switch_x0 = (ctx.bounds.x1 - switch_width).max(ctx.bounds.x0);
         let switch_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - switch_height) / 2.0).max(0.0);
         let switch_bounds = vello::kurbo::Rect::new(
@@ -2183,8 +2553,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let stepper = stepper.into_inner();
-        let button_size = ctx.bounds.height().clamp(24.0, 32.0);
-        let spacing = 4.0;
+        let button_size = ctx
+            .bounds
+            .height()
+            .clamp(STEPPER_BUTTON_MIN_SIZE, STEPPER_BUTTON_MAX_SIZE);
+        let spacing = STEPPER_BUTTON_SPACING;
         let controls_width = button_size * 2.0 + spacing;
         let controls_x0 = (ctx.bounds.x1 - controls_width).max(ctx.bounds.x0);
 
@@ -2284,7 +2657,7 @@ impl HydrolysisRenderer {
         match progress.style {
             ProgressStyle::Linear => {
                 let label_height = if ctx.bounds.height() >= 40.0 {
-                    18.0
+                    PROGRESS_LINEAR_LABEL_HEIGHT
                 } else {
                     0.0
                 };
@@ -2298,13 +2671,13 @@ impl HydrolysisRenderer {
                     Self::dispatch_in_rect(ctx, env, progress.label, label_rect);
                 }
 
-                let bar_y = ctx.bounds.y0 + label_height + 10.0;
+                let bar_y = ctx.bounds.y0 + label_height + PROGRESS_LINEAR_BAR_TOP_OFFSET;
                 let bar = vello::kurbo::RoundedRect::from_rect(
                     vello::kurbo::Rect::new(
-                        ctx.bounds.x0 + 8.0,
+                        ctx.bounds.x0 + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET,
                         bar_y,
-                        ctx.bounds.x1 - 8.0,
-                        bar_y + 8.0,
+                        ctx.bounds.x1 - PROGRESS_LINEAR_BAR_HORIZONTAL_INSET,
+                        bar_y + PROGRESS_LINEAR_BAR_HEIGHT,
                     ),
                     4.0,
                 );
@@ -2336,7 +2709,7 @@ impl HydrolysisRenderer {
 
                 let value_label_rect = vello::kurbo::Rect::new(
                     ctx.bounds.x0,
-                    bar.rect().y1 + 6.0,
+                    bar.rect().y1 + PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
                     ctx.bounds.x1,
                     ctx.bounds.y1,
                 );
@@ -2391,7 +2764,7 @@ impl HydrolysisRenderer {
     ) {
         let text_field = text_field.into_inner();
         let label_height = if ctx.bounds.height() >= 36.0 {
-            18.0
+            INPUT_LABEL_HEIGHT
         } else {
             0.0
         };
@@ -2437,7 +2810,11 @@ impl HydrolysisRenderer {
         } else {
             format!("{value}{preedit}")
         };
-        let text_bounds = inset_rect(field_rect, 8.0, 6.0);
+        let text_bounds = inset_rect(
+            field_rect,
+            INPUT_FIELD_HORIZONTAL_INSET,
+            INPUT_FIELD_VERTICAL_INSET,
+        );
         Self::render_styled_text(
             state,
             ctx.child(
@@ -2484,7 +2861,7 @@ impl HydrolysisRenderer {
     ) {
         let secure_field = secure_field.into_inner();
         let label_height = if ctx.bounds.height() >= 36.0 {
-            18.0
+            INPUT_LABEL_HEIGHT
         } else {
             0.0
         };
@@ -2526,7 +2903,11 @@ impl HydrolysisRenderer {
                 + preedit_count;
             "*".repeat(count)
         };
-        let text_bounds = inset_rect(field_rect, 8.0, 6.0);
+        let text_bounds = inset_rect(
+            field_rect,
+            INPUT_FIELD_HORIZONTAL_INSET,
+            INPUT_FIELD_VERTICAL_INSET,
+        );
         Self::render_styled_text(
             state,
             ctx.child(
