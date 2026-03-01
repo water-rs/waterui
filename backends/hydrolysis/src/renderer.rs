@@ -189,7 +189,7 @@ pub struct HydrolysisRenderer {
     text_input_targets: Vec<TextInputTarget>,
     scroll_targets: Vec<ScrollTarget>,
     focused_text_input: Cell<Option<usize>>,
-    ime_preedit: Option<String>,
+    ime_preedit: Option<Str>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
@@ -244,7 +244,7 @@ struct HoverTarget {
 }
 
 enum TextInputCommand {
-    Insert(String),
+    Insert(Str),
     Backspace,
 }
 
@@ -4325,18 +4325,15 @@ impl HydrolysisRenderer {
                 if renderer.focused_text_input.get() == Some(renderer.text_input_targets.len()) {
                     renderer.ime_preedit.clone().unwrap_or_default()
                 } else {
-                    String::new()
+                    Str::new()
                 };
             (
-                renderer.read_signal(&prompt_signal).to_plain().to_string(),
-                renderer
-                    .read_signal(&text_field.value)
-                    .to_plain()
-                    .to_string(),
+                renderer.read_signal(&prompt_signal).to_plain(),
+                renderer.read_signal(&text_field.value).to_plain(),
                 preedit,
             )
         };
-        let committed_with_preedit = format!("{value}{preedit}");
+        let committed_with_preedit = value.clone() + preedit.as_str();
         let display = if committed_with_preedit.is_empty() {
             prompt
         } else {
@@ -6189,7 +6186,7 @@ impl HydrolysisRenderer {
         if text.is_empty() {
             return preedit_cleared;
         }
-        self.dispatch_text_input_command(TextInputCommand::Insert(text.to_owned()))
+        self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
             || preedit_cleared
     }
 
@@ -6200,7 +6197,7 @@ impl HydrolysisRenderer {
         let next = if text.is_empty() {
             None
         } else {
-            Some(text.to_owned())
+            Some(Str::from(text.to_owned()))
         };
         if self.ime_preedit == next {
             return false;
