@@ -1905,6 +1905,30 @@ impl HydroNativeView for Native<GpuSurface> {
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
     }
+
+    fn accessibility(
+        _state: &mut HydroState,
+        _ctx: RenderContext,
+        _view: &Self,
+        _env: &Environment,
+    ) {
+        #[cfg(feature = "winit")]
+        {
+            let renderer = unsafe { _ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(_env, AccessibilityNodeRole::Image),
+            );
+            if let Some(label) = renderer.resolve_accessibility_label(_env, None) {
+                node.set_label(label);
+            }
+            let _ = renderer.register_accessibility_node(
+                node,
+                transformed_rect(_ctx.transform, _ctx.bounds),
+                _env,
+                None,
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<SceneView> {
@@ -1914,6 +1938,30 @@ impl HydroNativeView for Native<SceneView> {
 
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
+    }
+
+    fn accessibility(
+        _state: &mut HydroState,
+        _ctx: RenderContext,
+        _view: &Self,
+        _env: &Environment,
+    ) {
+        #[cfg(feature = "winit")]
+        {
+            let renderer = unsafe { _ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(_env, AccessibilityNodeRole::Image),
+            );
+            if let Some(label) = renderer.resolve_accessibility_label(_env, None) {
+                node.set_label(label);
+            }
+            let _ = renderer.register_accessibility_node(
+                node,
+                transformed_rect(_ctx.transform, _ctx.bounds),
+                _env,
+                None,
+            );
+        }
     }
 }
 
