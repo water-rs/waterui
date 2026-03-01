@@ -196,6 +196,8 @@ pub struct HydrolysisRenderer {
     scroll_controller: ScrollController,
     navigation_slots: Vec<NavigationSlot>,
     navigation_cursor: usize,
+    picker_menu_slots: Vec<PickerMenuSlot>,
+    picker_menu_cursor: usize,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
     #[cfg(feature = "winit")]
@@ -321,6 +323,10 @@ struct NavigationSlot {
     transition: Option<NavigationTransitionState>,
 }
 
+struct PickerMenuSlot {
+    open: Rc<Cell<bool>>,
+}
+
 #[derive(Clone)]
 struct NavigationTransitionState {
     style: NavigationTransition,
@@ -404,6 +410,14 @@ impl CustomNavigationController for HydroNavigationController {
     fn pop(&mut self) {
         if self.entries.borrow_mut().pop().is_some() {
             self.rebuild_requested.set(true);
+        }
+    }
+}
+
+impl PickerMenuSlot {
+    fn new() -> Self {
+        Self {
+            open: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -590,6 +604,8 @@ const PICKER_INDICATOR_SPACE: f64 = 18.0;
 const PICKER_RADIO_INDICATOR_SIZE: f64 = 16.0;
 const PICKER_RADIO_LABEL_SPACING: f64 = 8.0;
 const PICKER_RADIO_ROW_SPACING: f64 = 6.0;
+const PICKER_MENU_POPUP_TOP_SPACING: f64 = 4.0;
+const PICKER_MENU_POPUP_CORNER_RADIUS: f64 = 6.0;
 
 fn button_padding(style: ButtonStyle) -> (f64, f64) {
     match style {
@@ -774,6 +790,32 @@ fn tabs_button_rect(
     let button_width = bar_rect.width() / tab_count as f64;
     let x0 = bar_rect.x0 + button_width * index as f64;
     vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
+}
+
+fn menu_picker_row_height(field_bounds: vello::kurbo::Rect, max_item_text_height: f64) -> f64 {
+    field_bounds
+        .height()
+        .max(PICKER_MIN_HEIGHT)
+        .max(max_item_text_height + PICKER_VERTICAL_INSET * 2.0)
+}
+
+fn menu_picker_popup_rect(
+    field_bounds: vello::kurbo::Rect,
+    row_height: f64,
+    item_count: usize,
+) -> vello::kurbo::Rect {
+    let y0 = field_bounds.y1 + PICKER_MENU_POPUP_TOP_SPACING;
+    let y1 = y0 + row_height * item_count as f64;
+    vello::kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
+}
+
+fn menu_picker_option_rect(
+    popup_rect: vello::kurbo::Rect,
+    row_height: f64,
+    index: usize,
+) -> vello::kurbo::Rect {
+    let y0 = popup_rect.y0 + row_height * index as f64;
+    vello::kurbo::Rect::new(popup_rect.x0, y0, popup_rect.x1, y0 + row_height)
 }
 
 fn measure_list_intrinsic(
@@ -1670,18 +1712,60 @@ impl HydroNativeView for Native<PickerConfig> {
                         .unwrap_or_else(|| {
                             panic!("hydrolysis picker selection is not present in picker items")
                         });
-                    let selected_signal = items[selected_index].content.content();
-                    let selected_text = renderer.read_signal(&selected_signal).to_plain().to_string();
+                    let mut option_labels = Vec::with_capacity(items.len());
+                    let mut max_item_text_height: f64 = 0.0;
+                    for item in &items {
+                        let label_signal = item.content.content();
+                        let label = renderer.read_signal(&label_signal).to_plain();
+                        let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
+                            state,
+                            StyledStr::plain(label.clone()),
+                            env,
+                        );
+                        max_item_text_height = max_item_text_height.max(f64::from(label_size.height));
+                        option_labels.push(label);
+                    }
+                    let selected_text = option_labels[selected_index].clone();
                     let mut node = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
                     );
-                    let label = renderer.resolve_accessibility_label(env, Some(selected_text.clone()));
+                    let label = renderer.resolve_accessibility_label(
+                        env,
+                        Some(selected_text.as_str().to_owned()),
+                    );
                     if let Some(label) = label {
                         node.set_label(label);
                     }
-                    node.set_value(selected_text);
+                    node.set_value(selected_text.as_str().to_owned());
                     node.add_action(AccessibilityAction::Focus);
                     node.add_action(AccessibilityAction::Click);
+                    let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
+                    let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
+                    for (index, item) in items.iter().enumerate() {
+                        let mut option = AccessibilityNode::new(renderer.resolve_accessibility_role(
+                            env,
+                            AccessibilityNodeRole::ListBoxOption,
+                        ));
+                        option.set_label(option_labels[index].as_str().to_owned());
+                        let is_selected = item.tag == selected;
+                        option.set_selected(is_selected);
+                        option.set_toggled(AccessibilityToggled::from(is_selected));
+                        option.add_action(AccessibilityAction::Focus);
+                        option.add_action(AccessibilityAction::Click);
+                        let option_bounds =
+                            transformed_rect(ctx.transform, menu_picker_option_rect(popup_rect, row_height, index));
+                        if let Some(option_id) = renderer.register_accessibility_child_node(
+                            option,
+                            option_bounds,
+                            env,
+                            Some(AccessibilityActionTarget::PickerSelect {
+                                selection: picker.selection.clone(),
+                                target: item.tag,
+                            }),
+                        ) {
+                            node.push_child(option_id);
+                        }
+                    }
                     let ids = items.iter().map(|item| item.tag).collect::<Vec<_>>();
                     let bounds = transformed_rect(ctx.transform, ctx.bounds);
                     let _ = renderer.register_accessibility_node(
@@ -1857,6 +1941,8 @@ impl HydrolysisRenderer {
             scroll_controller: ScrollController::default(),
             navigation_slots: Vec::new(),
             navigation_cursor: 0,
+            picker_menu_slots: Vec::new(),
+            picker_menu_cursor: 0,
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
             #[cfg(feature = "winit")]
@@ -2049,6 +2135,18 @@ impl HydrolysisRenderer {
         }
 
         (index, Rc::clone(&self.navigation_slots[index].entries))
+    }
+
+    fn bind_picker_menu_state(&mut self) -> Rc<Cell<bool>> {
+        let index = self.picker_menu_cursor;
+        self.picker_menu_cursor = self
+            .picker_menu_cursor
+            .checked_add(1)
+            .expect("picker menu slot cursor overflow");
+        if index == self.picker_menu_slots.len() {
+            self.picker_menu_slots.push(PickerMenuSlot::new());
+        }
+        Rc::clone(&self.picker_menu_slots[index].open)
     }
 
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
@@ -4116,16 +4214,33 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&selection)
         };
+        let menu_open = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.bind_picker_menu_state()
+        };
+        let is_menu_open = menu_open.get();
         let selected_index = items
             .iter()
             .position(|item| item.tag == selected)
             .unwrap_or_else(|| panic!("hydrolysis picker selection is not present in picker items"));
-        let selected_text = {
-            let selected_signal = items[selected_index].content.content();
-            let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&selected_signal).to_plain()
-        };
-        let ids: Vec<_> = items.iter().map(|item| item.tag).collect();
+        let mut option_texts = Vec::with_capacity(items.len());
+        let mut max_item_text_height: f64 = 0.0;
+        for item in &items {
+            let styled = {
+                let renderer = unsafe { ctx.renderer() };
+                let label_signal = item.content.content();
+                renderer.read_signal(&label_signal)
+            };
+            let plain = styled.to_plain();
+            let size = HydrolysisRenderer::measure_text_intrinsic_size(
+                state,
+                StyledStr::plain(plain.clone()),
+                env,
+            );
+            max_item_text_height = max_item_text_height.max(f64::from(size.height));
+            option_texts.push(plain);
+        }
+        let selected_text = option_texts[selected_index].clone();
 
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, ctx.bounds);
@@ -4149,18 +4264,91 @@ impl HydrolysisRenderer {
         );
 
         let renderer = unsafe { ctx.renderer() };
+        let field_open_state = Rc::clone(&menu_open);
         renderer.register_pointer_target(
             transformed_rect(ctx.transform, ctx.bounds),
             move |_point, _env| {
-                let current = selection.get();
-                let index = ids.iter().position(|id| *id == current).unwrap_or_else(|| {
-                    panic!("hydrolysis picker selection is not present in picker items")
-                });
-                let next = ids[(index + 1) % ids.len()];
-                selection.set(next);
+                field_open_state.set(!field_open_state.get());
                 true
             },
         );
+
+        if !is_menu_open {
+            return;
+        }
+
+        let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
+        let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
+        let scene = unsafe { ctx.scene() };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            vello::peniko::Color::new([0.98, 0.98, 0.99, 1.0]),
+            None,
+            &vello::kurbo::RoundedRect::from_rect(popup_rect, PICKER_MENU_POPUP_CORNER_RADIUS),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctx.transform,
+            vello::peniko::Color::new([0.8, 0.82, 0.86, 1.0]),
+            None,
+            &vello::kurbo::RoundedRect::from_rect(popup_rect, PICKER_MENU_POPUP_CORNER_RADIUS),
+        );
+
+        for (index, item) in items.into_iter().enumerate() {
+            let row_rect = menu_picker_option_rect(popup_rect, row_height, index);
+            if item.tag == selected {
+                let scene = unsafe { ctx.scene() };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.88, 0.92, 0.99, 1.0]),
+                    None,
+                    &inset_rect(row_rect, 2.0, 1.0),
+                );
+            }
+            if index + 1 < option_texts.len() {
+                let separator = vello::kurbo::Rect::new(
+                    row_rect.x0 + 6.0,
+                    row_rect.y1 - 1.0,
+                    row_rect.x1 - 6.0,
+                    row_rect.y1,
+                );
+                let scene = unsafe { ctx.scene() };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.9, 0.91, 0.94, 1.0]),
+                    None,
+                    &separator,
+                );
+            }
+            let row_text_rect = inset_rect(row_rect, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
+            Self::render_styled_text(
+                state,
+                ctx.child(
+                    vello::kurbo::Affine::translate((row_text_rect.x0, row_text_rect.y0)),
+                    vello::kurbo::Rect::new(0.0, 0.0, row_text_rect.width(), row_text_rect.height()),
+                ),
+                StyledStr::plain(option_texts[index].clone()),
+                env,
+            );
+
+            let open_state = Rc::clone(&menu_open);
+            let selection = selection.clone();
+            let tag = item.tag;
+            let renderer = unsafe { ctx.renderer() };
+            renderer.register_pointer_target(
+                transformed_rect(ctx.transform, row_rect),
+                move |_point, _env| {
+                    if selection.get() != tag {
+                        selection.set(tag);
+                    }
+                    open_state.set(false);
+                    true
+                },
+            );
+        }
     }
 
     fn render_radio_picker(
@@ -5277,6 +5465,7 @@ impl HydrolysisRenderer {
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.navigation_cursor = 0;
+        self.picker_menu_cursor = 0;
         #[cfg(feature = "winit")]
         {
             self.accessibility_nodes.clear();
@@ -5308,6 +5497,7 @@ impl HydrolysisRenderer {
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
         self.navigation_slots.truncate(self.navigation_cursor);
+        self.picker_menu_slots.truncate(self.picker_menu_cursor);
         #[cfg(feature = "winit")]
         self.finalize_accessibility_tree_update();
     }
