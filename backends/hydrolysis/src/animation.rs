@@ -157,7 +157,9 @@ impl AnimatedScalarState {
         };
 
         let elapsed = now.saturating_duration_since(active.start_time);
-        self.current = active.animation.interpolate(active.from, active.to, elapsed);
+        self.current = active
+            .animation
+            .interpolate(active.from, active.to, elapsed);
 
         if active.animation.is_complete(elapsed) {
             self.current = active.to;
