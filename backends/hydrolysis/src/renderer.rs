@@ -1,4 +1,5 @@
 use core::f64::consts::TAU;
+use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -24,16 +25,17 @@ use waterui::metadata::context_menu::ContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationStack, NavigationView,
+    CustomNavigationController, NavigationController, NavigationStack, NavigationTransition,
+    NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
-use waterui_controls::button::ButtonConfig;
+use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
-use waterui_controls::toggle::ToggleConfig;
+use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::AnyViewBuilder;
@@ -43,7 +45,7 @@ use waterui_core::layout::{
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
-use waterui_form::picker::PickerConfig;
+use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
@@ -241,6 +243,24 @@ struct SurfaceBlitState {
 
 struct NavigationSlot {
     entries: Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>,
+    last_depth: usize,
+    last_scene: Option<vello::Scene>,
+    transition: Option<NavigationTransitionState>,
+}
+
+#[derive(Clone)]
+struct NavigationTransitionState {
+    style: NavigationTransition,
+    direction: NavigationTransitionDirection,
+    from_scene: vello::Scene,
+    to_scene: vello::Scene,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationTransitionDirection {
+    Push,
+    Pop,
 }
 
 struct HydroNavigationController {
@@ -262,7 +282,37 @@ impl NavigationSlot {
     fn new() -> Self {
         Self {
             entries: Rc::new(RefCell::new(Vec::new())),
+            last_depth: 0,
+            last_scene: None,
+            transition: None,
         }
+    }
+}
+
+impl NavigationTransitionState {
+    fn new(
+        style: NavigationTransition,
+        direction: NavigationTransitionDirection,
+        from_scene: vello::Scene,
+        to_scene: vello::Scene,
+        started_at: Instant,
+    ) -> Self {
+        Self {
+            style,
+            direction,
+            from_scene,
+            to_scene,
+            started_at,
+        }
+    }
+
+    fn progress(&self, now: Instant) -> f64 {
+        let elapsed = now.saturating_duration_since(self.started_at);
+        (elapsed.as_secs_f64() / NAVIGATION_TRANSITION_DURATION.as_secs_f64()).clamp(0.0, 1.0)
+    }
+
+    fn is_active(&self, now: Instant) -> bool {
+        self.progress(now) < 1.0
     }
 }
 
@@ -370,6 +420,8 @@ const NAVIGATION_TITLE_HEIGHT_INLINE: f64 = 24.0;
 const NAVIGATION_TITLE_HEIGHT_LARGE: f64 = 32.0;
 const NAVIGATION_BAR_HORIZONTAL_INSET: f64 = 12.0;
 const NAVIGATION_BAR_BOTTOM_INSET: f64 = 8.0;
+const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
+const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 
 const TABS_BAR_MIN_HEIGHT: f64 = 44.0;
 const TABS_BAR_MAX_HEIGHT: f64 = 64.0;
@@ -383,6 +435,11 @@ const LIST_MOVE_CONTROL_WIDTH: f64 = 20.0;
 const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
 const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
 
+const BUTTON_MIN_WIDTH: f64 = 44.0;
+const BUTTON_MIN_HEIGHT: f64 = 28.0;
+const BUTTON_LINK_UNDERLINE_BOTTOM_INSET: f64 = 2.0;
+const BUTTON_LINK_UNDERLINE_THICKNESS: f64 = 1.0;
+
 const SLIDER_HORIZONTAL_INSET: f64 = 12.0;
 const SLIDER_HORIZONTAL_SPACING: f64 = 8.0;
 const SLIDER_VERTICAL_SPACING: f64 = 6.0;
@@ -392,6 +449,7 @@ const SLIDER_THUMB_RADIUS: f64 = 9.0;
 
 const TOGGLE_SWITCH_WIDTH: f64 = 51.0;
 const TOGGLE_SWITCH_HEIGHT: f64 = 31.0;
+const TOGGLE_CHECKBOX_SIZE: f64 = 22.0;
 const TOGGLE_LABEL_SPACING: f64 = 8.0;
 
 const STEPPER_BUTTON_MIN_SIZE: f64 = 24.0;
@@ -419,6 +477,76 @@ const PICKER_MIN_HEIGHT: f64 = 30.0;
 const PICKER_HORIZONTAL_INSET: f64 = 8.0;
 const PICKER_VERTICAL_INSET: f64 = 6.0;
 const PICKER_INDICATOR_SPACE: f64 = 18.0;
+const PICKER_RADIO_INDICATOR_SIZE: f64 = 16.0;
+const PICKER_RADIO_LABEL_SPACING: f64 = 8.0;
+const PICKER_RADIO_ROW_SPACING: f64 = 6.0;
+
+fn button_padding(style: ButtonStyle) -> (f64, f64) {
+    match style {
+        ButtonStyle::Automatic => (8.0, 4.0),
+        ButtonStyle::Plain => (0.0, 0.0),
+        ButtonStyle::Link => (0.0, 0.0),
+        ButtonStyle::Borderless => (4.0, 2.0),
+        ButtonStyle::Bordered => (8.0, 4.0),
+        ButtonStyle::BorderedProminent => (10.0, 5.0),
+        _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
+    }
+}
+
+fn button_min_size(style: ButtonStyle) -> (f64, f64) {
+    match style {
+        ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
+            (BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+        }
+        ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => (0.0, 0.0),
+        _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
+    }
+}
+
+fn toggle_control_size(style: ToggleStyle) -> (f64, f64) {
+    match style {
+        ToggleStyle::Automatic | ToggleStyle::Switch => (TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT),
+        ToggleStyle::Checkbox => (TOGGLE_CHECKBOX_SIZE, TOGGLE_CHECKBOX_SIZE),
+        _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+    }
+}
+
+fn normalized_insert_text(inserted: &str, max_lines: Option<usize>) -> String {
+    if max_lines == Some(1) {
+        inserted
+            .chars()
+            .filter(|ch| *ch != '\n' && *ch != '\r')
+            .collect()
+    } else {
+        inserted.chars().filter(|ch| *ch != '\r').collect()
+    }
+}
+
+fn line_count(value: &str) -> usize {
+    value.chars().filter(|ch| *ch == '\n').count() + 1
+}
+
+fn exceeds_line_limit(value: &str, max_lines: Option<usize>) -> bool {
+    max_lines.is_some_and(|max| line_count(value) > max)
+}
+
+fn apply_text_insert(buffer: &mut String, inserted: &str, max_lines: Option<usize>) -> bool {
+    let normalized = normalized_insert_text(inserted, max_lines);
+    if normalized.is_empty() {
+        return false;
+    }
+    let original_len = buffer.len();
+    buffer.push_str(normalized.as_str());
+    if exceeds_line_limit(buffer, max_lines) {
+        buffer.truncate(original_len);
+        return false;
+    }
+    true
+}
+
+fn apply_backspace(buffer: &mut String) -> bool {
+    buffer.pop().is_some()
+}
 
 struct TableMetrics {
     column_widths: Vec<f64>,
@@ -533,7 +661,15 @@ fn measure_button_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    measure_view_intrinsic(&button.label, state, env)
+    let label_size = measure_view_intrinsic(&button.label, state, env);
+    let (padding_x, padding_y) = button_padding(button.style);
+    let content_width = f64::from(label_size.width) + padding_x * 2.0;
+    let content_height = f64::from(label_size.height) + padding_y * 2.0;
+    let (min_width, min_height) = button_min_size(button.style);
+    LayoutSize::new(
+        content_width.max(min_width) as f32,
+        content_height.max(min_height) as f32,
+    )
 }
 
 fn measure_toggle_intrinsic(
@@ -541,14 +677,15 @@ fn measure_toggle_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
+    let (control_width, control_height) = toggle_control_size(toggle.style);
     let label_size = measure_view_intrinsic(&toggle.label, state, env);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
-        label_width + TOGGLE_LABEL_SPACING + TOGGLE_SWITCH_WIDTH
+        label_width + TOGGLE_LABEL_SPACING + control_width
     } else {
-        TOGGLE_SWITCH_WIDTH
+        control_width
     };
-    let height = f64::from(label_size.height).max(TOGGLE_SWITCH_HEIGHT);
+    let height = f64::from(label_size.height).max(control_height);
     LayoutSize::new(width as f32, height as f32)
 }
 
@@ -602,10 +739,13 @@ fn measure_text_field_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let label_size = measure_view_intrinsic(&text_field.label, state, env);
+    let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     let prompt = text_field.prompt.content().get();
     let value = text_field.value.get();
-    let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size(state, prompt, env);
-    let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, value, env);
+    let prompt_size =
+        HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(state, prompt, env, line_limit);
+    let value_size =
+        HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(state, value, env, line_limit);
     let content_width =
         f64::from(prompt_size.width.max(value_size.width)) + INPUT_FIELD_HORIZONTAL_INSET * 2.0;
     let content_height =
@@ -723,20 +863,46 @@ fn measure_picker_intrinsic(
     if items.is_empty() {
         panic!("hydrolysis picker requires at least one item");
     }
+    let item_count = items.len();
 
-    let mut max_item_width: f64 = 0.0;
-    let mut max_item_height: f64 = 0.0;
-    for item in items {
-        let styled = item.content.content().get();
-        let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
-        max_item_width = max_item_width.max(f64::from(size.width));
-        max_item_height = max_item_height.max(f64::from(size.height));
+    match picker.style {
+        PickerStyle::Automatic | PickerStyle::Menu => {
+            let mut max_item_width: f64 = 0.0;
+            let mut max_item_height: f64 = 0.0;
+            for item in &items {
+                let styled = item.content.content().get();
+                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+                max_item_width = max_item_width.max(f64::from(size.width));
+                max_item_height = max_item_height.max(f64::from(size.height));
+            }
+
+            let width = (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
+                .max(PICKER_MIN_WIDTH);
+            let height = (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
+            LayoutSize::new(width as f32, height as f32)
+        }
+        PickerStyle::Radio => {
+            let mut max_item_width: f64 = 0.0;
+            let mut total_height = 0.0;
+            for (index, item) in items.iter().enumerate() {
+                let styled = item.content.content().get();
+                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+                max_item_width = max_item_width.max(f64::from(size.width));
+                total_height += f64::from(size.height).max(PICKER_RADIO_INDICATOR_SIZE);
+                if index + 1 < item_count {
+                    total_height += PICKER_RADIO_ROW_SPACING;
+                }
+            }
+            let width = (PICKER_HORIZONTAL_INSET * 2.0
+                + PICKER_RADIO_INDICATOR_SIZE
+                + PICKER_RADIO_LABEL_SPACING
+                + max_item_width)
+                .max(PICKER_MIN_WIDTH);
+            let height = (PICKER_VERTICAL_INSET * 2.0 + total_height).max(PICKER_MIN_HEIGHT);
+            LayoutSize::new(width as f32, height as f32)
+        }
+        _ => panic!("hydrolysis PickerStyle variant is not implemented"),
     }
-
-    let width = (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
-        .max(PICKER_MIN_WIDTH);
-    let height = (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
-    LayoutSize::new(width as f32, height as f32)
 }
 
 macro_rules! hydro_native_view_types {
@@ -1222,7 +1388,9 @@ impl HydrolysisRenderer {
         signal.get()
     }
 
-    fn bind_navigation_entries(&mut self) -> Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>> {
+    fn bind_navigation_entries(
+        &mut self,
+    ) -> (usize, Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>) {
         let index = self.navigation_cursor;
         self.navigation_cursor = self
             .navigation_cursor
@@ -1233,7 +1401,7 @@ impl HydrolysisRenderer {
             self.navigation_slots.push(NavigationSlot::new());
         }
 
-        Rc::clone(&self.navigation_slots[index].entries)
+        (index, Rc::clone(&self.navigation_slots[index].entries))
     }
 
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
@@ -1510,8 +1678,9 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let stack = stack.into_inner();
+        let transition_style = stack.transition_style();
         let root = stack.into_inner();
-        let entries = {
+        let (slot_index, entries) = {
             let renderer = unsafe { ctx.renderer() };
             renderer.bind_navigation_entries()
         };
@@ -1524,19 +1693,82 @@ impl HydrolysisRenderer {
             },
         }));
 
-        let active = {
+        let (active, depth) = {
             let entries_ref = entries.borrow();
-            entries_ref
+            let active = entries_ref
                 .last()
-                .map_or_else(|| root, |builder| AnyView::new(builder.build()))
+                .map_or_else(|| root, |builder| AnyView::new(builder.build()));
+            (active, entries_ref.len())
         };
-        Self::dispatch_any(ctx, &local_env, active);
+        let local_ctx = RenderContext {
+            renderer_ptr: ctx.renderer_ptr,
+            transform: vello::kurbo::Affine::IDENTITY,
+            bounds: ctx.bounds,
+        };
+        let active_scene = Self::render_subtree_scene(local_ctx, &local_env, active);
+        let now = Instant::now();
+        let transition_frame = {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = renderer
+                .navigation_slots
+                .get_mut(slot_index)
+                .expect("hydrolysis navigation slot missing");
+            if depth != slot.last_depth {
+                if transition_style == NavigationTransition::None || slot.last_scene.is_none() {
+                    slot.transition = None;
+                } else {
+                    let direction = if depth > slot.last_depth {
+                        NavigationTransitionDirection::Push
+                    } else {
+                        NavigationTransitionDirection::Pop
+                    };
+                    let from_scene = slot
+                        .last_scene
+                        .take()
+                        .expect("hydrolysis navigation transition requires previous scene");
+                    slot.transition = Some(NavigationTransitionState::new(
+                        transition_style,
+                        direction,
+                        from_scene,
+                        active_scene.clone(),
+                        now,
+                    ));
+                }
+                slot.last_depth = depth;
+            } else if let Some(transition) = slot.transition.as_ref()
+                && !transition.is_active(now)
+            {
+                slot.transition = None;
+            }
+            let frame = slot.transition.as_ref().map(|transition| {
+                (
+                    transition.style,
+                    transition.direction,
+                    transition.progress(now),
+                    transition.from_scene.clone(),
+                    transition.to_scene.clone(),
+                )
+            });
+            slot.last_scene = Some(active_scene.clone());
+            frame
+        };
+        let scene = unsafe { ctx.scene() };
+        if let Some((style, direction, progress, from_scene, to_scene)) = transition_frame {
+            draw_navigation_transition(
+                scene,
+                ctx.transform,
+                ctx.bounds,
+                style,
+                direction,
+                progress,
+                &from_scene,
+                &to_scene,
+            );
+        } else {
+            scene.append(&active_scene, Some(ctx.transform));
+        }
 
-        let has_push = {
-            let entries_ref = entries.borrow();
-            !entries_ref.is_empty()
-        };
-        if !has_push {
+        if depth == 0 {
             return;
         }
 
@@ -2147,15 +2379,35 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) {
+        Self::render_styled_text_limited(state, ctx, styled, env, None);
+    }
+
+    fn render_styled_text_limited(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        styled: StyledStr,
+        env: &Environment,
+        max_lines: Option<usize>,
+    ) {
         let layout = Self::build_text_layout(state, styled, env, Some(ctx.bounds.width() as f32));
+        Self::draw_text_layout(ctx, &layout, max_lines);
+    }
+
+    fn draw_text_layout(
+        ctx: RenderContext,
+        layout: &parley::Layout<[u8; 4]>,
+        max_lines: Option<usize>,
+    ) {
         if layout.is_empty() {
             return;
         }
-
         let text_transform =
             ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let scene = unsafe { ctx.scene() };
-        for line in layout.lines() {
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
             for item in line.items() {
                 if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
                     let run = glyph_run.run();
@@ -2244,8 +2496,30 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) -> LayoutSize {
+        Self::measure_text_intrinsic_size_with_line_limit(state, styled, env, None)
+    }
+
+    fn measure_text_intrinsic_size_with_line_limit(
+        state: &mut HydroState,
+        styled: StyledStr,
+        env: &Environment,
+        max_lines: Option<usize>,
+    ) -> LayoutSize {
         let layout = Self::build_text_layout(state, styled, env, None);
-        LayoutSize::new(layout.full_width(), layout.height())
+        if max_lines.is_none() {
+            return LayoutSize::new(layout.full_width(), layout.height());
+        }
+        let mut width = 0.0f32;
+        let mut height = 0.0f32;
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
+            let metrics = line.metrics();
+            width = width.max(metrics.advance);
+            height += metrics.line_height;
+        }
+        LayoutSize::new(width, height)
     }
 
     fn push_text_style(
@@ -2307,6 +2581,20 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let button = button.into_inner();
+        let style = button.style;
+        {
+            let scene = unsafe { ctx.scene() };
+            draw_button_chrome(scene, ctx.transform, ctx.bounds, style);
+        }
+
+        let (padding_x, padding_y) = button_padding(style);
+        let label_bounds = inset_rect(ctx.bounds, padding_x, padding_y);
+        if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+            Self::dispatch_in_rect(ctx, env, button.label, label_bounds);
+        } else {
+            Self::dispatch_any(ctx, env, button.label);
+        }
+
         let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
         {
             let renderer = unsafe { ctx.renderer() };
@@ -2316,7 +2604,6 @@ impl HydrolysisRenderer {
                 true
             });
         }
-        Self::dispatch_any(ctx, env, button.label);
     }
 
     fn render_toggle(
@@ -2326,21 +2613,21 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let toggle = toggle.into_inner();
-        let switch_width = TOGGLE_SWITCH_WIDTH;
-        let switch_height = TOGGLE_SWITCH_HEIGHT;
+        let style = toggle.style;
+        let (control_width, control_height) = toggle_control_size(style);
         let spacing = TOGGLE_LABEL_SPACING;
-        let switch_x0 = (ctx.bounds.x1 - switch_width).max(ctx.bounds.x0);
-        let switch_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - switch_height) / 2.0).max(0.0);
-        let switch_bounds = vello::kurbo::Rect::new(
-            switch_x0,
-            switch_y0,
-            switch_x0 + switch_width,
-            switch_y0 + switch_height,
+        let control_x0 = (ctx.bounds.x1 - control_width).max(ctx.bounds.x0);
+        let control_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - control_height) / 2.0).max(0.0);
+        let control_bounds = vello::kurbo::Rect::new(
+            control_x0,
+            control_y0,
+            control_x0 + control_width,
+            control_y0 + control_height,
         );
         let label_bounds = vello::kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
-            (switch_x0 - spacing).max(ctx.bounds.x0),
+            (control_x0 - spacing).max(ctx.bounds.x0),
             ctx.bounds.y1,
         );
         if label_bounds.width() > 0.0 {
@@ -2356,47 +2643,18 @@ impl HydrolysisRenderer {
             [0.2, 0.45, 0.9, 1.0],
             thumb_progress,
         );
-        let thumb_center_x = lerp_f64(
-            switch_bounds.x0 + 15.0,
-            switch_bounds.x1 - 15.0,
-            thumb_progress,
-        );
-        let thumb_center =
-            vello::kurbo::Point::new(thumb_center_x, switch_bounds.y0 + switch_height / 2.0);
-        let track = vello::kurbo::RoundedRect::from_rect(switch_bounds, 15.5);
-        let thumb = vello::kurbo::Circle::new(thumb_center, 13.0);
-
         let scene = unsafe { ctx.scene() };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            track_color,
-            None,
-            &track,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            ctx.transform,
-            vello::peniko::Color::new([0.72, 0.74, 0.78, 1.0]),
-            None,
-            &track,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            vello::peniko::Color::WHITE,
-            None,
-            &thumb,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            ctx.transform,
-            vello::peniko::Color::new([0.76, 0.78, 0.82, 1.0]),
-            None,
-            &thumb,
-        );
+        match style {
+            ToggleStyle::Automatic | ToggleStyle::Switch => {
+                draw_toggle_switch(scene, ctx.transform, control_bounds, thumb_progress, track_color);
+            }
+            ToggleStyle::Checkbox => {
+                draw_toggle_checkbox(scene, ctx.transform, control_bounds, thumb_progress);
+            }
+            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+        }
 
-        let hit_bounds = transformed_rect(ctx.transform, switch_bounds);
+        let hit_bounds = transformed_rect(ctx.transform, control_bounds);
         let toggle_binding = toggle.toggle;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(hit_bounds, move |_point, _env| {
@@ -2762,9 +3020,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let text_field = text_field.into_inner();
-        if text_field.line_limit.map(core::num::NonZeroUsize::get) != Some(1) {
-            panic!("hydrolysis TextField supports only line_limit(1)");
-        }
+        let line_limit = text_field.line_limit.map(NonZeroUsize::get);
         let label_height = if ctx.bounds.height() >= 36.0 {
             INPUT_LABEL_HEIGHT
         } else {
@@ -2818,7 +3074,17 @@ impl HydrolysisRenderer {
             INPUT_FIELD_HORIZONTAL_INSET,
             INPUT_FIELD_VERTICAL_INSET,
         );
-        Self::render_styled_text(
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &text_bounds,
+            );
+        }
+        Self::render_styled_text_limited(
             state,
             ctx.child(
                 vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
@@ -2826,13 +3092,19 @@ impl HydrolysisRenderer {
             ),
             StyledStr::plain(display),
             env,
+            line_limit,
         );
-        let cursor_size = HydrolysisRenderer::measure_text_intrinsic_size(
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.pop_layer();
+        }
+        let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(committed_with_preedit),
             env,
+            Some(text_bounds.width() as f32),
         );
-        let cursor_area = text_cursor_area_from_bounds(text_bounds, cursor_size);
+        let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit);
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
@@ -2844,19 +3116,14 @@ impl HydrolysisRenderer {
                 let mut plain = value_binding.get().to_plain().to_string();
                 match command {
                     TextInputCommand::Insert(text) => {
-                        let sanitized: String = text
-                            .chars()
-                            .filter(|ch| *ch != '\n' && *ch != '\r')
-                            .collect();
-                        if sanitized.is_empty() {
+                        if !apply_text_insert(&mut plain, text.as_str(), line_limit) {
                             return false;
                         }
-                        plain.push_str(sanitized.as_str());
                         value_binding.set(StyledStr::plain(plain));
                         true
                     }
                     TextInputCommand::Backspace => {
-                        if plain.pop().is_none() {
+                        if !apply_backspace(&mut plain) {
                             return false;
                         }
                         value_binding.set(StyledStr::plain(plain));
@@ -2923,7 +3190,7 @@ impl HydrolysisRenderer {
             INPUT_FIELD_VERTICAL_INSET,
         );
         let masked_display = StyledStr::plain(masked.clone());
-        Self::render_styled_text(
+        Self::render_styled_text_limited(
             state,
             ctx.child(
                 vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
@@ -2931,13 +3198,15 @@ impl HydrolysisRenderer {
             ),
             masked_display,
             env,
+            Some(1),
         );
-        let cursor_size = HydrolysisRenderer::measure_text_intrinsic_size(
+        let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(masked),
             env,
+            Some(text_bounds.width() as f32),
         );
-        let cursor_area = text_cursor_area_from_bounds(text_bounds, cursor_size);
+        let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1));
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
@@ -2949,17 +3218,12 @@ impl HydrolysisRenderer {
                 let mut plain = value_binding.get().expose().to_owned();
                 match command {
                     TextInputCommand::Insert(text) => {
-                        let sanitized: String = text
-                            .chars()
-                            .filter(|ch| *ch != '\n' && *ch != '\r')
-                            .collect();
-                        if sanitized.is_empty() {
+                        if !apply_text_insert(&mut plain, text.as_str(), Some(1)) {
                             return false;
                         }
-                        plain.push_str(sanitized.as_str());
                     }
                     TextInputCommand::Backspace => {
-                        if plain.pop().is_none() {
+                        if !apply_backspace(&mut plain) {
                             return false;
                         }
                     }
@@ -2986,10 +3250,27 @@ impl HydrolysisRenderer {
         if items.is_empty() {
             panic!("hydrolysis picker requires at least one item");
         }
+        match picker.style {
+            PickerStyle::Automatic | PickerStyle::Menu => {
+                Self::render_menu_picker(state, ctx, picker.selection, items, env);
+            }
+            PickerStyle::Radio => {
+                Self::render_radio_picker(state, ctx, picker.selection, items, env);
+            }
+            _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+        }
+    }
 
+    fn render_menu_picker(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        selection: nami::Binding<waterui_core::id::Id>,
+        items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
+        env: &Environment,
+    ) {
         let selected = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&picker.selection)
+            renderer.read_signal(&selection)
         };
         let selected_index = items
             .iter()
@@ -3004,8 +3285,15 @@ impl HydrolysisRenderer {
 
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, ctx.bounds);
+        draw_picker_indicator(scene, ctx.transform, ctx.bounds);
 
-        let text_bounds = inset_rect(ctx.bounds, 8.0, 6.0);
+        let text_bounds = inset_rect(ctx.bounds, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
+        let text_bounds = vello::kurbo::Rect::new(
+            text_bounds.x0,
+            text_bounds.y0,
+            (text_bounds.x1 - PICKER_INDICATOR_SPACE).max(text_bounds.x0),
+            text_bounds.y1,
+        );
         Self::render_styled_text(
             state,
             ctx.child(
@@ -3016,18 +3304,119 @@ impl HydrolysisRenderer {
             env,
         );
 
-        let selection_binding = picker.selection;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(
             transformed_rect(ctx.transform, ctx.bounds),
             move |_point, _env| {
-                let current = selection_binding.get();
+                let current = selection.get();
                 let index = ids.iter().position(|id| *id == current).unwrap_or(0);
                 let next = ids[(index + 1) % ids.len()];
-                selection_binding.set(next);
+                selection.set(next);
                 true
             },
         );
+    }
+
+    fn render_radio_picker(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        selection: nami::Binding<waterui_core::id::Id>,
+        items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
+        env: &Environment,
+    ) {
+        let selected = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&selection)
+        };
+        let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
+        for item in items {
+            let label_signal = item.content.content();
+            let label = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.read_signal(&label_signal)
+            };
+            let label_size = HydrolysisRenderer::measure_text_intrinsic_size(state, label.clone(), env);
+            let row_height = f64::from(label_size.height).max(PICKER_RADIO_INDICATOR_SIZE);
+            let row_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                row_y,
+                ctx.bounds.x1,
+                (row_y + row_height).min(ctx.bounds.y1),
+            );
+            if row_rect.height() <= 0.0 {
+                break;
+            }
+            row_y = row_rect.y1 + PICKER_RADIO_ROW_SPACING;
+
+            let indicator_center = vello::kurbo::Point::new(
+                row_rect.x0 + PICKER_HORIZONTAL_INSET + PICKER_RADIO_INDICATOR_SIZE / 2.0,
+                row_rect.y0 + row_rect.height() / 2.0,
+            );
+            let indicator_radius = PICKER_RADIO_INDICATOR_SIZE / 2.0;
+            let indicator = vello::kurbo::Circle::new(indicator_center, indicator_radius);
+            let is_selected = item.tag == selected;
+            let scene = unsafe { ctx.scene() };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([1.0, 1.0, 1.0, 1.0]),
+                None,
+                &indicator,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                ctx.transform,
+                if is_selected {
+                    vello::peniko::Color::new([0.2, 0.45, 0.9, 1.0])
+                } else {
+                    vello::peniko::Color::new([0.65, 0.67, 0.72, 1.0])
+                },
+                None,
+                &indicator,
+            );
+            if is_selected {
+                let inner = vello::kurbo::Circle::new(indicator_center, indicator_radius * 0.45);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.2, 0.45, 0.9, 1.0]),
+                    None,
+                    &inner,
+                );
+            }
+
+            let label_rect = vello::kurbo::Rect::new(
+                indicator_center.x + indicator_radius + PICKER_RADIO_LABEL_SPACING,
+                row_rect.y0,
+                row_rect.x1 - PICKER_HORIZONTAL_INSET,
+                row_rect.y1,
+            );
+            Self::render_styled_text(
+                state,
+                ctx.child(
+                    vello::kurbo::Affine::translate((label_rect.x0, label_rect.y0)),
+                    vello::kurbo::Rect::new(0.0, 0.0, label_rect.width(), label_rect.height()),
+                ),
+                label,
+                env,
+            );
+
+            let tag = item.tag;
+            let renderer = unsafe { ctx.renderer() };
+            renderer.register_pointer_target(
+                transformed_rect(ctx.transform, row_rect),
+                {
+                    let selection = selection.clone();
+                    move |_point, _env| {
+                        if selection.get() == tag {
+                            return false;
+                        }
+                        selection.set(tag);
+                        true
+                    }
+                },
+            );
+        }
     }
 
     fn render_dynamic(
@@ -4047,7 +4436,12 @@ impl HydrolysisRenderer {
     }
 
     pub fn advance_animations(&mut self) -> bool {
-        self.animation_controller.tick(Instant::now())
+        let now = Instant::now();
+        self.animation_controller.tick(now)
+            || self
+                .navigation_slots
+                .iter()
+                .any(|slot| slot.transition.as_ref().is_some_and(|state| state.is_active(now)))
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -4997,18 +5391,282 @@ fn circle_arc_path(
     path
 }
 
-fn text_cursor_area_from_bounds(
+fn text_cursor_area_from_layout(
     text_bounds: vello::kurbo::Rect,
-    text_size: LayoutSize,
+    layout: &parley::Layout<[u8; 4]>,
+    max_lines: Option<usize>,
 ) -> vello::kurbo::Rect {
     let left = text_bounds.x0;
     let right = text_bounds.x1.max(left + 1.0);
     let top = text_bounds.y0;
     let bottom = text_bounds.y1.max(top + 1.0);
+    if layout.is_empty() {
+        return vello::kurbo::Rect::new(left, top, left + 1.0, (top + 1.0).min(bottom));
+    }
 
-    let caret_x = (left + f64::from(text_size.width)).clamp(left, right - 1.0);
-    let caret_height = f64::from(text_size.height).max(1.0).min(bottom - top);
-    vello::kurbo::Rect::new(caret_x, top, caret_x + 1.0, top + caret_height)
+    let mut caret_x = left;
+    let mut caret_top = top;
+    let mut caret_bottom = (top + 1.0).min(bottom);
+    for (index, line) in layout.lines().enumerate() {
+        if max_lines.is_some_and(|limit| index >= limit) {
+            break;
+        }
+        let metrics = line.metrics();
+        caret_x = left + f64::from(metrics.offset + metrics.advance);
+        caret_top = top + f64::from(metrics.min_coord);
+        caret_bottom = top + f64::from(metrics.max_coord);
+    }
+    let caret_x = caret_x.clamp(left, right - 1.0);
+    let caret_top = caret_top.clamp(top, bottom - 1.0);
+    let caret_bottom = caret_bottom.clamp(caret_top + 1.0, bottom);
+    vello::kurbo::Rect::new(caret_x, caret_top, caret_x + 1.0, caret_bottom)
+}
+
+fn draw_button_chrome(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    style: ButtonStyle,
+) {
+    let rounded = vello::kurbo::RoundedRect::from_rect(bounds, 6.0);
+    match style {
+        ButtonStyle::Automatic => {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::new([0.93, 0.93, 0.95, 1.0]),
+                None,
+                &rounded,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                vello::peniko::Color::new([0.74, 0.74, 0.78, 1.0]),
+                None,
+                &rounded,
+            );
+        }
+        ButtonStyle::Bordered => {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::new([1.0, 1.0, 1.0, 1.0]),
+                None,
+                &rounded,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                vello::peniko::Color::new([0.73, 0.74, 0.78, 1.0]),
+                None,
+                &rounded,
+            );
+        }
+        ButtonStyle::BorderedProminent => {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::new([0.2, 0.45, 0.9, 1.0]),
+                None,
+                &rounded,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                vello::peniko::Color::new([0.15, 0.35, 0.75, 1.0]),
+                None,
+                &rounded,
+            );
+        }
+        ButtonStyle::Link => {
+            let underline_y = (bounds.y1 - BUTTON_LINK_UNDERLINE_BOTTOM_INSET).max(bounds.y0);
+            let underline = vello::kurbo::Line::new(
+                vello::kurbo::Point::new(bounds.x0, underline_y),
+                vello::kurbo::Point::new(bounds.x1, underline_y),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(BUTTON_LINK_UNDERLINE_THICKNESS),
+                transform,
+                vello::peniko::Color::new([0.2, 0.45, 0.9, 1.0]),
+                None,
+                &underline,
+            );
+        }
+        ButtonStyle::Plain | ButtonStyle::Borderless => {}
+        _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
+    }
+}
+
+fn draw_toggle_switch(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+    track_color: vello::peniko::Color,
+) {
+    let thumb_center_x = lerp_f64(bounds.x0 + 15.0, bounds.x1 - 15.0, progress);
+    let thumb_center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
+    let track = vello::kurbo::RoundedRect::from_rect(bounds, 15.5);
+    let thumb = vello::kurbo::Circle::new(thumb_center, 13.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        track_color,
+        None,
+        &track,
+    );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        vello::peniko::Color::new([0.72, 0.74, 0.78, 1.0]),
+        None,
+        &track,
+    );
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        vello::peniko::Color::WHITE,
+        None,
+        &thumb,
+    );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        vello::peniko::Color::new([0.76, 0.78, 0.82, 1.0]),
+        None,
+        &thumb,
+    );
+}
+
+fn draw_toggle_checkbox(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+) {
+    let rounded = vello::kurbo::RoundedRect::from_rect(bounds, 4.0);
+    let fill = lerp_color([1.0, 1.0, 1.0, 1.0], [0.2, 0.45, 0.9, 1.0], progress);
+    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &rounded);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        lerp_color([0.7, 0.72, 0.76, 1.0], [0.16, 0.34, 0.72, 1.0], progress),
+        None,
+        &rounded,
+    );
+    if progress <= 0.0 {
+        return;
+    }
+    let check = vello::kurbo::BezPath::from_vec(vec![
+        vello::kurbo::PathEl::MoveTo(vello::kurbo::Point::new(
+            bounds.x0 + bounds.width() * 0.25,
+            bounds.y0 + bounds.height() * 0.55,
+        )),
+        vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
+            bounds.x0 + bounds.width() * 0.45,
+            bounds.y0 + bounds.height() * 0.75,
+        )),
+        vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
+            bounds.x0 + bounds.width() * 0.78,
+            bounds.y0 + bounds.height() * 0.3,
+        )),
+    ]);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(2.0),
+        transform,
+        vello::peniko::Color::new([1.0, 1.0, 1.0, progress]),
+        None,
+        &check,
+    );
+}
+
+fn draw_picker_indicator(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+) {
+    let center_x = bounds.x1 - PICKER_HORIZONTAL_INSET - PICKER_INDICATOR_SPACE * 0.5;
+    let center_y = bounds.y0 + bounds.height() * 0.5;
+    let chevron = vello::kurbo::BezPath::from_vec(vec![
+        vello::kurbo::PathEl::MoveTo(vello::kurbo::Point::new(center_x - 4.0, center_y - 2.0)),
+        vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(center_x, center_y + 2.0)),
+        vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(center_x + 4.0, center_y - 2.0)),
+    ]);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.5),
+        transform,
+        vello::peniko::Color::new([0.45, 0.47, 0.52, 1.0]),
+        None,
+        &chevron,
+    );
+}
+
+fn draw_navigation_transition(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    style: NavigationTransition,
+    direction: NavigationTransitionDirection,
+    progress: f64,
+    from_scene: &vello::Scene,
+    to_scene: &vello::Scene,
+) {
+    let width = bounds.width();
+    match style {
+        NavigationTransition::PushPop => {
+            let (from_x, to_x) = match direction {
+                NavigationTransitionDirection::Push => (
+                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * progress,
+                    width * (1.0 - progress),
+                ),
+                NavigationTransitionDirection::Pop => (
+                    width * progress,
+                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * (1.0 - progress),
+                ),
+            };
+            append_scene_with_alpha(scene, transform, bounds, from_scene, from_x, 1.0);
+            append_scene_with_alpha(scene, transform, bounds, to_scene, to_x, 1.0);
+        }
+        NavigationTransition::Fade => {
+            append_scene_with_alpha(
+                scene,
+                transform,
+                bounds,
+                from_scene,
+                0.0,
+                1.0f32 - progress as f32,
+            );
+            append_scene_with_alpha(scene, transform, bounds, to_scene, 0.0, progress as f32);
+        }
+        NavigationTransition::None => {
+            scene.append(to_scene, Some(transform));
+        }
+    }
+}
+
+fn append_scene_with_alpha(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    clip_bounds: vello::kurbo::Rect,
+    content: &vello::Scene,
+    offset_x: f64,
+    alpha: f32,
+) {
+    if alpha <= 0.0 {
+        return;
+    }
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        alpha,
+        transform,
+        &clip_bounds,
+    );
+    scene.append(
+        content,
+        Some(transform * vello::kurbo::Affine::translate((offset_x, 0.0))),
+    );
+    scene.pop_layer();
 }
 
 fn draw_input_field(
