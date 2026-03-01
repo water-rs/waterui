@@ -1264,6 +1264,73 @@ impl HydroNativeView for Native<NavigationView> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_navigation_view_intrinsic(view.as_inner(), state, env)
     }
+
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "winit")]
+        {
+            let navigation = view.as_inner();
+            let bar = &navigation.bar;
+            let renderer = unsafe { ctx.renderer() };
+            let bar_hidden = renderer.read_signal(&bar.hidden);
+            if bar_hidden {
+                return;
+            }
+            let bar_height = match bar.display_mode {
+                waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+                    NAVIGATION_BAR_HEIGHT_AUTOMATIC
+                }
+                waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
+                waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+            };
+            let bar_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+            );
+            let mut bar_node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Navigation),
+            );
+            let bar_label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = bar_label {
+                bar_node.set_label(label);
+            }
+            let title_height = if matches!(
+                bar.display_mode,
+                waterui::navigation::NavigationTitleDisplayMode::Large
+            ) {
+                NAVIGATION_TITLE_HEIGHT_LARGE
+            } else {
+                NAVIGATION_TITLE_HEIGHT_INLINE
+            };
+            let title_rect = vello::kurbo::Rect::new(
+                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y1 - title_height - NAVIGATION_BAR_BOTTOM_INSET,
+                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y1 - NAVIGATION_BAR_BOTTOM_INSET,
+            );
+            if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
+                let mut title_node = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Header),
+                );
+                let default_title_label = renderer.accessibility_label_from_view(&bar.title, env);
+                let title_label = renderer.resolve_accessibility_label(env, default_title_label);
+                if let Some(label) = title_label {
+                    title_node.set_label(label);
+                }
+                if let Some(title_node_id) = renderer.register_accessibility_child_node(
+                    title_node,
+                    transformed_rect(ctx.transform, title_rect),
+                    env,
+                    None,
+                ) {
+                    bar_node.push_child(title_node_id);
+                }
+            }
+            let _ =
+                renderer.register_accessibility_node(bar_node, transformed_rect(ctx.transform, bar_rect), env, None);
+        }
+    }
 }
 
 impl HydroNativeView for Native<NavigationStack<(), ()>> {
@@ -2723,43 +2790,6 @@ impl HydrolysisRenderer {
                 bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
                 bar_rect.y1 - NAVIGATION_BAR_BOTTOM_INSET,
             );
-            #[cfg(feature = "winit")]
-            {
-                let renderer = unsafe { ctx.renderer() };
-                let mut bar_node = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Navigation),
-                );
-                let bar_label = renderer.resolve_accessibility_label(env, None);
-                if let Some(label) = bar_label {
-                    bar_node.set_label(label);
-                }
-                if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
-                    let mut title_node = AccessibilityNode::new(
-                        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Header),
-                    );
-                    let default_title_label =
-                        renderer.accessibility_label_from_view(&bar.title, env);
-                    let title_label =
-                        renderer.resolve_accessibility_label(env, default_title_label);
-                    if let Some(label) = title_label {
-                        title_node.set_label(label);
-                    }
-                    if let Some(title_node_id) = renderer.register_accessibility_child_node(
-                        title_node,
-                        transformed_rect(ctx.transform, title_rect),
-                        env,
-                        None,
-                    ) {
-                        bar_node.push_child(title_node_id);
-                    }
-                }
-                let _ = renderer.register_accessibility_node(
-                    bar_node,
-                    transformed_rect(ctx.transform, bar_rect),
-                    env,
-                    None,
-                );
-            }
             if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
                 Self::dispatch_in_rect_without_accessibility(ctx, env, bar.title, title_rect);
             }
