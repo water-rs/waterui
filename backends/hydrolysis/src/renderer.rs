@@ -226,16 +226,18 @@ struct HydroSubview {
     intrinsic: LayoutSize,
 }
 
+#[derive(Clone)]
 struct PointerTarget {
     bounds: vello::kurbo::Rect,
-    action: Box<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>,
+    action: PointerAction,
 }
 
+#[derive(Clone)]
 struct HoverTarget {
     bounds: vello::kurbo::Rect,
     hovering: bool,
-    on_enter: Option<Box<dyn FnMut(&Environment) -> bool>>,
-    on_exit: Option<Box<dyn FnMut(&Environment) -> bool>>,
+    on_enter: Option<HoverAction>,
+    on_exit: Option<HoverAction>,
 }
 
 enum TextInputCommand {
@@ -243,17 +245,24 @@ enum TextInputCommand {
     Backspace,
 }
 
+#[derive(Clone)]
 struct TextInputTarget {
     bounds: vello::kurbo::Rect,
     cursor_area: vello::kurbo::Rect,
     purpose: TextInputPurpose,
-    action: Box<dyn FnMut(TextInputCommand) -> bool>,
+    action: TextInputAction,
 }
 
+#[derive(Clone)]
 struct ScrollTarget {
     bounds: vello::kurbo::Rect,
-    action: Box<dyn FnMut(f32, f32) -> bool>,
+    action: ScrollAction,
 }
+
+type PointerAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
+type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
+type TextInputAction = Rc<RefCell<dyn FnMut(TextInputCommand) -> bool>>;
+type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32) -> bool>>;
 
 #[cfg(feature = "winit")]
 const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
@@ -305,7 +314,24 @@ struct DeferredLifeCycleHook {
 
 struct DynamicNode {
     pending_view: Rc<RefCell<Option<AnyView>>>,
-    cached_scene: Option<vello::Scene>,
+    cached_subtree: Option<DynamicSubtree>,
+}
+
+struct DynamicSubtree {
+    scene: vello::Scene,
+    pointer_targets: Vec<PointerTarget>,
+    hover_targets: Vec<HoverTarget>,
+    text_input_targets: Vec<TextInputTarget>,
+    scroll_targets: Vec<ScrollTarget>,
+    #[cfg(feature = "winit")]
+    accessibility: DynamicAccessibilitySubtree,
+}
+
+#[cfg(feature = "winit")]
+struct DynamicAccessibilitySubtree {
+    nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
+    root_children: Vec<AccessibilityNodeId>,
+    actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
 }
 
 struct SurfaceBlitState {
@@ -2102,6 +2128,180 @@ impl HydrolysisRenderer {
         renderer.dispatcher.dispatch(content, env, ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         subtree_scene
+    }
+
+    fn render_dynamic_subtree(
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+    ) -> DynamicSubtree {
+        let renderer = unsafe { ctx.renderer() };
+        let mut subtree_scene = vello::Scene::new();
+        let mut subtree_pointer_targets = Vec::new();
+        let mut subtree_hover_targets = Vec::new();
+        let mut subtree_text_input_targets = Vec::new();
+        let mut subtree_scroll_targets = Vec::new();
+        #[cfg(feature = "winit")]
+        let mut subtree_accessibility_nodes = Vec::new();
+        #[cfg(feature = "winit")]
+        let mut subtree_accessibility_root_children = Vec::new();
+        #[cfg(feature = "winit")]
+        let mut subtree_accessibility_actions = BTreeMap::new();
+
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        core::mem::swap(&mut renderer.pointer_targets, &mut subtree_pointer_targets);
+        core::mem::swap(&mut renderer.hover_targets, &mut subtree_hover_targets);
+        core::mem::swap(
+            &mut renderer.text_input_targets,
+            &mut subtree_text_input_targets,
+        );
+        core::mem::swap(&mut renderer.scroll_targets, &mut subtree_scroll_targets);
+        #[cfg(feature = "winit")]
+        {
+            core::mem::swap(
+                &mut renderer.accessibility_nodes,
+                &mut subtree_accessibility_nodes,
+            );
+            core::mem::swap(
+                &mut renderer.accessibility_root_children,
+                &mut subtree_accessibility_root_children,
+            );
+            core::mem::swap(
+                &mut renderer.accessibility_actions,
+                &mut subtree_accessibility_actions,
+            );
+
+            let previous_accessibility_next_node_id = renderer.accessibility_next_node_id;
+            let previous_accessibility_suppression_depth = renderer.accessibility_suppression_depth;
+            renderer.accessibility_next_node_id = 1;
+            renderer.accessibility_suppression_depth = 0;
+            renderer.dispatcher.dispatch(content, env, ctx);
+            renderer.accessibility_suppression_depth = previous_accessibility_suppression_depth;
+            renderer.accessibility_next_node_id = previous_accessibility_next_node_id;
+
+            core::mem::swap(
+                &mut renderer.accessibility_actions,
+                &mut subtree_accessibility_actions,
+            );
+            core::mem::swap(
+                &mut renderer.accessibility_root_children,
+                &mut subtree_accessibility_root_children,
+            );
+            core::mem::swap(
+                &mut renderer.accessibility_nodes,
+                &mut subtree_accessibility_nodes,
+            );
+        }
+        #[cfg(not(feature = "winit"))]
+        renderer.dispatcher.dispatch(content, env, ctx);
+
+        core::mem::swap(&mut renderer.scroll_targets, &mut subtree_scroll_targets);
+        core::mem::swap(
+            &mut renderer.text_input_targets,
+            &mut subtree_text_input_targets,
+        );
+        core::mem::swap(&mut renderer.hover_targets, &mut subtree_hover_targets);
+        core::mem::swap(&mut renderer.pointer_targets, &mut subtree_pointer_targets);
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+
+        DynamicSubtree {
+            scene: subtree_scene,
+            pointer_targets: subtree_pointer_targets,
+            hover_targets: subtree_hover_targets,
+            text_input_targets: subtree_text_input_targets,
+            scroll_targets: subtree_scroll_targets,
+            #[cfg(feature = "winit")]
+            accessibility: DynamicAccessibilitySubtree {
+                nodes: subtree_accessibility_nodes,
+                root_children: subtree_accessibility_root_children,
+                actions: subtree_accessibility_actions,
+            },
+        }
+    }
+
+    fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
+        self.scene.append(&subtree.scene, Some(ctx.transform));
+
+        self.pointer_targets
+            .extend(subtree.pointer_targets.iter().map(|target| PointerTarget {
+                bounds: transformed_rect(ctx.transform, target.bounds),
+                action: Rc::clone(&target.action),
+            }));
+        self.hover_targets
+            .extend(subtree.hover_targets.iter().map(|target| HoverTarget {
+                bounds: transformed_rect(ctx.transform, target.bounds),
+                hovering: false,
+                on_enter: target.on_enter.clone(),
+                on_exit: target.on_exit.clone(),
+            }));
+        self.text_input_targets
+            .extend(
+                subtree
+                    .text_input_targets
+                    .iter()
+                    .map(|target| TextInputTarget {
+                        bounds: transformed_rect(ctx.transform, target.bounds),
+                        cursor_area: transformed_rect(ctx.transform, target.cursor_area),
+                        purpose: target.purpose,
+                        action: Rc::clone(&target.action),
+                    }),
+            );
+        self.scroll_targets
+            .extend(subtree.scroll_targets.iter().map(|target| ScrollTarget {
+                bounds: transformed_rect(ctx.transform, target.bounds),
+                action: Rc::clone(&target.action),
+            }));
+
+        #[cfg(feature = "winit")]
+        self.replay_dynamic_accessibility_subtree(ctx.transform, &subtree.accessibility);
+    }
+
+    #[cfg(feature = "winit")]
+    fn next_accessibility_node_id(&mut self) -> AccessibilityNodeId {
+        let node_id = AccessibilityNodeId(self.accessibility_next_node_id);
+        self.accessibility_next_node_id = self
+            .accessibility_next_node_id
+            .checked_add(1)
+            .expect("hydrolysis accessibility node ID overflow");
+        node_id
+    }
+
+    #[cfg(feature = "winit")]
+    fn replay_dynamic_accessibility_subtree(
+        &mut self,
+        transform: vello::kurbo::Affine,
+        subtree: &DynamicAccessibilitySubtree,
+    ) {
+        if self.accessibility_suppression_depth > 0 {
+            return;
+        }
+
+        let mut id_map = BTreeMap::new();
+        for (local_id, _) in &subtree.nodes {
+            id_map.insert(*local_id, self.next_accessibility_node_id());
+        }
+
+        for (local_id, node) in &subtree.nodes {
+            let mapped_id = *id_map
+                .get(local_id)
+                .expect("hydrolysis dynamic accessibility node mapping missing local id");
+            let mut mapped_node = node.clone();
+            remap_accessibility_node_references(&mut mapped_node, &id_map);
+            if let Some(bounds) = mapped_node.bounds() {
+                let bounds = transformed_rect(transform, accesskit_rect_to_kurbo_rect(bounds));
+                mapped_node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+            }
+            if subtree.root_children.iter().any(|root_id| root_id == local_id) {
+                self.accessibility_root_children.push(mapped_id);
+            }
+            self.accessibility_nodes.push((mapped_id, mapped_node));
+            if let Some(action_target) = subtree.actions.get(local_id) {
+                self.accessibility_actions.insert(
+                    mapped_id,
+                    transform_accessibility_action_target(action_target, transform),
+                );
+            }
+        }
     }
 
     fn watch_signal<S>(&mut self, signal: &S)
@@ -4484,7 +4684,7 @@ impl HydrolysisRenderer {
                     identity,
                     DynamicNode {
                         pending_view: Rc::clone(&pending_view),
-                        cached_scene: None,
+                        cached_subtree: None,
                     },
                 );
                 pending_view
@@ -4498,27 +4698,27 @@ impl HydrolysisRenderer {
                 transform: vello::kurbo::Affine::IDENTITY,
                 bounds: ctx.bounds,
             };
-            let subtree = Self::render_subtree_scene(local_ctx, env, content);
+            let subtree = Self::render_dynamic_subtree(local_ctx, env, content);
             let renderer = unsafe { ctx.renderer() };
             renderer
                 .dynamic_nodes
                 .get_mut(&identity)
                 .expect("hydrolysis dynamic node missing after connect")
-                .cached_scene = Some(subtree);
+                .cached_subtree = Some(subtree);
         }
 
-        let cached = {
+        let renderer_ptr = {
             let renderer = unsafe { ctx.renderer() };
             renderer
                 .dynamic_nodes
                 .get(&identity)
-                .and_then(|node| node.cached_scene.as_ref())
+                .and_then(|node| node.cached_subtree.as_ref())
                 .expect("hydrolysis Dynamic must provide an initial view before dispatch")
-                as *const vello::Scene
+                as *const DynamicSubtree
         };
-        let scene = unsafe { ctx.scene() };
-        let cached = unsafe { &*cached };
-        scene.append(cached, Some(ctx.transform));
+        let subtree = unsafe { &*renderer_ptr };
+        let renderer = unsafe { ctx.renderer() };
+        renderer.replay_dynamic_subtree(ctx, subtree);
     }
 
     fn render_system_icon(
@@ -5535,7 +5735,7 @@ impl HydrolysisRenderer {
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
         let index = self.focused_text_input.get()?;
-        let target = self.text_input_targets.get(index)?;
+        let target = self.text_input_targets.as_slice().get(index)?;
         Some(TextInputState {
             x: target.cursor_area.x0,
             y: target.cursor_area.y0,
@@ -5804,7 +6004,7 @@ impl HydrolysisRenderer {
 
         for target in self.pointer_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
-                return (target.action)(point, env) || rebuild_requested;
+                return (target.action.borrow_mut())(point, env) || rebuild_requested;
             }
         }
         rebuild_requested
@@ -5828,12 +6028,12 @@ impl HydrolysisRenderer {
             if contains && !target.hovering {
                 target.hovering = true;
                 if let Some(on_enter) = target.on_enter.as_mut() {
-                    rebuild_requested |= on_enter(env);
+                    rebuild_requested |= (on_enter.borrow_mut())(env);
                 }
             } else if !contains && target.hovering {
                 target.hovering = false;
                 if let Some(on_exit) = target.on_exit.as_mut() {
-                    rebuild_requested |= on_exit(env);
+                    rebuild_requested |= (on_exit.borrow_mut())(env);
                 }
             }
         }
@@ -5850,7 +6050,7 @@ impl HydrolysisRenderer {
         }
 
         let target = &mut self.text_input_targets[index];
-        (target.action)(command)
+        (target.action.borrow_mut())(command)
     }
 
     pub fn handle_text_input(&mut self, text: &str) -> bool {
@@ -5906,7 +6106,7 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         for target in self.scroll_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
-                return (target.action)(dx, dy);
+                return (target.action.borrow_mut())(dx, dy);
             }
         }
         false
@@ -5918,7 +6118,7 @@ impl HydrolysisRenderer {
     {
         self.pointer_targets.push(PointerTarget {
             bounds,
-            action: Box::new(action),
+            action: Rc::new(RefCell::new(action)),
         });
     }
 
@@ -5929,7 +6129,7 @@ impl HydrolysisRenderer {
         self.hover_targets.push(HoverTarget {
             bounds,
             hovering: false,
-            on_enter: Some(Box::new(action)),
+            on_enter: Some(Rc::new(RefCell::new(action))),
             on_exit: None,
         });
     }
@@ -5942,7 +6142,7 @@ impl HydrolysisRenderer {
             bounds,
             hovering: false,
             on_enter: None,
-            on_exit: Some(Box::new(action)),
+            on_exit: Some(Rc::new(RefCell::new(action))),
         });
     }
 
@@ -5959,7 +6159,7 @@ impl HydrolysisRenderer {
             bounds,
             cursor_area,
             purpose,
-            action: Box::new(action),
+            action: Rc::new(RefCell::new(action)),
         });
     }
 
@@ -5969,7 +6169,7 @@ impl HydrolysisRenderer {
     {
         self.scroll_targets.push(ScrollTarget {
             bounds,
-            action: Box::new(action),
+            action: Rc::new(RefCell::new(action)),
         });
     }
 
@@ -6030,11 +6230,7 @@ impl HydrolysisRenderer {
             return None;
         }
         self.apply_accessibility_state(env, &mut node);
-        let node_id = AccessibilityNodeId(self.accessibility_next_node_id);
-        self.accessibility_next_node_id = self
-            .accessibility_next_node_id
-            .checked_add(1)
-            .expect("hydrolysis accessibility node ID overflow");
+        let node_id = self.next_accessibility_node_id();
         node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
         if attach_to_root {
             self.accessibility_root_children.push(node_id);
@@ -6183,6 +6379,164 @@ fn kurbo_rect_to_accesskit_rect(rect: vello::kurbo::Rect) -> AccessibilityRect {
         y0: rect.y0,
         x1: rect.x1,
         y1: rect.y1,
+    }
+}
+
+#[cfg(feature = "winit")]
+fn accesskit_rect_to_kurbo_rect(rect: AccessibilityRect) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
+}
+
+#[cfg(feature = "winit")]
+fn remap_accessibility_node_id(
+    node_id: AccessibilityNodeId,
+    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+) -> AccessibilityNodeId {
+    *id_map
+        .get(&node_id)
+        .expect("hydrolysis dynamic accessibility node mapping missing reference")
+}
+
+#[cfg(feature = "winit")]
+fn remap_accessibility_node_id_vec(
+    node_ids: &[AccessibilityNodeId],
+    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+) -> Vec<AccessibilityNodeId> {
+    node_ids
+        .iter()
+        .copied()
+        .map(|node_id| remap_accessibility_node_id(node_id, id_map))
+        .collect()
+}
+
+#[cfg(feature = "winit")]
+fn remap_accessibility_node_references(
+    node: &mut AccessibilityNode,
+    id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
+) {
+    let children = node.children();
+    if !children.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(children, id_map);
+        node.set_children(node_ids);
+    }
+    let controls = node.controls();
+    if !controls.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(controls, id_map);
+        node.set_controls(node_ids);
+    }
+    let details = node.details();
+    if !details.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(details, id_map);
+        node.set_details(node_ids);
+    }
+    let described_by = node.described_by();
+    if !described_by.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(described_by, id_map);
+        node.set_described_by(node_ids);
+    }
+    let flow_to = node.flow_to();
+    if !flow_to.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(flow_to, id_map);
+        node.set_flow_to(node_ids);
+    }
+    let labelled_by = node.labelled_by();
+    if !labelled_by.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(labelled_by, id_map);
+        node.set_labelled_by(node_ids);
+    }
+    let owns = node.owns();
+    if !owns.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(owns, id_map);
+        node.set_owns(node_ids);
+    }
+    let radio_group = node.radio_group();
+    if !radio_group.is_empty() {
+        let node_ids = remap_accessibility_node_id_vec(radio_group, id_map);
+        node.set_radio_group(node_ids);
+    }
+
+    if let Some(node_id) = node.active_descendant() {
+        node.set_active_descendant(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.error_message() {
+        node.set_error_message(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.in_page_link_target() {
+        node.set_in_page_link_target(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.member_of() {
+        node.set_member_of(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.next_on_line() {
+        node.set_next_on_line(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.previous_on_line() {
+        node.set_previous_on_line(remap_accessibility_node_id(node_id, id_map));
+    }
+    if let Some(node_id) = node.popup_for() {
+        node.set_popup_for(remap_accessibility_node_id(node_id, id_map));
+    }
+}
+
+#[cfg(feature = "winit")]
+fn transform_accessibility_action_target(
+    target: &AccessibilityActionTarget,
+    transform: vello::kurbo::Affine,
+) -> AccessibilityActionTarget {
+    match target {
+        AccessibilityActionTarget::PointerPrimaryClick { point } => {
+            AccessibilityActionTarget::PointerPrimaryClick {
+                point: transform * *point,
+            }
+        }
+        AccessibilityActionTarget::Toggle { binding } => AccessibilityActionTarget::Toggle {
+            binding: binding.clone(),
+        },
+        AccessibilityActionTarget::Slider { value, range, step } => {
+            AccessibilityActionTarget::Slider {
+                value: value.clone(),
+                range: range.clone(),
+                step: *step,
+            }
+        }
+        AccessibilityActionTarget::Stepper { value, step, range } => {
+            AccessibilityActionTarget::Stepper {
+                value: value.clone(),
+                step: step.clone(),
+                range: range.clone(),
+            }
+        }
+        AccessibilityActionTarget::TextField {
+            value,
+            line_limit,
+            point,
+        } => AccessibilityActionTarget::TextField {
+            value: value.clone(),
+            line_limit: *line_limit,
+            point: transform * *point,
+        },
+        AccessibilityActionTarget::SecureField { value, point } => {
+            AccessibilityActionTarget::SecureField {
+                value: value.clone(),
+                point: transform * *point,
+            }
+        }
+        AccessibilityActionTarget::PickerCycle { selection, ids } => {
+            AccessibilityActionTarget::PickerCycle {
+                selection: selection.clone(),
+                ids: ids.clone(),
+            }
+        }
+        AccessibilityActionTarget::PickerSelect { selection, target } => {
+            AccessibilityActionTarget::PickerSelect {
+                selection: selection.clone(),
+                target: *target,
+            }
+        }
+        AccessibilityActionTarget::Scroll { handle, axis } => AccessibilityActionTarget::Scroll {
+            handle: handle.clone(),
+            axis: axis.clone(),
+        },
     }
 }
 
