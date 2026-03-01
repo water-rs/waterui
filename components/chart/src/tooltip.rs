@@ -188,9 +188,9 @@ impl View for Tooltip {
                     (indicator, line),
                 ))
             } else {
-                AnyView::new(text(alloc::format!("{}: {}", val.label, val.value)).color(
-                    text_color.clone(),
-                ))
+                AnyView::new(
+                    text(alloc::format!("{}: {}", val.label, val.value)).color(text_color.clone()),
+                )
             };
             views.push(value_view);
         }
