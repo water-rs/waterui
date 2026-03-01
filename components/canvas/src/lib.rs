@@ -65,11 +65,12 @@ use alloc::boxed::Box;
 use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
-use vello::{kurbo, peniko};
+use kurbo::{self, Shape as _};
+use peniko;
 
 use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::state::{DrawingState, FillStyle, StrokeStyle};
-use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface};
+use waterui_graphics::{Scene2D, SceneContent, SceneView};
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -112,7 +113,9 @@ impl Canvas {
 
 impl waterui_core::View for Canvas {
     fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
-        GpuSurface::new(CanvasRenderer::new(self.draw_fn))
+        SceneView::new(CanvasContent {
+            draw_fn: self.draw_fn,
+        })
     }
 }
 
@@ -124,7 +127,7 @@ impl waterui_core::View for Canvas {
 /// The context maintains a state stack for transforms, styles, and other
 /// drawing properties. Use `save()` and `restore()` to push and pop state.
 pub struct DrawingContext<'a> {
-    scene: &'a mut vello::Scene,
+    scene: &'a mut dyn Scene2D,
     /// Width of the canvas in pixels.
     pub width: f32,
     /// Height of the canvas in pixels.
@@ -162,10 +165,11 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_clip_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
+        let clip_path = kurbo_rect.to_path(0.1);
         self.scene.push_clip_layer(
             self.current_state.fill_rule,
             self.current_state.transform,
-            &kurbo_rect,
+            &clip_path,
         );
     }
 
@@ -185,12 +189,13 @@ impl DrawingContext<'_> {
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
     pub fn push_alpha_rect(&mut self, alpha: f32, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
+        let clip_path = kurbo_rect.to_path(0.1);
         self.scene.push_layer(
             self.current_state.fill_rule,
             self.current_state.blend_mode,
             alpha.clamp(0.0, 1.0),
             self.current_state.transform,
-            &kurbo_rect,
+            &clip_path,
         );
     }
 
@@ -330,7 +335,6 @@ impl DrawingContext<'_> {
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
-            None,
             path.inner(),
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
@@ -344,13 +348,8 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let pushed_alpha = self.push_global_alpha_layer_if_needed(path.inner());
-        self.scene.stroke(
-            &stroke,
-            self.current_state.transform,
-            &brush,
-            None,
-            path.inner(),
-        );
+        self.scene
+            .stroke(&stroke, self.current_state.transform, &brush, path.inner());
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -364,14 +363,14 @@ impl DrawingContext<'_> {
             return;
         }
         let kurbo_rect = rect_to_kurbo(rect);
+        let shape_path = kurbo_rect.to_path(0.1);
         let brush = self.resolve_fill_style();
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&kurbo_rect);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
-            None,
-            &kurbo_rect,
+            &shape_path,
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
@@ -382,29 +381,25 @@ impl DrawingContext<'_> {
             return;
         }
         let kurbo_rect = rect_to_kurbo(rect);
+        let shape_path = kurbo_rect.to_path(0.1);
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&kurbo_rect);
-        self.scene.stroke(
-            &stroke,
-            self.current_state.transform,
-            &brush,
-            None,
-            &kurbo_rect,
-        );
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
+        self.scene
+            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
     /// Clears a rectangle to transparent black.
     pub fn clear_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
-        let transparent = peniko::Color::TRANSPARENT;
+        let shape_path = kurbo_rect.to_path(0.1);
+        let brush: peniko::Brush = peniko::Color::TRANSPARENT.into();
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
-            transparent,
-            None,
-            &kurbo_rect,
+            &brush,
+            &shape_path,
         );
     }
 
@@ -419,13 +414,13 @@ impl DrawingContext<'_> {
         }
         let brush = self.resolve_fill_style();
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&circle);
+        let shape_path = circle.to_path(0.1);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene.fill(
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
-            None,
-            &circle,
+            &shape_path,
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
@@ -438,9 +433,10 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&circle);
+        let shape_path = circle.to_path(0.1);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, None, &circle);
+            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -452,9 +448,10 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let line = kurbo::Line::new(point_to_kurbo(start), point_to_kurbo(end));
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&line);
+        let shape_path = line.to_path(0.1);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, None, &line);
+            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -673,7 +670,8 @@ impl DrawingContext<'_> {
         // Wrap ImageData in ImageBrush
         let image_brush = peniko::ImageBrush::new(image.inner().clone());
         let dest_rect = rect_to_kurbo(dest);
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&dest_rect);
+        let dest_path = dest_rect.to_path(0.1);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&dest_path);
 
         // Draw image using vello
         self.scene.draw_image(&image_brush, final_transform);
@@ -726,14 +724,15 @@ impl DrawingContext<'_> {
 
         // Create clip rectangle at destination
         let clip_rect = rect_to_kurbo(dest);
+        let clip_path = clip_rect.to_path(0.1);
 
         // Push a clipped layer, draw the image, then pop
         self.scene.push_clip_layer(
             self.current_state.fill_rule,
             self.current_state.transform,
-            &clip_rect,
+            &clip_path,
         );
-        let pushed_alpha = self.push_global_alpha_layer_if_needed(&clip_rect);
+        let pushed_alpha = self.push_global_alpha_layer_if_needed(&clip_path);
 
         // Wrap ImageData in ImageBrush
         let image_brush = peniko::ImageBrush::new(image.inner().clone());
@@ -867,7 +866,7 @@ impl DrawingContext<'_> {
         self.normalized_global_alpha() <= 0.0
     }
 
-    fn push_global_alpha_layer_if_needed(&mut self, clip_shape: &impl kurbo::Shape) -> bool {
+    fn push_global_alpha_layer_if_needed(&mut self, clip_shape: &kurbo::BezPath) -> bool {
         let alpha = self.normalized_global_alpha();
         if alpha >= 1.0 {
             return false;
@@ -890,260 +889,20 @@ impl DrawingContext<'_> {
     }
 }
 
-/// Internal renderer that bridges Canvas to `GpuSurface`.
-struct CanvasRenderer {
+struct CanvasContent {
     draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
-    scene: vello::Scene,
-    renderer: Option<vello::Renderer>,
-    /// Intermediate texture for Vello (`Rgba8Unorm` format required by Vello)
-    intermediate_texture: Option<wgpu::Texture>,
-    intermediate_view: Option<wgpu::TextureView>,
-    /// Blit pipeline for copying intermediate texture to target (handles HDR surfaces)
-    blit_pipeline: Option<wgpu::RenderPipeline>,
-    blit_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    blit_sampler: Option<wgpu::Sampler>,
-    /// Current intermediate texture dimensions
-    intermediate_size: (u32, u32),
 }
 
-impl CanvasRenderer {
-    fn new(draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>) -> Self {
-        Self {
-            draw_fn,
-            scene: vello::Scene::new(),
-            renderer: None,
-            intermediate_texture: None,
-            intermediate_view: None,
-            blit_pipeline: None,
-            blit_bind_group_layout: None,
-            blit_sampler: None,
-            intermediate_size: (0, 0),
-        }
-    }
-}
-
-impl GpuView for CanvasRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
-        let renderer = vello::Renderer::new(
-            ctx.device,
-            vello::RendererOptions {
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::area_only(),
-                num_init_threads: std::num::NonZeroUsize::new(1), // Single thread on macOS
-                pipeline_cache: None,
-            },
-        )
-        .expect("Failed to create Vello renderer");
-        self.renderer = Some(renderer);
-
-        // Create blit pipeline for copying from Rgba8Unorm to target format
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(waterui_graphics::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(
-                    waterui_graphics::shaders::BLIT.source.into(),
-                ),
-            });
-
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("Canvas Blit Bind Group Layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                });
-
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Canvas Blit Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
-
-        let pipeline = ctx
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Canvas Blit Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
-            });
-
-        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Canvas Blit Sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        self.blit_pipeline = Some(pipeline);
-        self.blit_bind_group_layout = Some(bind_group_layout);
-        self.blit_sampler = Some(sampler);
-
-        async {} // Sync renderer - immediately ready
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn render(&mut self, frame: &mut GpuFrame) {
-        let Some(renderer) = &mut self.renderer else {
-            return;
-        };
-
-        // Recreate intermediate texture if size changed
-        if self.intermediate_size != (frame.width, frame.height) {
-            let texture = frame.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Canvas Intermediate Texture"),
-                size: wgpu::Extent3d {
-                    width: frame.width,
-                    height: frame.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                // Vello requires Rgba8Unorm format
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.intermediate_texture = Some(texture);
-            self.intermediate_view = Some(view);
-            self.intermediate_size = (frame.width, frame.height);
-        }
-
-        let Some(intermediate_view) = &self.intermediate_view else {
-            return;
-        };
-
-        // Clear and rebuild scene
-        self.scene.reset();
-
-        // Create drawing context and invoke user's draw function
-        #[allow(clippy::cast_precision_loss)]
+impl SceneContent for CanvasContent {
+    #[allow(clippy::cast_precision_loss)]
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) {
         let mut ctx = DrawingContext {
-            scene: &mut self.scene,
-            width: frame.width as f32,
-            height: frame.height as f32,
+            scene,
+            width,
+            height,
             state_stack: Vec::new(),
             current_state: DrawingState::new(),
         };
         (self.draw_fn)(&mut ctx);
-
-        // Render the scene to intermediate texture (Rgba8Unorm)
-        let params = vello::RenderParams {
-            base_color: peniko::Color::TRANSPARENT,
-            width: frame.width,
-            height: frame.height,
-            antialiasing_method: vello::AaConfig::Area,
-        };
-
-        renderer
-            .render_to_texture(
-                frame.device,
-                frame.queue,
-                &self.scene,
-                intermediate_view,
-                &params,
-            )
-            .expect("Failed to render Vello scene");
-
-        // Blit from intermediate texture to target (may be HDR format)
-        let Some(pipeline) = &self.blit_pipeline else {
-            return;
-        };
-        let Some(bind_group_layout) = &self.blit_bind_group_layout else {
-            return;
-        };
-        let Some(sampler) = &self.blit_sampler else {
-            return;
-        };
-
-        let bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Canvas Blit Bind Group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(intermediate_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Canvas Blit Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Canvas Blit Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        frame.queue.submit(std::iter::once(encoder.finish()));
     }
 }

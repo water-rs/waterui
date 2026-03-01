@@ -5,7 +5,8 @@
 use waterui_graphics::color::{ResolvedColor, Srgb};
 
 // Internal imports for rendering (not exposed to users)
-use vello::{kurbo, peniko};
+use kurbo;
+use peniko;
 
 use super::gradient::{ConicGradient, LinearGradient, RadialGradient};
 use super::text::FontSpec;

@@ -6,7 +6,7 @@
 use waterui_core::layout::Size;
 
 // Internal imports for rendering
-use vello::peniko;
+use peniko;
 
 /// An image that can be drawn on the canvas.
 ///

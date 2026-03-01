@@ -29,6 +29,15 @@ pub mod prewarm;
 /// Shared shader sources.
 pub mod shaders;
 
+/// Engine-neutral 2D scene abstraction.
+pub mod scene2d;
+
+/// Vello-backed Scene2D implementation.
+pub mod scene2d_vello;
+
+/// Scene-content view abstraction and GPU-backed fallback renderer.
+pub mod scene_view;
+
 /// GPU effect rendering for captured view content.
 pub mod view_effect;
 
@@ -58,6 +67,10 @@ pub use filter_view::{
     AppliedFilter, FilterAdapter, FilterContext, FilterInput, FilterOutput, FilterViewExt,
     FilteredView, GpuFilter, HdrPolicy,
 };
+
+pub use scene_view::{SceneContent, SceneView, SceneViewMergeToParent};
+pub use scene2d::Scene2D;
+pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros
 pub use inventory;
@@ -108,6 +121,8 @@ pub(crate) fn pop_error_scope_now(
     let _ = device.poll(wgpu::PollType::Poll);
     match future.as_mut().poll(&mut cx) {
         Poll::Ready(result) => result,
-        Poll::Pending => panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)"),
+        Poll::Pending => {
+            panic!("{scope}: pop_error_scope remained pending after device.poll(Poll)")
+        }
     }
 }
