@@ -371,15 +371,7 @@ mod winit_impl {
                 .expect("hydrolysis winit surface: failed to request device");
 
             let caps = surface.get_capabilities(&adapter);
-            let format = preferred_surface_format(&caps);
-            if !matches!(
-                format,
-                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
-            ) {
-                panic!(
-                    "hydrolysis winit surface: Vello requires Rgba8Unorm( sRGB ) target, got {format:?}"
-                );
-            }
+            let format = select_vello_surface_format(&caps);
             let size = window.inner_size();
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -401,6 +393,38 @@ mod winit_impl {
                 config,
             }
         }
+    }
+
+    fn select_vello_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+        let preferred = preferred_surface_format(caps);
+        if supports_vello_surface_format(preferred) {
+            let linear = preferred.remove_srgb_suffix();
+            if preferred.is_srgb() && caps.formats.contains(&linear) {
+                return linear;
+            }
+            return preferred;
+        }
+
+        if let Some(format) = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|format| supports_vello_surface_format(*format))
+        {
+            return format.remove_srgb_suffix();
+        }
+
+        panic!(
+            "hydrolysis winit surface: Vello requires Rgba8/Bgra8 (linear or sRGB) surface formats, got {:?}",
+            caps.formats
+        );
+    }
+
+    fn supports_vello_surface_format(format: wgpu::TextureFormat) -> bool {
+        matches!(
+            format.remove_srgb_suffix(),
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+        )
     }
 
     impl SurfaceProvider for WinitSurface {
