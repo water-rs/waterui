@@ -3,12 +3,14 @@
 //! The legacy `Node`/`RenderCommand` prototype has been removed.
 
 mod animation;
+mod gpu_view;
 mod platform;
 mod renderer;
 mod runner;
 mod scroll;
 mod view_renderer;
 
+pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;
 pub use platform::{
