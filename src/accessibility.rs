@@ -108,10 +108,51 @@ pub enum AccessibilityRole {
 
 impl MetadataKey for AccessibilityRole {}
 
+/// Controls whether this view should participate in accessibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessibilityHidden(bool);
+
+impl MetadataKey for AccessibilityHidden {}
+
+impl AccessibilityHidden {
+    /// Creates a hidden flag for accessibility.
+    #[must_use]
+    pub const fn new(hidden: bool) -> Self {
+        Self(hidden)
+    }
+
+    /// Returns whether this view is hidden from assistive technologies.
+    #[must_use]
+    pub const fn is_hidden(&self) -> bool {
+        self.0
+    }
+}
+
+/// Defines how this view should expose child semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum AccessibilityChildren {
+    /// Default backend behavior.
+    #[default]
+    Automatic,
+    /// Keep this node semantic, but exclude semantics from descendants.
+    ExcludeDescendants,
+}
+
+impl MetadataKey for AccessibilityChildren {}
+
+impl AccessibilityChildren {
+    /// Returns whether descendants should be excluded from accessibility output.
+    #[must_use]
+    pub const fn excludes_descendants(&self) -> bool {
+        matches!(self, Self::ExcludeDescendants)
+    }
+}
+
 /// Describes nuanced state transitions that assistive technologies use to keep
 /// users in sync with complex widgets.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccessibilityState {
     /// Whether the control is disabled for interaction but remains visible.
     disabled: bool,
@@ -125,4 +166,99 @@ pub struct AccessibilityState {
     busy: bool,
     /// Whether the control should be hidden from assistive technologies.
     hidden: bool,
+}
+
+impl MetadataKey for AccessibilityState {}
+
+impl AccessibilityState {
+    /// Creates a default accessibility state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            disabled: false,
+            selected: false,
+            checked: None,
+            expanded: None,
+            busy: false,
+            hidden: false,
+        }
+    }
+
+    /// Sets disabled state.
+    #[must_use]
+    pub const fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Sets selected state.
+    #[must_use]
+    pub const fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Sets checked state. `None` means not applicable.
+    #[must_use]
+    pub const fn checked(mut self, checked: Option<bool>) -> Self {
+        self.checked = checked;
+        self
+    }
+
+    /// Sets expanded/collapsed state. `None` means not applicable.
+    #[must_use]
+    pub const fn expanded(mut self, expanded: Option<bool>) -> Self {
+        self.expanded = expanded;
+        self
+    }
+
+    /// Sets busy state.
+    #[must_use]
+    pub const fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
+    }
+
+    /// Sets hidden state.
+    #[must_use]
+    pub const fn hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
+    }
+
+    /// Returns disabled state.
+    #[must_use]
+    pub const fn is_disabled(&self) -> bool {
+        self.disabled
+    }
+
+    /// Returns selected state.
+    #[must_use]
+    pub const fn is_selected(&self) -> bool {
+        self.selected
+    }
+
+    /// Returns checked state.
+    #[must_use]
+    pub const fn checked_state(&self) -> Option<bool> {
+        self.checked
+    }
+
+    /// Returns expanded state.
+    #[must_use]
+    pub const fn expanded_state(&self) -> Option<bool> {
+        self.expanded
+    }
+
+    /// Returns busy state.
+    #[must_use]
+    pub const fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Returns hidden state.
+    #[must_use]
+    pub const fn is_hidden(&self) -> bool {
+        self.hidden
+    }
 }
