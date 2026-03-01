@@ -37,9 +37,20 @@ fn app() -> App {
     App::new(main_view, env).title("Hydrolysis Wayland Smoke")
 }
 
+fn smoke_lifetime() -> Duration {
+    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SMOKE_SECONDS")
+        .map(|value| {
+            value.parse::<u64>().expect(
+                "HYDROLYSIS_WAYLAND_SMOKE_SECONDS must be an unsigned integer number of seconds",
+            )
+        })
+        .unwrap_or(10);
+    Duration::from_secs(seconds)
+}
+
 fn main() {
     thread::spawn(|| {
-        thread::sleep(Duration::from_secs(4));
+        thread::sleep(smoke_lifetime());
         std::process::exit(0);
     });
 
