@@ -57,6 +57,10 @@ impl Scene2D for VelloScene2D<'_> {
         self.scene.draw_image(image, transform);
     }
 
+    fn append_vello_scene(&mut self, scene: &vello::Scene, transform: Option<Affine>) {
+        self.scene.append(scene, transform);
+    }
+
     fn reset(&mut self) {
         self.scene.reset();
     }
