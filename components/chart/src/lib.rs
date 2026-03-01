@@ -1,7 +1,7 @@
-//! Chart components for WaterUI with GPU-accelerated rendering.
+//! Chart components for WaterUI rendered through Canvas/Scene2D.
 //!
-//! This crate provides high-performance chart visualizations using GPU shaders,
-//! targeting 120fps rendering for all chart types at any data scale.
+//! This crate provides chart visualizations on top of WaterUI's scene pipeline,
+//! sharing one rendering path across native backends and hydrolysis.
 //!
 //! # Chart Types
 //!
@@ -39,7 +39,6 @@ pub mod data;
 pub mod interaction;
 pub mod legend;
 pub mod params;
-pub mod renderer;
 pub mod tooltip;
 
 // Re-export core types
@@ -86,11 +85,6 @@ pub use interaction::{ChartViewport, HitResult, SelectionState, ZoomPanState};
 pub use params::{
     ArcAngles, ChartParamError, DonutInnerRadius, GaugeRadii, PositiveF32, UnitInterval,
 };
-pub use renderer::{
-    AreaRenderer, BarChartRenderer, BubbleRenderer, CandlestickRenderer, ChartRenderer,
-    ChoroplethRenderer, ContourRenderer, DepthRenderer, GaugeRenderer, HeatmapRenderer,
-    LineChartRenderer, PieChartRenderer, RadarRenderer, ScatterChartRenderer,
-};
 
 // Re-export chart views
 pub use charts::area::AreaChart;
@@ -106,9 +100,6 @@ pub use charts::line::LineChart;
 pub use charts::pie::PieChart;
 pub use charts::radar::RadarChart;
 pub use charts::scatter::ScatterChart;
-
-// Re-export reactive wrapper
-pub use charts::SignalRenderer;
 
 // Re-export axis types
 pub use axes::{ChartAxes, ChartAxesReactive, ChartExt};

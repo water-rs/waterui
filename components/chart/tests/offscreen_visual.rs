@@ -1,22 +1,13 @@
-use core::future::Future;
-use std::fmt::Write as _;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use waterui_chart::animation::{ChartAnimation, EasingType};
 use waterui_chart::data::{
-    AreaData, AreaSeries, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataPoint,
-    DepthData, DepthLevel, GaugeData, GaugeRegion, GeoPolygon, HeatmapData, RadarData, RadarSeries,
+    AreaData, AreaSeries, BubblePoint, Candle, ChoroplethData, ContourData, DataPoint, DepthData,
+    DepthLevel, GaugeData, GaugeRegion, GeoPolygon, HeatmapData, RadarData, RadarSeries,
 };
-use waterui_chart::renderer::{
-    AreaRenderer, BarChartRenderer, BubbleRenderer, CandlestickRenderer, ChartRenderer,
-    ChoroplethRenderer, ContourRenderer, DepthRenderer, GaugeRenderer, HeatmapRenderer,
-    LineChartRenderer, PieChartRenderer, RadarRenderer, ScatterChartRenderer,
+use waterui_chart::{
+    AreaChart, BarChart, BubbleChart, CandlestickChart, ChoroplethChart, ContourChart, DepthChart,
+    GaugeChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart,
 };
-use waterui_graphics::color::Srgb;
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenSize,
-};
+use waterui_core::Environment;
+use waterui_testing::TestHost;
 
 #[derive(Debug, Clone, Copy)]
 struct VisualStats {
@@ -56,77 +47,6 @@ fn alpha_bbox_dimensions(
     Some((max_x - min_x + 1, max_y - min_y + 1))
 }
 
-#[derive(Debug)]
-struct SeededChart<R>
-where
-    R: ChartRenderer,
-    R::Data: Clone,
-{
-    renderer: R,
-    initial_data: R::Data,
-    transition_data: Option<R::Data>,
-    animation: ChartAnimation,
-}
-
-impl<R> SeededChart<R>
-where
-    R: ChartRenderer,
-    R::Data: Clone,
-{
-    fn static_frame(renderer: R, data: R::Data) -> Self {
-        Self {
-            renderer,
-            initial_data: data,
-            transition_data: None,
-            animation: ChartAnimation::new(),
-        }
-    }
-
-    fn transition_frame(renderer: R, initial_data: R::Data, transition_data: R::Data) -> Self {
-        Self {
-            renderer,
-            initial_data,
-            transition_data: Some(transition_data),
-            animation: ChartAnimation {
-                time: 0.15,
-                progress: 0.45,
-                easing: EasingType::EaseInOut as u32,
-                entry_active: 0,
-            },
-        }
-    }
-}
-
-impl<R> GpuView for SeededChart<R>
-where
-    R: ChartRenderer,
-    R::Data: Clone,
-{
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
-        self.renderer
-            .update_data(&self.initial_data, ctx.device, ctx.queue);
-        let transition_data = self.transition_data.clone();
-        let animation = self.animation;
-        let renderer = &mut self.renderer;
-        async move {
-            renderer.setup(ctx).await;
-            if let Some(next) = transition_data {
-                renderer.update_data(&next, ctx.device, ctx.queue);
-            }
-            renderer.set_animation(&animation);
-        }
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.renderer.set_animation(&self.animation);
-        self.renderer.render(frame);
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.renderer.resize(width, height);
-    }
-}
-
 fn analyze_output(name: &str, rgba: &[u8], width: u32, height: u32) -> VisualStats {
     let expected_len = (width as usize) * (height as usize) * 4;
     assert_eq!(
@@ -148,7 +68,6 @@ fn analyze_output(name: &str, rgba: &[u8], width: u32, height: u32) -> VisualSta
         .any(|px| [px[0], px[1], px[2], px[3]] != first);
     assert!(non_uniform, "{name}: image is fully uniform");
 
-    // Radial charts should stay close to isotropic geometry on non-square surfaces.
     if matches!(name, "gauge" | "radar" | "pie_donut") {
         let (bbox_w, bbox_h) = alpha_bbox_dimensions(rgba, width, height, 8)
             .expect("radial chart must have visible alpha footprint");
@@ -169,48 +88,11 @@ fn analyze_output(name: &str, rgba: &[u8], width: u32, height: u32) -> VisualSta
     }
 }
 
-fn render_case<R>(
-    name: &str,
-    seeded: SeededChart<R>,
-    size: OffscreenSize,
-    out_dir: &Path,
-) -> Result<VisualStats, String>
-where
-    R: ChartRenderer + 'static,
-    R::Data: Clone,
-{
-    let mut env = waterui_core::Environment::new();
-    let output = GpuSurface::new(seeded)
-        .render_offscreen(OffscreenRenderConfig::new(size), &mut env)
-        .map_err(|e| format!("{name}: offscreen render failed: {e}"))?;
-
-    let png_path = out_dir.join(format!("{name}.png"));
-    output
-        .save_png(&png_path)
-        .map_err(|e| format!("{name}: failed to save png {:?}: {e}", png_path))?;
-    Ok(analyze_output(
-        name,
-        &output.rgba8,
-        output.width,
-        output.height,
-    ))
-}
-
 fn basic_points() -> Vec<DataPoint> {
     (0..32)
         .map(|i| {
             let x = i as f32;
             let y = 48.0 + (x * 0.35).sin() * 20.0 + (x * 0.11).cos() * 8.0;
-            DataPoint::new(x, y)
-        })
-        .collect()
-}
-
-fn shifted_points() -> Vec<DataPoint> {
-    (0..32)
-        .map(|i| {
-            let x = i as f32;
-            let y = 50.0 + (x * 0.43).sin() * 22.0 + (x * 0.07).cos() * 6.0;
             DataPoint::new(x, y)
         })
         .collect()
@@ -274,331 +156,134 @@ fn heatmap_data(rows: u32, cols: u32) -> HeatmapData {
     HeatmapData::try_new(rows, cols, values).expect("heatmap seed should be valid")
 }
 
-fn contour_data(rows: u32, cols: u32) -> ContourData {
+fn contour_data(rows: u32, cols: u32, levels: usize) -> ContourData {
     let mut values = Vec::with_capacity((rows * cols) as usize);
     for r in 0..rows {
         for c in 0..cols {
-            let x = c as f32 / (cols - 1) as f32 * 2.0 - 1.0;
-            let y = r as f32 / (rows - 1) as f32 * 2.0 - 1.0;
-            let d = (x * x + y * y).sqrt();
-            let v = (1.0 - d * 0.8) + (x * 3.0).sin() * 0.15 + (y * 4.0).cos() * 0.1;
-            values.push(v);
+            let x = c as f32 / cols as f32;
+            let y = r as f32 / rows as f32;
+            values.push((x * 8.0).sin() + (y * 6.0).cos() + (x - 0.5) * (y - 0.5) * 3.0);
         }
     }
-    ContourData::try_new(rows, cols, values, 10).expect("contour seed should be valid")
+    ContourData::try_new(rows, cols, values, levels).expect("contour seed should be valid")
 }
 
 fn radar_data() -> RadarData {
-    RadarData::try_new(6)
-        .expect("radar axis count should be valid")
-        .labels(vec!["A", "B", "C", "D", "E", "F"])
-        .series(
-            RadarSeries::new("alpha", vec![72.0, 35.0, 88.0, 61.0, 54.0, 77.0])
-                .color_hex("#3B82F6"),
-        )
-        .series(
-            RadarSeries::new("beta", vec![44.0, 68.0, 52.0, 79.0, 70.0, 49.0]).color_hex("#EF4444"),
-        )
+    RadarData::new(5)
+        .labels(vec!["Speed", "Power", "Range", "Defense", "Magic"])
+        .series(RadarSeries::new("A", vec![80.0, 90.0, 70.0, 60.0, 85.0]).color_hex("#3B82F6"))
+        .series(RadarSeries::new("B", vec![65.0, 75.0, 92.0, 78.0, 68.0]).color_hex("#EF4444"))
         .max_value(100.0)
 }
 
 fn area_data() -> AreaData {
-    let x_values: Vec<f32> = (0..24).map(|v| v as f32).collect();
-    AreaData::new(x_values)
-        .series(
-            AreaSeries::new(
-                "cpu",
-                (0..24)
-                    .map(|i| 35.0 + (i as f32 * 0.23).sin() * 18.0 + 8.0)
-                    .collect(),
-            )
-            .color_hex("#3B82F6"),
-        )
-        .series(
-            AreaSeries::new(
-                "mem",
-                (0..24)
-                    .map(|i| 20.0 + (i as f32 * 0.31).cos() * 12.0 + 6.0)
-                    .collect(),
-            )
-            .color_hex("#22C55E"),
-        )
+    AreaData::new(vec![0.0, 1.0, 2.0, 3.0, 4.0])
+        .series(AreaSeries::new("S1", vec![10.0, 20.0, 15.0, 25.0, 30.0]).color(0.23, 0.51, 0.96, 0.7))
+        .series(AreaSeries::new("S2", vec![6.0, 9.0, 8.0, 12.0, 16.0]).color(0.94, 0.27, 0.27, 0.65))
 }
 
 fn choropleth_data() -> ChoroplethData {
-    let polygons = vec![
-        GeoPolygon::new(
-            0,
-            0.2,
-            vec![[-1.0, -0.2], [-0.4, -0.2], [-0.4, 0.5], [-1.0, 0.5]],
-        ),
-        GeoPolygon::new(
-            1,
-            0.4,
-            vec![[-0.35, -0.4], [0.2, -0.4], [0.2, 0.1], [-0.35, 0.1]],
-        ),
-        GeoPolygon::new(
-            2,
-            0.8,
-            vec![[0.25, -0.3], [0.9, -0.3], [0.9, 0.3], [0.25, 0.3]],
-        ),
-        GeoPolygon::new(
-            3,
-            0.6,
-            vec![[-0.2, 0.15], [0.4, 0.15], [0.4, 0.8], [-0.2, 0.8]],
-        ),
-    ];
-    ChoroplethData::new(polygons).color_scale(ColorScale::viridis())
+    ChoroplethData::new(vec![
+        GeoPolygon::new(0, 0.2, vec![[0.0, 0.0], [1.2, 0.0], [1.1, 1.0], [0.0, 1.0]]),
+        GeoPolygon::new(1, 0.8, vec![[1.2, 0.0], [2.2, 0.0], [2.4, 1.1], [1.1, 1.0]]),
+        GeoPolygon::new(2, 0.5, vec![[0.3, 1.0], [1.4, 1.1], [1.0, 2.1], [0.0, 1.8]]),
+    ])
+}
+
+fn render_case(name: &str, host: &TestHost, view: impl waterui_core::View) -> VisualStats {
+    let output = host.render(view);
+    analyze_output(name, &output.rgba8, output.width, output.height)
 }
 
 #[test]
-fn offscreen_visual_regression_suite() {
-    waterui_graphics::shared_context::init_shared_context()
-        .expect("offscreen visual suite requires a working GPU adapter");
+fn chart_canvas_visual_smoke() {
+    let host = TestHost::new(Environment::new(), 960, 600);
 
-    let out_dir = std::env::var("WATERUI_CHART_VISUAL_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/waterui_chart_visual_offscreen"));
-    fs::create_dir_all(&out_dir).expect("failed to create output dir");
-
-    let size = OffscreenSize::try_from_pixels(1280, 720).expect("valid offscreen size");
-    let mut report = String::new();
-    writeln!(&mut report, "name,opaque_pixels,non_uniform").expect("write report header");
-
-    let bar_a = basic_points();
-    let bar_b = shifted_points();
-    let mut bar_renderer = BarChartRenderer::new();
-    bar_renderer.set_color(Srgb::from_hex("#0EA5E9"));
-    let stats = render_case(
-        "bar_transition",
-        SeededChart::transition_frame(bar_renderer, bar_a, bar_b),
-        size,
-        &out_dir,
-    )
-    .expect("bar render failed");
-    writeln!(
-        &mut report,
-        "bar_transition,{},{},",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let line_a = basic_points();
-    let line_b = shifted_points();
-    let mut line_renderer = LineChartRenderer::new();
-    line_renderer.set_color(Srgb::from_hex("#22C55E"));
-    line_renderer.set_line_width(2.5);
-    line_renderer.set_fill(true, 0.3);
-    let stats = render_case(
-        "line_transition",
-        SeededChart::transition_frame(line_renderer, line_a, line_b),
-        size,
-        &out_dir,
-    )
-    .expect("line render failed");
-    writeln!(
-        &mut report,
-        "line_transition,{},{},",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let pie_data = vec![
-        DataPoint::new(0.0, 28.0),
-        DataPoint::new(1.0, 19.0),
-        DataPoint::new(2.0, 36.0),
-        DataPoint::new(3.0, 17.0),
-    ];
-    let mut pie_renderer = PieChartRenderer::new();
-    pie_renderer.set_inner_radius(0.42);
-    pie_renderer.set_colors(vec![
-        Srgb::from_hex("#3B82F6"),
-        Srgb::from_hex("#F97316"),
-        Srgb::from_hex("#22C55E"),
-        Srgb::from_hex("#A855F7"),
-    ]);
-    let stats = render_case(
+    let bar_stats = render_case("bar", &host, BarChart::new(nami::binding(basic_points())));
+    let line_stats = render_case(
+        "line",
+        &host,
+        LineChart::new(nami::binding(basic_points())).fill(0.25),
+    );
+    let pie_stats = render_case(
         "pie_donut",
-        SeededChart::static_frame(pie_renderer, pie_data),
-        size,
-        &out_dir,
-    )
-    .expect("pie render failed");
-    writeln!(
-        &mut report,
-        "pie_donut,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let mut scatter_renderer = ScatterChartRenderer::new();
-    scatter_renderer.set_color(Srgb::from_hex("#E11D48"));
-    scatter_renderer.set_radius(5.0);
-    let stats = render_case(
+        &host,
+        PieChart::new(nami::binding(vec![
+            DataPoint::new(0.0, 30.0),
+            DataPoint::new(1.0, 45.0),
+            DataPoint::new(2.0, 25.0),
+        ]))
+        .donut(0.45),
+    );
+    let scatter_stats = render_case(
         "scatter",
-        SeededChart::static_frame(scatter_renderer, basic_points()),
-        size,
-        &out_dir,
-    )
-    .expect("scatter render failed");
-    writeln!(
-        &mut report,
-        "scatter,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let bubble_renderer = BubbleRenderer::new()
-        .color(Srgb::from_hex("#0EA5E9"))
-        .min_radius(3.0)
-        .max_radius(18.0)
-        .opacity(0.75);
-    let stats = render_case(
+        &host,
+        ScatterChart::new(nami::binding(basic_points())).radius(5.0),
+    );
+    let bubble_stats = render_case(
         "bubble",
-        SeededChart::static_frame(bubble_renderer, bubble_points()),
-        size,
-        &out_dir,
-    )
-    .expect("bubble render failed");
-    writeln!(
-        &mut report,
-        "bubble,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let mut candlestick_renderer = CandlestickRenderer::new();
-    candlestick_renderer.set_bullish_color(Srgb::from_hex("#10B981"));
-    candlestick_renderer.set_bearish_color(Srgb::from_hex("#EF4444"));
-    let stats = render_case(
+        &host,
+        BubbleChart::new(nami::binding(bubble_points()))
+            .min_radius(4.0)
+            .max_radius(24.0),
+    );
+    let candle_stats = render_case(
         "candlestick",
-        SeededChart::static_frame(candlestick_renderer, candle_points()),
-        size,
-        &out_dir,
-    )
-    .expect("candlestick render failed");
-    writeln!(
-        &mut report,
-        "candlestick,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let mut depth_renderer = DepthRenderer::new();
-    depth_renderer.set_bid_color(Srgb::from_hex("#22C55E"), Srgb::from_hex("#16A34A"));
-    depth_renderer.set_ask_color(Srgb::from_hex("#EF4444"), Srgb::from_hex("#DC2626"));
-    let stats = render_case(
-        "depth",
-        SeededChart::static_frame(depth_renderer, depth_data()),
-        size,
-        &out_dir,
-    )
-    .expect("depth render failed");
-    writeln!(
-        &mut report,
-        "depth,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let stats = render_case(
+        &host,
+        CandlestickChart::new(nami::binding(candle_points())),
+    );
+    let depth_stats = render_case("depth", &host, DepthChart::new(nami::binding(depth_data())));
+    let heatmap_stats = render_case(
         "heatmap",
-        SeededChart::static_frame(HeatmapRenderer::new(), heatmap_data(32, 48)),
-        size,
-        &out_dir,
-    )
-    .expect("heatmap render failed");
-    writeln!(
-        &mut report,
-        "heatmap,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let contour_renderer = ContourRenderer::new().line_width(2.0);
-    let stats = render_case(
+        &host,
+        HeatmapChart::new(nami::binding(heatmap_data(24, 36))),
+    );
+    let contour_stats = render_case(
         "contour",
-        SeededChart::static_frame(contour_renderer, contour_data(40, 60)),
-        size,
-        &out_dir,
-    )
-    .expect("contour render failed");
-    writeln!(
-        &mut report,
-        "contour,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let gauge_renderer = GaugeRenderer::new()
-        .arc_angles(-core::f32::consts::PI * 0.75, core::f32::consts::PI * 0.75)
-        .radii(0.30, 0.45)
-        .background_color(Srgb::from_hex("#1F2937"))
-        .value_color(Srgb::from_hex("#3B82F6"))
-        .needle_color(Srgb::from_hex("#F9FAFB"));
-    let gauge_data = GaugeData::new(72.0, 0.0, 100.0)
-        .region(GaugeRegion::hex(30.0, "#22C55E"))
-        .region(GaugeRegion::hex(70.0, "#F59E0B"))
-        .region(GaugeRegion::hex(100.0, "#EF4444"))
-        .show_needle(true);
-    let stats = render_case(
+        &host,
+        ContourChart::new(nami::binding(contour_data(28, 28, 7))).line_width(1.8),
+    );
+    let gauge_stats = render_case(
         "gauge",
-        SeededChart::static_frame(gauge_renderer, gauge_data),
-        size,
-        &out_dir,
-    )
-    .expect("gauge render failed");
-    writeln!(
-        &mut report,
-        "gauge,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let stats = render_case(
+        &host,
+        GaugeChart::new(nami::binding(
+            GaugeData::new(72.0, 0.0, 100.0)
+                .region(GaugeRegion::hex(30.0, "#22C55E"))
+                .region(GaugeRegion::hex(70.0, "#EAB308"))
+                .region(GaugeRegion::hex(100.0, "#EF4444")),
+        )),
+    );
+    let radar_stats = render_case(
         "radar",
-        SeededChart::static_frame(RadarRenderer::new(), radar_data()),
-        size,
-        &out_dir,
-    )
-    .expect("radar render failed");
-    writeln!(
-        &mut report,
-        "radar,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let stats = render_case(
-        "area",
-        SeededChart::static_frame(AreaRenderer::new(), area_data()),
-        size,
-        &out_dir,
-    )
-    .expect("area render failed");
-    writeln!(
-        &mut report,
-        "area,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
-
-    let choropleth_renderer = ChoroplethRenderer::new()
-        .stroke_width(1.5)
-        .stroke_color(Srgb::from_hex("#111827"));
-    let stats = render_case(
+        &host,
+        RadarChart::new(nami::binding(radar_data()))
+            .ring_count(6)
+            .fill_opacity(0.32),
+    );
+    let area_stats = render_case("area", &host, AreaChart::new(nami::binding(area_data())));
+    let choropleth_stats = render_case(
         "choropleth",
-        SeededChart::static_frame(choropleth_renderer, choropleth_data()),
-        size,
-        &out_dir,
-    )
-    .expect("choropleth render failed");
-    writeln!(
-        &mut report,
-        "choropleth,{},{}",
-        stats.opaque_pixels, stats.non_uniform
-    )
-    .expect("write report row");
+        &host,
+        ChoroplethChart::new(nami::binding(choropleth_data())).stroke_width(1.5),
+    );
 
-    fs::write(out_dir.join("report.csv"), report).expect("failed to write visual report");
+    let stats = [
+        bar_stats,
+        line_stats,
+        pie_stats,
+        scatter_stats,
+        bubble_stats,
+        candle_stats,
+        depth_stats,
+        heatmap_stats,
+        contour_stats,
+        gauge_stats,
+        radar_stats,
+        area_stats,
+        choropleth_stats,
+    ];
+
+    let total_opaque: usize = stats.iter().map(|s| s.opaque_pixels).sum();
+    assert!(total_opaque > 10_000, "combined opaque footprint too small");
+    assert!(stats.iter().all(|s| s.non_uniform));
 }
