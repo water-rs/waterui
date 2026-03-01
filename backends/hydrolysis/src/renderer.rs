@@ -4,9 +4,10 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
+#[cfg(feature = "winit")]
+use std::ops::RangeInclusive;
 
 #[cfg(feature = "winit")]
 use accesskit::{
@@ -80,7 +81,9 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
 use crate::platform::{KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState};
-use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
+use crate::scroll::{ScrollController, ScrollMetrics};
+#[cfg(feature = "winit")]
+use crate::scroll::ScrollHandle;
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -1643,6 +1646,35 @@ impl HydroNativeView for Native<SystemIcon> {
             env,
         )
     }
+
+    fn accessibility(
+        _state: &mut HydroState,
+        _ctx: RenderContext,
+        _view: &Self,
+        _env: &Environment,
+    ) {
+        #[cfg(feature = "winit")]
+        {
+            let icon = _view.as_inner();
+            let renderer = unsafe { _ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(_env, AccessibilityNodeRole::Image),
+            );
+            let label = renderer.resolve_accessibility_label(
+                _env,
+                Some(icon.name.as_str().to_owned()),
+            );
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            let _ = renderer.register_accessibility_node(
+                node,
+                transformed_rect(_ctx.transform, _ctx.bounds),
+                _env,
+                None,
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<TableConfig> {
@@ -3024,6 +3056,11 @@ impl HydrolysisRenderer {
             if let Some(label) = list_label {
                 list_node.set_label(label);
             }
+            list_node.set_scroll_y(metrics.offset_y);
+            list_node.set_scroll_y_min(0.0);
+            list_node.set_scroll_y_max(metrics.max_y);
+            list_node.add_action(AccessibilityAction::ScrollUp);
+            list_node.add_action(AccessibilityAction::ScrollDown);
             list_node
         };
         {
@@ -3220,7 +3257,10 @@ impl HydrolysisRenderer {
                 accessibility_list,
                 transformed_rect(ctx.transform, viewport),
                 env,
-                None,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis: ScrollAxis::Vertical,
+                }),
             );
         }
 
@@ -3277,6 +3317,16 @@ impl HydrolysisRenderer {
             if let Some(label) = table_label {
                 table_node.set_label(label);
             }
+            table_node.set_scroll_x(scroll_metrics.offset_x);
+            table_node.set_scroll_x_min(0.0);
+            table_node.set_scroll_x_max(scroll_metrics.max_x);
+            table_node.set_scroll_y(scroll_metrics.offset_y);
+            table_node.set_scroll_y_min(0.0);
+            table_node.set_scroll_y_max(scroll_metrics.max_y);
+            table_node.add_action(AccessibilityAction::ScrollLeft);
+            table_node.add_action(AccessibilityAction::ScrollRight);
+            table_node.add_action(AccessibilityAction::ScrollUp);
+            table_node.add_action(AccessibilityAction::ScrollDown);
             table_node
         };
 
@@ -3418,7 +3468,10 @@ impl HydrolysisRenderer {
                 accessibility_table,
                 transformed_rect(ctx.transform, viewport),
                 env,
-                None,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis: ScrollAxis::All,
+                }),
             );
         }
 
