@@ -6,13 +6,12 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_scatter, reactive_canvas};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, PositiveF32};
-use crate::renderer::ScatterChartRenderer;
 
 /// Scatter plot visualization.
 ///
@@ -82,11 +81,12 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with styling options
-        let mut renderer = ScatterChartRenderer::new();
-        renderer.set_color(self.color);
-        renderer.set_radius(self.radius);
-
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let color = self.color;
+        let radius = self.radius;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_scatter(ctx, &data, color, radius);
+            })
+        })
     }
 }
