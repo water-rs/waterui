@@ -31,41 +31,47 @@ fn create_bounds(width: u32, height: u32) -> vello::kurbo::Rect {
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
     runtime.platform.apply_properties(&runtime.window);
-    let surface = runtime.platform.surface();
-    let (width, height) = surface.size();
-    let format = surface.format();
-    runtime
-        .renderer
-        .set_frame_resources(surface.device(), surface.queue());
-
-    if runtime.renderer.advance_animations() {
-        runtime.needs_rebuild = true;
-    }
-    let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
-    if should_rebuild {
-        runtime.renderer.reset_scene();
-        runtime.renderer.begin_rebuild_frame();
-        let content = runtime.window.build_content();
+    {
+        let surface = runtime.platform.surface();
+        let (width, height) = surface.size();
+        let format = surface.format();
         runtime
             .renderer
-            .dispatch(content, env, create_bounds(width, height));
-        runtime.renderer.finish_rebuild_frame();
-        runtime.needs_rebuild = false;
+            .set_frame_resources(surface.device(), surface.queue());
+
+        if runtime.renderer.advance_animations() {
+            runtime.needs_rebuild = true;
+        }
+        let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+        if should_rebuild {
+            runtime.renderer.reset_scene();
+            runtime.renderer.begin_rebuild_frame();
+            let content = runtime.window.build_content();
+            runtime
+                .renderer
+                .dispatch(content, env, create_bounds(width, height));
+            runtime.renderer.finish_rebuild_frame();
+            runtime.needs_rebuild = false;
+        }
+
+        let frame = surface
+            .acquire()
+            .expect("hydrolysis runner: failed to acquire frame");
+        runtime.renderer.render_scene_to_surface(
+            surface.device(),
+            surface.queue(),
+            frame.view(),
+            format,
+            width,
+            height,
+        );
+        runtime.renderer.clear_frame_resources();
+        surface.present(frame);
     }
 
-    let frame = surface
-        .acquire()
-        .expect("hydrolysis runner: failed to acquire frame");
-    runtime.renderer.render_scene_to_surface(
-        surface.device(),
-        surface.queue(),
-        frame.view(),
-        format,
-        width,
-        height,
-    );
-    runtime.renderer.clear_frame_resources();
-    surface.present(frame);
+    runtime
+        .platform
+        .sync_text_input_state(runtime.renderer.focused_text_input_state());
 }
 
 #[cfg(not(feature = "winit"))]
@@ -212,9 +218,27 @@ mod winit_runner {
                             runtime.needs_rebuild = true;
                         }
                     }
+                    InputEvent::ImePreedit { text } => {
+                        if runtime.renderer.handle_ime_preedit(text.as_str()) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::ImeCommit { text } => {
+                        if runtime.renderer.handle_ime_commit(text.as_str()) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::ImeDisabled => {
+                        if runtime.renderer.handle_ime_disabled() {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
                     _ => {}
                 }
             }
+            runtime
+                .platform
+                .sync_text_input_state(runtime.renderer.focused_text_input_state());
             should_close
         }
 
@@ -273,6 +297,9 @@ mod winit_runner {
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.mount_pending_windows(event_loop);
             for runtime in self.windows.values_mut() {
+                runtime
+                    .platform
+                    .sync_text_input_state(runtime.renderer.focused_text_input_state());
                 if runtime.renderer.advance_animations() {
                     runtime.needs_rebuild = true;
                 }

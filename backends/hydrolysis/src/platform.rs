@@ -35,6 +35,23 @@ pub struct Modifiers {
     pub super_key: bool,
 }
 
+/// IME purpose for the focused text input target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInputPurpose {
+    Normal,
+    Password,
+}
+
+/// Focused text-input area used for IME activation and candidate-window placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextInputState {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub purpose: TextInputPurpose,
+}
+
 /// Input events emitted by a windowing backend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
@@ -63,6 +80,13 @@ pub enum InputEvent {
         state: KeyState,
         modifiers: Modifiers,
     },
+    ImePreedit {
+        text: String,
+    },
+    ImeCommit {
+        text: String,
+    },
+    ImeDisabled,
     Resize {
         width: u32,
         height: u32,
@@ -143,6 +167,7 @@ pub trait PlatformWindow {
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
     fn scale_factor(&self) -> f64;
+    fn sync_text_input_state(&mut self, state: Option<TextInputState>);
 }
 
 /// Headless offscreen rendering surface.
@@ -310,6 +335,8 @@ impl PlatformWindow for OffscreenWindow {
     fn scale_factor(&self) -> f64 {
         self.scale_factor
     }
+
+    fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 }
 
 #[cfg(feature = "winit")]
@@ -320,15 +347,15 @@ mod winit_impl {
     use waterui::window::WindowState;
     use waterui_graphics::gpu_surface::preferred_surface_format;
     use winit::{
-        dpi::LogicalSize,
-        event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+        dpi::{LogicalPosition, LogicalSize},
+        event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
         keyboard::{Key, ModifiersState},
-        window::{Fullscreen, Window as NativeWindow, WindowId},
+        window::{Fullscreen, ImePurpose, Window as NativeWindow, WindowId},
     };
 
     use super::{
         InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton, SurfaceError,
-        SurfaceFrame, SurfaceProvider,
+        SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
     };
 
     pub struct WinitSurface {
@@ -475,6 +502,7 @@ mod winit_impl {
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
         modifiers: Modifiers,
+        ime_allowed: bool,
     }
 
     impl WinitWindow {
@@ -486,6 +514,7 @@ mod winit_impl {
                 pending_events: Vec::new(),
                 pointer_position: (0.0, 0.0),
                 modifiers: Modifiers::default(),
+                ime_allowed: false,
             }
         }
 
@@ -558,6 +587,20 @@ mod winit_impl {
                         modifiers: self.modifiers,
                     });
                 }
+                WindowEvent::Ime(ime) => match ime {
+                    Ime::Preedit(text, _) => {
+                        self.pending_events
+                            .push(InputEvent::ImePreedit { text: text.clone() });
+                    }
+                    Ime::Commit(text) => {
+                        self.pending_events
+                            .push(InputEvent::ImeCommit { text: text.clone() });
+                    }
+                    Ime::Disabled => {
+                        self.pending_events.push(InputEvent::ImeDisabled);
+                    }
+                    Ime::Enabled => {}
+                },
                 _ => {}
             }
         }
@@ -604,6 +647,28 @@ mod winit_impl {
 
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
+        }
+
+        fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
+            let ime_allowed = state.is_some();
+            if self.ime_allowed != ime_allowed {
+                self.window.set_ime_allowed(ime_allowed);
+                self.ime_allowed = ime_allowed;
+            }
+
+            let Some(state) = state else {
+                return;
+            };
+
+            let purpose = match state.purpose {
+                TextInputPurpose::Normal => ImePurpose::Normal,
+                TextInputPurpose::Password => ImePurpose::Password,
+            };
+            self.window.set_ime_purpose(purpose);
+            self.window.set_ime_cursor_area(
+                LogicalPosition::new(state.x, state.y),
+                LogicalSize::new(state.width.max(1.0), state.height.max(1.0)),
+            );
         }
     }
 
