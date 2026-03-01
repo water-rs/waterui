@@ -6,7 +6,7 @@
 use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
-use vello::kurbo::{self, Shape};
+use kurbo::{self, Shape};
 
 use super::conversions::{point_to_kurbo, rect_to_kurbo};
 
