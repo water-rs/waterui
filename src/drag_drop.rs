@@ -23,10 +23,10 @@
 //!     });
 //! ```
 
-use alloc::string::String;
 use core::fmt;
 use nami::Computed;
 use nami::signal::IntoComputed;
+use waterui_str::Str;
 use waterui_core::{
     Environment,
     handler::{BoxedAction, boxed_action},
@@ -46,21 +46,21 @@ use crate::reactive::Binding;
 #[non_exhaustive]
 pub enum DragData {
     /// Plain text content.
-    Text(String),
+    Text(Str),
     /// A URL (as a string).
-    Url(String),
+    Url(Str),
 }
 
 impl DragData {
     /// Creates a text drag data item.
     #[must_use]
-    pub fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<Str>) -> Self {
         Self::Text(text.into())
     }
 
     /// Creates a URL drag data item.
     #[must_use]
-    pub fn url(url: impl Into<String>) -> Self {
+    pub fn url(url: impl Into<Str>) -> Self {
         Self::Url(url.into())
     }
 

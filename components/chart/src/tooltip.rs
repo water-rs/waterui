@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use waterui_core::{AnyView, View};
@@ -11,12 +10,13 @@ use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::text;
+use waterui_core::Str;
 
 /// Content to display in a tooltip.
 #[derive(Debug, Clone, Default)]
 pub struct TooltipContent {
     /// Optional title line.
-    pub title: Option<String>,
+    pub title: Option<Str>,
     /// Value lines to display.
     pub values: Vec<TooltipValue>,
 }
@@ -25,9 +25,9 @@ pub struct TooltipContent {
 #[derive(Debug, Clone)]
 pub struct TooltipValue {
     /// Label for the value.
-    pub label: String,
+    pub label: Str,
     /// The value to display.
-    pub value: String,
+    pub value: Str,
     /// Optional color indicator.
     pub color: Option<Srgb>,
 }
@@ -35,7 +35,7 @@ pub struct TooltipValue {
 impl TooltipValue {
     /// Creates a new tooltip value.
     #[must_use]
-    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(label: impl Into<Str>, value: impl Into<Str>) -> Self {
         Self {
             label: label.into(),
             value: value.into(),
@@ -60,14 +60,14 @@ impl TooltipContent {
 
     /// Sets the title.
     #[must_use]
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl Into<Str>) -> Self {
         self.title = Some(title.into());
         self
     }
 
     /// Adds a value line.
     #[must_use]
-    pub fn value(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn value(mut self, label: impl Into<Str>, value: impl Into<Str>) -> Self {
         self.values.push(TooltipValue::new(label, value));
         self
     }
@@ -76,8 +76,8 @@ impl TooltipContent {
     #[must_use]
     pub fn colored_value(
         mut self,
-        label: impl Into<String>,
-        value: impl Into<String>,
+        label: impl Into<Str>,
+        value: impl Into<Str>,
         color: impl Into<Srgb>,
     ) -> Self {
         self.values
@@ -170,7 +170,7 @@ impl View for Tooltip {
 
         // Add title if present
         if let Some(title) = &self.content.title {
-            views.push(AnyView::new(text(title.clone()).color(text_color.clone())));
+            views.push(AnyView::new(text((*title).clone()).color(text_color.clone())));
         }
 
         // Add values with optional color indicators

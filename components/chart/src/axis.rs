@@ -5,9 +5,9 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use waterui_core::Str;
 
 /// Configuration for a chart axis.
 ///
@@ -29,7 +29,7 @@ pub struct AxisConfig {
     tick_count: usize,
     format: TickFormat,
     show_grid: bool,
-    label: Option<String>,
+    label: Option<Str>,
 }
 
 impl AxisConfig {
@@ -67,7 +67,7 @@ impl AxisConfig {
 
     /// Sets axis label (e.g., "Price ($)").
     #[must_use]
-    pub fn label(mut self, label: impl Into<String>) -> Self {
+    pub fn label(mut self, label: impl Into<Str>) -> Self {
         self.label = Some(label.into());
         self
     }
@@ -130,12 +130,12 @@ impl AxisConfig {
     }
 
     /// Formats a tick value based on the configured format.
-    fn format_tick(&self, value: f32, step: f32) -> String {
+    fn format_tick(&self, value: f32, step: f32) -> Str {
         match &self.format {
             TickFormat::Auto => format_auto(value, step),
-            TickFormat::Fixed(decimals) => format!("{:.1$}", value, *decimals),
+            TickFormat::Fixed(decimals) => format!("{:.1$}", value, *decimals).into(),
             TickFormat::SI => format_si(value),
-            TickFormat::Percent => format!("{:.0}%", value * 100.0),
+            TickFormat::Percent => format!("{:.0}%", value * 100.0).into(),
             TickFormat::Custom(formatter) => formatter(value),
         }
     }
@@ -159,14 +159,14 @@ pub enum TickFormat {
     /// Percentage (value * 100 + %).
     Percent,
     /// Custom formatter function.
-    Custom(Arc<dyn Fn(f32) -> String + Send + Sync>),
+    Custom(Arc<dyn Fn(f32) -> Str + Send + Sync>),
 }
 
 /// A computed tick mark.
 #[derive(Clone)]
 pub struct Tick {
     value: f32,
-    label: String,
+    label: Str,
     /// Position in normalized [0, 1] space.
     position: f32,
 }
@@ -227,7 +227,7 @@ fn nice_number(x: f32, round: bool) -> f32 {
 }
 
 /// Auto-formats a value based on its magnitude and step size.
-fn format_auto(value: f32, step: f32) -> String {
+fn format_auto(value: f32, step: f32) -> Str {
     // Determine decimal places based on step size
     let decimals = if step >= 1.0 {
         0
@@ -240,28 +240,28 @@ fn format_auto(value: f32, step: f32) -> String {
     let rounded = (value / step).round() * step;
 
     if decimals == 0 {
-        format!("{:.0}", rounded)
+        format!("{:.0}", rounded).into()
     } else {
-        format!("{:.1$}", rounded, decimals)
+        format!("{:.1$}", rounded, decimals).into()
     }
 }
 
 /// Formats a value with SI prefixes (K, M, B, T).
-fn format_si(value: f32) -> String {
+fn format_si(value: f32) -> Str {
     let abs = value.abs();
 
     if abs >= 1_000_000_000_000.0 {
-        format!("{:.1}T", value / 1_000_000_000_000.0)
+        format!("{:.1}T", value / 1_000_000_000_000.0).into()
     } else if abs >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
+        format!("{:.1}B", value / 1_000_000_000.0).into()
     } else if abs >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
+        format!("{:.1}M", value / 1_000_000.0).into()
     } else if abs >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
+        format!("{:.1}K", value / 1_000.0).into()
     } else if abs >= 1.0 {
-        format!("{:.0}", value)
+        format!("{:.0}", value).into()
     } else {
-        format!("{:.2}", value)
+        format!("{:.2}", value).into()
     }
 }
 
