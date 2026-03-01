@@ -21,6 +21,7 @@ use nami::{
     collection::{Collection, List},
 };
 use waterui_controls::button;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{
     AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
     impl_extractor, layout::StretchAxis, raw_view,
@@ -43,6 +44,12 @@ pub struct NavigationView {
 /// A trait for handling custom navigation actions.
 /// For renderers to implement navigation handling.
 pub trait CustomNavigationController: 'static {
+    /// Pushes a destination builder onto the stack.
+    /// Renderers that need persistent rebuild capability should override this.
+    fn push_builder(&mut self, content: AnyViewBuilder<NavigationView>) {
+        self.push(content.build());
+    }
+
     /// Pushes a new navigation view onto the stack.
     /// # Arguments
     /// * `content` - The navigation view to push
@@ -82,6 +89,12 @@ impl NavigationController {
     pub fn push(&self, content: NavigationView) {
         self.0.borrow_mut().push(content);
     }
+
+    /// Pushes a destination builder onto the stack.
+    pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
+        self.0.borrow_mut().push_builder(content);
+    }
+
     /// Pops the top navigation view off the stack.
     pub fn pop(&self) {
         self.0.borrow_mut().pop();
@@ -370,12 +383,10 @@ where
             "NavigationLink used outside of a navigation context"
         );
 
+        let destination = AnyViewBuilder::new(self.content);
         button(self.label)
             .extract::<NavigationController>()
-            .action(move |receiver| {
-                let content = (self.content).build();
-                receiver.push(content);
-            })
+            .action(move |receiver| receiver.push_builder(destination.clone()))
     }
 }
 

@@ -36,6 +36,7 @@ use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{
     Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
 };
@@ -165,6 +166,8 @@ pub struct HydrolysisRenderer {
     rebuild_requested: Rc<Cell<bool>>,
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
+    navigation_slots: Vec<NavigationSlot>,
+    navigation_cursor: usize,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
 }
@@ -216,7 +219,14 @@ struct SurfaceBlitState {
     blitter: wgpu::util::TextureBlitter,
 }
 
-struct HydroNavigationController;
+struct NavigationSlot {
+    entries: Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>,
+}
+
+struct HydroNavigationController {
+    entries: Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>,
+    rebuild_requested: Rc<Cell<bool>>,
+}
 
 impl DeferredLifeCycleHook {
     fn new(hook: LifeCycleHook, env: Environment) -> Self {
@@ -228,13 +238,30 @@ impl DeferredLifeCycleHook {
     }
 }
 
+impl NavigationSlot {
+    fn new() -> Self {
+        Self {
+            entries: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
 impl CustomNavigationController for HydroNavigationController {
+    fn push_builder(&mut self, content: AnyViewBuilder<NavigationView>) {
+        self.entries.borrow_mut().push(content);
+        self.rebuild_requested.set(true);
+    }
+
     fn push(&mut self, _content: NavigationView) {
-        panic!("hydrolysis NavigationStack push/pop state is not implemented yet");
+        panic!(
+            "hydrolysis NavigationController::push(NavigationView) is unsupported; use NavigationLink or push_builder"
+        );
     }
 
     fn pop(&mut self) {
-        panic!("hydrolysis NavigationStack push/pop state is not implemented yet");
+        if self.entries.borrow_mut().pop().is_some() {
+            self.rebuild_requested.set(true);
+        }
     }
 }
 
@@ -330,6 +357,8 @@ impl HydrolysisRenderer {
             rebuild_requested: Rc::new(Cell::new(false)),
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
+            navigation_slots: Vec::new(),
+            navigation_cursor: 0,
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
         }
@@ -472,6 +501,20 @@ impl HydrolysisRenderer {
     {
         self.watch_signal(signal);
         signal.get()
+    }
+
+    fn bind_navigation_entries(&mut self) -> Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>> {
+        let index = self.navigation_cursor;
+        self.navigation_cursor = self
+            .navigation_cursor
+            .checked_add(1)
+            .expect("navigation slot cursor overflow");
+
+        if index == self.navigation_slots.len() {
+            self.navigation_slots.push(NavigationSlot::new());
+        }
+
+        Rc::clone(&self.navigation_slots[index].entries)
     }
 
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
@@ -736,10 +779,91 @@ impl HydrolysisRenderer {
         stack: Native<NavigationStack<(), ()>>,
         env: &Environment,
     ) {
-        let root = stack.into_inner().into_inner();
+        let stack = stack.into_inner();
+        let root = stack.into_inner();
+        let entries = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.bind_navigation_entries()
+        };
         let mut local_env = env.clone();
-        local_env.insert(NavigationController::new(HydroNavigationController));
-        Self::dispatch_any(ctx, &local_env, root);
+        local_env.insert(NavigationController::new(HydroNavigationController {
+            entries: Rc::clone(&entries),
+            rebuild_requested: {
+                let renderer = unsafe { ctx.renderer() };
+                Rc::clone(&renderer.rebuild_requested)
+            },
+        }));
+
+        let active = {
+            let entries_ref = entries.borrow();
+            entries_ref
+                .last()
+                .map_or_else(|| root, |builder| AnyView::new(builder.build()))
+        };
+        Self::dispatch_any(ctx, &local_env, active);
+
+        let has_push = {
+            let entries_ref = entries.borrow();
+            !entries_ref.is_empty()
+        };
+        if !has_push {
+            return;
+        }
+
+        let back_button_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0 + 8.0,
+            ctx.bounds.y0 + 8.0,
+            ctx.bounds.x0 + 38.0,
+            ctx.bounds.y0 + 36.0,
+        );
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.92, 0.92, 0.94, 1.0]),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(back_button_rect, 6.0),
+            );
+            let chevron = vello::kurbo::BezPath::from_vec(vec![
+                vello::kurbo::PathEl::MoveTo(vello::kurbo::Point::new(
+                    back_button_rect.x0 + 19.0,
+                    back_button_rect.y0 + 10.0,
+                )),
+                vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
+                    back_button_rect.x0 + 12.0,
+                    back_button_rect.y0 + 15.0,
+                )),
+                vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
+                    back_button_rect.x0 + 19.0,
+                    back_button_rect.y0 + 20.0,
+                )),
+            ]);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                ctx.transform,
+                vello::peniko::Color::new([0.25, 0.25, 0.28, 1.0]),
+                None,
+                &chevron,
+            );
+        }
+
+        let entries_for_pop = Rc::clone(&entries);
+        let rebuild_requested = {
+            let renderer = unsafe { ctx.renderer() };
+            Rc::clone(&renderer.rebuild_requested)
+        };
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(
+            transformed_rect(ctx.transform, back_button_rect),
+            move |_point, _env| {
+                if entries_for_pop.borrow_mut().pop().is_some() {
+                    rebuild_requested.set(true);
+                    return true;
+                }
+                false
+            },
+        );
     }
 
     fn render_tabs(
@@ -2988,6 +3112,7 @@ impl HydrolysisRenderer {
         self.lifecycle_disappear_slot = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
+        self.navigation_cursor = 0;
     }
 
     pub fn finish_rebuild_frame(&mut self) {
@@ -3010,6 +3135,7 @@ impl HydrolysisRenderer {
 
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
+        self.navigation_slots.truncate(self.navigation_cursor);
     }
 
     pub fn scene_mut(&mut self) -> &mut vello::Scene {
