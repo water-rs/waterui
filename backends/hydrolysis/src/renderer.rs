@@ -12,7 +12,9 @@ use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
+use waterui::component::list::ListConfig;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui::component::table::TableConfig;
 use waterui::cursor::Cursor;
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
@@ -20,6 +22,10 @@ use waterui::gesture::{Gesture, GestureObserver, GesturePoint, TapEvent};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+use waterui::navigation::tab::{TabPosition, Tabs};
+use waterui::navigation::{
+    CustomNavigationController, NavigationController, NavigationStack, NavigationView,
+};
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
@@ -39,6 +45,7 @@ use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Re
 use waterui_form::picker::PickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
     OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop,
@@ -209,6 +216,8 @@ struct SurfaceBlitState {
     blitter: wgpu::util::TextureBlitter,
 }
 
+struct HydroNavigationController;
+
 impl DeferredLifeCycleHook {
     fn new(hook: LifeCycleHook, env: Environment) -> Self {
         Self { env, hook }
@@ -216,6 +225,16 @@ impl DeferredLifeCycleHook {
 
     fn call(self) {
         self.hook.handle(&self.env);
+    }
+}
+
+impl CustomNavigationController for HydroNavigationController {
+    fn push(&mut self, _content: NavigationView) {
+        panic!("hydrolysis NavigationStack push/pop state is not implemented yet");
+    }
+
+    fn pop(&mut self) {
+        panic!("hydrolysis NavigationStack push/pop state is not implemented yet");
     }
 }
 
@@ -325,6 +344,11 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<FixedContainer>>(Self::render_fixed_container);
         dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
         dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
+        dispatcher.register::<Native<NavigationView>>(Self::render_navigation_view);
+        dispatcher.register::<Native<NavigationStack<(), ()>>>(Self::render_navigation_stack);
+        dispatcher.register::<Native<Tabs>>(Self::render_tabs);
+        dispatcher.register::<Native<ListConfig>>(Self::render_list);
+        dispatcher.register::<Native<TableConfig>>(Self::render_table);
         dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
         dispatcher.register::<Native<ToggleConfig>>(Self::render_toggle);
         dispatcher.register::<Native<SliderConfig>>(Self::render_slider);
@@ -336,6 +360,7 @@ impl HydrolysisRenderer {
         dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
         dispatcher.register::<Native<SystemIcon>>(Self::render_system_icon);
         dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
+        dispatcher.register::<Native<ViewEffectErased>>(Self::render_view_effect);
         dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
         dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
         dispatcher.register::<Native<ResolvedShape>>(Self::render_resolved_shape);
@@ -417,6 +442,19 @@ impl HydrolysisRenderer {
         let child_transform = vello::kurbo::Affine::translate((rect.x0, rect.y0));
         let child_bounds = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
         Self::dispatch_any(ctx.child(child_transform, child_bounds), env, content);
+    }
+
+    fn render_subtree_scene(
+        ctx: RenderContext,
+        env: &Environment,
+        content: AnyView,
+    ) -> vello::Scene {
+        let renderer = unsafe { ctx.renderer() };
+        let mut subtree_scene = vello::Scene::new();
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        renderer.dispatcher.dispatch(content, env, ctx);
+        core::mem::swap(&mut renderer.scene, &mut subtree_scene);
+        subtree_scene
     }
 
     fn watch_signal<S>(&mut self, signal: &S)
@@ -602,6 +640,615 @@ impl HydrolysisRenderer {
         }
 
         Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, axis);
+    }
+
+    fn render_navigation_view(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        navigation: Native<NavigationView>,
+        env: &Environment,
+    ) {
+        let navigation = navigation.into_inner();
+        let NavigationView { bar, content } = navigation;
+        let bar_hidden = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&bar.hidden)
+        };
+        let bar_height = if bar_hidden {
+            0.0
+        } else {
+            match bar.display_mode {
+                waterui::navigation::NavigationTitleDisplayMode::Automatic => 52.0,
+                waterui::navigation::NavigationTitleDisplayMode::Inline => 44.0,
+                waterui::navigation::NavigationTitleDisplayMode::Large => 64.0,
+            }
+        };
+
+        if bar_height > 0.0 {
+            let bar_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+            );
+            let bar_color = {
+                let renderer = unsafe { ctx.renderer() };
+                let color = renderer.read_signal(&bar.color);
+                resolved_color_to_peniko(color.resolve(env).get())
+            };
+            {
+                let scene = unsafe { ctx.scene() };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    bar_color,
+                    None,
+                    &bar_rect,
+                );
+                let separator = vello::kurbo::Rect::new(
+                    bar_rect.x0,
+                    (bar_rect.y1 - 1.0).max(bar_rect.y0),
+                    bar_rect.x1,
+                    bar_rect.y1,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.8, 0.8, 0.82, 1.0]),
+                    None,
+                    &separator,
+                );
+            }
+
+            let title_height = if matches!(
+                bar.display_mode,
+                waterui::navigation::NavigationTitleDisplayMode::Large
+            ) {
+                32.0
+            } else {
+                24.0
+            };
+            let title_rect = vello::kurbo::Rect::new(
+                bar_rect.x0 + 12.0,
+                bar_rect.y1 - title_height - 8.0,
+                bar_rect.x1 - 12.0,
+                bar_rect.y1 - 8.0,
+            );
+            if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, bar.title, title_rect);
+            }
+        }
+
+        let content_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+            ctx.bounds.x1,
+            ctx.bounds.y1,
+        );
+        if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
+            Self::dispatch_in_rect(ctx, env, content, content_rect);
+        }
+    }
+
+    fn render_navigation_stack(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        stack: Native<NavigationStack<(), ()>>,
+        env: &Environment,
+    ) {
+        let root = stack.into_inner().into_inner();
+        let mut local_env = env.clone();
+        local_env.insert(NavigationController::new(HydroNavigationController));
+        Self::dispatch_any(ctx, &local_env, root);
+    }
+
+    fn render_tabs(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        tabs: Native<Tabs>,
+        env: &Environment,
+    ) {
+        let tabs = tabs.into_inner();
+        if tabs.tabs.is_empty() {
+            panic!("hydrolysis Tabs requires at least one tab");
+        }
+
+        let tab_count = tabs.tabs.len();
+        let position = tabs.position;
+        let selection = tabs.selection;
+        let selected_id = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&selection)
+        };
+        let selected_index = tabs
+            .tabs
+            .iter()
+            .position(|tab| tab.label.tag == selected_id)
+            .unwrap_or(0);
+
+        if tabs.tabs[selected_index].label.tag != selected_id {
+            selection.set(tabs.tabs[selected_index].label.tag);
+        }
+
+        let bar_height = (ctx.bounds.height() * 0.12).clamp(44.0, 64.0);
+        let (bar_rect, content_rect) = match position {
+            TabPosition::Top => (
+                vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    ctx.bounds.y0,
+                    ctx.bounds.x1,
+                    (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+                ),
+                vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    (ctx.bounds.y0 + bar_height).min(ctx.bounds.y1),
+                    ctx.bounds.x1,
+                    ctx.bounds.y1,
+                ),
+            ),
+            TabPosition::Bottom => (
+                vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    (ctx.bounds.y1 - bar_height).max(ctx.bounds.y0),
+                    ctx.bounds.x1,
+                    ctx.bounds.y1,
+                ),
+                vello::kurbo::Rect::new(
+                    ctx.bounds.x0,
+                    ctx.bounds.y0,
+                    ctx.bounds.x1,
+                    (ctx.bounds.y1 - bar_height).max(ctx.bounds.y0),
+                ),
+            ),
+        };
+
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.95, 0.95, 0.97, 1.0]),
+                None,
+                &bar_rect,
+            );
+            let separator = if matches!(position, TabPosition::Top) {
+                vello::kurbo::Rect::new(bar_rect.x0, bar_rect.y1 - 1.0, bar_rect.x1, bar_rect.y1)
+            } else {
+                vello::kurbo::Rect::new(bar_rect.x0, bar_rect.y0, bar_rect.x1, bar_rect.y0 + 1.0)
+            };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.82, 0.82, 0.85, 1.0]),
+                None,
+                &separator,
+            );
+        }
+
+        let mut selected_content = None;
+        for (index, tab) in tabs.tabs.into_iter().enumerate() {
+            if index == selected_index {
+                selected_content = Some(AnyView::new(tab.content.build()));
+            }
+
+            let button_width = bar_rect.width() / tab_count as f64;
+            let x0 = bar_rect.x0 + button_width * index as f64;
+            let button_rect =
+                vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1);
+            {
+                let scene = unsafe { ctx.scene() };
+                if index == selected_index {
+                    let highlight = inset_rect(button_rect, 4.0, 6.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        ctx.transform,
+                        vello::peniko::Color::new([0.84, 0.9, 1.0, 1.0]),
+                        None,
+                        &vello::kurbo::RoundedRect::from_rect(highlight, 8.0),
+                    );
+                }
+            }
+            let label_rect = inset_rect(button_rect, 8.0, 8.0);
+            let tab_id = tab.label.tag;
+            if label_rect.width() > 0.0 && label_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, tab.label.content, label_rect);
+            }
+
+            let selection_binding = selection.clone();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.register_pointer_target(
+                transformed_rect(ctx.transform, button_rect),
+                move |_point, _env| {
+                    if selection_binding.get() != tab_id {
+                        selection_binding.set(tab_id);
+                    }
+                    true
+                },
+            );
+        }
+
+        if let Some(content) = selected_content {
+            if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, content, content_rect);
+            }
+        }
+    }
+
+    fn render_list(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        list: Native<ListConfig>,
+        env: &Environment,
+    ) {
+        let list = list.into_inner();
+        let editing = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&list.editing)
+        };
+        let row_count_signal = list.contents.len();
+        let row_count = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&row_count_signal)
+        };
+        let delete_action = list.on_delete.map(Rc::new);
+        let move_action = list.on_move.map(Rc::new);
+
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let item = list.contents.get_view(index).unwrap_or_else(|| {
+                panic!("ListConfig failed to materialize item at index {index}")
+            });
+            let intrinsic = estimate_intrinsic_size(&item.content, state, env);
+            let row_height = f64::from(intrinsic.height.max(28.0)) + 16.0;
+            rows.push((index, item, row_height));
+        }
+
+        let viewport = ctx.bounds;
+        let content_height = rows
+            .iter()
+            .fold(0.0, |acc, (_index, _item, height)| acc + *height)
+            .max(viewport.height());
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.scroll_controller.bind(
+                ScrollAxis::Vertical,
+                viewport.width(),
+                viewport.height(),
+                viewport.width(),
+                content_height,
+            )
+        };
+        let metrics = handle.metrics();
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &viewport,
+            );
+        }
+
+        let total_rows = rows.len();
+        let mut y = viewport.y0 - metrics.offset_y;
+        for (index, item, row_height) in rows {
+            let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
+            y += row_height;
+            if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
+                continue;
+            }
+
+            {
+                let scene = unsafe { ctx.scene() };
+                let row_color = if index % 2 == 0 {
+                    vello::peniko::Color::new([1.0, 1.0, 1.0, 1.0])
+                } else {
+                    vello::peniko::Color::new([0.985, 0.985, 0.99, 1.0])
+                };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    row_color,
+                    None,
+                    &row_rect,
+                );
+            }
+
+            let deletable = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.read_signal(&item.deletable)
+            };
+            let mut content_rect = inset_rect(row_rect, 12.0, 8.0);
+            let mut trailing_x = row_rect.x1 - 8.0;
+
+            if editing && move_action.is_some() {
+                let control_width = 20.0;
+                let control_height = (row_height - 12.0).max(12.0);
+                let control_rect = vello::kurbo::Rect::new(
+                    trailing_x - control_width,
+                    row_rect.y0 + 6.0,
+                    trailing_x,
+                    row_rect.y0 + 6.0 + control_height,
+                );
+                trailing_x -= control_width + 6.0;
+                {
+                    let scene = unsafe { ctx.scene() };
+                    draw_stepper_button(scene, ctx.transform, control_rect);
+                    let split = control_rect.y0 + control_rect.height() / 2.0;
+                    let separator = vello::kurbo::Line::new(
+                        (control_rect.x0 + 3.0, split),
+                        (control_rect.x1 - 3.0, split),
+                    );
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        ctx.transform,
+                        vello::peniko::Color::new([0.65, 0.65, 0.68, 1.0]),
+                        None,
+                        &separator,
+                    );
+                }
+
+                if index > 0 {
+                    let up_rect = vello::kurbo::Rect::new(
+                        control_rect.x0,
+                        control_rect.y0,
+                        control_rect.x1,
+                        control_rect.y0 + control_rect.height() / 2.0,
+                    );
+                    let action = Rc::clone(move_action.as_ref().expect("move action missing"));
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.register_pointer_target(
+                        transformed_rect(ctx.transform, up_rect),
+                        move |_point, env| {
+                            (action.as_ref())(env, index, index - 1);
+                            true
+                        },
+                    );
+                }
+                if index + 1 < total_rows {
+                    let down_rect = vello::kurbo::Rect::new(
+                        control_rect.x0,
+                        control_rect.y0 + control_rect.height() / 2.0,
+                        control_rect.x1,
+                        control_rect.y1,
+                    );
+                    let action = Rc::clone(move_action.as_ref().expect("move action missing"));
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.register_pointer_target(
+                        transformed_rect(ctx.transform, down_rect),
+                        move |_point, env| {
+                            (action.as_ref())(env, index, index + 1);
+                            true
+                        },
+                    );
+                }
+            }
+
+            if editing && deletable && delete_action.is_some() {
+                let delete_rect = vello::kurbo::Rect::new(
+                    trailing_x - 26.0,
+                    row_rect.y0 + 6.0,
+                    trailing_x,
+                    row_rect.y1 - 6.0,
+                );
+                trailing_x = delete_rect.x0 - 6.0;
+                {
+                    let scene = unsafe { ctx.scene() };
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        ctx.transform,
+                        vello::peniko::Color::new([0.91, 0.25, 0.2, 1.0]),
+                        None,
+                        &vello::kurbo::RoundedRect::from_rect(delete_rect, 5.0),
+                    );
+                }
+                let action = Rc::clone(delete_action.as_ref().expect("delete action missing"));
+                let renderer = unsafe { ctx.renderer() };
+                renderer.register_pointer_target(
+                    transformed_rect(ctx.transform, delete_rect),
+                    move |_point, env| {
+                        (action.as_ref())(env, index);
+                        true
+                    },
+                );
+            }
+
+            content_rect.x1 = content_rect.x1.min(trailing_x);
+            if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, item.content, content_rect);
+            }
+
+            {
+                let scene = unsafe { ctx.scene() };
+                let separator = vello::kurbo::Rect::new(
+                    row_rect.x0 + 8.0,
+                    row_rect.y1 - 1.0,
+                    row_rect.x1 - 8.0,
+                    row_rect.y1,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.9, 0.9, 0.92, 1.0]),
+                    None,
+                    &separator,
+                );
+            }
+        }
+
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.pop_layer();
+        }
+
+        let renderer = unsafe { ctx.renderer() };
+        let handle_for_input = handle.clone();
+        renderer
+            .register_scroll_target(transformed_rect(ctx.transform, viewport), move |dx, dy| {
+                handle_for_input.apply_scroll_delta(dx, dy)
+            });
+        let scene = unsafe { ctx.scene() };
+        Self::draw_scroll_indicators(
+            scene,
+            ctx.transform,
+            viewport,
+            metrics,
+            ScrollAxis::Vertical,
+        );
+    }
+
+    fn render_table(
+        state: &mut HydroState,
+        ctx: RenderContext,
+        table: Native<TableConfig>,
+        env: &Environment,
+    ) {
+        let table = table.into_inner();
+        let columns = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&table.columns)
+        };
+        if columns.is_empty() {
+            return;
+        }
+
+        let mut column_widths = Vec::with_capacity(columns.len());
+        let mut max_rows = 0usize;
+        for column in &columns {
+            let mut width: f64 = 72.0;
+            let label_size = estimate_intrinsic_size(&AnyView::new(column.label()), state, env);
+            width = width.max(f64::from(label_size.width) + 18.0);
+
+            let rows = column.rows();
+            let row_count_signal = rows.len();
+            let row_count = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.read_signal(&row_count_signal)
+            };
+            max_rows = max_rows.max(row_count);
+            for index in 0..row_count {
+                if let Some(cell) = rows.get_view(index) {
+                    let size = estimate_intrinsic_size(&AnyView::new(cell), state, env);
+                    width = width.max(f64::from(size.width) + 18.0);
+                }
+            }
+            column_widths.push(width);
+        }
+
+        let header_height = 32.0;
+        let row_height = 30.0;
+        let table_width: f64 = column_widths.iter().sum::<f64>();
+        let table_height = header_height + row_height * max_rows as f64;
+        let viewport = ctx.bounds;
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.scroll_controller.bind(
+                ScrollAxis::All,
+                viewport.width(),
+                viewport.height(),
+                table_width.max(viewport.width()),
+                table_height.max(viewport.height()),
+            )
+        };
+        let metrics = handle.metrics();
+
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &viewport,
+            );
+        }
+
+        let origin_x = viewport.x0 - metrics.offset_x;
+        let origin_y = viewport.y0 - metrics.offset_y;
+        {
+            let scene = unsafe { ctx.scene() };
+            let header_rect = vello::kurbo::Rect::new(
+                origin_x,
+                origin_y,
+                origin_x + table_width,
+                origin_y + header_height,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.95, 0.95, 0.96, 1.0]),
+                None,
+                &header_rect,
+            );
+        }
+
+        let mut x = origin_x;
+        for (column_index, column) in columns.into_iter().enumerate() {
+            let width = column_widths[column_index];
+            let header_cell =
+                vello::kurbo::Rect::new(x, origin_y, x + width, origin_y + header_height);
+            Self::dispatch_in_rect(
+                ctx,
+                env,
+                AnyView::new(column.label()),
+                inset_rect(header_cell, 8.0, 6.0),
+            );
+
+            let rows = column.rows();
+            for row_index in 0..max_rows {
+                let cell_rect = vello::kurbo::Rect::new(
+                    x,
+                    origin_y + header_height + row_height * row_index as f64,
+                    x + width,
+                    origin_y + header_height + row_height * (row_index + 1) as f64,
+                );
+                if let Some(cell) = rows.get_view(row_index) {
+                    Self::dispatch_in_rect(
+                        ctx,
+                        env,
+                        AnyView::new(cell),
+                        inset_rect(cell_rect, 8.0, 6.0),
+                    );
+                }
+                let scene = unsafe { ctx.scene() };
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    ctx.transform,
+                    vello::peniko::Color::new([0.85, 0.85, 0.87, 1.0]),
+                    None,
+                    &cell_rect,
+                );
+            }
+
+            let separator = vello::kurbo::Line::new(
+                (x + width, origin_y),
+                (x + width, origin_y + table_height),
+            );
+            let scene = unsafe { ctx.scene() };
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                ctx.transform,
+                vello::peniko::Color::new([0.8, 0.8, 0.83, 1.0]),
+                None,
+                &separator,
+            );
+            x += width;
+        }
+
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.pop_layer();
+        }
+
+        let renderer = unsafe { ctx.renderer() };
+        let handle_for_input = handle.clone();
+        renderer
+            .register_scroll_target(transformed_rect(ctx.transform, viewport), move |dx, dy| {
+                handle_for_input.apply_scroll_delta(dx, dy)
+            });
+        let scene = unsafe { ctx.scene() };
+        Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, ScrollAxis::All);
     }
 
     fn render_divider(
@@ -1519,6 +2166,122 @@ impl HydrolysisRenderer {
             * vello::kurbo::Affine::scale_non_uniform(
                 ctx.bounds.width() / f64::from(output.width),
                 ctx.bounds.height() / f64::from(output.height),
+            );
+        let scene = unsafe { ctx.scene() };
+        scene.draw_image(
+            &vello::peniko::ImageBrush::new(image),
+            ctx.transform * image_transform,
+        );
+    }
+
+    fn render_view_effect(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        effect: Native<ViewEffectErased>,
+        env: &Environment,
+    ) {
+        let mut effect = effect.into_inner();
+        let renderer = unsafe { ctx.renderer() };
+        let (device_ptr, queue_ptr) = renderer.state().frame_resource_ptrs();
+        let device = unsafe { &*device_ptr };
+        let queue = unsafe { &*queue_ptr };
+
+        let input_width = (ctx.bounds.width().max(1.0).round()) as u32;
+        let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
+        let output_size = effect.output_size();
+        let (output_width, output_height) = output_size.compute(input_width, input_height);
+        if output_width == 0 || output_height == 0 {
+            panic!("hydrolysis ViewEffect requires non-zero output dimensions");
+        }
+
+        let subtree = Self::render_subtree_scene(ctx, env, effect.take_content());
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_view_effect_input"),
+            size: wgpu::Extent3d {
+                width: input_width,
+                height: input_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer
+            .vello_renderer
+            .render_to_texture(
+                device,
+                queue,
+                &subtree,
+                &input_view,
+                &vello::RenderParams {
+                    base_color: vello::peniko::Color::TRANSPARENT,
+                    width: input_width,
+                    height: input_height,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .expect("hydrolysis ViewEffect failed to capture child scene");
+
+        let setup_context = EffectContext {
+            device,
+            queue,
+            input_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            pipeline_cache: None,
+        };
+        pollster::block_on(effect.setup(&setup_context));
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_view_effect_output"),
+            size: wgpu::Extent3d {
+                width: output_width,
+                height: output_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let input = EffectInput {
+            device,
+            queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width: input_width,
+            height: input_height,
+        };
+        let output = EffectOutput {
+            device,
+            queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width: output_width,
+            height: output_height,
+        };
+        effect.render(&input, &output);
+        if effect.needs_redraw() {
+            renderer.request_rebuild();
+        }
+
+        let image = renderer.vello_renderer.register_texture(output_texture);
+        renderer.active_filter_images.push(image.clone());
+        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
+            * vello::kurbo::Affine::scale_non_uniform(
+                ctx.bounds.width() / f64::from(output_width),
+                ctx.bounds.height() / f64::from(output_height),
             );
         let scene = unsafe { ctx.scene() };
         scene.draw_image(
