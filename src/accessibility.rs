@@ -32,6 +32,12 @@ impl AccessibilityLabel {
     pub fn new(label: impl Into<Str>) -> Self {
         Self(label.into())
     }
+
+    /// Returns the raw label string.
+    #[must_use]
+    pub const fn as_str(&self) -> &Str {
+        &self.0
+    }
 }
 
 /// Describes the semantic role of a component so assistive technology can

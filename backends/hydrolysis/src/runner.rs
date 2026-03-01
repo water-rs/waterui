@@ -3,8 +3,8 @@ use waterui::app::App;
 use waterui::component::table::TableConfig;
 use waterui::window::{Window, WindowBackground};
 use waterui_core::Environment;
-use waterui_core::view::Hook;
 use waterui_core::Native;
+use waterui_core::view::Hook;
 
 #[cfg(not(feature = "winit"))]
 use crate::platform::OffscreenWindow;
@@ -65,6 +65,10 @@ fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Colo
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
     runtime.platform.apply_properties(&runtime.window);
+    #[cfg(feature = "winit")]
+    runtime
+        .renderer
+        .set_accessibility_root_label(runtime.window.title.get().as_str());
     {
         let scale_factor = runtime.platform.scale_factor();
         let surface = runtime.platform.surface();
@@ -150,6 +154,9 @@ mod winit_runner {
     use std::mem;
     use std::sync::{Arc, mpsc};
 
+    use accesskit_winit::{
+        Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
+    };
     use executor_core::{
         LocalExecutor,
         async_task::{self, AsyncTask, Runnable},
@@ -169,9 +176,16 @@ mod winit_runner {
     use crate::renderer::HydrolysisRenderer;
     use crate::runner::{RuntimeWindow, render_window};
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug)]
     enum RunnerEvent {
         PollLocalTasks,
+        AccessKit(AccessKitEvent),
+    }
+
+    impl From<AccessKitEvent> for RunnerEvent {
+        fn from(value: AccessKitEvent) -> Self {
+            Self::AccessKit(value)
+        }
     }
 
     #[derive(Clone)]
@@ -208,7 +222,7 @@ mod winit_runner {
         let (local_runnable_tx, local_runnable_rx) = mpsc::channel::<Runnable>();
         let local_executor = WinitMainThreadExecutor {
             runnable_tx: local_runnable_tx,
-            event_proxy,
+            event_proxy: event_proxy.clone(),
         };
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
@@ -222,7 +236,9 @@ mod winit_runner {
             env,
             pending_windows: windows,
             windows: HashMap::new(),
+            accesskit_adapters: HashMap::new(),
             local_runnable_rx,
+            event_proxy,
         };
 
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -235,7 +251,9 @@ mod winit_runner {
         env: Environment,
         pending_windows: Vec<Window>,
         windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
+        accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
         local_runnable_rx: mpsc::Receiver<Runnable>,
+        event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
     }
 
     impl WinitRunner {
@@ -256,11 +274,12 @@ mod winit_runner {
             &mut self,
             event_loop: &ActiveEventLoop,
             window: Window,
-        ) -> RuntimeWindow<WinitWindow> {
+        ) -> (RuntimeWindow<WinitWindow>, AccessKitAdapter) {
             let frame = window.frame.get();
             let attributes = NativeWindow::default_attributes()
                 .with_title(window.title.get().as_str())
                 .with_resizable(window.resizable)
+                .with_visible(false)
                 .with_inner_size(winit::dpi::LogicalSize::new(
                     frame.width() as f64,
                     frame.height() as f64,
@@ -277,15 +296,22 @@ mod winit_runner {
                 let surface = platform.surface();
                 HydrolysisRenderer::new(surface.device())
             };
-            RuntimeWindow::new(window, platform, renderer)
+            let adapter = AccessKitAdapter::with_event_loop_proxy(
+                event_loop,
+                platform.native_window(),
+                self.event_proxy.clone(),
+            );
+            platform.native_window().set_visible(true);
+            (RuntimeWindow::new(window, platform, renderer), adapter)
         }
 
         fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
             let pending = mem::take(&mut self.pending_windows);
             for window in pending {
-                let runtime = self.create_runtime_window(event_loop, window);
+                let (runtime, adapter) = self.create_runtime_window(event_loop, window);
                 let id = runtime.platform.id();
                 self.windows.insert(id, runtime);
+                self.accesskit_adapters.insert(id, adapter);
             }
         }
 
@@ -302,8 +328,10 @@ mod winit_runner {
                     }
                     InputEvent::Resize { width, height } => {
                         let frame = runtime.window.frame.get();
-                        let logical_width =
-                            Self::physical_to_logical_dimension(width, runtime.platform.scale_factor());
+                        let logical_width = Self::physical_to_logical_dimension(
+                            width,
+                            runtime.platform.scale_factor(),
+                        );
                         let logical_height = Self::physical_to_logical_dimension(
                             height,
                             runtime.platform.scale_factor(),
@@ -379,6 +407,7 @@ mod winit_runner {
 
             for id in close_ids {
                 self.windows.remove(&id);
+                self.accesskit_adapters.remove(&id);
             }
 
             if self.windows.is_empty() && self.pending_windows.is_empty() {
@@ -406,11 +435,17 @@ mod winit_runner {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
+            let adapter = self
+                .accesskit_adapters
+                .get_mut(&window_id)
+                .expect("hydrolysis runner missing AccessKit adapter for window");
+            adapter.process_event(runtime.platform.native_window(), &event);
             runtime.platform.handle_window_event(&event);
             let should_close = Self::handle_input_events(runtime, &self.env);
 
             if should_close {
                 self.windows.remove(&window_id);
+                self.accesskit_adapters.remove(&window_id);
                 if self.windows.is_empty() && self.pending_windows.is_empty() {
                     event_loop.exit();
                 }
@@ -419,6 +454,9 @@ mod winit_runner {
 
             if let WindowEvent::RedrawRequested = event {
                 render_window(runtime, &self.env);
+                if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                    adapter.update_if_active(|| update);
+                }
             }
         }
 
@@ -445,6 +483,32 @@ mod winit_runner {
         fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RunnerEvent) {
             match event {
                 RunnerEvent::PollLocalTasks => self.drain_local_executor_queue(),
+                RunnerEvent::AccessKit(event) => {
+                    let Some(runtime) = self.windows.get_mut(&event.window_id) else {
+                        return;
+                    };
+                    let adapter = self
+                        .accesskit_adapters
+                        .get_mut(&event.window_id)
+                        .expect("hydrolysis runner missing AccessKit adapter for user event");
+                    match event.window_event {
+                        AccessKitWindowEvent::InitialTreeRequested => {
+                            if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                                adapter.update_if_active(|| update);
+                            } else {
+                                runtime.needs_rebuild = true;
+                                runtime.platform.request_redraw();
+                            }
+                        }
+                        AccessKitWindowEvent::ActionRequested(request) => {
+                            if runtime.renderer.handle_accessibility_action(request, &self.env) {
+                                runtime.needs_rebuild = true;
+                                runtime.platform.request_redraw();
+                            }
+                        }
+                        AccessKitWindowEvent::AccessibilityDeactivated => {}
+                    }
+                }
             }
         }
     }
