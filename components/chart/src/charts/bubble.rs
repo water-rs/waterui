@@ -2,13 +2,12 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_bubble, reactive_canvas};
 use crate::data::BubblePoint;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
-use crate::renderer::BubbleRenderer;
 
 /// Bubble chart for 3D data visualization.
 ///
@@ -124,11 +123,14 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
 
 impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        let renderer = BubbleRenderer::new()
-            .color(self.color)
-            .min_radius(self.min_radius)
-            .max_radius(self.max_radius)
-            .opacity(self.opacity);
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let color = self.color;
+        let min_radius = self.min_radius;
+        let max_radius = self.max_radius;
+        let opacity = self.opacity;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_bubble(ctx, &data, color, min_radius, max_radius, opacity);
+            })
+        })
     }
 }
