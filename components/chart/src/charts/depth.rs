@@ -2,12 +2,11 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_depth, reactive_canvas};
 use crate::data::DepthData;
-use crate::renderer::DepthRenderer;
 
 /// Depth chart for order book visualization.
 ///
@@ -78,11 +77,12 @@ impl<S: Signal<Output = DepthData>> DepthChart<S> {
 
 impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with colors
-        let mut renderer = DepthRenderer::new();
-        renderer.set_bid_color(self.bid_color, self.bid_color);
-        renderer.set_ask_color(self.ask_color, self.ask_color);
-
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let bid_color = self.bid_color;
+        let ask_color = self.ask_color;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_depth(ctx, &data, bid_color, ask_color);
+            })
+        })
     }
 }

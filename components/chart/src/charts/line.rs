@@ -6,13 +6,12 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_line, reactive_canvas};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
-use crate::renderer::LineChartRenderer;
 
 /// Line chart visualization.
 ///
@@ -106,12 +105,14 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with styling options
-        let mut renderer = LineChartRenderer::new();
-        renderer.set_color(self.color);
-        renderer.set_line_width(self.line_width);
-        renderer.set_fill(self.show_fill, self.fill_opacity);
-
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let color = self.color;
+        let line_width = self.line_width;
+        let show_fill = self.show_fill;
+        let fill_opacity = self.fill_opacity;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_line(ctx, &data, color, line_width, show_fill, fill_opacity);
+            })
+        })
     }
 }

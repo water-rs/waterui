@@ -6,12 +6,11 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::GpuSurface;
+use waterui_canvas::Canvas;
 use waterui_graphics::color::Srgb;
 
-use crate::charts::SignalRenderer;
+use crate::charts::canvas::{draw_bar, reactive_canvas};
 use crate::data::DataPoint;
-use crate::renderer::BarChartRenderer;
 
 /// Bar chart visualization.
 ///
@@ -58,11 +57,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        // Create base renderer with color
-        let mut renderer = BarChartRenderer::new();
-        renderer.set_color(self.color);
-
-        // Wrap in reactive container that watches for data changes
-        GpuSurface::new(SignalRenderer::new(renderer, self.data))
+        let color = self.color;
+        reactive_canvas(self.data, move |data| {
+            Canvas::new(move |ctx| {
+                draw_bar(ctx, &data, color);
+            })
+        })
     }
 }
