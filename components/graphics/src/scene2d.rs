@@ -28,6 +28,9 @@ pub trait Scene2D {
     /// Draws an image with transform.
     fn draw_image(&mut self, image: &ImageBrush, transform: Affine);
 
+    /// Appends a pre-built Vello scene.
+    fn append_vello_scene(&mut self, scene: &vello::Scene, transform: Option<Affine>);
+
     /// Clears all recorded scene commands.
     fn reset(&mut self);
 }
