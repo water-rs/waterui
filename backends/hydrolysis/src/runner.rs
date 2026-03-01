@@ -1,11 +1,26 @@
+use nami::Signal as _;
 use waterui::app::App;
-use waterui::window::Window;
+use waterui::component::table::TableConfig;
+use waterui::window::{Window, WindowBackground};
 use waterui_core::Environment;
+use waterui_core::view::Hook;
+use waterui_core::Native;
 
 #[cfg(not(feature = "winit"))]
 use crate::platform::OffscreenWindow;
 use crate::platform::PlatformWindow;
 use crate::renderer::HydrolysisRenderer;
+
+fn init_main_thread_executors() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+    let _ = waterui::inspector::maybe_init_from_env();
+}
+
+fn install_native_component_hooks(env: &mut Environment) {
+    env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
+        Native::new(config)
+    }));
+}
 
 struct RuntimeWindow<P: PlatformWindow> {
     window: Window,
@@ -25,16 +40,38 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
-fn create_bounds(width: u32, height: u32) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64)
+fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        panic!("hydrolysis runner: invalid scale factor {scale_factor}");
+    }
+    vello::kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(width) / scale_factor,
+        f64::from(height) / scale_factor,
+    )
+}
+
+fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Color {
+    match &window.background {
+        WindowBackground::Opaque => vello::peniko::Color::WHITE,
+        WindowBackground::Color(color) => {
+            let resolved = color.resolve(env).get();
+            let srgb = resolved.to_srgb_with_headroom();
+            vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+        }
+    }
 }
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
     runtime.platform.apply_properties(&runtime.window);
     {
+        let scale_factor = runtime.platform.scale_factor();
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
         let format = surface.format();
+        let bounds = create_bounds(width, height, scale_factor);
+        let root_transform = vello::kurbo::Affine::scale(scale_factor);
         runtime
             .renderer
             .set_frame_resources(surface.device(), surface.queue());
@@ -49,11 +86,12 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             let content = runtime.window.build_content();
             runtime
                 .renderer
-                .dispatch(content, env, create_bounds(width, height));
+                .dispatch_with_transform(content, env, bounds, root_transform);
             runtime.renderer.finish_rebuild_frame();
             runtime.needs_rebuild = false;
         }
 
+        let clear_color = window_clear_color(&runtime.window, env);
         let frame = surface
             .acquire()
             .expect("hydrolysis runner: failed to acquire frame");
@@ -64,6 +102,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             format,
             width,
             height,
+            clear_color,
         );
         runtime.renderer.clear_frame_resources();
         surface.present(frame);
@@ -76,8 +115,10 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 
 #[cfg(not(feature = "winit"))]
 pub fn run(app: App) {
+    init_main_thread_executors();
     let (windows, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    install_native_component_hooks(&mut env);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
@@ -98,19 +139,27 @@ pub fn run(app: App) {
 
 #[cfg(feature = "winit")]
 pub fn run(app: App) {
+    init_main_thread_executors();
     winit_runner::run(app);
 }
 
 #[cfg(feature = "winit")]
 mod winit_runner {
     use std::collections::HashMap;
+    use std::future::Future;
     use std::mem;
-    use std::sync::Arc;
+    use std::sync::{Arc, mpsc};
 
+    use executor_core::{
+        LocalExecutor,
+        async_task::{self, AsyncTask, Runnable},
+        try_init_local_executor,
+    };
     use nami::Signal;
     use waterui::app::App;
     use waterui::window::{Window, WindowState};
     use waterui_core::Environment;
+    use waterui_core::layout::Size;
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -120,9 +169,52 @@ mod winit_runner {
     use crate::renderer::HydrolysisRenderer;
     use crate::runner::{RuntimeWindow, render_window};
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RunnerEvent {
+        PollLocalTasks,
+    }
+
+    #[derive(Clone)]
+    struct WinitMainThreadExecutor {
+        runnable_tx: mpsc::Sender<Runnable>,
+        event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
+    }
+
+    impl LocalExecutor for WinitMainThreadExecutor {
+        type Task<T: 'static> = AsyncTask<T>;
+
+        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+        where
+            Fut: Future + 'static,
+        {
+            let runnable_tx = self.runnable_tx.clone();
+            let event_proxy = self.event_proxy.clone();
+            let (runnable, task) = async_task::spawn_local(fut, move |runnable: Runnable| {
+                if runnable_tx.send(runnable).is_err() {
+                    return;
+                }
+                let _ = event_proxy.send_event(RunnerEvent::PollLocalTasks);
+            });
+            runnable.schedule();
+            task
+        }
+    }
+
     pub fn run(app: App) {
+        let event_loop = EventLoop::<RunnerEvent>::with_user_event()
+            .build()
+            .expect("hydrolysis runner: failed to create event loop");
+        let event_proxy = event_loop.create_proxy();
+        let (local_runnable_tx, local_runnable_rx) = mpsc::channel::<Runnable>();
+        let local_executor = WinitMainThreadExecutor {
+            runnable_tx: local_runnable_tx,
+            event_proxy,
+        };
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+
         let (windows, env) = app.into_parts();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        super::install_native_component_hooks(&mut env);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
         ));
@@ -130,9 +222,9 @@ mod winit_runner {
             env,
             pending_windows: windows,
             windows: HashMap::new(),
+            local_runnable_rx,
         };
 
-        let event_loop = EventLoop::new().expect("hydrolysis runner: failed to create event loop");
         event_loop.set_control_flow(ControlFlow::Wait);
         event_loop
             .run_app(&mut runner)
@@ -143,9 +235,23 @@ mod winit_runner {
         env: Environment,
         pending_windows: Vec<Window>,
         windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
+        local_runnable_rx: mpsc::Receiver<Runnable>,
     }
 
     impl WinitRunner {
+        fn drain_local_executor_queue(&self) {
+            while let Ok(runnable) = self.local_runnable_rx.try_recv() {
+                runnable.run();
+            }
+        }
+
+        fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
+            if !scale_factor.is_finite() || scale_factor <= 0.0 {
+                panic!("hydrolysis runner: invalid scale factor {scale_factor}");
+            }
+            (f64::from(value) / scale_factor) as f32
+        }
+
         fn create_runtime_window(
             &mut self,
             event_loop: &ActiveEventLoop,
@@ -194,7 +300,19 @@ mod winit_runner {
                         runtime.window.state.set(WindowState::Closed);
                         should_close = true;
                     }
-                    InputEvent::Resize { .. } => {
+                    InputEvent::Resize { width, height } => {
+                        let frame = runtime.window.frame.get();
+                        let logical_width =
+                            Self::physical_to_logical_dimension(width, runtime.platform.scale_factor());
+                        let logical_height = Self::physical_to_logical_dimension(
+                            height,
+                            runtime.platform.scale_factor(),
+                        );
+                        let frame = waterui_core::layout::Rect::new(
+                            frame.origin(),
+                            Size::new(logical_width, logical_height),
+                        );
+                        runtime.window.frame.set(frame);
                         runtime.needs_rebuild = true;
                     }
                     InputEvent::PointerDown { x, y, button } => {
@@ -269,8 +387,9 @@ mod winit_runner {
         }
     }
 
-    impl ApplicationHandler for WinitRunner {
+    impl ApplicationHandler<RunnerEvent> for WinitRunner {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            self.drain_local_executor_queue();
             self.mount_pending_windows(event_loop);
             for runtime in self.windows.values() {
                 runtime.platform.request_redraw();
@@ -283,6 +402,7 @@ mod winit_runner {
             window_id: WindowId,
             event: WindowEvent,
         ) {
+            self.drain_local_executor_queue();
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
@@ -303,6 +423,7 @@ mod winit_runner {
         }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            self.drain_local_executor_queue();
             self.mount_pending_windows(event_loop);
             for runtime in self.windows.values_mut() {
                 runtime
@@ -319,6 +440,12 @@ mod winit_runner {
                 }
             }
             self.remove_closed_windows(event_loop);
+        }
+
+        fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RunnerEvent) {
+            match event {
+                RunnerEvent::PollLocalTasks => self.drain_local_executor_queue(),
+            }
         }
     }
 }

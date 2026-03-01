@@ -14,7 +14,7 @@ use waterui::border::Border;
 use waterui::component::focus::Focused;
 use waterui::component::list::ListConfig;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui::component::table::TableConfig;
+use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::Cursor;
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
@@ -126,6 +126,18 @@ impl RenderContext {
         }
     }
 
+    pub(crate) fn with_renderer_transform(
+        renderer: &mut HydrolysisRenderer,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+    ) -> Self {
+        Self {
+            renderer_ptr: renderer as *mut HydrolysisRenderer,
+            transform,
+            bounds,
+        }
+    }
+
     /// # Safety
     /// The caller guarantees the render context belongs to an active render pass.
     pub unsafe fn renderer(&self) -> &mut HydrolysisRenderer {
@@ -165,6 +177,7 @@ pub struct HydrolysisRenderer {
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
     rebuild_requested: Rc<Cell<bool>>,
+    dynamic_nodes: BTreeMap<usize, DynamicNode>,
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
     navigation_slots: Vec<NavigationSlot>,
@@ -210,6 +223,11 @@ struct ScrollTarget {
 struct DeferredLifeCycleHook {
     env: Environment,
     hook: LifeCycleHook,
+}
+
+struct DynamicNode {
+    pending_view: Rc<RefCell<Option<AnyView>>>,
+    cached_scene: Option<vello::Scene>,
 }
 
 struct SurfaceBlitState {
@@ -269,7 +287,7 @@ impl CustomNavigationController for HydroNavigationController {
 impl HydroSubview {
     fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
         Self {
-            stretch_axis: view.stretch_axis(),
+            stretch_axis: effective_stretch_axis(view),
             intrinsic: estimate_intrinsic_size(view, state, env),
         }
     }
@@ -319,6 +337,368 @@ impl core::fmt::Debug for HydrolysisRenderer {
     }
 }
 
+trait HydroNativeView: View + Sized + 'static {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment);
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize;
+}
+
+fn register_native_view<V: HydroNativeView>(
+    dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
+) {
+    dispatcher.register::<V>(V::render);
+}
+
+fn intrinsic_for_native<V: HydroNativeView>(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> Option<LayoutSize> {
+    view.downcast_ref::<V>()
+        .map(|native| V::intrinsic(state, native, env))
+}
+
+fn control_intrinsic_size() -> LayoutSize {
+    LayoutSize::new(44.0, 44.0)
+}
+
+fn decoration_intrinsic_size() -> LayoutSize {
+    LayoutSize::new(10.0, 10.0)
+}
+
+const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
+const TABLE_CELL_HORIZONTAL_PADDING: f64 = 18.0;
+const TABLE_HEADER_HEIGHT: f64 = 32.0;
+const TABLE_ROW_HEIGHT: f64 = 30.0;
+
+const SLIDER_HORIZONTAL_INSET: f64 = 12.0;
+const SLIDER_HORIZONTAL_SPACING: f64 = 8.0;
+const SLIDER_VERTICAL_SPACING: f64 = 6.0;
+const SLIDER_MIN_TRACK_WIDTH: f64 = 72.0;
+const SLIDER_TRACK_HEIGHT: f64 = 6.0;
+const SLIDER_THUMB_RADIUS: f64 = 9.0;
+
+struct TableMetrics {
+    column_widths: Vec<f64>,
+    max_rows: usize,
+    table_width: f64,
+    table_height: f64,
+}
+
+fn measure_table_metrics(
+    columns: &[TableColumn],
+    state: &mut HydroState,
+    env: &Environment,
+) -> TableMetrics {
+    let mut column_widths = Vec::with_capacity(columns.len());
+    let mut max_rows = 0usize;
+    for column in columns {
+        let mut width = TABLE_MIN_COLUMN_WIDTH;
+        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
+        let label_size = estimate_intrinsic_size(&label_view, state, env);
+        width = width.max(f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING);
+
+        let rows = column.rows();
+        let row_count = rows.len().get();
+        max_rows = max_rows.max(row_count);
+        for index in 0..row_count {
+            if let Some(cell) = rows.get_view(index) {
+                let cell_view = normalize_layout_view(AnyView::new(cell), env);
+                let size = estimate_intrinsic_size(&cell_view, state, env);
+                width = width.max(f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING);
+            }
+        }
+        column_widths.push(width);
+    }
+
+    let table_width: f64 = column_widths.iter().sum();
+    let table_height = TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * max_rows as f64;
+    TableMetrics {
+        column_widths,
+        max_rows,
+        table_width,
+        table_height,
+    }
+}
+
+fn measure_slider_intrinsic(
+    slider: &SliderConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = estimate_intrinsic_size(&slider.label, state, env);
+    let min_label_size = estimate_intrinsic_size(&slider.min_value_label, state, env);
+    let max_label_size = estimate_intrinsic_size(&slider.max_value_label, state, env);
+
+    let control_row_height = (SLIDER_THUMB_RADIUS * 2.0)
+        .max(f64::from(min_label_size.height))
+        .max(f64::from(max_label_size.height));
+    let label_height = f64::from(label_size.height);
+    let intrinsic_height = if label_height > 0.0 {
+        label_height + SLIDER_VERTICAL_SPACING + control_row_height
+    } else {
+        control_row_height
+    };
+
+    let min_width = f64::from(label_size.width).max(
+        f64::from(min_label_size.width)
+            + SLIDER_HORIZONTAL_SPACING
+            + SLIDER_MIN_TRACK_WIDTH
+            + SLIDER_HORIZONTAL_SPACING
+            + f64::from(max_label_size.width)
+            + SLIDER_HORIZONTAL_INSET * 2.0,
+    );
+    LayoutSize::new(min_width as f32, intrinsic_height as f32)
+}
+
+macro_rules! hydro_native_view_types {
+    ($macro:ident) => {
+        $macro!(Native<()>);
+        $macro!(Native<Spacer>);
+        $macro!(Native<TextConfig>);
+        $macro!(Native<FixedContainer>);
+        $macro!(Native<LazyContainer>);
+        $macro!(Native<ScrollView>);
+        $macro!(Native<NavigationView>);
+        $macro!(Native<NavigationStack<(), ()>>);
+        $macro!(Native<Tabs>);
+        $macro!(Native<ListConfig>);
+        $macro!(Native<TableConfig>);
+        $macro!(Native<ButtonConfig>);
+        $macro!(Native<ToggleConfig>);
+        $macro!(Native<SliderConfig>);
+        $macro!(Native<StepperConfig>);
+        $macro!(Native<ProgressConfig>);
+        $macro!(Native<TextFieldConfig>);
+        $macro!(Native<SecureFieldConfig>);
+        $macro!(Native<PickerConfig>);
+        $macro!(Native<Dynamic>);
+        $macro!(Native<SystemIcon>);
+        $macro!(Native<GpuSurface>);
+        $macro!(Native<SceneView>);
+        $macro!(Native<ViewEffectErased>);
+        $macro!(Native<ResolvedColor>);
+        $macro!(Native<ResolvedGradient>);
+        $macro!(Native<ResolvedShape>);
+    };
+}
+
+macro_rules! impl_hydro_native_with_constant_intrinsic {
+    ($inner:ty, $render:path, $size:expr) => {
+        impl HydroNativeView for Native<$inner> {
+            fn render(
+                state: &mut HydroState,
+                ctx: RenderContext,
+                view: Self,
+                env: &Environment,
+            ) {
+                $render(state, ctx, view, env);
+            }
+
+            fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+                $size
+            }
+        }
+    };
+}
+
+impl HydroNativeView for Native<()> {
+    fn render(_state: &mut HydroState, _ctx: RenderContext, _view: Self, _env: &Environment) {}
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<Spacer> {
+    fn render(_state: &mut HydroState, _ctx: RenderContext, _view: Self, _env: &Environment) {}
+
+    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
+        LayoutSize::zero()
+    }
+}
+
+impl HydroNativeView for Native<TextConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_text_config(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        HydrolysisRenderer::measure_text_intrinsic_size(state, view.as_inner().content.get(), env)
+    }
+}
+
+impl HydroNativeView for Native<FixedContainer> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_fixed_container(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        let (layout, children) = view.as_inner().as_parts();
+        estimate_layout_intrinsic(layout, children.iter(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<LazyContainer> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_lazy_container(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        let (layout, children) = view.as_inner().as_parts();
+        let child_count = children.len().get();
+        let mut materialized = Vec::with_capacity(child_count);
+        for index in 0..child_count {
+            let child = children.get_view(index).unwrap_or_else(|| {
+                panic!("LazyContainer failed to materialize child at index {index}")
+            });
+            materialized.push(normalize_layout_view(child, env));
+        }
+        estimate_layout_intrinsic(layout, materialized.iter(), state, env)
+    }
+}
+
+impl HydroNativeView for Native<ScrollView> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_scroll_view(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        let (_axis, content) = view.as_inner().as_parts();
+        estimate_intrinsic_size(content, state, env)
+    }
+}
+
+impl_hydro_native_with_constant_intrinsic!(
+    NavigationView,
+    HydrolysisRenderer::render_navigation_view,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    NavigationStack<(), ()>,
+    HydrolysisRenderer::render_navigation_stack,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    Tabs,
+    HydrolysisRenderer::render_tabs,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ListConfig,
+    HydrolysisRenderer::render_list,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ButtonConfig,
+    HydrolysisRenderer::render_button,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ToggleConfig,
+    HydrolysisRenderer::render_toggle,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    StepperConfig,
+    HydrolysisRenderer::render_stepper,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ProgressConfig,
+    HydrolysisRenderer::render_progress,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    TextFieldConfig,
+    HydrolysisRenderer::render_text_field,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    SecureFieldConfig,
+    HydrolysisRenderer::render_secure_field,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    PickerConfig,
+    HydrolysisRenderer::render_picker,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    Dynamic,
+    HydrolysisRenderer::render_dynamic,
+    control_intrinsic_size()
+);
+
+impl HydroNativeView for Native<SystemIcon> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_system_icon(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(view.as_inner().name.clone()),
+            env,
+        )
+    }
+}
+
+impl HydroNativeView for Native<TableConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_table(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        let columns = view.as_inner().columns.get();
+        if columns.is_empty() {
+            return LayoutSize::zero();
+        }
+        let metrics = measure_table_metrics(&columns, state, env);
+        LayoutSize::new(metrics.table_width as f32, metrics.table_height as f32)
+    }
+}
+
+impl HydroNativeView for Native<SliderConfig> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_slider(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_slider_intrinsic(view.as_inner(), state, env)
+    }
+}
+
+impl_hydro_native_with_constant_intrinsic!(
+    GpuSurface,
+    HydrolysisRenderer::render_gpu_surface,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    SceneView,
+    HydrolysisRenderer::render_scene_view,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ViewEffectErased,
+    HydrolysisRenderer::render_view_effect,
+    control_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ResolvedColor,
+    HydrolysisRenderer::render_resolved_color,
+    decoration_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ResolvedGradient,
+    HydrolysisRenderer::render_resolved_gradient,
+    decoration_intrinsic_size()
+);
+impl_hydro_native_with_constant_intrinsic!(
+    ResolvedShape,
+    HydrolysisRenderer::render_resolved_shape,
+    decoration_intrinsic_size()
+);
+
 impl HydrolysisRenderer {
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
@@ -356,6 +736,7 @@ impl HydrolysisRenderer {
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
             rebuild_requested: Rc::new(Cell::new(false)),
+            dynamic_nodes: BTreeMap::new(),
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
             navigation_slots: Vec::new(),
@@ -366,36 +747,14 @@ impl HydrolysisRenderer {
     }
 
     fn register_core_handlers(dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>) {
-        dispatcher.register::<Native<()>>(|_state, _ctx, _unit, _env| ());
-        dispatcher.register::<Native<Spacer>>(|_state, _ctx, _spacer, _env| ());
         dispatcher.register::<Str>(Self::render_str);
-        dispatcher.register::<Native<TextConfig>>(Self::render_text_config);
-
-        dispatcher.register::<Native<FixedContainer>>(Self::render_fixed_container);
-        dispatcher.register::<Native<LazyContainer>>(Self::render_lazy_container);
-        dispatcher.register::<Native<ScrollView>>(Self::render_scroll_view);
-        dispatcher.register::<Native<NavigationView>>(Self::render_navigation_view);
-        dispatcher.register::<Native<NavigationStack<(), ()>>>(Self::render_navigation_stack);
-        dispatcher.register::<Native<Tabs>>(Self::render_tabs);
-        dispatcher.register::<Native<ListConfig>>(Self::render_list);
-        dispatcher.register::<Native<TableConfig>>(Self::render_table);
-        dispatcher.register::<Native<ButtonConfig>>(Self::render_button);
-        dispatcher.register::<Native<ToggleConfig>>(Self::render_toggle);
-        dispatcher.register::<Native<SliderConfig>>(Self::render_slider);
-        dispatcher.register::<Native<StepperConfig>>(Self::render_stepper);
-        dispatcher.register::<Native<ProgressConfig>>(Self::render_progress);
-        dispatcher.register::<Native<TextFieldConfig>>(Self::render_text_field);
-        dispatcher.register::<Native<SecureFieldConfig>>(Self::render_secure_field);
-        dispatcher.register::<Native<PickerConfig>>(Self::render_picker);
-        dispatcher.register::<Native<Dynamic>>(Self::render_dynamic);
-        dispatcher.register::<Native<SystemIcon>>(Self::render_system_icon);
-        dispatcher.register::<Native<GpuSurface>>(Self::render_gpu_surface);
-        dispatcher.register::<Native<SceneView>>(Self::render_scene_view);
-        dispatcher.register::<Native<ViewEffectErased>>(Self::render_view_effect);
-        dispatcher.register::<Native<ResolvedColor>>(Self::render_resolved_color);
-        dispatcher.register::<Native<ResolvedGradient>>(Self::render_resolved_gradient);
-        dispatcher.register::<Native<ResolvedShape>>(Self::render_resolved_shape);
         dispatcher.register::<Divider>(Self::render_divider);
+        macro_rules! register_native {
+            ($ty:ty) => {
+                register_native_view::<$ty>(dispatcher);
+            };
+        }
+        hydro_native_view_types!(register_native);
 
         dispatcher.register::<Metadata<Environment>>(Self::render_environment_metadata);
         dispatcher.register::<Metadata<Retain>>(Self::render_retain_metadata);
@@ -566,8 +925,13 @@ impl HydrolysisRenderer {
         children: Vec<AnyView>,
         env: &Environment,
     ) {
-        let mut subviews = Vec::with_capacity(children.len());
-        for child in &children {
+        let mut resolved_children = Vec::with_capacity(children.len());
+        for child in children {
+            resolved_children.push(normalize_layout_view(child, env));
+        }
+
+        let mut subviews = Vec::with_capacity(resolved_children.len());
+        for child in &resolved_children {
             subviews.push(HydroSubview::from_view(child, state, env));
         }
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
@@ -583,7 +947,7 @@ impl HydrolysisRenderer {
         ));
         let child_rects = layout.place(bounds, &refs);
 
-        for (child, rect) in children.into_iter().zip(child_rects) {
+        for (child, rect) in resolved_children.into_iter().zip(child_rects) {
             let child_transform =
                 vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
             let child_bounds = vello::kurbo::Rect::new(
@@ -631,6 +995,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let (axis, content) = scroll.into_inner().into_inner();
+        let content = normalize_layout_view(content, env);
         let viewport = ctx.bounds;
         let intrinsic = estimate_intrinsic_size(&content, state, env);
         let (content_width, content_height) = match axis {
@@ -1021,9 +1386,10 @@ impl HydrolysisRenderer {
 
         let mut rows = Vec::with_capacity(row_count);
         for index in 0..row_count {
-            let item = list.contents.get_view(index).unwrap_or_else(|| {
+            let mut item = list.contents.get_view(index).unwrap_or_else(|| {
                 panic!("ListConfig failed to materialize item at index {index}")
             });
+            item.content = normalize_layout_view(item.content, env);
             let intrinsic = estimate_intrinsic_size(&item.content, state, env);
             let row_height = f64::from(intrinsic.height.max(28.0)) + 16.0;
             rows.push((index, item, row_height));
@@ -1238,34 +1604,7 @@ impl HydrolysisRenderer {
         if columns.is_empty() {
             return;
         }
-
-        let mut column_widths = Vec::with_capacity(columns.len());
-        let mut max_rows = 0usize;
-        for column in &columns {
-            let mut width: f64 = 72.0;
-            let label_size = estimate_intrinsic_size(&AnyView::new(column.label()), state, env);
-            width = width.max(f64::from(label_size.width) + 18.0);
-
-            let rows = column.rows();
-            let row_count_signal = rows.len();
-            let row_count = {
-                let renderer = unsafe { ctx.renderer() };
-                renderer.read_signal(&row_count_signal)
-            };
-            max_rows = max_rows.max(row_count);
-            for index in 0..row_count {
-                if let Some(cell) = rows.get_view(index) {
-                    let size = estimate_intrinsic_size(&AnyView::new(cell), state, env);
-                    width = width.max(f64::from(size.width) + 18.0);
-                }
-            }
-            column_widths.push(width);
-        }
-
-        let header_height = 32.0;
-        let row_height = 30.0;
-        let table_width: f64 = column_widths.iter().sum::<f64>();
-        let table_height = header_height + row_height * max_rows as f64;
+        let table_metrics = measure_table_metrics(&columns, state, env);
         let viewport = ctx.bounds;
         let handle = {
             let renderer = unsafe { ctx.renderer() };
@@ -1273,11 +1612,11 @@ impl HydrolysisRenderer {
                 ScrollAxis::All,
                 viewport.width(),
                 viewport.height(),
-                table_width.max(viewport.width()),
-                table_height.max(viewport.height()),
+                table_metrics.table_width.max(viewport.width()),
+                table_metrics.table_height.max(viewport.height()),
             )
         };
-        let metrics = handle.metrics();
+        let scroll_metrics = handle.metrics();
 
         {
             let scene = unsafe { ctx.scene() };
@@ -1290,15 +1629,15 @@ impl HydrolysisRenderer {
             );
         }
 
-        let origin_x = viewport.x0 - metrics.offset_x;
-        let origin_y = viewport.y0 - metrics.offset_y;
+        let origin_x = viewport.x0 - scroll_metrics.offset_x;
+        let origin_y = viewport.y0 - scroll_metrics.offset_y;
         {
             let scene = unsafe { ctx.scene() };
             let header_rect = vello::kurbo::Rect::new(
                 origin_x,
                 origin_y,
-                origin_x + table_width,
-                origin_y + header_height,
+                origin_x + table_metrics.table_width,
+                origin_y + TABLE_HEADER_HEIGHT,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1311,9 +1650,9 @@ impl HydrolysisRenderer {
 
         let mut x = origin_x;
         for (column_index, column) in columns.into_iter().enumerate() {
-            let width = column_widths[column_index];
+            let width = table_metrics.column_widths[column_index];
             let header_cell =
-                vello::kurbo::Rect::new(x, origin_y, x + width, origin_y + header_height);
+                vello::kurbo::Rect::new(x, origin_y, x + width, origin_y + TABLE_HEADER_HEIGHT);
             Self::dispatch_in_rect(
                 ctx,
                 env,
@@ -1322,12 +1661,12 @@ impl HydrolysisRenderer {
             );
 
             let rows = column.rows();
-            for row_index in 0..max_rows {
+            for row_index in 0..table_metrics.max_rows {
                 let cell_rect = vello::kurbo::Rect::new(
                     x,
-                    origin_y + header_height + row_height * row_index as f64,
+                    origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * row_index as f64,
                     x + width,
-                    origin_y + header_height + row_height * (row_index + 1) as f64,
+                    origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * (row_index + 1) as f64,
                 );
                 if let Some(cell) = rows.get_view(row_index) {
                     Self::dispatch_in_rect(
@@ -1349,7 +1688,7 @@ impl HydrolysisRenderer {
 
             let separator = vello::kurbo::Line::new(
                 (x + width, origin_y),
-                (x + width, origin_y + table_height),
+                (x + width, origin_y + table_metrics.table_height),
             );
             let scene = unsafe { ctx.scene() };
             scene.stroke(
@@ -1374,7 +1713,13 @@ impl HydrolysisRenderer {
                 handle_for_input.apply_scroll_delta(dx, dy)
             });
         let scene = unsafe { ctx.scene() };
-        Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, ScrollAxis::All);
+        Self::draw_scroll_indicators(
+            scene,
+            ctx.transform,
+            viewport,
+            scroll_metrics,
+            ScrollAxis::All,
+        );
     }
 
     fn render_divider(
@@ -1638,8 +1983,8 @@ impl HydrolysisRenderer {
             renderer.resolve_toggle_progress(&toggle.toggle)
         };
         let track_color = lerp_color(
-            [0.7058824, 0.7058824, 0.7254902, 1.0],
-            [0.20392157, 0.78039217, 0.34901962, 1.0],
+            [0.86, 0.86, 0.88, 1.0],
+            [0.2, 0.45, 0.9, 1.0],
             thumb_progress,
         );
         let thumb_center_x = lerp_f64(
@@ -1660,10 +2005,24 @@ impl HydrolysisRenderer {
             None,
             &track,
         );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctx.transform,
+            vello::peniko::Color::new([0.72, 0.74, 0.78, 1.0]),
+            None,
+            &track,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
             vello::peniko::Color::WHITE,
+            None,
+            &thumb,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctx.transform,
+            vello::peniko::Color::new([0.76, 0.78, 0.82, 1.0]),
             None,
             &thumb,
         );
@@ -1679,14 +2038,14 @@ impl HydrolysisRenderer {
     }
 
     fn render_slider(
-        _state: &mut HydroState,
+        state: &mut HydroState,
         ctx: RenderContext,
         slider: Native<SliderConfig>,
         env: &Environment,
     ) {
         let slider = slider.into_inner();
         let label_height = if ctx.bounds.height() >= 36.0 {
-            20.0
+            f64::from(estimate_intrinsic_size(&slider.label, state, env).height).max(20.0)
         } else {
             0.0
         };
@@ -1700,6 +2059,29 @@ impl HydrolysisRenderer {
             Self::dispatch_in_rect(ctx, env, slider.label, label_rect);
         }
 
+        let min_label_size = estimate_intrinsic_size(&slider.min_value_label, state, env);
+        let max_label_size = estimate_intrinsic_size(&slider.max_value_label, state, env);
+        let min_label_width = f64::from(min_label_size.width);
+        let max_label_width = f64::from(max_label_size.width);
+        let min_label_x0 = ctx.bounds.x0 + SLIDER_HORIZONTAL_INSET;
+        let min_label_x1 = min_label_x0 + min_label_width;
+        let max_label_x1 = ctx.bounds.x1 - SLIDER_HORIZONTAL_INSET;
+        let max_label_x0 = max_label_x1 - max_label_width;
+        let control_top = ctx.bounds.y0 + label_height;
+        let control_bottom = ctx.bounds.y1;
+        let control_height = control_bottom - control_top;
+
+        if min_label_width > 0.0 && control_height > 0.0 {
+            let min_label_rect =
+                vello::kurbo::Rect::new(min_label_x0, control_top, min_label_x1, control_bottom);
+            Self::dispatch_in_rect(ctx, env, slider.min_value_label, min_label_rect);
+        }
+        if max_label_width > 0.0 && control_height > 0.0 {
+            let max_label_rect =
+                vello::kurbo::Rect::new(max_label_x0, control_top, max_label_x1, control_bottom);
+            Self::dispatch_in_rect(ctx, env, slider.max_value_label, max_label_rect);
+        }
+
         let range_start = *slider.range.start();
         let range_end = *slider.range.end();
         let span = range_end - range_start;
@@ -1707,14 +2089,22 @@ impl HydrolysisRenderer {
             panic!("hydrolysis slider requires range start < end");
         }
 
-        let track_left = ctx.bounds.x0 + 12.0;
-        let track_right = ctx.bounds.x1 - 12.0;
-        let track_center_y = ctx.bounds.y1 - ((ctx.bounds.height() - label_height) / 2.0).max(10.0);
+        let track_left = if min_label_width > 0.0 {
+            min_label_x1 + SLIDER_HORIZONTAL_SPACING
+        } else {
+            ctx.bounds.x0 + SLIDER_HORIZONTAL_INSET
+        };
+        let track_right = if max_label_width > 0.0 {
+            max_label_x0 - SLIDER_HORIZONTAL_SPACING
+        } else {
+            ctx.bounds.x1 - SLIDER_HORIZONTAL_INSET
+        };
+        let track_center_y = control_top + control_height / 2.0;
         let track_rect = vello::kurbo::Rect::new(
             track_left,
-            track_center_y - 2.0,
+            track_center_y - SLIDER_TRACK_HEIGHT / 2.0,
             track_right,
-            track_center_y + 2.0,
+            track_center_y + SLIDER_TRACK_HEIGHT / 2.0,
         );
 
         let clamped = {
@@ -1727,25 +2117,27 @@ impl HydrolysisRenderer {
         let fill_right = track_left + (track_right - track_left) * progress;
         let fill_rect = vello::kurbo::Rect::new(
             track_left,
-            track_center_y - 2.0,
+            track_center_y - SLIDER_TRACK_HEIGHT / 2.0,
             fill_right,
-            track_center_y + 2.0,
+            track_center_y + SLIDER_TRACK_HEIGHT / 2.0,
         );
-        let thumb =
-            vello::kurbo::Circle::new(vello::kurbo::Point::new(fill_right, track_center_y), 7.0);
+        let thumb = vello::kurbo::Circle::new(
+            vello::kurbo::Point::new(fill_right, track_center_y),
+            SLIDER_THUMB_RADIUS,
+        );
 
         let scene = unsafe { ctx.scene() };
         scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
-            vello::peniko::Color::new([0.75, 0.75, 0.78, 1.0]),
+            vello::peniko::Color::new([0.8, 0.82, 0.87, 1.0]),
             None,
             &track_rect,
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
-            vello::peniko::Color::new([0.20392157, 0.53333336, 0.94509804, 1.0]),
+            vello::peniko::Color::new([0.2, 0.45, 0.9, 1.0]),
             None,
             &fill_rect,
         );
@@ -1756,14 +2148,21 @@ impl HydrolysisRenderer {
             None,
             &thumb,
         );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctx.transform,
+            vello::peniko::Color::new([0.7, 0.73, 0.78, 1.0]),
+            None,
+            &thumb,
+        );
 
         let hit_bounds = transformed_rect(
             ctx.transform,
             vello::kurbo::Rect::new(
                 track_left,
-                track_center_y - 14.0,
+                track_center_y - (SLIDER_THUMB_RADIUS + 7.0),
                 track_right,
-                track_center_y + 14.0,
+                track_center_y + (SLIDER_THUMB_RADIUS + 7.0),
             ),
         );
         let value_binding = slider.value;
@@ -2230,28 +2629,66 @@ impl HydrolysisRenderer {
         dynamic: Native<Dynamic>,
         env: &Environment,
     ) {
-        let current = Rc::new(RefCell::new(None::<AnyView>));
-        let is_initial = Rc::new(Cell::new(true));
-        let rebuild_requested = {
+        let dynamic = dynamic.into_inner();
+        let identity = dynamic.identity();
+        let pending_view = {
             let renderer = unsafe { ctx.renderer() };
-            Rc::clone(&renderer.rebuild_requested)
-        };
-        dynamic.into_inner().connect({
-            let current = Rc::clone(&current);
-            let is_initial = Rc::clone(&is_initial);
-            let rebuild_requested = Rc::clone(&rebuild_requested);
-            move |update| {
-                *current.borrow_mut() = Some(update.into_value());
-                if !is_initial.replace(false) {
-                    rebuild_requested.set(true);
-                }
+            if let Some(node) = renderer.dynamic_nodes.get(&identity) {
+                Rc::clone(&node.pending_view)
+            } else {
+                let pending_view = Rc::new(RefCell::new(None::<AnyView>));
+                let is_initial = Rc::new(Cell::new(true));
+                let rebuild_requested = Rc::clone(&renderer.rebuild_requested);
+                dynamic.connect({
+                    let pending_view = Rc::clone(&pending_view);
+                    let is_initial = Rc::clone(&is_initial);
+                    let rebuild_requested = Rc::clone(&rebuild_requested);
+                    move |update| {
+                        *pending_view.borrow_mut() = Some(update.into_value());
+                        if !is_initial.replace(false) {
+                            rebuild_requested.set(true);
+                        }
+                    }
+                });
+                renderer.dynamic_nodes.insert(
+                    identity,
+                    DynamicNode {
+                        pending_view: Rc::clone(&pending_view),
+                        cached_scene: None,
+                    },
+                );
+                pending_view
             }
-        });
-        let content = current
-            .borrow_mut()
-            .take()
-            .expect("hydrolysis Dynamic must provide an initial view before dispatch");
-        Self::dispatch_any(ctx, env, content);
+        };
+
+        let update = pending_view.borrow_mut().take();
+        if let Some(content) = update {
+            let local_ctx = RenderContext {
+                renderer_ptr: ctx.renderer_ptr,
+                transform: vello::kurbo::Affine::IDENTITY,
+                bounds: ctx.bounds,
+            };
+            let subtree = Self::render_subtree_scene(local_ctx, env, content);
+            let renderer = unsafe { ctx.renderer() };
+            renderer
+                .dynamic_nodes
+                .get_mut(&identity)
+                .expect("hydrolysis dynamic node missing after connect")
+                .cached_scene = Some(subtree);
+        }
+
+        let cached = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer
+                .dynamic_nodes
+                .get(&identity)
+                .and_then(|node| node.cached_scene.as_ref())
+                .expect("hydrolysis Dynamic must provide an initial view before dispatch")
+                as *const vello::Scene
+        };
+        let scene = unsafe { ctx.scene() };
+        let cached = unsafe { &*cached };
+        scene.append(cached, Some(ctx.transform));
     }
 
     fn render_system_icon(
@@ -3038,9 +3475,10 @@ impl HydrolysisRenderer {
             ScrollAxis::Vertical | ScrollAxis::All => {
                 if metrics.max_y > 0.0 {
                     let track_height = viewport.height();
+                    let min_thumb_height = track_height.min(12.0);
                     let thumb_height = (track_height
                         * (metrics.viewport_height / metrics.content_height))
-                        .clamp(12.0, track_height);
+                        .clamp(min_thumb_height, track_height);
                     let travel = track_height - thumb_height;
                     let progress = if metrics.max_y > 0.0 {
                         metrics.offset_y / metrics.max_y
@@ -3073,9 +3511,10 @@ impl HydrolysisRenderer {
             ScrollAxis::Horizontal | ScrollAxis::All => {
                 if metrics.max_x > 0.0 {
                     let track_width = viewport.width();
+                    let min_thumb_width = track_width.min(12.0);
                     let thumb_width = (track_width
                         * (metrics.viewport_width / metrics.content_width))
-                        .clamp(12.0, track_width);
+                        .clamp(min_thumb_width, track_width);
                     let travel = track_width - thumb_width;
                     let progress = if metrics.max_x > 0.0 {
                         metrics.offset_x / metrics.max_x
@@ -3205,7 +3644,17 @@ impl HydrolysisRenderer {
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
-        let ctx = RenderContext::with_renderer(self, bounds);
+        self.dispatch_with_transform(view, env, bounds, vello::kurbo::Affine::IDENTITY);
+    }
+
+    pub fn dispatch_with_transform<V: View>(
+        &mut self,
+        view: V,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+    ) {
+        let ctx = RenderContext::with_renderer_transform(self, bounds, transform);
         self.dispatcher.dispatch(view, env, ctx);
     }
 
@@ -3216,9 +3665,10 @@ impl HydrolysisRenderer {
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
+        base_color: vello::peniko::Color,
     ) {
         let params = vello::RenderParams {
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color,
             width,
             height,
             antialiasing_method: vello::AaConfig::Area,
@@ -3279,9 +3729,10 @@ impl HydrolysisRenderer {
         target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        base_color: vello::peniko::Color,
     ) {
         if target_format == wgpu::TextureFormat::Rgba8Unorm {
-            self.render_scene_to_texture(device, queue, target, width, height);
+            self.render_scene_to_texture(device, queue, target, width, height, base_color);
             return;
         }
 
@@ -3303,7 +3754,7 @@ impl HydrolysisRenderer {
             state.view.clone()
         };
 
-        self.render_scene_to_texture(device, queue, &source_view, width, height);
+        self.render_scene_to_texture(device, queue, &source_view, width, height, base_color);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("hydrolysis_surface_blit_encoder"),
@@ -3516,11 +3967,281 @@ impl Drop for HydrolysisRenderer {
     }
 }
 
+fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
+    macro_rules! passthrough_metadata_content {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if let Some(metadata) = view.downcast_ref::<Metadata<$ty>>() {
+                    return Some(&metadata.content);
+                }
+            )+
+        };
+    }
+
+    macro_rules! passthrough_ignorable_metadata_content {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<$ty>>() {
+                    return Some(&metadata.content);
+                }
+            )+
+        };
+    }
+
+    passthrough_metadata_content!(
+        Environment,
+        Retain,
+        Opacity,
+        AppliedFilter,
+        Scale,
+        Rotation,
+        Offset,
+        ClipShape,
+        Border,
+        Shadow,
+        Focused,
+        Hittable,
+        GestureObserver,
+        LifeCycleHook,
+        OnEvent,
+        Secure,
+        StandardDynamicRange,
+        HighDynamicRange,
+        Cursor,
+        IgnoreSafeArea,
+        ContextMenu,
+        Draggable,
+        DropDestination,
+        Blur,
+        Brightness,
+        Contrast,
+        Saturation,
+        Grayscale,
+        HueRotation,
+        Background
+    );
+    passthrough_ignorable_metadata_content!(
+        MaterialBackground,
+        AccessibilityLabel,
+        AccessibilityRole
+    );
+
+    None
+}
+
+fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
+    if let Some(content) = passthrough_content(view) {
+        return effective_stretch_axis(content);
+    }
+    view.stretch_axis()
+}
+
+fn is_layout_terminal(view: &AnyView) -> bool {
+    if view.downcast_ref::<Str>().is_some() || view.downcast_ref::<Divider>().is_some() {
+        return true;
+    }
+
+    macro_rules! check_native_terminal {
+        ($ty:ty) => {
+            if view.downcast_ref::<$ty>().is_some() {
+                return true;
+            }
+        };
+    }
+    hydro_native_view_types!(check_native_terminal);
+    false
+}
+
+fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
+    normalize_layout_view_with_budget(view, env, 64)
+}
+
+fn normalize_layout_view_with_budget(
+    view: AnyView,
+    env: &Environment,
+    remaining: usize,
+) -> AnyView {
+    if remaining == 0 {
+        panic!(
+            "hydrolysis layout normalization exceeded recursion budget for {}",
+            view.name()
+        );
+    }
+    let next_remaining = remaining - 1;
+    let mut view = view;
+
+    if view.is::<Metadata<Environment>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<Environment>>()
+            .expect("layout normalization failed to downcast Metadata<Environment>");
+        let normalized_content = normalize_layout_view_with_budget(content, &value, next_remaining);
+        return AnyView::new(Metadata {
+            content: normalized_content,
+            value,
+        });
+    }
+    macro_rules! normalize_passthrough_metadata {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if view.is::<Metadata<$ty>>() {
+                    let Metadata { content, value } = *view
+                        .downcast::<Metadata<$ty>>()
+                        .expect("layout normalization failed to downcast metadata");
+                    let normalized_content =
+                        normalize_layout_view_with_budget(content, env, next_remaining);
+                    return AnyView::new(Metadata {
+                        content: normalized_content,
+                        value,
+                    });
+                }
+            )+
+        };
+    }
+    macro_rules! normalize_passthrough_ignorable_metadata {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if view.is::<IgnorableMetadata<$ty>>() {
+                    let IgnorableMetadata { content, value } = *view
+                        .downcast::<IgnorableMetadata<$ty>>()
+                        .expect("layout normalization failed to downcast ignorable metadata");
+                    let normalized_content =
+                        normalize_layout_view_with_budget(content, env, next_remaining);
+                    return AnyView::new(IgnorableMetadata {
+                        content: normalized_content,
+                        value,
+                    });
+                }
+            )+
+        };
+    }
+
+    normalize_passthrough_metadata!(
+        Retain,
+        Opacity,
+        AppliedFilter,
+        Scale,
+        Rotation,
+        Offset,
+        ClipShape,
+        Border,
+        Shadow,
+        Focused,
+        Hittable,
+        GestureObserver,
+        LifeCycleHook,
+        OnEvent,
+        Secure,
+        StandardDynamicRange,
+        HighDynamicRange,
+        Cursor,
+        IgnoreSafeArea,
+        ContextMenu,
+        Draggable,
+        DropDestination,
+        Blur,
+        Brightness,
+        Contrast,
+        Saturation,
+        Grayscale,
+        HueRotation,
+        Background
+    );
+    normalize_passthrough_ignorable_metadata!(
+        MaterialBackground,
+        AccessibilityLabel,
+        AccessibilityRole
+    );
+
+    if view.is::<Native<FixedContainer>>() {
+        let native = *view
+            .downcast::<Native<FixedContainer>>()
+            .expect("layout normalization failed to downcast Native<FixedContainer>");
+        let (layout, children) = native.into_inner().into_inner();
+        let mut normalized_children = Vec::with_capacity(children.len());
+        for child in children {
+            normalized_children.push(normalize_layout_view_with_budget(
+                child,
+                env,
+                next_remaining,
+            ));
+        }
+        return AnyView::new(Native::new(FixedContainer::from_parts(
+            layout,
+            normalized_children,
+        )));
+    }
+
+    if view.is::<Native<LazyContainer>>() {
+        let native = *view
+            .downcast::<Native<LazyContainer>>()
+            .expect("layout normalization failed to downcast Native<LazyContainer>");
+        let (layout, children) = native.into_inner().into_inner();
+        let child_count = children.len().get();
+        let mut normalized_children = Vec::with_capacity(child_count);
+        for index in 0..child_count {
+            let child = children.get_view(index).unwrap_or_else(|| {
+                panic!("LazyContainer failed to materialize child at index {index}")
+            });
+            normalized_children.push(normalize_layout_view_with_budget(
+                child,
+                env,
+                next_remaining,
+            ));
+        }
+        return AnyView::new(Native::new(FixedContainer::from_parts(
+            layout,
+            normalized_children,
+        )));
+    }
+
+    if view.is::<Native<ScrollView>>() {
+        let native = *view
+            .downcast::<Native<ScrollView>>()
+            .expect("layout normalization failed to downcast Native<ScrollView>");
+        let (axis, content) = native.into_inner().into_inner();
+        let normalized_content = normalize_layout_view_with_budget(content, env, next_remaining);
+        return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
+    }
+
+    if is_layout_terminal(&view) {
+        return view;
+    }
+
+    view = AnyView::new(view.body(env));
+    normalize_layout_view_with_budget(view, env, next_remaining)
+}
+
+fn estimate_layout_intrinsic<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let mut subviews = Vec::new();
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, state, env));
+    }
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
+}
+
 fn estimate_intrinsic_size(
     view: &AnyView,
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return estimate_intrinsic_size(&metadata.content, state, &metadata.value);
+    }
+
+    if let Some(content) = passthrough_content(view) {
+        return estimate_intrinsic_size(content, state, env);
+    }
+
+    if view.downcast_ref::<()>().is_some() {
+        return LayoutSize::zero();
+    }
+
     if let Some(text) = view.downcast_ref::<Str>() {
         return HydrolysisRenderer::measure_text_intrinsic_size(
             state,
@@ -3528,28 +4249,45 @@ fn estimate_intrinsic_size(
             env,
         );
     }
-
-    if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
+    if let Some(text) = view.downcast_ref::<&'static str>() {
         return HydrolysisRenderer::measure_text_intrinsic_size(
             state,
-            text.as_inner().content.get(),
+            StyledStr::plain(*text),
+            env,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<String>() {
+        return HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(text.clone()),
+            env,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
+        return HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(text.clone()),
             env,
         );
     }
 
-    if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(icon.as_inner().name.clone()),
-            env,
-        );
+    macro_rules! try_native_intrinsic {
+        ($ty:ty) => {
+            if let Some(intrinsic) = intrinsic_for_native::<$ty>(view, state, env) {
+                return intrinsic;
+            }
+        };
+    }
+    hydro_native_view_types!(try_native_intrinsic);
+
+    if view.downcast_ref::<Divider>().is_some() {
+        return LayoutSize::new(1.0, 1.0);
     }
 
-    if view.stretch_axis().stretches_any() {
-        return LayoutSize::zero();
-    }
-
-    LayoutSize::new(44.0, 44.0)
+    panic!(
+        "hydrolysis intrinsic estimation encountered unsupported view type {}",
+        view.name()
+    );
 }
 
 fn resolved_color_to_peniko(color: ResolvedColor) -> vello::peniko::Color {
