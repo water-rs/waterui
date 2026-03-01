@@ -77,7 +77,10 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 #[cfg(not(feature = "winit"))]
 pub fn run(app: App) {
     let (windows, env) = app.into_parts();
-    let env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    env.insert(waterui_core::ViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::default(),
+    ));
     for window in windows {
         let frame = window.frame.get();
         let width = frame.width().max(1.0) as u32;
@@ -119,7 +122,10 @@ mod winit_runner {
 
     pub fn run(app: App) {
         let (windows, env) = app.into_parts();
-        let env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::default(),
+        ));
         let mut runner = WinitRunner {
             env,
             pending_windows: windows,
