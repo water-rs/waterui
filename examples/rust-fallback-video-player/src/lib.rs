@@ -10,7 +10,7 @@ struct Sample {
 
 fn main() -> impl View {
     let selected = Binding::usize(2);
-    let status = Binding::container(String::from("Loading fallback video pipeline..."));
+    let status = Binding::container(Str::from("Loading fallback video pipeline..."));
     let is_buffering = Binding::bool(true);
 
     let samples = [
@@ -38,9 +38,9 @@ fn main() -> impl View {
 
     let title = selected.clone().map(move |index| samples[index].title);
     let source_profile = selected.clone().map(move |index| samples[index].profile);
-    let source = selected.clone().map(move |index| {
-        Url::parse(samples[index].url).expect("sample URL should be valid")
-    });
+    let source = selected
+        .clone()
+        .map(move |index| Url::parse(samples[index].url).expect("sample URL should be valid"));
 
     let player = VideoPlayer::new(source)
         .show_controls(true)
@@ -51,23 +51,23 @@ fn main() -> impl View {
             move |event| match event {
                 video::Event::ReadyToPlay => {
                     is_buffering.set(false);
-                    status.set(String::from("Ready"));
+                    status.set(Str::from("Ready"));
                 }
                 video::Event::Buffering => {
                     is_buffering.set(true);
-                    status.set(String::from("Buffering..."));
+                    status.set(Str::from("Buffering..."));
                 }
                 video::Event::BufferingEnded => {
                     is_buffering.set(false);
-                    status.set(String::from("Playing"));
+                    status.set(Str::from("Playing"));
                 }
                 video::Event::Ended => {
                     is_buffering.set(false);
-                    status.set(String::from("Ended"));
+                    status.set(Str::from("Ended"));
                 }
                 video::Event::Error { message } => {
                     is_buffering.set(false);
-                    status.set(format!("Error: {message}"));
+                    status.set(format!("Error: {message}").into());
                 }
             }
         });
