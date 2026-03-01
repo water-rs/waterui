@@ -347,7 +347,7 @@ mod winit_impl {
     use waterui::window::WindowState;
     use waterui_graphics::gpu_surface::preferred_surface_format;
     use winit::{
-        dpi::{LogicalPosition, LogicalSize},
+        dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
         event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
         keyboard::{Key, ModifiersState},
         window::{Fullscreen, ImePurpose, Window as NativeWindow, WindowId},
@@ -535,6 +535,14 @@ mod winit_impl {
                         height: size.height.max(1),
                     });
                 }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = self.window.inner_size();
+                    self.surface.resize(size.width, size.height);
+                    self.pending_events.push(InputEvent::Resize {
+                        width: size.width.max(1),
+                        height: size.height.max(1),
+                    });
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer_position = (position.x as f32, position.y as f32);
                     self.pending_events.push(InputEvent::PointerMove {
@@ -615,10 +623,16 @@ mod winit_impl {
             self.window.set_title(window.title.get().as_str());
             self.window.set_resizable(window.resizable);
             let frame = window.frame.get();
-            let _ = self.window.request_inner_size(LogicalSize::new(
-                frame.width() as f64,
-                frame.height() as f64,
-            ));
+            let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
+            let current_size = self
+                .window
+                .inner_size()
+                .to_logical::<f64>(self.window.scale_factor());
+            if (current_size.width - target_size.width).abs() > 0.5
+                || (current_size.height - target_size.height).abs() > 0.5
+            {
+                let _ = self.window.request_inner_size(target_size);
+            }
             match window.state.get() {
                 WindowState::Normal => {
                     self.window.set_minimized(false);
@@ -666,8 +680,11 @@ mod winit_impl {
             };
             self.window.set_ime_purpose(purpose);
             self.window.set_ime_cursor_area(
-                LogicalPosition::new(state.x, state.y),
-                LogicalSize::new(state.width.max(1.0), state.height.max(1.0)),
+                PhysicalPosition::new(state.x.round() as i32, state.y.round() as i32),
+                PhysicalSize::new(
+                    state.width.max(1.0).ceil() as u32,
+                    state.height.max(1.0).ceil() as u32,
+                ),
             );
         }
     }
