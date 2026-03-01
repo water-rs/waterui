@@ -7,6 +7,7 @@ mod platform;
 mod renderer;
 mod runner;
 mod scroll;
+mod view_renderer;
 
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;
@@ -16,3 +17,4 @@ pub use platform::{
 };
 pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 pub use runner::run;
+pub use view_renderer::HydrolysisViewRenderer;
