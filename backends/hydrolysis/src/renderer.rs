@@ -211,6 +211,7 @@ enum TextInputCommand {
 
 struct TextInputTarget {
     bounds: vello::kurbo::Rect,
+    cursor_area: vello::kurbo::Rect,
     purpose: TextInputPurpose,
     action: Box<dyn FnMut(TextInputCommand) -> bool>,
 }
@@ -2761,6 +2762,9 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let text_field = text_field.into_inner();
+        if text_field.line_limit.map(core::num::NonZeroUsize::get) != Some(1) {
+            panic!("hydrolysis TextField supports only line_limit(1)");
+        }
         let label_height = if ctx.bounds.height() >= 36.0 {
             INPUT_LABEL_HEIGHT
         } else {
@@ -2803,10 +2807,11 @@ impl HydrolysisRenderer {
                 preedit,
             )
         };
-        let display = if value.is_empty() && preedit.is_empty() {
+        let committed_with_preedit = format!("{value}{preedit}");
+        let display = if committed_with_preedit.is_empty() {
             prompt
         } else {
-            format!("{value}{preedit}")
+            committed_with_preedit.clone()
         };
         let text_bounds = inset_rect(
             field_rect,
@@ -2822,20 +2827,31 @@ impl HydrolysisRenderer {
             StyledStr::plain(display),
             env,
         );
+        let cursor_size = HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(committed_with_preedit),
+            env,
+        );
+        let cursor_area = text_cursor_area_from_bounds(text_bounds, cursor_size);
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
             transformed_rect(ctx.transform, field_rect),
+            transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Normal,
             move |command| {
                 let mut plain = value_binding.get().to_plain().to_string();
                 match command {
                     TextInputCommand::Insert(text) => {
-                        if text.is_empty() {
+                        let sanitized: String = text
+                            .chars()
+                            .filter(|ch| *ch != '\n' && *ch != '\r')
+                            .collect();
+                        if sanitized.is_empty() {
                             return false;
                         }
-                        plain.push_str(text.as_str());
+                        plain.push_str(sanitized.as_str());
                         value_binding.set(StyledStr::plain(plain));
                         true
                     }
@@ -2906,29 +2922,41 @@ impl HydrolysisRenderer {
             INPUT_FIELD_HORIZONTAL_INSET,
             INPUT_FIELD_VERTICAL_INSET,
         );
+        let masked_display = StyledStr::plain(masked.clone());
         Self::render_styled_text(
             state,
             ctx.child(
                 vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
+            masked_display,
+            env,
+        );
+        let cursor_size = HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
             StyledStr::plain(masked),
             env,
         );
+        let cursor_area = text_cursor_area_from_bounds(text_bounds, cursor_size);
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
             transformed_rect(ctx.transform, field_rect),
+            transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Password,
             move |command| {
                 let mut plain = value_binding.get().expose().to_owned();
                 match command {
                     TextInputCommand::Insert(text) => {
-                        if text.is_empty() {
+                        let sanitized: String = text
+                            .chars()
+                            .filter(|ch| *ch != '\n' && *ch != '\r')
+                            .collect();
+                        if sanitized.is_empty() {
                             return false;
                         }
-                        plain.push_str(text.as_str());
+                        plain.push_str(sanitized.as_str());
                     }
                     TextInputCommand::Backspace => {
                         if plain.pop().is_none() {
@@ -4010,10 +4038,10 @@ impl HydrolysisRenderer {
         let index = self.focused_text_input.get()?;
         let target = self.text_input_targets.get(index)?;
         Some(TextInputState {
-            x: target.bounds.x0,
-            y: target.bounds.y0,
-            width: target.bounds.width().max(1.0),
-            height: target.bounds.height().max(1.0),
+            x: target.cursor_area.x0,
+            y: target.cursor_area.y0,
+            width: target.cursor_area.width().max(1.0),
+            height: target.cursor_area.height().max(1.0),
             purpose: target.purpose,
         })
     }
@@ -4219,11 +4247,12 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_text_input(&mut self, text: &str) -> bool {
+        let preedit_cleared = self.ime_preedit.take().is_some();
         if text.is_empty() {
-            return false;
+            return preedit_cleared;
         }
-        self.ime_preedit = None;
         self.dispatch_text_input_command(TextInputCommand::Insert(text.to_owned()))
+            || preedit_cleared
     }
 
     pub fn handle_ime_preedit(&mut self, text: &str) -> bool {
@@ -4243,7 +4272,6 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_ime_commit(&mut self, text: &str) -> bool {
-        self.ime_preedit = None;
         self.handle_text_input(text)
     }
 
@@ -4258,7 +4286,9 @@ impl HydrolysisRenderer {
 
         match key {
             KeyCode::Named(value) if value == "Backspace" => {
-                self.ime_preedit = None;
+                if self.ime_preedit.take().is_some() {
+                    return true;
+                }
                 self.dispatch_text_input_command(TextInputCommand::Backspace)
             }
             KeyCode::Named(_) | KeyCode::Character(_) | KeyCode::Unidentified => false,
@@ -4312,6 +4342,7 @@ impl HydrolysisRenderer {
     fn register_text_input_target<F>(
         &mut self,
         bounds: vello::kurbo::Rect,
+        cursor_area: vello::kurbo::Rect,
         purpose: TextInputPurpose,
         action: F,
     ) where
@@ -4319,6 +4350,7 @@ impl HydrolysisRenderer {
     {
         self.text_input_targets.push(TextInputTarget {
             bounds,
+            cursor_area,
             purpose,
             action: Box::new(action),
         });
@@ -4963,6 +4995,20 @@ fn circle_arc_path(
         ));
     }
     path
+}
+
+fn text_cursor_area_from_bounds(
+    text_bounds: vello::kurbo::Rect,
+    text_size: LayoutSize,
+) -> vello::kurbo::Rect {
+    let left = text_bounds.x0;
+    let right = text_bounds.x1.max(left + 1.0);
+    let top = text_bounds.y0;
+    let bottom = text_bounds.y1.max(top + 1.0);
+
+    let caret_x = (left + f64::from(text_size.width)).clamp(left, right - 1.0);
+    let caret_height = f64::from(text_size.height).max(1.0).min(bottom - top);
+    vello::kurbo::Rect::new(caret_x, top, caret_x + 1.0, top + caret_height)
 }
 
 fn draw_input_field(
