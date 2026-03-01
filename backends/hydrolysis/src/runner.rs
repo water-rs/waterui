@@ -33,6 +33,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     runtime.platform.apply_properties(&runtime.window);
     let surface = runtime.platform.surface();
     let (width, height) = surface.size();
+    let format = surface.format();
     runtime
         .renderer
         .set_frame_resources(surface.device(), surface.queue());
@@ -55,10 +56,11 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     let frame = surface
         .acquire()
         .expect("hydrolysis runner: failed to acquire frame");
-    runtime.renderer.render_scene_to_texture(
+    runtime.renderer.render_scene_to_surface(
         surface.device(),
         surface.queue(),
         frame.view(),
+        format,
         width,
         height,
     );
