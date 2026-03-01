@@ -35,11 +35,11 @@ impl IntoFFI for DragData {
         match self {
             DragData::Text(s) => WuiDragData {
                 tag: WuiDragDataTag::Text,
-                value: Str::from(s).into_ffi(),
+                value: s.into_ffi(),
             },
             DragData::Url(s) => WuiDragData {
                 tag: WuiDragDataTag::Url,
-                value: Str::from(s).into_ffi(),
+                value: s.into_ffi(),
             },
             _ => panic!("waterui drag/drop FFI does not support this DragData variant"),
         }
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
 
         // Convert C string to Rust String
         let c_str = core::ffi::CStr::from_ptr(data_value);
-        let value = core::str::from_utf8_unchecked(c_str.to_bytes()).to_owned();
+        let value = Str::from(core::str::from_utf8_unchecked(c_str.to_bytes()).to_owned());
 
         // Create DragData from the tag and value
         let data = match data_tag {
