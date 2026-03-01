@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture, stream::LocalBoxStre
 use waterkit_camera::{Camera, Frame};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
 
@@ -20,15 +20,15 @@ fn main() -> impl View {
     let filter_strength = Binding::f64(0.75);
     let reconnect_ticket = Binding::usize(0);
 
-    let preview_status: Binding<String> =
-        Binding::container(String::from("Starting camera renderer..."));
-    let waterkit_status: Binding<String> = Binding::container(String::from(
+    let preview_status: Binding<Str> =
+        Binding::container(Str::from("Starting camera renderer..."));
+    let waterkit_status: Binding<Str> = Binding::container(Str::from(
         "Not synced. Tap the button below to query Waterkit.",
     ));
-    let permission_status: Binding<String> =
-        Binding::container(String::from("Permission status: unknown"));
-    let camera_inventory: Binding<String> =
-        Binding::container(String::from("No camera inventory yet."));
+    let permission_status: Binding<Str> =
+        Binding::container(Str::from("Permission status: unknown"));
+    let camera_inventory: Binding<Str> =
+        Binding::container(Str::from("No camera inventory yet."));
 
     let filter_label = active_filter.clone().map(filter_name);
 
@@ -58,7 +58,7 @@ fn main() -> impl View {
             .action(|(ticket, status)| {
                 let next = ticket.get().saturating_add(1);
                 ticket.set(next);
-                status.set(String::from("Reconnecting camera stream..."));
+                status.set(Str::from("Reconnecting camera stream..."));
             }),)),
     ))
     .spacing(10.0);
@@ -108,7 +108,7 @@ fn camera_surface(
     active_filter: Binding<usize>,
     filter_strength: Binding<f64>,
     reconnect_ticket: Binding<usize>,
-    preview_status: Binding<String>,
+    preview_status: Binding<Str>,
 ) -> impl View {
     GpuSurface::new(CameraFilterRenderer::new(
         active_filter,
@@ -135,7 +135,7 @@ struct CameraFilterRenderer {
     active_filter: Binding<usize>,
     filter_strength: Binding<f64>,
     reconnect_ticket: Binding<usize>,
-    preview_status: Binding<String>,
+    preview_status: Binding<Str>,
     last_reconnect_ticket: usize,
 
     camera: Option<Camera>,
@@ -155,7 +155,7 @@ impl CameraFilterRenderer {
         active_filter: Binding<usize>,
         filter_strength: Binding<f64>,
         reconnect_ticket: Binding<usize>,
-        preview_status: Binding<String>,
+        preview_status: Binding<Str>,
     ) -> Self {
         Self {
             active_filter,
@@ -292,7 +292,7 @@ impl CameraFilterRenderer {
         } else {
             "Opening camera stream..."
         };
-        self.preview_status.set(status.to_string());
+        self.preview_status.set(status.to_string().into());
         self.camera = None;
         self.frame_stream = None;
         self.latest_texture = None;
@@ -316,12 +316,11 @@ impl CameraFilterRenderer {
             Some(Ok(camera)) => {
                 self.frame_stream = Some(camera.frames().boxed_local());
                 self.camera = Some(camera);
-                self.preview_status
-                    .set(String::from("Camera stream active."));
+                self.preview_status.set(Str::from("Camera stream active."));
             }
             Some(Err(error)) => {
                 self.preview_status
-                    .set(format!("Failed to open camera stream: {error}"));
+                    .set(format!("Failed to open camera stream: {error}").into());
             }
             None => {
                 self.camera_open_task = Some(task);
@@ -366,7 +365,7 @@ impl CameraFilterRenderer {
                 self.latest_texture = None;
                 self.latest_bind_group = None;
                 self.preview_status
-                    .set(String::from("Camera stream ended unexpectedly."));
+                    .set(Str::from("Camera stream ended unexpectedly."));
             }
             std::task::Poll::Pending => {
                 self.frame_stream = Some(frame_stream);
@@ -376,7 +375,11 @@ impl CameraFilterRenderer {
 }
 
 impl GpuView for CameraFilterRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
         async {}
@@ -504,11 +507,11 @@ fn filter_params(filter_kind: usize, strength: f32) -> (f32, f32, f32, f32, f32)
 }
 
 async fn sync_waterkit_camera(
-    status: Binding<String>,
-    permission: Binding<String>,
-    inventory: Binding<String>,
+    status: Binding<Str>,
+    permission: Binding<Str>,
+    inventory: Binding<Str>,
 ) {
-    status.set(String::from(
+    status.set(Str::from(
         "Checking camera permission via waterkit-permission...",
     ));
 
@@ -516,12 +519,12 @@ async fn sync_waterkit_camera(
     permission.set(format!(
         "Permission status: {}",
         permission_status_text(current)
-    ));
+    ).into());
 
     let granted = if matches!(current, PermissionStatus::Granted) {
         true
     } else {
-        status.set(String::from(
+        status.set(Str::from(
             "Requesting camera permission via waterkit-permission...",
         ));
         match request(Permission::Camera).await {
@@ -529,12 +532,12 @@ async fn sync_waterkit_camera(
                 permission.set(format!(
                     "Permission status: {}",
                     permission_status_text(next)
-                ));
+                ).into());
                 matches!(next, PermissionStatus::Granted)
             }
             Err(error) => {
-                status.set(format!("Permission request failed: {error}"));
-                inventory.set(String::from(
+                status.set(format!("Permission request failed: {error}").into());
+                inventory.set(Str::from(
                     "Waterkit camera inventory unavailable until permission is granted.",
                 ));
                 return;
@@ -543,25 +546,25 @@ async fn sync_waterkit_camera(
     };
 
     if !granted {
-        status.set(String::from(
+        status.set(Str::from(
             "Camera permission was not granted. Sync cancelled.",
         ));
-        inventory.set(String::from(
+        inventory.set(Str::from(
             "Waterkit camera inventory unavailable until permission is granted.",
         ));
         return;
     }
 
-    status.set(String::from(
+    status.set(Str::from(
         "Permission granted. Enumerating cameras via waterkit-camera...",
     ));
 
     match Camera::list() {
         Ok(cameras) if cameras.is_empty() => {
-            status.set(String::from(
+            status.set(Str::from(
                 "Waterkit is connected, but no camera devices were reported.",
             ));
-            inventory.set(String::from("0 camera devices detected."));
+            inventory.set(Str::from("0 camera devices detected."));
         }
         Ok(cameras) => {
             let summary = cameras
@@ -580,12 +583,12 @@ async fn sync_waterkit_camera(
             status.set(format!(
                 "Waterkit sync complete: {} camera(s) detected.",
                 cameras.len()
-            ));
-            inventory.set(summary);
+            ).into());
+            inventory.set(summary.into());
         }
         Err(error) => {
-            status.set(format!("Camera enumeration failed: {error}"));
-            inventory.set(String::from(
+            status.set(format!("Camera enumeration failed: {error}").into());
+            inventory.set(Str::from(
                 "Waterkit camera list could not be loaded on this platform/runtime.",
             ));
         }
