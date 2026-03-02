@@ -2,13 +2,20 @@
 
 use icu_calendar::{Date, DateTime};
 use icu_datetime::{
-    DateFormatter, DateTimeFormatter, TimeFormatter,
+    DateFormatter, DateTimeFormatter, TimeFormatter, ZonedDateTimeFormatter,
     options::length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
+    time_zone::TimeZoneFormatterOptions,
 };
+use icu_timezone::{CustomTimeZone, GmtOffset, MetazoneCalculator, TimeZoneIdMapper, ZoneVariant};
 use icu_provider::DataLocale;
+use jiff::{
+    civil::DateTime as JiffDateTime,
+    tz::Dst,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::locale::{Locale, locales};
+use crate::regional::RegionalContext;
 
 static DATE_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 static TIME_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -127,6 +134,45 @@ fn to_iso_time_only(time: &SimpleTime) -> Option<DateTime<icu_calendar::Iso>> {
     DateTime::try_new_iso_datetime(2000, 1, 1, time.hour, time.minute, time.second).ok()
 }
 
+fn to_jiff_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<JiffDateTime> {
+    let year = i16::try_from(date.year).ok()?;
+    let month = i8::try_from(date.month).ok()?;
+    let day = i8::try_from(date.day).ok()?;
+    let hour = i8::try_from(time.hour).ok()?;
+    let minute = i8::try_from(time.minute).ok()?;
+    let second = i8::try_from(time.second).ok()?;
+    JiffDateTime::new(year, month, day, hour, minute, second, 0).ok()
+}
+
+fn build_regional_time_zone(
+    context: &RegionalContext,
+    date: &SimpleDate,
+    time: &SimpleTime,
+) -> Option<CustomTimeZone> {
+    let local_datetime = to_jiff_datetime(date, time)?;
+    let zoned = local_datetime.in_tz(context.timezone()).ok()?;
+    let offset = GmtOffset::try_from_offset_seconds(zoned.offset().seconds()).ok()?;
+
+    let mut zone = CustomTimeZone::new_with_offset(offset);
+    zone.zone_variant = Some(match zoned
+        .time_zone()
+        .to_offset_info(zoned.timestamp())
+        .dst()
+    {
+        Dst::Yes => ZoneVariant::daylight(),
+        Dst::No => ZoneVariant::standard(),
+    });
+
+    let mapper = TimeZoneIdMapper::new();
+    if let Some(time_zone_id) = mapper.as_borrowed().iana_to_bcp47(context.timezone()) {
+        zone.time_zone_id = Some(time_zone_id);
+        let local_iso = to_iso_datetime(date, time)?;
+        zone.maybe_calculate_metazone(&MetazoneCalculator::new(), &local_iso);
+    }
+
+    Some(zone)
+}
+
 fn fallback_date_string(date: &SimpleDate) -> String {
     format!("{}-{:02}-{:02}", date.year, date.month, date.day)
 }
@@ -144,9 +190,11 @@ fn report_fallback_once(flag: &AtomicBool, kind: &str, locale: &Locale, reason: 
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        eprintln!(
-            "[waterui-locale] {kind} formatting fallback for locale {}: {reason}",
-            locale.canonical_tag()
+        tracing::warn!(
+            kind,
+            locale = locale.canonical_tag(),
+            reason,
+            "waterui-locale formatting fallback"
         );
     }
 }
@@ -282,6 +330,82 @@ pub fn format_datetime(
             let date_fallback = format_date(locale, date, date_style);
             let time_fallback = format_time(locale, time, time_style);
             format!("{date_fallback} {time_fallback}")
+        }
+    }
+}
+
+/// Format a date and time using regional timezone + language settings.
+///
+/// This API consumes runtime regional settings (locale, preferred language order,
+/// region, and timezone) and formats the datetime with timezone awareness.
+pub fn format_datetime_with_regional_context(
+    context: &RegionalContext,
+    date: &SimpleDate,
+    time: &SimpleTime,
+    date_style: DateStyle,
+    time_style: TimeStyle,
+) -> String {
+    let locale = context.locale();
+
+    let Some(datetime_iso) = to_iso_datetime(date, time) else {
+        report_fallback_once(
+            &DATETIME_FALLBACK_LOGGED,
+            "datetime",
+            locale,
+            "invalid date/time components",
+        );
+        let date_fallback = fallback_date_string(date);
+        let time_fallback = fallback_time_string(time, !matches!(time_style, TimeStyle::Short));
+        return format!("{date_fallback} {time_fallback}");
+    };
+
+    let Some(time_zone) = build_regional_time_zone(context, date, time) else {
+        report_fallback_once(
+            &DATETIME_FALLBACK_LOGGED,
+            "datetime",
+            locale,
+            "failed to resolve timezone context",
+        );
+        return format_datetime(locale, date, time, date_style, time_style);
+    };
+
+    let options =
+        length::Bag::from_date_time_style(map_date_style(date_style), map_time_style(time_style));
+    let data_locale = to_data_locale(locale);
+
+    let formatter = ZonedDateTimeFormatter::try_new(
+        &data_locale,
+        options.clone().into(),
+        TimeZoneFormatterOptions::default(),
+    )
+    .or_else(|_| {
+        ZonedDateTimeFormatter::try_new(
+            &to_data_locale(&locales::EN),
+            options.clone().into(),
+            TimeZoneFormatterOptions::default(),
+        )
+    });
+
+    match formatter {
+        Ok(formatter) => formatter
+            .format_to_string(&datetime_iso.to_any(), &time_zone)
+            .unwrap_or_else(|err| {
+                report_fallback_once(
+                    &DATETIME_FALLBACK_LOGGED,
+                    "datetime",
+                    locale,
+                    &format!("ICU zoned format failed: {err}"),
+                );
+                format_datetime(locale, date, time, date_style, time_style)
+            }),
+        Err(err) => {
+            report_fallback_once(
+                &DATETIME_FALLBACK_LOGGED,
+                "datetime",
+                locale,
+                &format!("ICU zoned formatter init failed: {err}"),
+            );
+            format_datetime(locale, date, time, date_style, time_style)
         }
     }
 }
