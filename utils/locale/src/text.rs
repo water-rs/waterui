@@ -168,6 +168,11 @@ where
 }
 
 fn resolve_locale_binding(env: &Environment) -> Binding<Locale> {
+    // Respect explicit per-view RegionalContext in the environment first.
+    if let Some(context) = env.get::<crate::regional::RegionalContext>().cloned() {
+        return Binding::container(context.locale().clone());
+    }
+
     // Respect explicit per-view Locale in the environment first.
     if let Some(locale) = env.get::<Locale>().cloned() {
         return Binding::container(locale);
