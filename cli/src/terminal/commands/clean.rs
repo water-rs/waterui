@@ -17,6 +17,7 @@ use waterui_cli::{
     android::platform::clean_android,
     apple::platform::clean_apple,
     gtk4::platform::clean_gtk4,
+    hydrolysis::platform::clean_hydrolysis,
     project::{Manifest, Project},
 };
 
@@ -29,6 +30,8 @@ pub enum TargetBackend {
     Android,
     /// GTK4 backend (Linux/macOS/Windows).
     Gtk4,
+    /// Hydrolysis backend (self-drawn renderer).
+    Hydrolysis,
     /// All backends.
     All,
 }
@@ -103,6 +106,14 @@ pub async fn run(args: Args) -> Result<()> {
                 pb.finish_and_clear();
             }
             success!("Cleaned GTK4 build artifacts");
+        }
+        TargetBackend::Hydrolysis => {
+            let spinner = shell::spinner("Cleaning hydrolysis build artifacts...");
+            clean_hydrolysis(&project).await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Cleaned hydrolysis build artifacts");
         }
     }
 

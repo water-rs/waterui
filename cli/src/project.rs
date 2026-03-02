@@ -2,6 +2,7 @@
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
+use sha2::Digest as _;
 use tracing::info;
 
 /// Represents a `WaterUI` project with its manifest and crate information.
@@ -114,6 +115,20 @@ impl Project {
         &self.target_dir
     }
 
+    /// Get backend-specific target directory under the project's resolved Cargo target directory.
+    ///
+    /// This keeps generated backend builds inside the user-controlled target tree.
+    #[must_use]
+    pub fn backend_target_dir(&self, backend_name: &str) -> PathBuf {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(self.root.display().to_string().as_bytes());
+        let digest = format!("{:x}", hasher.finalize());
+        let project_fingerprint = &digest[..12];
+        self.target_dir
+            .join("water-backends")
+            .join(format!("{backend_name}-{project_fingerprint}"))
+    }
+
     /// Get the backends configured for the project.
     #[must_use]
     pub const fn backends(&self) -> &Backends {
@@ -124,6 +139,42 @@ impl Project {
     #[must_use]
     pub fn crate_name(&self) -> &str {
         &self.crate_name
+    }
+
+    /// Get configured or default FFI crate name for app mode.
+    #[must_use]
+    pub fn ffi_crate_name(&self) -> String {
+        self.app_crate_overrides()
+            .and_then(|crates| crates.ffi.clone())
+            .unwrap_or_else(|| format!("{}-ffi", self.crate_name))
+    }
+
+    /// Get configured or default GTK backend crate name for app mode.
+    #[must_use]
+    pub fn gtk_backend_crate_name(&self) -> String {
+        self.app_crate_overrides()
+            .and_then(|crates| crates.gtk.clone())
+            .unwrap_or_else(|| format!("{}-gtk4", self.crate_name))
+    }
+
+    /// Get configured or default hydrolysis backend crate name for app mode.
+    #[must_use]
+    pub fn hydrolysis_backend_crate_name(&self) -> String {
+        self.app_crate_overrides()
+            .and_then(|crates| crates.hydrolysis.clone())
+            .unwrap_or_else(|| format!("{}-hydrolysis", self.crate_name))
+    }
+
+    /// Get package type declared in `Water.toml`.
+    #[must_use]
+    pub const fn package_type(&self) -> PackageType {
+        self.manifest.package.package_type
+    }
+
+    /// Returns true when this project is a playground project.
+    #[must_use]
+    pub fn is_playground(&self) -> bool {
+        self.package_type() == PackageType::Playground
     }
 
     /// Get the Apple backend configuration if available.
@@ -160,6 +211,14 @@ impl Project {
     #[must_use]
     pub const fn gtk4_backend(&self) -> Option<&crate::gtk4::backend::Gtk4Backend> {
         self.manifest.backends.gtk4()
+    }
+
+    /// Get the hydrolysis backend configuration if available.
+    #[must_use]
+    pub const fn hydrolysis_backend(
+        &self,
+    ) -> Option<&crate::hydrolysis::backend::HydrolysisBackend> {
+        self.manifest.backends.hydrolysis()
     }
 
     /// Get the manifest of the project.
@@ -213,7 +272,7 @@ impl Project {
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
             android::platform::clean_android, apple::platform::clean_apple,
-            gtk4::platform::clean_gtk4,
+            gtk4::platform::clean_gtk4, hydrolysis::platform::clean_hydrolysis,
         };
 
         // Clean Rust target directory
@@ -233,8 +292,13 @@ impl Project {
         }
 
         // Clean GTK4 backend if configured
-        if self.gtk4_backend().is_some() {
+        if self.gtk4_backend().is_some() || self.is_playground() {
             clean_gtk4(self).await?;
+        }
+
+        // Clean hydrolysis backend if configured
+        if self.hydrolysis_backend().is_some() || self.is_playground() {
+            clean_hydrolysis(self).await?;
         }
 
         Ok(())
@@ -252,6 +316,10 @@ impl Project {
         options: PackageOptions,
     ) -> Result<Artifact, eyre::Report> {
         backend.package(self, platform, options).await
+    }
+
+    fn app_crate_overrides(&self) -> Option<&AppCrates> {
+        self.manifest.app.as_ref()?.crates.as_ref()
     }
 }
 
@@ -284,6 +352,10 @@ pub enum FailToOpenProject {
     /// Failed to initialize backend for playground project.
     #[error("Failed to initialize backend: {0}")]
     BackendInit(#[from] crate::backend::FailToInitBackend),
+
+    /// Failed to manage `.water` directory for playground projects.
+    #[error("Failed to prepare .water directory: {0}")]
+    WaterDir(#[from] eyre::Report),
 }
 
 /// Errors that can occur when creating a new `WaterUI` project.
@@ -321,8 +393,8 @@ pub struct CreateOptions {
     pub name: String,
     /// Bundle identifier (e.g., "com.example.waterexample").
     pub bundle_identifier: String,
-    /// Whether to create a playground project.
-    pub playground: bool,
+    /// Package type for the project.
+    pub package_type: PackageType,
     /// Path to local `WaterUI` repository for development.
     pub waterui_path: Option<PathBuf>,
     /// Author name for Cargo.toml.
@@ -371,24 +443,7 @@ impl Project {
             .collect::<String>();
 
         // Build template context for root files
-        let ctx = TemplateContext {
-            app_display_name: options.name.clone(),
-            app_name: options.name.replace(' ', ""),
-            crate_name: crate_name.clone(),
-            bundle_identifier: options.bundle_identifier.clone(),
-            author: options.author.clone(),
-            android_backend_path: options
-                .waterui_path
-                .as_ref()
-                .map(|p| p.join("backends/android")),
-            use_remote_dev_backend: options.waterui_path.is_none(),
-            waterui_path: options.waterui_path.clone(),
-            backend_project_path: None, // Root files don't need this
-            android_permissions: Vec::new(),
-            ios_permissions: Vec::new(),
-            accessory: false,
-            preview_runtime_fingerprint: None,
-        };
+        let ctx = TemplateContext::for_create_options(&options, crate_name.clone());
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
         templates::root::scaffold(&path, &ctx)
@@ -396,11 +451,11 @@ impl Project {
             .map_err(FailToCreateProject::Scaffold)?;
 
         // Build manifest
-        let package_type = if options.playground {
-            PackageType::Playground
-        } else {
-            PackageType::App
-        };
+        let package_type = options.package_type;
+        let mut backends = Backends::default();
+        if package_type == PackageType::App {
+            backends.set_path("backends");
+        }
 
         let manifest = Manifest {
             package: Package {
@@ -410,12 +465,13 @@ impl Project {
                 assets_path: default_assets_path(),
                 accessory: false,
             },
-            backends: Backends::default(),
+            backends,
             waterui_path: options
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
             permissions: HashMap::default(),
+            app: None,
         };
 
         // Save Water.toml
@@ -522,6 +578,79 @@ impl Project {
         Ok(())
     }
 
+    /// Initialize the hydrolysis backend for an existing project.
+    ///
+    /// Creates necessary files/folders for the hydrolysis backend under
+    /// `backend_path::<HydrolysisBackend>()`.
+    ///
+    /// # Errors
+    /// Returns an error if scaffolding fails.
+    pub async fn init_hydrolysis_backend(
+        &mut self,
+    ) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::{backend::Backend, hydrolysis::backend::HydrolysisBackend};
+
+        let backend = HydrolysisBackend::init(self).await?;
+        self.manifest.backends.set_hydrolysis(backend);
+        self.manifest
+            .save(&self.root)
+            .await
+            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+        Ok(())
+    }
+
+    /// Remove Apple backend configuration and generated files.
+    ///
+    /// # Errors
+    /// Returns an error if deleting files or saving manifest fails.
+    pub async fn remove_apple_backend(&mut self) -> eyre::Result<()> {
+        if let Some(backend) = self.apple_backend() {
+            let path = backend.project_path().to_path_buf();
+            self.remove_backend_relative_dir(&path).await?;
+        }
+        self.manifest.backends.clear_apple();
+        self.save_manifest().await
+    }
+
+    /// Remove Android backend configuration and generated files.
+    ///
+    /// # Errors
+    /// Returns an error if deleting files or saving manifest fails.
+    pub async fn remove_android_backend(&mut self) -> eyre::Result<()> {
+        if let Some(backend) = self.android_backend() {
+            let path = backend.project_path().to_path_buf();
+            self.remove_backend_relative_dir(&path).await?;
+        }
+        self.manifest.backends.clear_android();
+        self.save_manifest().await
+    }
+
+    /// Remove GTK4 backend configuration and generated files.
+    ///
+    /// # Errors
+    /// Returns an error if deleting files or saving manifest fails.
+    pub async fn remove_gtk4_backend(&mut self) -> eyre::Result<()> {
+        if let Some(backend) = self.gtk4_backend() {
+            let path = backend.project_path().to_path_buf();
+            self.remove_backend_relative_dir(&path).await?;
+        }
+        self.manifest.backends.clear_gtk4();
+        self.save_manifest().await
+    }
+
+    /// Remove hydrolysis backend configuration and generated files.
+    ///
+    /// # Errors
+    /// Returns an error if deleting files or saving manifest fails.
+    pub async fn remove_hydrolysis_backend(&mut self) -> eyre::Result<()> {
+        if let Some(backend) = self.hydrolysis_backend() {
+            let path = backend.project_path().to_path_buf();
+            self.remove_backend_relative_dir(&path).await?;
+        }
+        self.manifest.backends.clear_hydrolysis();
+        self.save_manifest().await
+    }
+
     /// Open a `WaterUI` project located at the specified path.
     ///
     /// This loads both the `Water.toml` manifest and the `Cargo.toml` file.
@@ -561,8 +690,11 @@ impl Project {
             return Err(FailToOpenProject::BackendsNotAllowedInPlayground);
         }
 
-        // For playground projects, backends are stored in .water directory
+        // For playground projects, managed backends are stored in .water directory.
         if is_playground {
+            crate::water_dir::ensure_valid(&path)
+                .await
+                .map_err(FailToOpenProject::WaterDir)?;
             manifest.backends.set_path(".water");
         }
 
@@ -592,13 +724,13 @@ impl Project {
             || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
 
         if is_playground && !skip_backend_init {
-            // Apple backend - always re-scaffold to pick up manifest changes
+            // Apple backend - always re-scaffold to pick up manifest changes.
             let apple_backend = AppleBackend::init(&project)
                 .await
                 .map_err(FailToOpenProject::BackendInit)?;
             project.manifest.backends.set_apple(apple_backend);
 
-            // Android backend - always re-scaffold to pick up manifest changes
+            // Android backend - always re-scaffold to pick up manifest changes.
             let android_backend = AndroidBackend::init(&project)
                 .await
                 .map_err(FailToOpenProject::BackendInit)?;
@@ -606,6 +738,23 @@ impl Project {
         }
 
         Ok(project)
+    }
+}
+
+impl Project {
+    async fn save_manifest(&self) -> eyre::Result<()> {
+        self.manifest.save(&self.root).await.map_err(Into::into)
+    }
+
+    async fn remove_backend_relative_dir(&self, relative_path: &Path) -> eyre::Result<()> {
+        let backend_path = self
+            .root
+            .join(self.manifest.backends.path())
+            .join(relative_path);
+        if backend_path.exists() {
+            smol::fs::remove_dir_all(&backend_path).await?;
+        }
+        Ok(())
     }
 }
 
@@ -658,6 +807,9 @@ pub struct Manifest {
     /// Permission configuration for playground projects.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub permissions: HashMap<String, PermissionEntry>,
+    /// App-only configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppConfig>,
 }
 
 /// Permission entry for playground projects.
@@ -746,8 +898,31 @@ impl Manifest {
             backends: Backends::default(),
             waterui_path: None,
             permissions: HashMap::default(),
+            app: None,
         }
     }
+}
+
+/// App-specific configuration in `Water.toml`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AppConfig {
+    /// Optional crate name overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crates: Option<AppCrates>,
+}
+
+/// Crate name overrides for app mode.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AppCrates {
+    /// Optional override crate name for generated FFI crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffi: Option<String>,
+    /// Optional override crate name for generated GTK backend crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gtk: Option<String>,
+    /// Optional override crate name for generated hydrolysis backend crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrolysis: Option<String>,
 }
 
 /// `[package]` section in `Water.toml`.
