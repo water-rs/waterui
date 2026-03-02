@@ -10,6 +10,8 @@ use color_eyre::eyre::{self, bail};
 use smol::fs;
 use tracing::info;
 
+#[cfg(target_os = "macos")]
+use crate::macos_bundle::package_binary_as_app;
 use crate::{
     assets,
     build::BuildOptions,
@@ -35,6 +37,7 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on macOS or Linux";
 pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
+    let backend_target_dir = project.backend_target_dir("gtk4");
 
     if !cargo_toml.exists() {
         bail!(
@@ -53,6 +56,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     let mut cargo = smol::process::Command::new("cargo");
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
+    cargo.arg("--target-dir").arg(&backend_target_dir);
     if options.is_release() {
         cargo.arg("--release");
     }
@@ -75,7 +79,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
     // Return the target directory where the binary was built
     // GTK4 uses its own target directory since it's a standalone project
-    let target_dir = backend_path.join("target").join(profile);
+    let target_dir = backend_target_dir.join(profile);
     Ok(target_dir)
 }
 
@@ -87,6 +91,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
+    let backend_target_dir = project.backend_target_dir("gtk4");
 
     if !cargo_toml.exists() {
         return Ok(()); // Nothing to clean
@@ -97,6 +102,8 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
         "clean".into(),
         "--manifest-path".into(),
         cargo_toml.as_os_str().to_owned(),
+        "--target-dir".into(),
+        backend_target_dir.as_os_str().to_owned(),
     ];
     run_command_os("cargo", args).await?;
 
@@ -121,11 +128,10 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // Copy project assets and dependency fonts
     copy_assets_and_fonts(project, &backend_path).await?;
 
-    let target_dir = backend_path.join("target").join(profile);
+    let target_dir = project.backend_target_dir("gtk4").join(profile);
 
     // The binary name is the GTK4 crate name (project-gtk4)
-    let crate_name = project.crate_name();
-    let binary_name = format!("{crate_name}-gtk4");
+    let binary_name = project.gtk_backend_crate_name();
 
     // Handle platform-specific binary extension
     let binary_path = if cfg!(windows) {
@@ -134,8 +140,9 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
         target_dir.join(&binary_name)
     };
 
-    if !binary_path.exists() {
-        // Try to find the binary by checking if it's using a different naming convention
+    let final_binary_path = if binary_path.exists() {
+        binary_path
+    } else {
         let alt_binary_name = binary_name.replace('-', "_");
         let alt_binary_path = if cfg!(windows) {
             target_dir.join(format!("{alt_binary_name}.exe"))
@@ -144,16 +151,49 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
         };
 
         if alt_binary_path.exists() {
-            return Ok(Artifact::new(project.bundle_identifier(), alt_binary_path));
+            alt_binary_path
+        } else {
+            bail!(
+                "Built GTK4 binary not found at {}. Did you run build first?",
+                binary_path.display()
+            );
         }
+    };
 
-        bail!(
-            "Built GTK4 binary not found at {}. Did you run build first?",
-            binary_path.display()
-        );
+    #[cfg(target_os = "macos")]
+    {
+        let app_name = project
+            .manifest()
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ')
+            .collect::<String>();
+        let app_name = if app_name.is_empty() {
+            "WaterUIGtk4".to_string()
+        } else {
+            app_name
+        };
+        let dist_dir = backend_path.join("dist");
+        fs::create_dir_all(&dist_dir).await?;
+        let app_path = package_binary_as_app(
+            &final_binary_path,
+            project.bundle_identifier(),
+            &app_name,
+            Some(&backend_path.join("resources")),
+            &dist_dir,
+        )
+        .await?;
+        return Ok(Artifact::new(project.bundle_identifier(), app_path));
     }
 
-    Ok(Artifact::new(project.bundle_identifier(), binary_path))
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Artifact::new(
+            project.bundle_identifier(),
+            final_binary_path,
+        ))
+    }
 }
 
 // ============================================================================
