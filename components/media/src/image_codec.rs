@@ -271,7 +271,7 @@ pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, 
 }
 
 pub(crate) fn decode_with_platform(data: &[u8]) -> Result<DecodedRgba, String> {
-    let decoded = waterkit_codec::decode_image(data).map_err(|e| e.to_string())?;
+    let decoded = waterkit_codec::decode_image_platform(data).map_err(|e| e.to_string())?;
     let width = decoded.width();
     let height = decoded.height();
     let pixel_format = decoded.pixel_format();
