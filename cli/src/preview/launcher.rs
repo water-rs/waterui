@@ -553,7 +553,7 @@ async fn remove_dir_all_retry(path: &Path) -> Result<()> {
 
 /// Scaffold the preview support app as a normal playground project.
 async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements) -> Result<()> {
-    use crate::project::{CreateOptions, Manifest as WaterManifest};
+    use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
     use crate::templates::TemplateContext;
 
     let waterui_path = requirements.waterui_root.clone();
@@ -561,7 +561,7 @@ async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements
     let options = CreateOptions {
         name: "WaterUI Preview".to_string(),
         bundle_identifier: "dev.waterui.preview".to_string(),
-        playground: true,
+        package_type: PackageType::Playground,
         waterui_path: Some(waterui_path.clone()),
         author: String::new(),
     };
@@ -576,21 +576,15 @@ async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements
     manifest.package.accessory = true;
     manifest.save(project.root()).await?;
 
-    let ctx = TemplateContext {
-        app_display_name: "WaterUI Preview".to_string(),
-        app_name: "WaterUIPreview".to_string(),
-        crate_name: project.crate_name().to_string(),
-        bundle_identifier: "dev.waterui.preview".to_string(),
-        author: String::new(),
-        android_backend_path: Some(waterui_path.join("backends/android")),
-        use_remote_dev_backend: false,
-        waterui_path: Some(waterui_path),
-        backend_project_path: None,
-        android_permissions: Vec::new(),
-        ios_permissions: Vec::new(),
-        accessory: true,
-        preview_runtime_fingerprint: Some(requirements.runtime_fingerprint.clone()),
-    };
+    let ctx = TemplateContext::for_support_playground(
+        "WaterUI Preview",
+        "WaterUIPreview",
+        project.crate_name().to_string(),
+        "dev.waterui.preview",
+        waterui_path,
+        true,
+        Some(requirements.runtime_fingerprint.clone()),
+    );
 
     crate::templates::preview::scaffold(project.root(), &ctx)
         .await
