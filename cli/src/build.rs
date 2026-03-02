@@ -285,7 +285,7 @@ impl RustBuild {
                     Err(install_err) => {
                         return Err(RustBuildError::FailToBuildRustLibrary(
                             std::io::Error::other(format!(
-                                "Cargo build failed and meson appears missing for dav1d-sys.\n\
+                                "Cargo build failed and meson appears missing.\n\
 Automatic meson installation failed: {install_err}\n\n{combined}"
                             )),
                         ));
@@ -337,13 +337,6 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             .arg("--lib")
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
-
-        // Configure dav1d dependency resolution for this target.
-        for (key, value) in
-            crate::toolchain::dav1d::cargo_env_for_target(&self.triple.to_string()).await
-        {
-            cmd.env(key, value);
-        }
 
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
@@ -460,7 +453,11 @@ fn combined_build_output(output: &std::process::Output) -> String {
 
 fn should_auto_install_meson(build_output: &str) -> bool {
     let lower = build_output.to_ascii_lowercase();
-    lower.contains("dav1d-sys") && lower.contains("meson")
+    lower.contains("meson")
+        && (lower.contains("not found")
+            || lower.contains("no such file")
+            || lower.contains("failed to execute")
+            || lower.contains("is required"))
 }
 
 fn should_retry_after_cmake_generator_mismatch(build_output: &str) -> bool {
