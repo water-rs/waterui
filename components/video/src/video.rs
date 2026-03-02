@@ -34,7 +34,7 @@
 //! ```
 
 use waterui_core::{
-    binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed, Binding, Computed,
+    Binding, Computed, binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed,
 };
 
 use crate::Url;

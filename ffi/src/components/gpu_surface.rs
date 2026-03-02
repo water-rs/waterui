@@ -27,7 +27,9 @@ use {
     wgpu_hal::api::Metal as MetalApi,
 };
 
-use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle};
+use waterui_graphics::gpu_surface::{
+    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
+};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
@@ -596,7 +598,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 pipeline_cache: state.pipeline_cache.as_ref(),
                 redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
+            let setup_future = state
+                .gpu_surface
+                .setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render::setup");
             state.initialized = true;
             state.renderer_format = format;
@@ -778,7 +782,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
                 pipeline_cache: state.pipeline_cache.as_ref(),
                 redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
+            let setup_future = state
+                .gpu_surface
+                .setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_texture::setup");
             state.initialized = true;
             state.renderer_format = target_format;
@@ -945,10 +951,15 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
                 redraw_handle: state.redraw_handle.clone(),
             };
             trace_metal_capture_step("render_to_metal_texture: setup future begin");
-            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
+            let setup_future = state
+                .gpu_surface
+                .setup(&ctx, &mut unsafe { &mut *state.env }.0);
             trace_metal_capture_step("render_to_metal_texture: setup future created");
             trace_metal_capture_step("render_to_metal_texture: setup immediate-poll begin");
-            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_metal_texture::setup");
+            crate::ready_now_or_panic(
+                setup_future,
+                "waterui_gpu_surface_render_to_metal_texture::setup",
+            );
             trace_metal_capture_step("render_to_metal_texture: setup immediate-poll done");
             state.initialized = true;
             state.renderer_format = target_format;
@@ -1033,7 +1044,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
                 pipeline_cache: state.pipeline_cache.as_ref(),
                 redraw_handle: state.redraw_handle.clone(),
             };
-            let setup_future = state.gpu_surface.setup(&ctx, &mut unsafe { &mut *state.env }.0);
+            let setup_future = state
+                .gpu_surface
+                .setup(&ctx, &mut unsafe { &mut *state.env }.0);
             crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_await_ready::setup");
             state.initialized = true;
             state.renderer_format = format;

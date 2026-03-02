@@ -166,9 +166,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
 
     let mut clean_results = stream::iter(unique_cache_dirs.into_iter().map(|cache_dir| {
         let progress = progress.clone();
-        async move {
-            clean_cache_dir(cache_dir, progress).await
-        }
+        async move { clean_cache_dir(cache_dir, progress).await }
     }))
     .buffer_unordered(clean_parallelism());
 
@@ -305,7 +303,10 @@ async fn removable_cache_dir_count(cache_dirs: &[PathBuf]) -> usize {
     count
 }
 
-async fn clean_cache_dir(cache_dir: PathBuf, progress: Option<ProgressBar>) -> Result<Option<PathBuf>> {
+async fn clean_cache_dir(
+    cache_dir: PathBuf,
+    progress: Option<ProgressBar>,
+) -> Result<Option<PathBuf>> {
     if !path_exists(&cache_dir).await {
         return Ok(None);
     }

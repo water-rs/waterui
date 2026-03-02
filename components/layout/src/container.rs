@@ -43,6 +43,18 @@ impl FixedContainer {
     pub fn into_inner(self) -> (Box<dyn Layout>, Vec<AnyView>) {
         (self.layout, self.contents)
     }
+
+    /// Creates a fixed container from pre-built layout and children parts.
+    #[must_use]
+    pub fn from_parts(layout: Box<dyn Layout>, contents: Vec<AnyView>) -> Self {
+        Self { layout, contents }
+    }
+
+    /// Returns borrowed access to the boxed layout and collected children.
+    #[must_use]
+    pub fn as_parts(&self) -> (&dyn Layout, &[AnyView]) {
+        (self.layout.as_ref(), &self.contents)
+    }
 }
 
 impl NativeView for FixedContainer {
@@ -88,6 +100,12 @@ impl LazyContainer {
     #[must_use]
     pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {
         (self.layout, self.contents)
+    }
+
+    /// Returns borrowed access to the boxed layout and lazy child collection.
+    #[must_use]
+    pub fn as_parts(&self) -> (&dyn Layout, &AnyViews<AnyView>) {
+        (self.layout.as_ref(), &self.contents)
     }
 }
 

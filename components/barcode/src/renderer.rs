@@ -248,7 +248,11 @@ impl BarcodeRenderer {
 }
 
 impl GpuView for BarcodeRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl std::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl std::future::Future<Output = ()> {
         let (pipeline, bgl) =
             Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
         self.render_pipeline = Some(pipeline);

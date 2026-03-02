@@ -1,6 +1,4 @@
-use waterui_graphics::{
-    GradientType, ResolvedGradient, ResolvedGradientStop,
-};
+use waterui_graphics::{GradientType, ResolvedGradient, ResolvedGradientStop};
 
 use crate::{IntoFFI, WuiArray, color::WuiResolvedColor};
 

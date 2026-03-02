@@ -8,9 +8,7 @@ use color_eyre::eyre::Result;
 use sha2::Digest as _;
 
 use crate::{header, note, success};
-use waterui_cli::inspector::{
-    InspectorLaunchOptions, InspectorPlatform, launch_inspector_session,
-};
+use waterui_cli::inspector::{InspectorLaunchOptions, InspectorPlatform, launch_inspector_session};
 
 /// Target platform for inspector app.
 #[derive(Debug, Clone, Copy, ValueEnum)]

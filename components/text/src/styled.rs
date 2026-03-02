@@ -316,6 +316,12 @@ impl StyledStr {
         self.chunks
     }
 
+    /// Returns the constituent chunks without consuming the styled text.
+    #[must_use]
+    pub fn chunks(&self) -> &[(Str, Style)] {
+        &self.chunks
+    }
+
     /// Sets the style for all text in this styled text.
     #[must_use]
     pub fn set_style(self, style: &Style) -> Self {

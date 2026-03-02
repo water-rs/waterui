@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -302,7 +302,11 @@ impl FlameRenderer {
 }
 
 impl GpuView for FlameRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 

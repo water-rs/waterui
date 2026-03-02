@@ -333,8 +333,7 @@ impl FlowMarkdownState {
                 .tree
                 .take()
                 .expect("FlowMarkdown incremental parse requires cached previous tree");
-            let edit =
-                build_append_input_edit(previous_len, self.source_end_point, markdown);
+            let edit = build_append_input_edit(previous_len, self.source_end_point, markdown);
             previous_tree.edit(&edit);
             let next_tree = self
                 .parser
@@ -407,8 +406,8 @@ impl FlowMarkdownState {
 
         let full_typewriter_chars = self.total_typewriter_char_count(&self.blocks);
         let typewriter = if should_incremental && appended {
-            self.resolve_typewriter_run(&changed_kinds)
-                .and_then(|(batch_chars, batch_ms, token_fade_in)| {
+            self.resolve_typewriter_run(&changed_kinds).and_then(
+                |(batch_chars, batch_ms, token_fade_in)| {
                     let visible = self.typewriter_visible_chars.min(full_typewriter_chars);
                     self.typewriter_visible_chars = visible;
                     self.typewriter_target_chars = full_typewriter_chars;
@@ -418,7 +417,8 @@ impl FlowMarkdownState {
                         batch_ms,
                         token_fade_in,
                     })
-                })
+                },
+            )
         } else {
             self.typewriter_visible_chars = full_typewriter_chars;
             self.typewriter_target_chars = full_typewriter_chars;
@@ -482,8 +482,7 @@ impl FlowMarkdownState {
                 cps,
                 batch_ms,
                 fade_in,
-            }) =
-                self.animation_policy(kind)
+            }) = self.animation_policy(kind)
             {
                 let batch_ms = batch_ms.max(1);
                 let batch_chars = ((u64::from(cps.max(1)) * batch_ms) / 1000).max(1) as usize;
@@ -659,13 +658,15 @@ fn parse_block(
     }
 
     let elements = match () {
-        _ if block.kind == FlowElementKind::Table && is_incomplete_table(&slice) => match table_policy {
-            FlowTablePolicy::NoAnimationReadablePending => {
-                vec![RichTextElement::Text(StyledStr::plain(
-                    "Streaming table...".to_string(),
-                ))]
+        _ if block.kind == FlowElementKind::Table && is_incomplete_table(&slice) => {
+            match table_policy {
+                FlowTablePolicy::NoAnimationReadablePending => {
+                    vec![RichTextElement::Text(StyledStr::plain(
+                        "Streaming table...".to_string(),
+                    ))]
+                }
             }
-        },
+        }
         _ if block.kind == FlowElementKind::Image && is_incomplete_image_fragment(&slice) => {
             vec![RichTextElement::Text(StyledStr::plain(
                 extract_image_alt_or_placeholder(&slice),
@@ -802,9 +803,7 @@ fn close_unterminated_inline_markers(markdown: &str) -> String {
 
         if ch == '*' || ch == '_' {
             let run = consume_repeated_marker(ch, &mut chars, &fence_ranges, &mut fence_cursor);
-            if ch == '_'
-                && is_intraword_underscore(markdown, idx, run)
-            {
+            if ch == '_' && is_intraword_underscore(markdown, idx, run) {
                 continue;
             }
 
@@ -1076,10 +1075,7 @@ fn scan_fenced_ranges(markdown: &str) -> (Vec<Range<usize>>, Option<FenceMarker>
 fn parse_fence_run(line: &str) -> Option<(char, usize, &str)> {
     let bytes = line.as_bytes();
     let mut idx = 0usize;
-    while idx < bytes.len()
-        && idx < 3
-        && (bytes[idx] == b' ' || bytes[idx] == b'\t')
-    {
+    while idx < bytes.len() && idx < 3 && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
         idx += 1;
     }
 
@@ -1110,7 +1106,10 @@ fn byte_in_ranges(index: usize, ranges: &[Range<usize>], cursor: &mut usize) -> 
     }
 }
 
-fn infer_block_kind(default_kind: FlowElementKind, elements: &[RichTextElement]) -> FlowElementKind {
+fn infer_block_kind(
+    default_kind: FlowElementKind,
+    elements: &[RichTextElement],
+) -> FlowElementKind {
     if elements
         .iter()
         .any(|element| rich_text_contains_kind(element, FlowElementKind::Image))
@@ -1168,9 +1167,9 @@ fn rich_text_contains_kind(element: &RichTextElement, kind: FlowElementKind) -> 
         (RichTextElement::Group { elements, .. }, _) => elements
             .iter()
             .any(|child| rich_text_contains_kind(child, kind)),
-        (RichTextElement::List { items, .. }, _) => {
-            items.iter().any(|child| rich_text_contains_kind(child, kind))
-        }
+        (RichTextElement::List { items, .. }, _) => items
+            .iter()
+            .any(|child| rich_text_contains_kind(child, kind)),
         (RichTextElement::Quote { content }, _) => content
             .iter()
             .any(|child| rich_text_contains_kind(child, kind)),
@@ -1178,9 +1177,9 @@ fn rich_text_contains_kind(element: &RichTextElement, kind: FlowElementKind) -> 
             headers
                 .iter()
                 .any(|child| rich_text_contains_kind(child, kind))
-                || rows.iter().any(|row| {
-                    row.iter().any(|child| rich_text_contains_kind(child, kind))
-                })
+                || rows
+                    .iter()
+                    .any(|row| row.iter().any(|child| rich_text_contains_kind(child, kind)))
         }
         _ => false,
     }
@@ -1740,18 +1739,9 @@ mod tests {
 
     #[test]
     fn completion_closes_basic_inline_markers_for_streaming_fragments() {
-        assert_eq!(
-            complete_incomplete_markdown_fragment("**bold"),
-            "**bold**"
-        );
-        assert_eq!(
-            complete_incomplete_markdown_fragment("*italic"),
-            "*italic*"
-        );
-        assert_eq!(
-            complete_incomplete_markdown_fragment("`code"),
-            "`code`"
-        );
+        assert_eq!(complete_incomplete_markdown_fragment("**bold"), "**bold**");
+        assert_eq!(complete_incomplete_markdown_fragment("*italic"), "*italic*");
+        assert_eq!(complete_incomplete_markdown_fragment("`code"), "`code`");
         assert_eq!(
             complete_incomplete_markdown_fragment("~~strike"),
             "~~strike~~"
@@ -1784,7 +1774,10 @@ mod tests {
         );
         let completed = complete_incomplete_markdown_fragment(markdown);
         assert_eq!(completed, format!("{markdown}```"));
-        assert_eq!(completed.matches("**").count(), markdown.matches("**").count());
+        assert_eq!(
+            completed.matches("**").count(),
+            markdown.matches("**").count()
+        );
     }
 
     #[test]
@@ -1857,8 +1850,7 @@ mod tests {
 
         for markdown in DOCS {
             let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
-            let saw_typewriter =
-                stream_with_constant_chars_per_second(&mut state, markdown, 16);
+            let saw_typewriter = stream_with_constant_chars_per_second(&mut state, markdown, 16);
             assert!(
                 saw_typewriter,
                 "constant-rate stream should trigger at least one typewriter run"

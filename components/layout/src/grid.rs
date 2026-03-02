@@ -2,12 +2,12 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
-use waterui_core::{view::TupleViews, AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
+    Layout, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
-    Layout, Point, ProposalSize, Rect, Size, SubView,
 };
 
 /// Cached measurement for a child during layout

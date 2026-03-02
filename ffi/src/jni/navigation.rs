@@ -96,8 +96,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigat
     env_ptr: jlong,
     controller_ptr: jlong,
 ) {
-    let wui_env: *mut crate::WuiEnv =
-        require_ptr(env_ptr, "envInstallNavigationController", "env");
+    let wui_env: *mut crate::WuiEnv = require_ptr(env_ptr, "envInstallNavigationController", "env");
     let controller: *mut crate::components::navigation::WuiNavigationController = require_ptr(
         controller_ptr,
         "envInstallNavigationController",

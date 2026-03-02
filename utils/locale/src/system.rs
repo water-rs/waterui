@@ -5,8 +5,8 @@ use std::cell::RefCell;
 
 use nami::Binding;
 
-use crate::regional::{self, ListenerHandle};
 use crate::locale::{Locale, locales};
+use crate::regional::{self, ListenerHandle};
 
 thread_local! {
     static RUNTIME_LOCALE_STATE: RefCell<Option<RuntimeLocaleState>> = const { RefCell::new(None) };
