@@ -5,9 +5,9 @@ use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use nami::Signal;
 use waterui_canvas::{Canvas, DrawingContext, Path};
+use waterui_core::View;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::View;
 use waterui_graphics::color::Srgb;
 
 use crate::data::{
@@ -82,7 +82,10 @@ fn plot_rect(ctx: &DrawingContext<'_>, padding_ratio: f32) -> Rect {
     let inset_y = height * padding_ratio;
     Rect::new(
         Point::new(inset_x, inset_y),
-        Size::new((width - inset_x * 2.0).max(1.0), (height - inset_y * 2.0).max(1.0)),
+        Size::new(
+            (width - inset_x * 2.0).max(1.0),
+            (height - inset_y * 2.0).max(1.0),
+        ),
     )
 }
 
@@ -392,8 +395,12 @@ pub(crate) fn draw_depth(ctx: &mut DrawingContext<'_>, data: &DepthData, bid: Sr
         ctx.stroke_path(&outline);
     };
 
-    draw_side(ctx, &data.bids, bid, |level| (level.price, level.cumulative_volume));
-    draw_side(ctx, &data.asks, ask, |level| (level.price, level.cumulative_volume));
+    draw_side(ctx, &data.bids, bid, |level| {
+        (level.price, level.cumulative_volume)
+    });
+    draw_side(ctx, &data.asks, ask, |level| {
+        (level.price, level.cumulative_volume)
+    });
 }
 
 pub(crate) fn draw_heatmap(ctx: &mut DrawingContext<'_>, data: &HeatmapData) {
@@ -423,13 +430,7 @@ pub(crate) fn draw_heatmap(ctx: &mut DrawingContext<'_>, data: &HeatmapData) {
     }
 }
 
-fn contour_interpolate(
-    p1: Point,
-    p2: Point,
-    v1: f32,
-    v2: f32,
-    level: f32,
-) -> Point {
+fn contour_interpolate(p1: Point, p2: Point, v1: f32, v2: f32, level: f32) -> Point {
     let denom = (v2 - v1).abs();
     let t = if denom <= f32::EPSILON {
         0.5
@@ -634,7 +635,10 @@ pub(crate) fn draw_radar(
 
     for axis in 0..axis_count {
         let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
-        let end = Point::new(center.x + angle.cos() * radius, center.y + angle.sin() * radius);
+        let end = Point::new(
+            center.x + angle.cos() * radius,
+            center.y + angle.sin() * radius,
+        );
         ctx.stroke_line(center, end);
     }
 
@@ -711,8 +715,14 @@ pub(crate) fn draw_pie(
 
         let mut path = Path::new();
         if inner_r > 0.0 {
-            let outer_start = Point::new(center.x + angle.cos() * outer_r, center.y + angle.sin() * outer_r);
-            let inner_end = Point::new(center.x + end.cos() * inner_r, center.y + end.sin() * inner_r);
+            let outer_start = Point::new(
+                center.x + angle.cos() * outer_r,
+                center.y + angle.sin() * outer_r,
+            );
+            let inner_end = Point::new(
+                center.x + end.cos() * inner_r,
+                center.y + end.sin() * inner_r,
+            );
             path.move_to(outer_start);
             path.arc(center, outer_r, angle, end, false);
             path.line_to(inner_end);
@@ -720,7 +730,10 @@ pub(crate) fn draw_pie(
             path.close();
         } else {
             path.move_to(center);
-            path.line_to(Point::new(center.x + angle.cos() * outer_r, center.y + angle.sin() * outer_r));
+            path.line_to(Point::new(
+                center.x + angle.cos() * outer_r,
+                center.y + angle.sin() * outer_r,
+            ));
             path.arc(center, outer_r, angle, end, false);
             path.close();
         }
@@ -772,7 +785,12 @@ pub(crate) fn draw_choropleth(
         }
         path.close();
 
-        let fill_color = color_from_scale(&data.color_scale, polygon.value, data.min_value, data.max_value);
+        let fill_color = color_from_scale(
+            &data.color_scale,
+            polygon.value,
+            data.min_value,
+            data.max_value,
+        );
         ctx.set_fill_style(fill_color);
         ctx.fill_path(&path);
 
@@ -815,7 +833,12 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData) {
             }
 
             for index in (0..point_count.min(series.values.len())).rev() {
-                path.line_to(map_xy(plot, bounds, data.x_values[index], cumulative[index]));
+                path.line_to(map_xy(
+                    plot,
+                    bounds,
+                    data.x_values[index],
+                    cumulative[index],
+                ));
                 cumulative[index] += series.values[index];
             }
         } else {
@@ -823,7 +846,12 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData) {
             path.line_to(map_xy(plot, bounds, data.x_values[0], series.values[0]));
 
             for index in 1..point_count.min(series.values.len()) {
-                path.line_to(map_xy(plot, bounds, data.x_values[index], series.values[index]));
+                path.line_to(map_xy(
+                    plot,
+                    bounds,
+                    data.x_values[index],
+                    series.values[index],
+                ));
             }
 
             for index in (0..point_count.min(series.values.len())).rev() {

@@ -4,15 +4,17 @@ use std::ffi::OsStr;
 use std::path::{Component, Path};
 
 /// Environment variables required for the preview support app runtime profile.
-pub(crate) const PREVIEW_RUNTIME_ENV_VARS: [(&str, &str); 2] =
-    [("WATERUI_GPU_PREFER_HDR", "0"), ("WATERUI_PREVIEW_MODE", "1")];
+pub(crate) const PREVIEW_RUNTIME_ENV_VARS: [(&str, &str); 2] = [
+    ("WATERUI_GPU_PREFER_HDR", "0"),
+    ("WATERUI_PREVIEW_MODE", "1"),
+];
 
 const PREVIEW_ROOT_INPUT_FILES: [&str; 4] = ["Cargo.toml", "Cargo.lock", "Water.toml", "build.rs"];
 
 /// Build input extensions relevant to runtime compatibility.
 const PREVIEW_INPUT_EXTENSIONS: [&str; 19] = [
-    "rs", "swift", "m", "mm", "h", "hpp", "c", "cc", "cpp", "metal", "wgsl", "kt", "kts",
-    "java", "xml", "plist", "toml", "json", "yaml",
+    "rs", "swift", "m", "mm", "h", "hpp", "c", "cc", "cpp", "metal", "wgsl", "kt", "kts", "java",
+    "xml", "plist", "toml", "json", "yaml",
 ];
 
 /// Return a stable runtime profile tag used to version runtime compatibility.
@@ -31,8 +33,7 @@ pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
     matches!(
         name.to_str(),
         Some(
-            ".git" | ".jj" | ".water" | "target" | "node_modules" | ".gradle" | ".idea"
-                | ".vscode"
+            ".git" | ".jj" | ".water" | "target" | "node_modules" | ".gradle" | ".idea" | ".vscode"
         )
     )
 }

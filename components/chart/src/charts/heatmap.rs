@@ -1,8 +1,8 @@
 //! Heatmap chart component.
 
 use nami::Signal;
-use waterui_core::{Environment, View};
 use waterui_canvas::Canvas;
+use waterui_core::{Environment, View};
 
 use crate::charts::canvas::{draw_heatmap, reactive_canvas};
 use crate::data::HeatmapData;

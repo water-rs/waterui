@@ -152,6 +152,12 @@ impl Dynamic {
             DynamicHandlerState::Connected(_) => unreachable!("Dynamic already connected"),
         }
     }
+
+    /// Returns a stable identity for this dynamic node.
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        Rc::as_ptr(&self.0.0) as usize
+    }
 }
 
 /// Creates a view that watches a reactive value.

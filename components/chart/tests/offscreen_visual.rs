@@ -178,8 +178,12 @@ fn radar_data() -> RadarData {
 
 fn area_data() -> AreaData {
     AreaData::new(vec![0.0, 1.0, 2.0, 3.0, 4.0])
-        .series(AreaSeries::new("S1", vec![10.0, 20.0, 15.0, 25.0, 30.0]).color(0.23, 0.51, 0.96, 0.7))
-        .series(AreaSeries::new("S2", vec![6.0, 9.0, 8.0, 12.0, 16.0]).color(0.94, 0.27, 0.27, 0.65))
+        .series(
+            AreaSeries::new("S1", vec![10.0, 20.0, 15.0, 25.0, 30.0]).color(0.23, 0.51, 0.96, 0.7),
+        )
+        .series(
+            AreaSeries::new("S2", vec![6.0, 9.0, 8.0, 12.0, 16.0]).color(0.94, 0.27, 0.27, 0.65),
+        )
 }
 
 fn choropleth_data() -> ChoroplethData {

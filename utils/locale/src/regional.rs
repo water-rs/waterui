@@ -194,7 +194,10 @@ fn normalize_locale_env_value(value: &str) -> Option<String> {
         return None;
     }
     let without_encoding = trimmed.split('.').next().unwrap_or(trimmed);
-    let without_modifier = without_encoding.split('@').next().unwrap_or(without_encoding);
+    let without_modifier = without_encoding
+        .split('@')
+        .next()
+        .unwrap_or(without_encoding);
     if without_modifier.is_empty() {
         return None;
     }
