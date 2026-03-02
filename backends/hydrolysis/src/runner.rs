@@ -27,6 +27,7 @@ struct RuntimeWindow<P: PlatformWindow> {
     platform: P,
     renderer: HydrolysisRenderer,
     needs_rebuild: bool,
+    pointer_position: Option<(f32, f32)>,
 }
 
 impl<P: PlatformWindow> RuntimeWindow<P> {
@@ -36,6 +37,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             platform,
             renderer,
             needs_rebuild: true,
+            pointer_position: None,
         }
     }
 }
@@ -83,8 +85,12 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         if runtime.renderer.advance_animations() {
             runtime.needs_rebuild = true;
         }
-        let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
-        if should_rebuild {
+
+        loop {
+            let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
+            if !should_rebuild {
+                break;
+            }
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
             let content = runtime.window.build_content();
@@ -93,6 +99,11 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 .dispatch_with_transform(content, env, bounds, root_transform);
             runtime.renderer.finish_rebuild_frame();
             runtime.needs_rebuild = false;
+            if let Some((x, y)) = runtime.pointer_position {
+                if runtime.renderer.handle_pointer_move(x, y, env) {
+                    runtime.needs_rebuild = true;
+                }
+            }
         }
 
         let clear_color = window_clear_color(&runtime.window, env);
@@ -115,6 +126,11 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    if let Some((x, y)) = runtime.pointer_position {
+        runtime
+            .platform
+            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
+    }
 }
 
 #[cfg(not(feature = "winit"))]
@@ -344,22 +360,32 @@ mod winit_runner {
                         runtime.needs_rebuild = true;
                     }
                     InputEvent::PointerDown { x, y, button } => {
+                        runtime.pointer_position = Some((x, y));
                         if runtime.renderer.handle_pointer_down(x, y, button, env) {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::PointerUp { x, y, button } => {
+                        runtime.pointer_position = Some((x, y));
                         if runtime.renderer.handle_pointer_up(x, y, button, env) {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::PointerMove { x, y } => {
+                        runtime.pointer_position = Some((x, y));
                         if runtime.renderer.handle_pointer_move(x, y, env) {
                             runtime.needs_rebuild = true;
                         }
                     }
-                    InputEvent::Scroll { x, y, dx, dy } => {
-                        if runtime.renderer.handle_scroll(x, y, dx, dy) {
+                    InputEvent::Scroll {
+                        x,
+                        y,
+                        dx,
+                        dy,
+                        is_line_delta,
+                    } => {
+                        runtime.pointer_position = Some((x, y));
+                        if runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta) {
                             runtime.needs_rebuild = true;
                         }
                     }
@@ -393,6 +419,11 @@ mod winit_runner {
             runtime
                 .platform
                 .sync_text_input_state(runtime.renderer.focused_text_input_state());
+            if let Some((x, y)) = runtime.pointer_position {
+                runtime
+                    .platform
+                    .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
+            }
             should_close
         }
 
@@ -493,7 +524,8 @@ mod winit_runner {
                         .expect("hydrolysis runner missing AccessKit adapter for user event");
                     match event.window_event {
                         AccessKitWindowEvent::InitialTreeRequested => {
-                            if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                            if let Some(update) = runtime.renderer.take_accessibility_tree_update()
+                            {
                                 adapter.update_if_active(|| update);
                             } else {
                                 runtime.needs_rebuild = true;
@@ -501,7 +533,10 @@ mod winit_runner {
                             }
                         }
                         AccessKitWindowEvent::ActionRequested(request) => {
-                            if runtime.renderer.handle_accessibility_action(request, &self.env) {
+                            if runtime
+                                .renderer
+                                .handle_accessibility_action(request, &self.env)
+                            {
                                 runtime.needs_rebuild = true;
                                 runtime.platform.request_redraw();
                             }
