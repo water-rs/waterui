@@ -5,7 +5,6 @@ use std::convert::Infallible;
 use color_eyre::eyre;
 
 pub mod cmake;
-pub mod dav1d;
 pub mod doctor;
 pub mod meson;
 pub mod sccache;
