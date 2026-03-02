@@ -100,12 +100,12 @@ impl ScrollHandle {
         state.metrics()
     }
 
-    pub fn apply_scroll_delta(&self, dx: f32, dy: f32) -> bool {
+    pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let mut state = self.state.borrow_mut();
         if state.generation != self.generation {
             return false;
         }
-        state.apply_scroll_delta(f64::from(dx), f64::from(dy))
+        state.apply_scroll_delta(f64::from(dx), f64::from(dy), is_line_delta)
     }
 }
 
@@ -152,21 +152,24 @@ impl ScrollState {
         self.generation
     }
 
-    fn apply_scroll_delta(&mut self, dx: f64, dy: f64) -> bool {
+    fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
         let metrics = self.metrics();
         let old_x = self.offset_x;
         let old_y = self.offset_y;
+        let delta_scale = if is_line_delta { SCROLL_LINE_STEP } else { 1.0 };
+        let scaled_dx = dx * delta_scale;
+        let scaled_dy = dy * delta_scale;
 
         match self.axis {
             Axis::Horizontal => {
-                self.offset_x = clamp_scroll_offset(old_x - dx * SCROLL_LINE_STEP, metrics.max_x);
+                self.offset_x = clamp_scroll_offset(old_x - scaled_dx, metrics.max_x);
             }
             Axis::Vertical => {
-                self.offset_y = clamp_scroll_offset(old_y - dy * SCROLL_LINE_STEP, metrics.max_y);
+                self.offset_y = clamp_scroll_offset(old_y - scaled_dy, metrics.max_y);
             }
             Axis::All => {
-                self.offset_x = clamp_scroll_offset(old_x - dx * SCROLL_LINE_STEP, metrics.max_x);
-                self.offset_y = clamp_scroll_offset(old_y - dy * SCROLL_LINE_STEP, metrics.max_y);
+                self.offset_x = clamp_scroll_offset(old_x - scaled_dx, metrics.max_x);
+                self.offset_y = clamp_scroll_offset(old_y - scaled_dy, metrics.max_y);
             }
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
