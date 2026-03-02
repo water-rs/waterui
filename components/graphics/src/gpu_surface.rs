@@ -246,8 +246,7 @@ impl RedrawHandle {
 
     /// Check and clear the dirty flag. Returns `true` if a redraw was requested.
     pub fn take_dirty(&self) -> bool {
-        self.dirty
-            .swap(false, core::sync::atomic::Ordering::AcqRel)
+        self.dirty.swap(false, core::sync::atomic::Ordering::AcqRel)
     }
 }
 
@@ -413,7 +412,11 @@ pub trait GpuView: 'static {
     ///
     /// Returns a future that completes when setup is done. For sync renderers,
     /// return `async {}` after performing sync work.
-    fn setup(&mut self, ctx: &GpuContext, env: &mut waterui_core::Environment) -> impl Future<Output = ()>;
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        env: &mut waterui_core::Environment,
+    ) -> impl Future<Output = ()>;
 
     /// Called each frame to render.
     ///
@@ -715,12 +718,20 @@ impl std::error::Error for OffscreenRenderError {}
 
 /// Private object-safe trait for type-erased GPU views.
 trait GpuViewImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a>;
+    fn setup<'a>(
+        &'a mut self,
+        ctx: &'a GpuContext<'a>,
+        env: &'a mut waterui_core::Environment,
+    ) -> SetupFuture<'a>;
     fn render(&mut self, frame: &mut GpuFrame);
 }
 
 impl<T: GpuView> GpuViewImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a> {
+    fn setup<'a>(
+        &'a mut self,
+        ctx: &'a GpuContext<'a>,
+        env: &'a mut waterui_core::Environment,
+    ) -> SetupFuture<'a> {
         Box::pin(GpuView::setup(self, ctx, env))
     }
 
@@ -908,7 +919,10 @@ impl GpuSurface {
             pipeline_cache: guard.pipeline_cache.as_ref(),
             redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(self.setup(&ctx, env), "gpu_surface::render_offscreen::setup");
+        crate::ready_now_or_panic(
+            self.setup(&ctx, env),
+            "gpu_surface::render_offscreen::setup",
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface"),
@@ -997,7 +1011,10 @@ impl GpuSurface {
             pipeline_cache: guard.pipeline_cache.as_ref(),
             redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(self.setup(&ctx, env), "gpu_surface::render_offscreen_hdr::setup");
+        crate::ready_now_or_panic(
+            self.setup(&ctx, env),
+            "gpu_surface::render_offscreen_hdr::setup",
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface_hdr"),
@@ -1037,7 +1054,11 @@ impl GpuSurface {
     }
 
     /// Calls `setup` on the GPU view, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>, env: &'a mut waterui_core::Environment) -> SetupFuture<'a> {
+    pub fn setup<'a>(
+        &'a mut self,
+        ctx: &'a GpuContext<'a>,
+        env: &'a mut waterui_core::Environment,
+    ) -> SetupFuture<'a> {
         self.renderer.setup(ctx, env)
     }
 

@@ -1,8 +1,8 @@
 //! FlowMarkdown end-to-end playground.
 use std::time::Duration;
 
-use waterui::app::App;
 use waterui::animation::Animation;
+use waterui::app::App;
 use waterui::prelude::*;
 use waterui::task::{sleep, spawn_local};
 
@@ -298,17 +298,16 @@ fn main() -> impl View {
                         );
                     }
                 }),
-                button("Reset")
-                    .action({
-                        let markdown = markdown.clone();
-                        let char_progress = char_progress.clone();
-                        let stream_revision = stream_revision.clone();
-                        let streaming = streaming.clone();
-                        move || {
-                            cancel_stream(&streaming, &stream_revision);
-                            reset_stream(&markdown, &char_progress);
-                        }
-                    }),
+                button("Reset").action({
+                    let markdown = markdown.clone();
+                    let char_progress = char_progress.clone();
+                    let stream_revision = stream_revision.clone();
+                    let streaming = streaming.clone();
+                    move || {
+                        cancel_stream(&streaming, &stream_revision);
+                        reset_stream(&markdown, &char_progress);
+                    }
+                }),
             ))
             .spacing(10.0),
             Dynamic::watch(animation_revision.clone(), {
@@ -318,7 +317,10 @@ fn main() -> impl View {
                 let stream_cps = stream_cps.clone();
                 move |_| {
                     let fade_label = if token_fade_enabled.get() {
-                        format!("on ({} ms)", stream_interval_ms(stream_cps.get()).clamp(8, 64))
+                        format!(
+                            "on ({} ms)",
+                            stream_interval_ms(stream_cps.get()).clamp(8, 64)
+                        )
                     } else {
                         "off".to_string()
                     };
