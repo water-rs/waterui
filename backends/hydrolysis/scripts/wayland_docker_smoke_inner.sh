@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCREENSHOT="/work/backends/hydrolysis/scripts/wayland_smoke.png"
+EXAMPLE="${HYDROLYSIS_WAYLAND_EXAMPLE:-wayland_smoke}"
+ARTIFACT="${HYDROLYSIS_WAYLAND_ARTIFACT:-${EXAMPLE}}"
+RUN_SECONDS="${HYDROLYSIS_WAYLAND_SECONDS:-15}"
+OUTPUT_WIDTH="${HYDROLYSIS_WAYLAND_OUTPUT_WIDTH:-1920}"
+OUTPUT_HEIGHT="${HYDROLYSIS_WAYLAND_OUTPUT_HEIGHT:-1080}"
+OUTPUT_SCALE="${HYDROLYSIS_WAYLAND_OUTPUT_SCALE:-1}"
+WGPU_BACKEND_VALUE="${HYDROLYSIS_WAYLAND_WGPU_BACKEND:-gles}"
+
+SCREENSHOT="/work/backends/hydrolysis/scripts/${ARTIFACT}.png"
 SCREENSHOT_DIR="/work/backends/hydrolysis/scripts"
-APP_LOG="/work/backends/hydrolysis/scripts/wayland_smoke_app.log"
-WESTON_LOG_OUT="/work/backends/hydrolysis/scripts/wayland_smoke_weston.log"
-SCREENSHOT_LOG_OUT="/work/backends/hydrolysis/scripts/wayland_smoke_screenshooter.log"
+APP_LOG="/work/backends/hydrolysis/scripts/${ARTIFACT}_app.log"
+WESTON_LOG_OUT="/work/backends/hydrolysis/scripts/${ARTIFACT}_weston.log"
+SCREENSHOT_LOG_OUT="/work/backends/hydrolysis/scripts/${ARTIFACT}_screenshooter.log"
 WESTON_LOG="/tmp/weston.log"
 SCREENSHOT_LOG="/tmp/weston-screenshot.log"
-BASELINE_SCREENSHOT="/work/backends/hydrolysis/scripts/wayland_smoke_baseline.png"
-PROBE_SCREENSHOT="/work/backends/hydrolysis/scripts/wayland_smoke_probe.png"
-CANDIDATE_SCREENSHOT="/work/backends/hydrolysis/scripts/wayland_smoke_candidate.png"
+WESTON_CONFIG="/tmp/weston-smoke.ini"
+BASELINE_SCREENSHOT="/work/backends/hydrolysis/scripts/${ARTIFACT}_baseline.png"
+PROBE_SCREENSHOT="/work/backends/hydrolysis/scripts/${ARTIFACT}_probe.png"
+CANDIDATE_SCREENSHOT="/work/backends/hydrolysis/scripts/${ARTIFACT}_candidate.png"
 
 persist_logs() {
     cp "${WESTON_LOG}" "${WESTON_LOG_OUT}" 2>/dev/null || true
@@ -36,12 +45,23 @@ export XDG_RUNTIME_DIR=/tmp/xdg-runtime
 mkdir -p "${XDG_RUNTIME_DIR}"
 chmod 700 "${XDG_RUNTIME_DIR}"
 
+printf '%s\n' \
+    '[core]' \
+    'backend=headless-backend.so' \
+    'shell=kiosk-shell.so' \
+    'idle-time=0' \
+    'modules=screen-share.so' \
+    '' \
+    '[output]' \
+    'name=headless' \
+    "mode=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}" \
+    "scale=${OUTPUT_SCALE}" \
+    > "${WESTON_CONFIG}"
+
 weston \
-    --backend=headless-backend.so \
     --socket=wayland-1 \
-    --idle-time=0 \
     --renderer=pixman \
-    --modules=screen-share.so \
+    --config="${WESTON_CONFIG}" \
     --debug \
     --log="${WESTON_LOG}" &
 WESTON_PID=$!
@@ -61,10 +81,10 @@ fi
 
 export WAYLAND_DISPLAY=wayland-1
 export WINIT_UNIX_BACKEND=wayland
-export WGPU_BACKEND=vulkan,gles
-export HYDROLYSIS_WAYLAND_SMOKE_SECONDS=15
+export WGPU_BACKEND="${WGPU_BACKEND_VALUE}"
+export HYDROLYSIS_WAYLAND_SECONDS="${RUN_SECONDS}"
 
-/usr/local/cargo/bin/cargo build -p hydrolysis --features winit --example wayland_smoke
+/usr/local/cargo/bin/cargo build -p hydrolysis --features winit --example "${EXAMPLE}"
 
 capture_screenshot() {
     local output_path="$1"
@@ -106,7 +126,7 @@ for _ in $(seq 1 120); do
     sleep 0.1
 done
 
-/work/target/debug/examples/wayland_smoke >"${APP_LOG}" 2>&1 &
+/work/target/debug/examples/"${EXAMPLE}" >"${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 for _ in $(seq 1 120); do
@@ -116,8 +136,8 @@ for _ in $(seq 1 120); do
         else
             app_status=$?
         fi
-        echo "wayland_smoke exited before screenshot capture" >&2
-        echo "wayland_smoke exit status: ${app_status}" >&2
+        echo "${EXAMPLE} exited before screenshot capture" >&2
+        echo "${EXAMPLE} exit status: ${app_status}" >&2
         cat "${APP_LOG}" >&2 || true
         cat "${WESTON_LOG}" >&2 || true
         exit 1
@@ -141,8 +161,8 @@ fi
 wait "${APP_PID}"
 app_status=$?
 if [ "${app_status}" -ne 0 ]; then
-    echo "wayland_smoke exited with failure status: ${app_status}" >&2
+    echo "${EXAMPLE} exited with failure status: ${app_status}" >&2
     cat "${APP_LOG}" >&2 || true
     exit "${app_status}"
 fi
-echo "wayland screenshot: ${SCREENSHOT}"
+echo "${EXAMPLE} screenshot: ${SCREENSHOT}"

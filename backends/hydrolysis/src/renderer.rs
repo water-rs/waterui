@@ -26,7 +26,7 @@ use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
-use waterui::component::list::ListConfig;
+use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::Cursor;
@@ -81,9 +81,7 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 
 use crate::animation::AnimationController;
 use crate::platform::{KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState};
-use crate::scroll::{ScrollController, ScrollMetrics};
-#[cfg(feature = "winit")]
-use crate::scroll::ScrollHandle;
+use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -197,7 +195,9 @@ pub struct HydrolysisRenderer {
     dynamic_nodes: BTreeMap<usize, DynamicNode>,
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
+    pending_scroll_handles: Vec<ScrollHandle>,
     navigation_slots: Vec<NavigationSlot>,
+    pending_navigation_entries: Vec<(usize, NavigationEntries)>,
     navigation_cursor: usize,
     picker_menu_slots: Vec<PickerMenuSlot>,
     picker_menu_cursor: usize,
@@ -345,8 +345,10 @@ struct SurfaceBlitState {
     blitter: wgpu::util::TextureBlitter,
 }
 
+type NavigationEntries = Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>;
+
 struct NavigationSlot {
-    entries: Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>,
+    entries: NavigationEntries,
     last_depth: usize,
     last_scene: Option<vello::Scene>,
     transition: Option<NavigationTransitionState>,
@@ -372,7 +374,7 @@ enum NavigationTransitionDirection {
 }
 
 struct HydroNavigationController {
-    entries: Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>,
+    entries: NavigationEntries,
     rebuild_requested: Rc<Cell<bool>>,
 }
 
@@ -521,6 +523,7 @@ fn register_native_view<V: HydroNativeView>(
         if hidden_from_accessibility {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
+            V::accessibility(state, ctx, &view, env);
             V::render(state, ctx, view, env);
             let renderer = unsafe { ctx.renderer() };
             renderer.pop_accessibility_suppression();
@@ -710,6 +713,26 @@ struct TableMetrics {
     table_height: f64,
 }
 
+fn table_header_cell_rect(origin_x: f64, origin_y: f64, x_offset: f64, width: f64) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        origin_x + x_offset,
+        origin_y,
+        origin_x + x_offset + width,
+        origin_y + TABLE_HEADER_HEIGHT,
+    )
+}
+
+fn table_data_cell_rect(
+    origin_x: f64,
+    origin_y: f64,
+    x_offset: f64,
+    width: f64,
+    row_index: usize,
+) -> vello::kurbo::Rect {
+    let y0 = origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * row_index as f64;
+    vello::kurbo::Rect::new(origin_x + x_offset, y0, origin_x + x_offset + width, y0 + TABLE_ROW_HEIGHT)
+}
+
 fn navigation_bar_height(view: &NavigationView) -> f64 {
     if view.bar.hidden.get() {
         0.0
@@ -821,6 +844,15 @@ fn tabs_button_rect(
     vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
 }
 
+fn navigation_back_button_rect(bounds: vello::kurbo::Rect) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        bounds.x0 + 8.0,
+        bounds.y0 + 8.0,
+        bounds.x0 + 38.0,
+        bounds.y0 + 36.0,
+    )
+}
+
 fn menu_picker_row_height(field_bounds: vello::kurbo::Rect, max_item_text_height: f64) -> f64 {
     field_bounds
         .height()
@@ -882,6 +914,27 @@ fn measure_list_intrinsic(
     }
 
     LayoutSize::new(max_width as f32, total_height as f32)
+}
+
+fn materialize_list_rows(
+    list: &ListConfig,
+    row_count: usize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> Vec<(usize, ListItem, f64)> {
+    let mut rows = Vec::with_capacity(row_count);
+    for index in 0..row_count {
+        let mut item = list
+            .contents
+            .get_view(index)
+            .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
+        item.content = normalize_layout_view(item.content, env);
+        let intrinsic = estimate_intrinsic_size(&item.content, state, env);
+        let row_height =
+            f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT)) + LIST_ROW_VERTICAL_PADDING * 2.0;
+        rows.push((index, item, row_height));
+    }
+    rows
 }
 
 fn measure_button_intrinsic(
@@ -1254,6 +1307,83 @@ impl HydroNativeView for Native<ScrollView> {
         let (_axis, content) = view.as_inner().as_parts();
         estimate_intrinsic_size(content, state, env)
     }
+
+    fn accessibility(state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        let (axis, content) = view.as_inner().as_parts();
+        let viewport = ctx.bounds;
+        let intrinsic = estimate_intrinsic_size(content, state, env);
+        let (content_width, content_height) = match axis {
+            ScrollAxis::Horizontal => (
+                f64::from(intrinsic.width).max(viewport.width()),
+                viewport.height(),
+            ),
+            ScrollAxis::Vertical => (
+                viewport.width(),
+                f64::from(intrinsic.height).max(viewport.height()),
+            ),
+            ScrollAxis::All => (
+                f64::from(intrinsic.width).max(viewport.width()),
+                f64::from(intrinsic.height).max(viewport.height()),
+            ),
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        };
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            let handle = renderer.scroll_controller.bind(
+                axis,
+                viewport.width(),
+                viewport.height(),
+                content_width,
+                content_height,
+            );
+            renderer.push_pending_scroll_handle(handle.clone());
+            handle
+        };
+        #[cfg(feature = "winit")]
+        {
+            let metrics = handle.metrics();
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
+            );
+            let label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            node.set_scroll_x(metrics.offset_x);
+            node.set_scroll_x_min(0.0);
+            node.set_scroll_x_max(metrics.max_x);
+            node.set_scroll_y(metrics.offset_y);
+            node.set_scroll_y_min(0.0);
+            node.set_scroll_y_max(metrics.max_y);
+            match axis {
+                ScrollAxis::Horizontal => {
+                    node.add_action(AccessibilityAction::ScrollLeft);
+                    node.add_action(AccessibilityAction::ScrollRight);
+                }
+                ScrollAxis::Vertical => {
+                    node.add_action(AccessibilityAction::ScrollUp);
+                    node.add_action(AccessibilityAction::ScrollDown);
+                }
+                ScrollAxis::All => {
+                    node.add_action(AccessibilityAction::ScrollLeft);
+                    node.add_action(AccessibilityAction::ScrollRight);
+                    node.add_action(AccessibilityAction::ScrollUp);
+                    node.add_action(AccessibilityAction::ScrollDown);
+                }
+                _ => panic!("scroll axis variant is not supported by hydrolysis"),
+            }
+            let _ = renderer.register_accessibility_node(
+                node,
+                transformed_rect(ctx.transform, viewport),
+                env,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis,
+                }),
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<NavigationView> {
@@ -1341,6 +1471,43 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
     }
+
+    fn accessibility(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        _view: &Self,
+        _env: &Environment,
+    ) {
+        let entries = {
+            let renderer = unsafe { ctx.renderer() };
+            let (slot_index, entries) = renderer.bind_navigation_entries();
+            renderer.push_pending_navigation_entries(slot_index, Rc::clone(&entries));
+            entries
+        };
+        let depth = entries.borrow().len();
+        #[cfg(feature = "winit")]
+        {
+            if depth == 0 {
+                return;
+            }
+            let renderer = unsafe { ctx.renderer() };
+            let mut back_node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(_env, AccessibilityNodeRole::Button),
+            );
+            back_node.set_label("Back".to_owned());
+            back_node.add_action(AccessibilityAction::Focus);
+            back_node.add_action(AccessibilityAction::Click);
+            let back_bounds = transformed_rect(ctx.transform, navigation_back_button_rect(ctx.bounds));
+            let _ = renderer.register_accessibility_node(
+                back_node,
+                back_bounds,
+                _env,
+                Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    point: accessibility_activation_point(back_bounds),
+                }),
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<Tabs> {
@@ -1420,6 +1587,84 @@ impl HydroNativeView for Native<ListConfig> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_list_intrinsic(view.as_inner(), state, env)
+    }
+
+    fn accessibility(state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        let list = view.as_inner();
+        let row_count_signal = list.contents.len();
+        let row_count = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&row_count_signal)
+        };
+        let rows = materialize_list_rows(list, row_count, state, env);
+        let viewport = ctx.bounds;
+        let content_height = rows
+            .iter()
+            .fold(0.0, |acc, (_index, _item, height)| acc + *height)
+            .max(viewport.height());
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            let handle = renderer.scroll_controller.bind(
+                ScrollAxis::Vertical,
+                viewport.width(),
+                viewport.height(),
+                viewport.width(),
+                content_height,
+            );
+            renderer.push_pending_scroll_handle(handle.clone());
+            handle
+        };
+        #[cfg(feature = "winit")]
+        {
+            let metrics = handle.metrics();
+            let renderer = unsafe { ctx.renderer() };
+            let mut list_node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::List),
+            );
+            let list_label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = list_label {
+                list_node.set_label(label);
+            }
+            list_node.set_scroll_y(metrics.offset_y);
+            list_node.set_scroll_y_min(0.0);
+            list_node.set_scroll_y_max(metrics.max_y);
+            list_node.add_action(AccessibilityAction::ScrollUp);
+            list_node.add_action(AccessibilityAction::ScrollDown);
+            let mut y = viewport.y0 - metrics.offset_y;
+            for (_index, item, row_height) in rows {
+                let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
+                y += row_height;
+                if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
+                    continue;
+                }
+                let mut row_node = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ListItem),
+                );
+                let default_label = renderer.accessibility_label_from_view(&item.content, env);
+                let label = renderer.resolve_accessibility_label(env, default_label);
+                if let Some(label) = label {
+                    row_node.set_label(label);
+                }
+                row_node.add_action(AccessibilityAction::Focus);
+                if let Some(row_node_id) = renderer.register_accessibility_child_node(
+                    row_node,
+                    transformed_rect(ctx.transform, row_rect),
+                    env,
+                    None,
+                ) {
+                    list_node.push_child(row_node_id);
+                }
+            }
+            let _ = renderer.register_accessibility_node(
+                list_node,
+                transformed_rect(ctx.transform, viewport),
+                env,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis: ScrollAxis::Vertical,
+                }),
+            );
+        }
     }
 }
 
@@ -1756,6 +2001,114 @@ impl HydroNativeView for Native<TableConfig> {
         }
         let metrics = measure_table_metrics(&columns, state, env);
         LayoutSize::new(metrics.table_width as f32, metrics.table_height as f32)
+    }
+
+    fn accessibility(state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        let columns = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&view.as_inner().columns)
+        };
+        if columns.is_empty() {
+            return;
+        }
+        let viewport = ctx.bounds;
+        let table_metrics = measure_table_metrics(&columns, state, env);
+        let handle = {
+            let renderer = unsafe { ctx.renderer() };
+            let handle = renderer.scroll_controller.bind(
+                ScrollAxis::All,
+                viewport.width(),
+                viewport.height(),
+                table_metrics.table_width.max(viewport.width()),
+                table_metrics.table_height.max(viewport.height()),
+            );
+            renderer.push_pending_scroll_handle(handle.clone());
+            handle
+        };
+        #[cfg(feature = "winit")]
+        {
+            let scroll_metrics = handle.metrics();
+            let renderer = unsafe { ctx.renderer() };
+            let mut table_node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Table),
+            );
+            let table_label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = table_label {
+                table_node.set_label(label);
+            }
+            table_node.set_scroll_x(scroll_metrics.offset_x);
+            table_node.set_scroll_x_min(0.0);
+            table_node.set_scroll_x_max(scroll_metrics.max_x);
+            table_node.set_scroll_y(scroll_metrics.offset_y);
+            table_node.set_scroll_y_min(0.0);
+            table_node.set_scroll_y_max(scroll_metrics.max_y);
+            table_node.add_action(AccessibilityAction::ScrollLeft);
+            table_node.add_action(AccessibilityAction::ScrollRight);
+            table_node.add_action(AccessibilityAction::ScrollUp);
+            table_node.add_action(AccessibilityAction::ScrollDown);
+
+            let origin_x = viewport.x0 - scroll_metrics.offset_x;
+            let origin_y = viewport.y0 - scroll_metrics.offset_y;
+            let mut x_offset = 0.0;
+            for (column_index, column) in columns.into_iter().enumerate() {
+                let width = table_metrics.column_widths[column_index];
+                let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
+                let header_view = AnyView::new(column.label());
+                let mut header_node = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ColumnHeader),
+                );
+                let default_label = renderer.accessibility_label_from_view(&header_view, env);
+                let label = renderer.resolve_accessibility_label(env, default_label);
+                if let Some(label) = label {
+                    header_node.set_label(label);
+                }
+                header_node.add_action(AccessibilityAction::Focus);
+                if let Some(header_node_id) = renderer.register_accessibility_child_node(
+                    header_node,
+                    transformed_rect(ctx.transform, header_cell),
+                    env,
+                    None,
+                ) {
+                    table_node.push_child(header_node_id);
+                }
+                let rows = column.rows();
+                for row_index in 0..table_metrics.max_rows {
+                    let cell_rect =
+                        table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
+                    if let Some(cell) = rows.get_view(row_index) {
+                        let cell_view = AnyView::new(cell);
+                        let mut cell_node = AccessibilityNode::new(
+                            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Cell),
+                        );
+                        let default_label = renderer.accessibility_label_from_view(&cell_view, env);
+                        let label = renderer.resolve_accessibility_label(env, default_label);
+                        if let Some(label) = label {
+                            cell_node.set_label(label);
+                        }
+                        cell_node.add_action(AccessibilityAction::Focus);
+                        if let Some(cell_node_id) = renderer.register_accessibility_child_node(
+                            cell_node,
+                            transformed_rect(ctx.transform, cell_rect),
+                            env,
+                            None,
+                        ) {
+                            table_node.push_child(cell_node_id);
+                        }
+                    }
+                }
+                x_offset += width;
+            }
+
+            let _ = renderer.register_accessibility_node(
+                table_node,
+                transformed_rect(ctx.transform, viewport),
+                env,
+                Some(AccessibilityActionTarget::Scroll {
+                    handle: handle.clone(),
+                    axis: ScrollAxis::All,
+                }),
+            );
+        }
     }
 }
 
@@ -2112,7 +2465,9 @@ impl HydrolysisRenderer {
             dynamic_nodes: BTreeMap::new(),
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
+            pending_scroll_handles: Vec::new(),
             navigation_slots: Vec::new(),
+            pending_navigation_entries: Vec::new(),
             navigation_cursor: 0,
             picker_menu_slots: Vec::new(),
             picker_menu_cursor: 0,
@@ -2468,9 +2823,7 @@ impl HydrolysisRenderer {
         signal.get()
     }
 
-    fn bind_navigation_entries(
-        &mut self,
-    ) -> (usize, Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>) {
+    fn bind_navigation_entries(&mut self) -> (usize, NavigationEntries) {
         let index = self.navigation_cursor;
         self.navigation_cursor = self
             .navigation_cursor
@@ -2482,6 +2835,29 @@ impl HydrolysisRenderer {
         }
 
         (index, Rc::clone(&self.navigation_slots[index].entries))
+    }
+
+    fn push_pending_navigation_entries(&mut self, slot_index: usize, entries: NavigationEntries) {
+        self.pending_navigation_entries.push((slot_index, entries));
+    }
+
+    fn take_pending_navigation_entries(
+        &mut self,
+        caller: &'static str,
+    ) -> (usize, NavigationEntries) {
+        self.pending_navigation_entries
+            .pop()
+            .unwrap_or_else(|| panic!("hydrolysis {caller} requires prebound navigation entries"))
+    }
+
+    fn push_pending_scroll_handle(&mut self, handle: ScrollHandle) {
+        self.pending_scroll_handles.push(handle);
+    }
+
+    fn take_pending_scroll_handle(&mut self, caller: &'static str) -> ScrollHandle {
+        self.pending_scroll_handles
+            .pop()
+            .unwrap_or_else(|| panic!("hydrolysis {caller} requires prebound scroll handle"))
     }
 
     fn bind_picker_menu_state(&mut self) -> Rc<Cell<bool>> {
@@ -2634,13 +3010,7 @@ impl HydrolysisRenderer {
 
         let handle = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.scroll_controller.bind(
-                axis,
-                viewport.width(),
-                viewport.height(),
-                content_width,
-                content_height,
-            )
+            renderer.take_pending_scroll_handle("render_scroll_view")
         };
         let metrics = handle.metrics();
 
@@ -2664,49 +3034,6 @@ impl HydrolysisRenderer {
             renderer.register_scroll_target(
                 transformed_rect(ctx.transform, viewport),
                 move |dx, dy| target_handle.apply_scroll_delta(dx, dy),
-            );
-        }
-        #[cfg(feature = "winit")]
-        {
-            let renderer = unsafe { ctx.renderer() };
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
-            );
-            let label = renderer.resolve_accessibility_label(env, None);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            node.set_scroll_x(metrics.offset_x);
-            node.set_scroll_x_min(0.0);
-            node.set_scroll_x_max(metrics.max_x);
-            node.set_scroll_y(metrics.offset_y);
-            node.set_scroll_y_min(0.0);
-            node.set_scroll_y_max(metrics.max_y);
-            match axis {
-                ScrollAxis::Horizontal => {
-                    node.add_action(AccessibilityAction::ScrollLeft);
-                    node.add_action(AccessibilityAction::ScrollRight);
-                }
-                ScrollAxis::Vertical => {
-                    node.add_action(AccessibilityAction::ScrollUp);
-                    node.add_action(AccessibilityAction::ScrollDown);
-                }
-                ScrollAxis::All => {
-                    node.add_action(AccessibilityAction::ScrollLeft);
-                    node.add_action(AccessibilityAction::ScrollRight);
-                    node.add_action(AccessibilityAction::ScrollUp);
-                    node.add_action(AccessibilityAction::ScrollDown);
-                }
-                _ => panic!("scroll axis variant is not supported by hydrolysis"),
-            }
-            let _ = renderer.register_accessibility_node(
-                node,
-                transformed_rect(ctx.transform, viewport),
-                env,
-                Some(AccessibilityActionTarget::Scroll {
-                    handle: handle.clone(),
-                    axis,
-                }),
             );
         }
 
@@ -2817,7 +3144,7 @@ impl HydrolysisRenderer {
         let root = stack.into_inner();
         let (slot_index, entries) = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.bind_navigation_entries()
+            renderer.take_pending_navigation_entries("render_navigation_stack")
         };
         let mut local_env = env.clone();
         local_env.insert(NavigationController::new(HydroNavigationController {
@@ -2907,31 +3234,7 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let back_button_rect = vello::kurbo::Rect::new(
-            ctx.bounds.x0 + 8.0,
-            ctx.bounds.y0 + 8.0,
-            ctx.bounds.x0 + 38.0,
-            ctx.bounds.y0 + 36.0,
-        );
-        #[cfg(feature = "winit")]
-        {
-            let renderer = unsafe { ctx.renderer() };
-            let mut back_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-            );
-            back_node.set_label("Back".to_owned());
-            back_node.add_action(AccessibilityAction::Focus);
-            back_node.add_action(AccessibilityAction::Click);
-            let back_bounds = transformed_rect(ctx.transform, back_button_rect);
-            let _ = renderer.register_accessibility_node(
-                back_node,
-                back_bounds,
-                env,
-                Some(AccessibilityActionTarget::PointerPrimaryClick {
-                    point: accessibility_activation_point(back_bounds),
-                }),
-            );
-        }
+        let back_button_rect = navigation_back_button_rect(ctx.bounds);
         {
             let scene = unsafe { ctx.scene() };
             scene.fill(
@@ -3093,54 +3396,16 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&row_count_signal)
         };
+        let rows = materialize_list_rows(&list, row_count, state, env);
         let delete_action = list.on_delete.map(Rc::new);
         let move_action = list.on_move.map(Rc::new);
 
-        let mut rows = Vec::with_capacity(row_count);
-        for index in 0..row_count {
-            let mut item = list.contents.get_view(index).unwrap_or_else(|| {
-                panic!("ListConfig failed to materialize item at index {index}")
-            });
-            item.content = normalize_layout_view(item.content, env);
-            let intrinsic = estimate_intrinsic_size(&item.content, state, env);
-            let row_height = f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
-                + LIST_ROW_VERTICAL_PADDING * 2.0;
-            rows.push((index, item, row_height));
-        }
-
         let viewport = ctx.bounds;
-        let content_height = rows
-            .iter()
-            .fold(0.0, |acc, (_index, _item, height)| acc + *height)
-            .max(viewport.height());
         let handle = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.scroll_controller.bind(
-                ScrollAxis::Vertical,
-                viewport.width(),
-                viewport.height(),
-                viewport.width(),
-                content_height,
-            )
+            renderer.take_pending_scroll_handle("render_list")
         };
         let metrics = handle.metrics();
-        #[cfg(feature = "winit")]
-        let mut accessibility_list = {
-            let renderer = unsafe { ctx.renderer() };
-            let mut list_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::List),
-            );
-            let list_label = renderer.resolve_accessibility_label(env, None);
-            if let Some(label) = list_label {
-                list_node.set_label(label);
-            }
-            list_node.set_scroll_y(metrics.offset_y);
-            list_node.set_scroll_y_min(0.0);
-            list_node.set_scroll_y_max(metrics.max_y);
-            list_node.add_action(AccessibilityAction::ScrollUp);
-            list_node.add_action(AccessibilityAction::ScrollDown);
-            list_node
-        };
         {
             let scene = unsafe { ctx.scene() };
             scene.push_layer(
@@ -3160,28 +3425,6 @@ impl HydrolysisRenderer {
             if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
                 continue;
             }
-            #[cfg(feature = "winit")]
-            {
-                let renderer = unsafe { ctx.renderer() };
-                let mut row_node = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ListItem),
-                );
-                let default_label = renderer.accessibility_label_from_view(&item.content, env);
-                let label = renderer.resolve_accessibility_label(env, default_label);
-                if let Some(label) = label {
-                    row_node.set_label(label);
-                }
-                row_node.add_action(AccessibilityAction::Focus);
-                if let Some(row_node_id) = renderer.register_accessibility_child_node(
-                    row_node,
-                    transformed_rect(ctx.transform, row_rect),
-                    env,
-                    None,
-                ) {
-                    accessibility_list.push_child(row_node_id);
-                }
-            }
-
             {
                 let scene = unsafe { ctx.scene() };
                 let row_color = if index % 2 == 0 {
@@ -3328,19 +3571,6 @@ impl HydrolysisRenderer {
             let scene = unsafe { ctx.scene() };
             scene.pop_layer();
         }
-        #[cfg(feature = "winit")]
-        {
-            let renderer = unsafe { ctx.renderer() };
-            let _ = renderer.register_accessibility_node(
-                accessibility_list,
-                transformed_rect(ctx.transform, viewport),
-                env,
-                Some(AccessibilityActionTarget::Scroll {
-                    handle: handle.clone(),
-                    axis: ScrollAxis::Vertical,
-                }),
-            );
-        }
 
         let renderer = unsafe { ctx.renderer() };
         let handle_for_input = handle.clone();
@@ -3376,37 +3606,9 @@ impl HydrolysisRenderer {
         let viewport = ctx.bounds;
         let handle = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.scroll_controller.bind(
-                ScrollAxis::All,
-                viewport.width(),
-                viewport.height(),
-                table_metrics.table_width.max(viewport.width()),
-                table_metrics.table_height.max(viewport.height()),
-            )
+            renderer.take_pending_scroll_handle("render_table")
         };
         let scroll_metrics = handle.metrics();
-        #[cfg(feature = "winit")]
-        let mut accessibility_table = {
-            let renderer = unsafe { ctx.renderer() };
-            let mut table_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Table),
-            );
-            let table_label = renderer.resolve_accessibility_label(env, None);
-            if let Some(label) = table_label {
-                table_node.set_label(label);
-            }
-            table_node.set_scroll_x(scroll_metrics.offset_x);
-            table_node.set_scroll_x_min(0.0);
-            table_node.set_scroll_x_max(scroll_metrics.max_x);
-            table_node.set_scroll_y(scroll_metrics.offset_y);
-            table_node.set_scroll_y_min(0.0);
-            table_node.set_scroll_y_max(scroll_metrics.max_y);
-            table_node.add_action(AccessibilityAction::ScrollLeft);
-            table_node.add_action(AccessibilityAction::ScrollRight);
-            table_node.add_action(AccessibilityAction::ScrollUp);
-            table_node.add_action(AccessibilityAction::ScrollDown);
-            table_node
-        };
 
         {
             let scene = unsafe { ctx.scene() };
@@ -3438,33 +3640,11 @@ impl HydrolysisRenderer {
             );
         }
 
-        let mut x = origin_x;
+        let mut x_offset = 0.0;
         for (column_index, column) in columns.into_iter().enumerate() {
             let width = table_metrics.column_widths[column_index];
-            let header_cell =
-                vello::kurbo::Rect::new(x, origin_y, x + width, origin_y + TABLE_HEADER_HEIGHT);
+            let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
             let header_view = AnyView::new(column.label());
-            #[cfg(feature = "winit")]
-            {
-                let renderer = unsafe { ctx.renderer() };
-                let mut header_node = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ColumnHeader),
-                );
-                let default_label = renderer.accessibility_label_from_view(&header_view, env);
-                let label = renderer.resolve_accessibility_label(env, default_label);
-                if let Some(label) = label {
-                    header_node.set_label(label);
-                }
-                header_node.add_action(AccessibilityAction::Focus);
-                if let Some(header_node_id) = renderer.register_accessibility_child_node(
-                    header_node,
-                    transformed_rect(ctx.transform, header_cell),
-                    env,
-                    None,
-                ) {
-                    accessibility_table.push_child(header_node_id);
-                }
-            }
             Self::dispatch_in_rect_without_accessibility(
                 ctx,
                 env,
@@ -3474,35 +3654,9 @@ impl HydrolysisRenderer {
 
             let rows = column.rows();
             for row_index in 0..table_metrics.max_rows {
-                let cell_rect = vello::kurbo::Rect::new(
-                    x,
-                    origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * row_index as f64,
-                    x + width,
-                    origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * (row_index + 1) as f64,
-                );
+                let cell_rect = table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
                 if let Some(cell) = rows.get_view(row_index) {
                     let cell_view = AnyView::new(cell);
-                    #[cfg(feature = "winit")]
-                    {
-                        let renderer = unsafe { ctx.renderer() };
-                        let mut cell_node = AccessibilityNode::new(
-                            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Cell),
-                        );
-                        let default_label = renderer.accessibility_label_from_view(&cell_view, env);
-                        let label = renderer.resolve_accessibility_label(env, default_label);
-                        if let Some(label) = label {
-                            cell_node.set_label(label);
-                        }
-                        cell_node.add_action(AccessibilityAction::Focus);
-                        if let Some(cell_node_id) = renderer.register_accessibility_child_node(
-                            cell_node,
-                            transformed_rect(ctx.transform, cell_rect),
-                            env,
-                            None,
-                        ) {
-                            accessibility_table.push_child(cell_node_id);
-                        }
-                    }
                     Self::dispatch_in_rect_without_accessibility(
                         ctx,
                         env,
@@ -3521,8 +3675,11 @@ impl HydrolysisRenderer {
             }
 
             let separator = vello::kurbo::Line::new(
-                (x + width, origin_y),
-                (x + width, origin_y + table_metrics.table_height),
+                (origin_x + x_offset + width, origin_y),
+                (
+                    origin_x + x_offset + width,
+                    origin_y + table_metrics.table_height,
+                ),
             );
             let scene = unsafe { ctx.scene() };
             scene.stroke(
@@ -3532,25 +3689,12 @@ impl HydrolysisRenderer {
                 None,
                 &separator,
             );
-            x += width;
+            x_offset += width;
         }
 
         {
             let scene = unsafe { ctx.scene() };
             scene.pop_layer();
-        }
-        #[cfg(feature = "winit")]
-        {
-            let renderer = unsafe { ctx.renderer() };
-            let _ = renderer.register_accessibility_node(
-                accessibility_table,
-                transformed_rect(ctx.transform, viewport),
-                env,
-                Some(AccessibilityActionTarget::Scroll {
-                    handle: handle.clone(),
-                    axis: ScrollAxis::All,
-                }),
-            );
         }
 
         let renderer = unsafe { ctx.renderer() };
@@ -5792,6 +5936,8 @@ impl HydrolysisRenderer {
         self.lifecycle_disappear_slot = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
+        self.pending_scroll_handles.clear();
+        self.pending_navigation_entries.clear();
         self.navigation_cursor = 0;
         self.picker_menu_cursor = 0;
         #[cfg(feature = "winit")]
