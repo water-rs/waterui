@@ -158,6 +158,18 @@ impl Dynamic {
     pub fn identity(&self) -> usize {
         Rc::as_ptr(&self.0.0) as usize
     }
+
+    /// Reads the current pre-connection view snapshot, if this dynamic node
+    /// has not been connected yet.
+    ///
+    /// Returns `None` when the node is already connected to a backend receiver.
+    pub fn with_unconnected_view<R>(&self, f: impl FnOnce(Option<&AnyView>) -> R) -> Option<R> {
+        let state = self.0.0.borrow();
+        match &*state {
+            DynamicHandlerState::Unconnected(view) => Some(f(view.as_ref())),
+            DynamicHandlerState::Connected(_) => None,
+        }
+    }
 }
 
 /// Creates a view that watches a reactive value.
