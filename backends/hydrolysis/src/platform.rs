@@ -1,4 +1,5 @@
 use waterui::window::{Window as WuiWindow, WindowState};
+use waterui::cursor::CursorStyle;
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub enum InputEvent {
         y: f32,
         dx: f32,
         dy: f32,
+        is_line_delta: bool,
     },
     Key {
         key: KeyCode,
@@ -168,6 +170,7 @@ pub trait PlatformWindow {
     fn request_redraw(&self);
     fn scale_factor(&self) -> f64;
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
+    fn set_cursor_style(&mut self, style: CursorStyle);
 }
 
 /// Headless offscreen rendering surface.
@@ -337,6 +340,8 @@ impl PlatformWindow for OffscreenWindow {
     }
 
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
+
+    fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
 #[cfg(feature = "winit")]
@@ -350,12 +355,12 @@ mod winit_impl {
         dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
         event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
         keyboard::{Key, ModifiersState},
-        window::{Fullscreen, ImePurpose, Window as NativeWindow, WindowId},
+        window::{Cursor as WinitCursor, CursorIcon, Fullscreen, ImePurpose, Window as NativeWindow, WindowId},
     };
 
     use super::{
-        InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton, SurfaceError,
-        SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
+        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
+        SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
     };
 
     pub struct WinitSurface {
@@ -503,6 +508,7 @@ mod winit_impl {
         pointer_position: (f32, f32),
         modifiers: Modifiers,
         ime_allowed: bool,
+        current_cursor_style: CursorStyle,
     }
 
     impl WinitWindow {
@@ -515,6 +521,7 @@ mod winit_impl {
                 pointer_position: (0.0, 0.0),
                 modifiers: Modifiers::default(),
                 ime_allowed: false,
+                current_cursor_style: CursorStyle::Arrow,
             }
         }
 
@@ -549,7 +556,8 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer_position = (position.x as f32, position.y as f32);
+                    let logical = position.to_logical::<f64>(self.window.scale_factor());
+                    self.pointer_position = (logical.x as f32, logical.y as f32);
                     self.pending_events.push(InputEvent::PointerMove {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -576,15 +584,19 @@ mod winit_impl {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let (dx, dy) = match delta {
-                        MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy),
-                        MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32),
+                    let (dx, dy, is_line_delta) = match delta {
+                        MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
+                        MouseScrollDelta::PixelDelta(delta) => {
+                            let scale = self.window.scale_factor() as f32;
+                            (delta.x as f32 / scale, delta.y as f32 / scale, false)
+                        }
                     };
                     self.pending_events.push(InputEvent::Scroll {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
                         dx,
                         dy,
+                        is_line_delta,
                     });
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
@@ -692,6 +704,15 @@ mod winit_impl {
                 ),
             );
         }
+
+        fn set_cursor_style(&mut self, style: CursorStyle) {
+            if self.current_cursor_style == style {
+                return;
+            }
+            self.current_cursor_style = style;
+            self.window
+                .set_cursor(WinitCursor::Icon(map_cursor_style(style)));
+        }
     }
 
     impl From<ModifiersState> for Modifiers {
@@ -721,6 +742,28 @@ mod winit_impl {
             Key::Character(value) => KeyCode::Character(value.to_string()),
             Key::Named(value) => KeyCode::Named(format!("{value:?}")),
             _ => KeyCode::Unidentified,
+        }
+    }
+
+    fn map_cursor_style(style: CursorStyle) -> CursorIcon {
+        match style {
+            CursorStyle::Arrow => CursorIcon::Default,
+            CursorStyle::PointingHand => CursorIcon::Pointer,
+            CursorStyle::IBeam => CursorIcon::Text,
+            CursorStyle::Crosshair => CursorIcon::Crosshair,
+            CursorStyle::OpenHand => CursorIcon::Grab,
+            CursorStyle::ClosedHand => CursorIcon::Grabbing,
+            CursorStyle::NotAllowed => CursorIcon::NotAllowed,
+            CursorStyle::ResizeLeft => CursorIcon::WResize,
+            CursorStyle::ResizeRight => CursorIcon::EResize,
+            CursorStyle::ResizeUp => CursorIcon::NResize,
+            CursorStyle::ResizeDown => CursorIcon::SResize,
+            CursorStyle::ResizeLeftRight => CursorIcon::EwResize,
+            CursorStyle::ResizeUpDown => CursorIcon::NsResize,
+            CursorStyle::Move => CursorIcon::Move,
+            CursorStyle::Wait => CursorIcon::Wait,
+            CursorStyle::Copy => CursorIcon::Copy,
+            _ => panic!("unsupported CursorStyle variant in hydrolysis winit backend"),
         }
     }
 
