@@ -3,7 +3,7 @@ use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
 use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
-use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, color::Color, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, wgpu};
 
 /// Resolved configuration for GPU rendering.
 #[derive(Debug, Clone, Copy)]
@@ -193,7 +193,11 @@ impl WaveformRenderer {
 }
 
 impl GpuView for WaveformRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
 
         // 1. Create Shader

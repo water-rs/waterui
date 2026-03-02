@@ -29,8 +29,8 @@ mod waveform;
 // mod spectrogram;
 // mod phase;
 
-pub use theme::{SpectrumTheme, WaveformTheme};
 pub use audio::AudioCapture;
+pub use theme::{SpectrumTheme, WaveformTheme};
 pub use waveform::Waveform;
 // pub use spectrum::Spectrum;
 // pub use spectrogram::Spectrogram;

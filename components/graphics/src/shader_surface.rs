@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuView, GpuSurface};
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 
 /// A simplified GPU surface that renders a custom fragment shader.
 ///
@@ -245,7 +245,11 @@ fn shader_source_hash(source: &str) -> u64 {
 }
 
 impl GpuView for ShaderRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ShaderSurface] setup() called with format: {:?}",
             ctx.surface_format

@@ -144,7 +144,11 @@ impl ParticleRenderer {
 }
 
 impl GpuView for ParticleRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let device = ctx.device;
 
         // 1. Create Buffers using encase size calculation

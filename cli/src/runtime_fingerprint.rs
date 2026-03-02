@@ -102,10 +102,8 @@ fn is_git_work_tree(root: &Path) -> Result<bool> {
     let Ok(inside_work_tree) = inside_work_tree else {
         return Ok(false);
     };
-    Ok(
-        inside_work_tree.status.success()
-            && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true",
-    )
+    Ok(inside_work_tree.status.success()
+        && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true")
 }
 
 fn collect_runtime_fingerprint_files_from_git(
@@ -119,7 +117,12 @@ fn collect_runtime_fingerprint_files_from_git(
     let mut seen = HashSet::new();
 
     // Tracked files.
-    if !collect_git_paths(root, &["ls-files", "--recurse-submodules", "-z"], files, &mut seen)? {
+    if !collect_git_paths(
+        root,
+        &["ls-files", "--recurse-submodules", "-z"],
+        files,
+        &mut seen,
+    )? {
         return Ok(false);
     }
 
@@ -150,7 +153,11 @@ fn collect_git_paths(
         return Ok(false);
     }
 
-    for entry in output.stdout.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
+    for entry in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
         let relative = PathBuf::from(String::from_utf8_lossy(entry).into_owned());
         if !seen.insert(relative.clone()) {
             continue;
@@ -239,8 +246,8 @@ mod tests {
         fs::write(dir.path().join("src/lib.rs"), "pub fn a() {}").expect("write source");
         commit_all(dir.path(), "init");
 
-        let fingerprint =
-            compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1").expect("fingerprint");
+        let fingerprint = compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1")
+            .expect("fingerprint");
         assert!(fingerprint.contains(":git:"));
     }
 
@@ -254,8 +261,8 @@ mod tests {
 
         fs::write(dir.path().join("src/lib.rs"), "pub fn a() { let _x = 1; }")
             .expect("modify source");
-        let fingerprint =
-            compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1").expect("fingerprint");
+        let fingerprint = compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1")
+            .expect("fingerprint");
         assert!(!fingerprint.contains(":git:"));
     }
 
@@ -268,8 +275,8 @@ mod tests {
         commit_all(dir.path(), "init");
 
         fs::write(dir.path().join("src/new.rs"), "pub fn b() {}").expect("write untracked source");
-        let fingerprint =
-            compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1").expect("fingerprint");
+        let fingerprint = compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1")
+            .expect("fingerprint");
         assert!(!fingerprint.contains(":git:"));
     }
 

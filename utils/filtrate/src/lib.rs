@@ -38,6 +38,6 @@ pub use filtrate_core::nami;
 
 // Re-export all filter implementations
 pub use filtrate_core::filters::{
-    Blur, Brightness, Contrast, Grayscale, HueRotation, Invert, Saturation, Sepia,
-    Sharpen, Vignette,
+    Blur, Brightness, Contrast, Grayscale, HueRotation, Invert, Saturation, Sepia, Sharpen,
+    Vignette,
 };

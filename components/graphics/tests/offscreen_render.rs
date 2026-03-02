@@ -3,7 +3,7 @@
 use core::future::Future;
 
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize, wgpu,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -12,7 +12,11 @@ struct SolidClearRenderer {
 }
 
 impl GpuView for SolidClearRenderer {
-    fn setup(&mut self, _ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
+    fn setup(
+        &mut self,
+        _ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl Future<Output = ()> {
         async {}
     }
 

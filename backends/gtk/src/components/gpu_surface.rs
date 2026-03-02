@@ -457,8 +457,7 @@ fn init_wgpu_if_needed(
         st.device_init_in_progress = true;
     }
 
-    let (sender, receiver) =
-        gtk4::glib::MainContext::channel(gtk4::glib::PRIORITY_DEFAULT);
+    let (sender, receiver) = gtk4::glib::MainContext::channel(gtk4::glib::PRIORITY_DEFAULT);
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
     let descriptor = descriptor.clone();
@@ -555,8 +554,7 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         eprintln!("[gtk-gpu] setup_if_needed: begin setup");
     }
 
-    let (sender, receiver) =
-        gtk4::glib::MainContext::channel(gtk4::glib::PRIORITY_DEFAULT);
+    let (sender, receiver) = gtk4::glib::MainContext::channel(gtk4::glib::PRIORITY_DEFAULT);
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
     let device = device.clone();
@@ -597,7 +595,17 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 }
 
 fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
-    let (device, queue, format, msaa_samples, mut gpu_surface, pointer, gesture, glow, redraw_handle) = {
+    let (
+        device,
+        queue,
+        format,
+        msaa_samples,
+        mut gpu_surface,
+        pointer,
+        gesture,
+        glow,
+        redraw_handle,
+    ) = {
         let mut st = state.borrow_mut();
         let Some(device) = st.wgpu_device.clone() else {
             if gpu_debug_enabled() {

@@ -442,7 +442,8 @@ async fn monitor_android_process(
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
         // when the shell user doesn't have permission to send signals to the app process
-        let output = match run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        let output = match run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id])
+            .await
         {
             Ok(output) => output,
             Err(err) => {
@@ -490,10 +491,7 @@ async fn monitor_android_process(
                     if output.status.success() {
                         String::from_utf8_lossy(&output.stdout).to_string()
                     } else {
-                        debug!(
-                            "PID-filtered logcat exited with status {}",
-                            output.status
-                        );
+                        debug!("PID-filtered logcat exited with status {}", output.status);
                         String::new()
                     }
                 },
@@ -1283,20 +1281,12 @@ mod tests {
     #[test]
     fn detects_native_crash_when_pid_is_mentioned() {
         let log = "I DEBUG : Fatal signal 11 (SIGSEGV), code 1, fault addr 0x0 in tid 1 (main) pid: 28184\n";
-        assert!(android_log_looks_like_crash(
-            log,
-            "com.example.app",
-            28184
-        ));
+        assert!(android_log_looks_like_crash(log, "com.example.app", 28184));
     }
 
     #[test]
     fn detects_java_crash_for_app() {
         let log = "E AndroidRuntime: FATAL EXCEPTION: main\nE AndroidRuntime: Process: com.example.app, PID: 28184\n";
-        assert!(android_log_looks_like_crash(
-            log,
-            "com.example.app",
-            28184
-        ));
+        assert!(android_log_looks_like_crash(log, "com.example.app", 28184));
     }
 }

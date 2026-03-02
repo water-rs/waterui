@@ -138,9 +138,8 @@ unsafe extern "C" fn webview_can_go_forward(data: *const ()) -> bool {
 }
 
 unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
-    let handle = unsafe {
-        &*require_webview_handle_ptr(data as *const (), "webview_set_user_agent")
-    };
+    let handle =
+        unsafe { &*require_webview_handle_ptr(data as *const (), "webview_set_user_agent") };
     let ua = wui_str_to_string(user_agent);
     crate::jni::with_jni_env(|env| {
         let jua = java_string(env, &ua);
@@ -155,9 +154,8 @@ unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
 }
 
 unsafe extern "C" fn webview_set_redirects_enabled(data: *mut (), enabled: bool) {
-    let handle = unsafe {
-        &*require_webview_handle_ptr(data as *const (), "webview_set_redirects_enabled")
-    };
+    let handle =
+        unsafe { &*require_webview_handle_ptr(data as *const (), "webview_set_redirects_enabled") };
     crate::jni::with_jni_env(|env| {
         env.call_method(
             &handle.wrapper,
@@ -176,9 +174,8 @@ unsafe extern "C" fn webview_inject_script(
     script: WuiStr,
     time: WuiScriptInjectionTime,
 ) {
-    let handle = unsafe {
-        &*require_webview_handle_ptr(data as *const (), "webview_inject_script")
-    };
+    let handle =
+        unsafe { &*require_webview_handle_ptr(data as *const (), "webview_inject_script") };
     let script = wui_str_to_string(script);
     crate::jni::with_jni_env(|env| {
         let jscript = java_string(env, &script);
@@ -240,8 +237,7 @@ unsafe extern "C" fn webview_add_handler(
 }
 
 unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
-    let handle =
-        unsafe { &mut *require_webview_handle_ptr_mut(data, "webview_remove_handler") };
+    let handle = unsafe { &mut *require_webview_handle_ptr_mut(data, "webview_remove_handler") };
     let name = wui_str_to_string(name);
 
     crate::jni::with_jni_env(|env| {

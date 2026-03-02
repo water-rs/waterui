@@ -16,7 +16,7 @@ use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
 use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
-use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface, wgpu};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
 use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
@@ -2265,7 +2265,11 @@ impl VideoRenderer {
 }
 
 impl GpuView for VideoRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
         async {}

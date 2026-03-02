@@ -1,8 +1,8 @@
 //! Bubble chart component.
 
 use nami::Signal;
-use waterui_core::{Environment, View};
 use waterui_canvas::Canvas;
+use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{draw_bubble, reactive_canvas};

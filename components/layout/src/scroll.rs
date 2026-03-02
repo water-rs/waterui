@@ -62,6 +62,12 @@ impl ScrollView {
         (self.axis, self.content)
     }
 
+    /// Returns borrowed access to axis and content.
+    #[must_use]
+    pub const fn as_parts(&self) -> (Axis, &AnyView) {
+        (self.axis, &self.content)
+    }
+
     /// Creates a `ScrollView` with horizontal scrolling.
     pub fn horizontal(content: impl View) -> Self {
         Self::new(Axis::Horizontal, AnyView::new(content))

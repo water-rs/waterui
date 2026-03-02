@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use crate::image_codec::{self, DecodedRgba};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuView, GpuSurface, OffscreenRenderConfig, OffscreenRenderError,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
     OffscreenRenderOutput, OffscreenRenderOutputHdr,
 };
 use waterui_layout::frame::Frame;
@@ -406,7 +406,11 @@ impl ImageRenderer {
 }
 
 impl GpuView for ImageRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ImageRenderer] setup() called with format: {:?}, size: {}x{}, source_hdr={}, source_wide_gamut={}",
             ctx.surface_format,
@@ -420,12 +424,16 @@ impl GpuView for ImageRenderer {
         if let Some(pixels) = self.pending_pixels.take() {
             let texture_format = match self.source_pixel_format {
                 SourcePixelFormat::Rgba8UnormSrgb =>
-                    // Use sRGB format - standard web/PNG/JPEG content.
-                    // GPU automatically converts sRGB to linear when sampling.
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                // Use sRGB format - standard web/PNG/JPEG content.
+                // GPU automatically converts sRGB to linear when sampling.
+                {
+                    wgpu::TextureFormat::Rgba8UnormSrgb
+                }
                 SourcePixelFormat::Rgba16Float =>
-                    // HDR path: linear extended-range source pixels.
-                    wgpu::TextureFormat::Rgba16Float,
+                // HDR path: linear extended-range source pixels.
+                {
+                    wgpu::TextureFormat::Rgba16Float
+                }
             };
             let bytes_per_pixel = Self::bytes_per_pixel(self.source_pixel_format);
             let unpadded_bpr = self.width * bytes_per_pixel;

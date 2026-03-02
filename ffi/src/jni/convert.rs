@@ -1192,11 +1192,7 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
             .find_class("dev/waterui/android/runtime/ResolvedGradientStopStruct")
             .expect("ResolvedGradientStopStruct class not found");
         let stop_array = env
-            .new_object_array(
-                self.stops.len() as i32,
-                &stop_class,
-                JObject::null(),
-            )
+            .new_object_array(self.stops.len() as i32, &stop_class, JObject::null())
             .expect("Failed to create ResolvedGradientStopStruct array");
 
         for (index, stop) in self.stops.as_slice().iter().enumerate() {
@@ -1254,11 +1250,7 @@ impl ToJavaStruct for crate::shape::WuiResolvedShape {
             .find_class("dev/waterui/android/runtime/PathCommandStruct")
             .expect("PathCommandStruct class not found");
         let command_array = env
-            .new_object_array(
-                self.commands.len() as i32,
-                &command_class,
-                JObject::null(),
-            )
+            .new_object_array(self.commands.len() as i32, &command_class, JObject::null())
             .expect("Failed to create PathCommandStruct array");
 
         for (index, cmd) in self.commands.as_slice().iter().enumerate() {

@@ -13,23 +13,27 @@ fn main_view() -> impl View {
     let slider_value = binding(0.4_f64);
     let stepper_value = binding(3_i32);
 
-    scroll(vstack((
-        text("Hydrolysis Wayland Smoke").size(28.0),
-        text("Direct self-drawn window via winit + Vello").size(16.0),
-        RoundedRectangle::new(0.2)
-            .fill(Color::srgb_hex("#2563EB"))
-            .size(560.0, 180.0),
-        hstack((
-            Toggle::new(&toggle_value).label("Toggle"),
-            Slider::new(0.0..=1.0, &slider_value).label("Slider"),
-            Stepper::new(&stepper_value).range(0..=10).label("Stepper"),
+    scroll(
+        vstack((
+            text("Hydrolysis Wayland Smoke").size(28.0),
+            text("Direct self-drawn window via winit + Vello").size(16.0),
+            RoundedRectangle::new(0.2)
+                .fill(Color::srgb_hex("#2563EB"))
+                .size(560.0, 180.0),
+            hstack((
+                Toggle::new(&toggle_value).label("Toggle"),
+                Slider::new(0.0..=1.0, &slider_value).label("Slider"),
+                Stepper::new(&stepper_value).range(0..=10).label("Stepper"),
+            ))
+            .spacing(16.0),
+            text("Scroll to verify wheel routing").size(14.0),
+            spacer(),
         ))
-        .spacing(16.0),
-        text("Scroll to verify wheel routing").size(14.0),
-        spacer(),
-    ))
-    .spacing(20.0)
-    .padding())
+        .spacing(20.0)
+        .padding(),
+    )
+    .background(Color::srgb_hex("#EEF2FF"))
+    .foreground(Color::srgb_hex("#0F172A"))
 }
 
 fn app() -> App {
@@ -38,11 +42,11 @@ fn app() -> App {
 }
 
 fn smoke_lifetime() -> Duration {
-    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SMOKE_SECONDS")
+    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SECONDS")
         .map(|value| {
-            value.parse::<u64>().expect(
-                "HYDROLYSIS_WAYLAND_SMOKE_SECONDS must be an unsigned integer number of seconds",
-            )
+            value
+                .parse::<u64>()
+                .expect("HYDROLYSIS_WAYLAND_SECONDS must be an unsigned integer")
         })
         .unwrap_or(10);
     Duration::from_secs(seconds)

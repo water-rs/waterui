@@ -407,7 +407,9 @@ fn pipeline_cache_path_for_adapter(info: &wgpu::AdapterInfo) -> Option<PathBuf> 
     })
 }
 
-async fn request_adapter_async(instance: &wgpu::Instance) -> Result<wgpu::Adapter, SharedContextError> {
+async fn request_adapter_async(
+    instance: &wgpu::Instance,
+) -> Result<wgpu::Adapter, SharedContextError> {
     instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -479,8 +481,8 @@ fn request_android_adapter_with_backends(
 }
 
 #[cfg(target_os = "android")]
-async fn create_android_instance_and_adapter_async(
-) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+async fn create_android_instance_and_adapter_async()
+-> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     match android_backend_override() {
         AndroidBackendOverride::Vulkan => {
             tracing::info!(
@@ -528,8 +530,8 @@ async fn create_android_instance_and_adapter_async(
 }
 
 #[cfg(target_os = "android")]
-fn create_android_instance_and_adapter(
-) -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
+fn create_android_instance_and_adapter()
+-> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     pollster::block_on(create_android_instance_and_adapter_async())
 }
 
@@ -593,18 +595,17 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
     }
 
     // Request device
-    let (device, queue) =
-        adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("WaterUI Shared Device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|e| SharedContextError::DeviceCreationFailed(e.to_string()))?;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("WaterUI Shared Device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::default(),
+        })
+        .await
+        .map_err(|e| SharedContextError::DeviceCreationFailed(e.to_string()))?;
 
     // Set error handler
     device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {

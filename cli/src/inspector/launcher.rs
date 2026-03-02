@@ -316,10 +316,12 @@ Current project resolves `waterui` from a non-path source."
 
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let waterui_core_id = waterui_core.id.to_string();
-    let runtime_fingerprint_base = compute_runtime_fingerprint(&waterui_root, &waterui_core_id)
-        .await?;
-    let runtime_fingerprint =
-        format!("{runtime_fingerprint_base}|profile={}", runtime_profile_tag());
+    let runtime_fingerprint_base =
+        compute_runtime_fingerprint(&waterui_root, &waterui_core_id).await?;
+    let runtime_fingerprint = format!(
+        "{runtime_fingerprint_base}|profile={}",
+        runtime_profile_tag()
+    );
 
     Ok(InspectorRequirements {
         waterui_root,

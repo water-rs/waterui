@@ -78,6 +78,7 @@ where
             frame.format,
             frame.width,
             frame.height,
+            vello::peniko::Color::TRANSPARENT,
         );
         let next_rebuild = renderer.take_rebuild_request();
         renderer.clear_frame_resources();
