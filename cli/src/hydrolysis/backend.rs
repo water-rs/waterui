@@ -1,4 +1,4 @@
-//! GTK4 backend configuration and initialization.
+//! Hydrolysis backend configuration and initialization.
 
 use std::path::{Path, PathBuf};
 
@@ -9,59 +9,57 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    gtk4::platform::{build_gtk4, clean_gtk4, is_gtk4_platform, package_gtk4},
+    hydrolysis::platform::{
+        build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
+    },
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
 
-/// Configuration for the GTK4 backend in a `WaterUI` project.
-///
-/// `[backend.gtk4]` in `Water.toml`
+/// Configuration for the hydrolysis backend in a `WaterUI` project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Gtk4Backend {
+pub struct HydrolysisBackend {
     #[serde(
-        default = "default_gtk4_project_path",
-        skip_serializing_if = "is_default_gtk4_project_path"
+        default = "default_hydrolysis_project_path",
+        skip_serializing_if = "is_default_hydrolysis_project_path"
     )]
     project_path: PathBuf,
 }
 
-impl Gtk4Backend {
-    /// Create a new GTK4 backend configuration with default settings.
+impl HydrolysisBackend {
+    /// Create a new hydrolysis backend configuration with default settings.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            project_path: default_gtk4_project_path(),
+            project_path: default_hydrolysis_project_path(),
         }
     }
 
-    /// Set a custom project path (defaults to "gtk4").
+    /// Set a custom project path (defaults to "hydrolysis").
     #[must_use]
     pub fn with_project_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.project_path = path.into();
         self
     }
 
-    /// Get the path to the GTK4 project within the `WaterUI` project.
+    /// Get the path to the hydrolysis project within the `WaterUI` project.
     #[must_use]
     pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
     }
 }
 
-impl Default for Gtk4Backend {
+impl Default for HydrolysisBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Backend for Gtk4Backend {
-    const DEFAULT_PATH: &'static str = "gtk4";
+impl Backend for HydrolysisBackend {
+    const DEFAULT_PATH: &'static str = "hydrolysis";
 
-    // GTK4 uses cargo's target directory for build caches
-    // Since GTK4 project is a simple Rust binary crate, it uses the workspace target
-    // No need to preserve local target - it's part of the workspace
+    // Hydrolysis uses Cargo build cache in `target/`.
     const CACHE_PATHS: &'static [&'static str] = &[];
 
     fn path(&self) -> &Path {
@@ -70,11 +68,8 @@ impl Backend for Gtk4Backend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
-
-        // Get the relative path to the backend from project root (e.g., "gtk4" or ".water/gtk4")
         let backend_relative_path = project.backend_relative_path::<Self>();
-
-        let project_path = default_gtk4_project_path();
+        let project_path = default_hydrolysis_project_path();
 
         let app_name = manifest
             .package
@@ -89,10 +84,10 @@ impl Backend for Gtk4Backend {
         )
         .with_backend_project_path(backend_relative_path);
 
-        templates::gtk4::scaffold(
+        templates::hydrolysis::scaffold(
             &project.backend_path::<Self>(),
             &ctx,
-            &project.gtk_backend_crate_name(),
+            &project.hydrolysis_backend_crate_name(),
         )
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
@@ -101,36 +96,36 @@ impl Backend for Gtk4Backend {
     }
 
     fn supports(&self, platform: TargetPlatform) -> bool {
-        is_gtk4_platform(platform)
+        is_hydrolysis_platform(platform)
     }
 
     async fn build(
         &self,
         project: &Project,
-        _platform: TargetPlatform,
+        platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
-        build_gtk4(project, options).await
+        build_hydrolysis(project, platform, options).await
     }
 
     async fn package(
         &self,
         project: &Project,
-        _platform: TargetPlatform,
+        platform: TargetPlatform,
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
-        package_gtk4(project, options).await
+        package_hydrolysis(project, platform, options).await
     }
 
     async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
-        clean_gtk4(project).await
+        clean_hydrolysis(project).await
     }
 }
 
-fn default_gtk4_project_path() -> PathBuf {
-    PathBuf::from("gtk4")
+fn default_hydrolysis_project_path() -> PathBuf {
+    PathBuf::from("hydrolysis")
 }
 
-fn is_default_gtk4_project_path(s: &Path) -> bool {
-    s == Path::new("gtk4")
+fn is_default_hydrolysis_project_path(s: &Path) -> bool {
+    s == Path::new("hydrolysis")
 }
