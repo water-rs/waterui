@@ -400,7 +400,9 @@ mod tests {
     use executor_core::LocalExecutor;
 
     use super::{LogLevel, MainThreadStallProbeConfig, classify_level};
-    use super::{RuntimeProbe, TaskPollSample, clear_runtime_probes_for_tests, install_runtime_probe};
+    use super::{
+        RuntimeProbe, TaskPollSample, clear_runtime_probes_for_tests, install_runtime_probe,
+    };
 
     #[derive(Debug, Clone, Copy)]
     struct PollOnceExecutor;

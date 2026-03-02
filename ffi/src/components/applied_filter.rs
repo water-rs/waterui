@@ -650,7 +650,8 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
         }
         WuiInputType::PixelData => {
             let capture_texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
-            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
+            let upload =
+                unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
 
             state.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {

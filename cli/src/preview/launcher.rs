@@ -93,21 +93,20 @@ impl PreviewSession {
             &target_triple,
             project.crate_name(),
         );
-        let dylib_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature)
-            .await?
-        {
-            candidate_path
-        } else {
-            info!("Building dylib...");
-            let dylib_path = rust_build
-                .build_dylib(project.crate_name(), false)
-                .await
-                .wrap_err("Failed to build dylib")?;
-            write_dylib_signature(&dylib_path, &dylib_signature).await?;
+        let dylib_path =
+            if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
+                candidate_path
+            } else {
+                info!("Building dylib...");
+                let dylib_path = rust_build
+                    .build_dylib(project.crate_name(), false)
+                    .await
+                    .wrap_err("Failed to build dylib")?;
+                write_dylib_signature(&dylib_path, &dylib_signature).await?;
 
-            info!("Dylib built: {}", dylib_path.display());
-            dylib_path
-        };
+                info!("Dylib built: {}", dylib_path.display());
+                dylib_path
+            };
 
         self.dylib_path = Some(dylib_path.clone());
 
@@ -161,10 +160,12 @@ fn dylib_signature_path(path: &Path) -> PathBuf {
     PathBuf::from(raw)
 }
 
-fn dylib_build_signature(runtime_fingerprint: &str, target_triple: &str, crate_name: &str) -> String {
-    format!(
-        "runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}"
-    )
+fn dylib_build_signature(
+    runtime_fingerprint: &str,
+    target_triple: &str,
+    crate_name: &str,
+) -> String {
+    format!("runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}")
 }
 
 fn preview_run_options() -> RunOptions {
@@ -634,10 +635,12 @@ Current project resolves `waterui` from a non-path source."
 
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let waterui_core_id = waterui_core.id.to_string();
-    let runtime_fingerprint_base = compute_runtime_fingerprint(&waterui_root, &waterui_core_id)
-        .await?;
-    let runtime_fingerprint =
-        format!("{runtime_fingerprint_base}|profile={}", runtime_profile_tag());
+    let runtime_fingerprint_base =
+        compute_runtime_fingerprint(&waterui_root, &waterui_core_id).await?;
+    let runtime_fingerprint = format!(
+        "{runtime_fingerprint_base}|profile={}",
+        runtime_profile_tag()
+    );
     Ok(PreviewRequirements {
         waterui_root,
         runtime_fingerprint,

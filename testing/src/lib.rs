@@ -31,12 +31,21 @@ impl TestHost {
 
     /// Renders a view and returns the captured RGBA8 snapshot.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
-        let mut platform = OffscreenWindow::new(self.width.max(1), self.height.max(1), wgpu::TextureFormat::Rgba8Unorm);
+        let mut platform = OffscreenWindow::new(
+            self.width.max(1),
+            self.height.max(1),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         let mut renderer = {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
-        let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(self.width.max(1)), f64::from(self.height.max(1)));
+        let bounds = vello::kurbo::Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.width.max(1)),
+            f64::from(self.height.max(1)),
+        );
 
         let surface = platform.surface();
         renderer.set_frame_resources(surface.device(), surface.queue());

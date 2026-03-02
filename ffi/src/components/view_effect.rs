@@ -481,7 +481,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             // Copy pixel data to capture texture.
             // input_handle is a pointer to RGBA pixel data
             let capture_texture = unsafe { state.capture_texture.as_ref().unwrap_unchecked() };
-            let upload = unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
+            let upload =
+                unsafe { prepare_rgba8_upload(input_handle, width, height).unwrap_unchecked() };
 
             state.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
