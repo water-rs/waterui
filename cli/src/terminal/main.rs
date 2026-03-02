@@ -14,7 +14,9 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use futures::future::{self, Either};
 
-use commands::{build, clean, create, device, devices, doctor, inspector, package, preview, run};
+use commands::{
+    backend, build, clean, create, device, devices, doctor, inspector, package, preview, run,
+};
 
 /// `WaterUI` command line interface.
 #[derive(Parser, Debug)]
@@ -32,6 +34,9 @@ struct Cli {
 enum Commands {
     /// Create a new `WaterUI` project.
     Create(create::Args),
+
+    /// Manage project backends.
+    Backend(backend::Args),
 
     /// Build and run on device/simulator.
     Run(run::Args),
@@ -98,6 +103,7 @@ fn main() -> Result<()> {
             let command = async {
                 match cli.command {
                     Commands::Create(args) => create::run(args).await,
+                    Commands::Backend(args) => backend::run(args).await,
                     Commands::Run(args) => run::run(args).await,
                     Commands::Build(args) => build::run(args).await,
 
