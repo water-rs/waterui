@@ -15,6 +15,7 @@ categories = ["internationalization", "localization"]
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-str.workspace = true
+waterkit-regional.workspace = true
 nami.workspace = true
 anyhow = "1.0"
 
@@ -24,15 +25,18 @@ icu_locid_transform = "1.5"
 icu_plurals = "1.5"
 icu_decimal = "1.5"
 icu_datetime = "1.5"
+icu_timezone = "1.5"
 icu_calendar = "1.5"
 icu_list = "1.5"
 icu_provider = "1.5"
 fixed_decimal = "0.5"
+jiff.workspace = true
 
 # Other dependencies
 num = "0.4"
 serde = { workspace = true, features = ["derive"] }
 toml = "0.8"
+tracing.workspace = true
 
 [features]
 default = []

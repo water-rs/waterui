@@ -2,6 +2,7 @@
 
 use core::ops::Deref;
 use core::str::FromStr;
+use std::collections::BTreeSet;
 
 use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
 use icu_locid_transform::LocaleFallbacker;
@@ -9,6 +10,8 @@ use icu_provider::DataLocale;
 use nami::impl_constant;
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
+
+use crate::regional;
 
 /// A locale wrapper around ICU4X `Locale`.
 ///
@@ -183,10 +186,27 @@ pub mod locales {
 /// - zh-TW → zh-Hant → zh (not zh-Hans!)
 /// - sr-Latn → sr (stays separate from sr-Cyrl)
 pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
+    let mut seen = BTreeSet::new();
+    let mut results = Vec::new();
+
+    append_fallback_chain(locale, &mut seen, &mut results);
+
+    let runtime_settings = regional::current_settings();
+    if runtime_settings.locale_tag() == locale.canonical_tag() {
+        for preferred in runtime_settings.preferred_languages() {
+            if let Ok(preferred_locale) = Locale::from_str(preferred) {
+                append_fallback_chain(&preferred_locale, &mut seen, &mut results);
+            }
+        }
+    }
+
+    results
+}
+
+fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut Vec<Locale>) {
     let fallbacker = LocaleFallbacker::new();
     let config = fallbacker.for_config(Default::default());
     let mut iterator = config.fallback_for(DataLocale::from(locale.0.clone()));
-    let mut results = Vec::new();
 
     // Collect up to 10 fallback locales.
     for _ in 0..10 {
@@ -194,17 +214,24 @@ pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
         if current.is_und() {
             break;
         }
-        results.push(Locale(current.clone().into_locale()));
+        let fallback = Locale(current.clone().into_locale());
+        if seen.insert(fallback.canonical_tag()) {
+            out.push(fallback);
+        }
         iterator.step();
     }
-
-    results
 }
 
 impl Extractor for Locale {
     fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
-        env.get::<Locale>()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Locale not found in environment"))
+        if let Some(locale) = env.get::<Locale>().cloned() {
+            return Ok(locale);
+        }
+
+        if let Some(context) = env.get::<regional::RegionalContext>() {
+            return Ok(context.locale().clone());
+        }
+
+        Ok(regional::current_settings().locale().clone())
     }
 }

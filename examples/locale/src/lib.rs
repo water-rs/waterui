@@ -19,7 +19,9 @@
 use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
-use waterui_locale::format::date::{DateStyle, SimpleDate, format_date};
+use waterui_locale::format::date::{
+    DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date, format_datetime_with_regional_context,
+};
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::{Locale, LocalizedDisplay, locales};
 
@@ -104,13 +106,25 @@ fn paragraph_section() -> impl View {
 /// Date formatting section
 fn date_section(locale: Locale) -> impl View {
     let date = SimpleDate::new(2006, 3, 20);
+    let time = SimpleTime::new(9, 30, 0);
     let date_short = format_date(&locale, &date, DateStyle::Short);
     let date_long = format_date(&locale, &date, DateStyle::Long);
+    let regional = waterui::regional::current_settings();
+    let timezone = regional.timezone().to_string();
+    let datetime_with_zone = format_datetime_with_regional_context(
+        &regional,
+        &date,
+        &time,
+        DateStyle::Long,
+        TimeStyle::Long,
+    );
 
     vstack((
         text!("Festival Date (2006-03-20)").size(16.0).bold(),
         hstack((text!("Short:"), spacer(), text(date_short))),
         hstack((text!("Long:"), spacer(), text(date_long))),
+        hstack((text!("Timezone:"), spacer(), text(timezone))),
+        hstack((text!("Kickoff (TZ):"), spacer(), text(datetime_with_zone))),
     ))
 }
 
@@ -165,13 +179,7 @@ fn formatted_content(locale: Locale) -> impl View {
     vstack((date_section(locale), Divider, unit_section(locale_for_unit)))
 }
 
-fn main(env: &Environment) -> impl View {
-    // Get system locale from environment (injected by native FFI)
-    let system_locale = env
-        .get::<Locale>()
-        .cloned()
-        .unwrap_or_else(|| locales::EN.clone());
-
+fn main(system_locale: Locale) -> impl View {
     // Determine initial locale code from system locale
     let initial_code: &'static str = match system_locale.language.as_str() {
         "en" => match system_locale.region.as_ref().map(|r| r.as_str()) {
@@ -225,7 +233,12 @@ fn main(env: &Environment) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main(&env), env)
+    let system_locale = env
+        .get::<Locale>()
+        .cloned()
+        .unwrap_or_else(|| locales::EN.clone());
+
+    App::new(move || main(system_locale.clone()), env)
 }
 
 waterui_ffi::export!();
