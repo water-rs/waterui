@@ -154,49 +154,6 @@ async fn ensure_apple_framework_linking(xcodeproj: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn ensure_dav1d_linking(xcodeproj: &Path, platform: TargetPlatform) -> eyre::Result<()> {
-    let target = platform.triple().to_string();
-    let envs = crate::toolchain::dav1d::cargo_env_for_target(&target).await;
-    let mut lib_name: Option<String> = None;
-    let mut lib_dir: Option<String> = None;
-    for (key, value) in envs {
-        match key.as_str() {
-            "SYSTEM_DEPS_DAV1D_LIB" => lib_name = Some(value.to_string_lossy().into_owned()),
-            "SYSTEM_DEPS_DAV1D_SEARCH_NATIVE" => {
-                lib_dir = Some(value.to_string_lossy().into_owned());
-            }
-            _ => {}
-        }
-    }
-
-    let (Some(lib_name), Some(lib_dir)) = (lib_name, lib_dir) else {
-        return Ok(());
-    };
-    let ld_search = format!("-L{lib_dir}");
-    let ld_lib = format!("-l{lib_name}");
-    let flags = [ld_search.as_str(), ld_lib.as_str()];
-
-    let pbxproj_path = xcodeproj.join("project.pbxproj");
-    if !pbxproj_path.exists() {
-        return Ok(());
-    }
-    let content = fs::read_to_string(&pbxproj_path)
-        .await
-        .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
-    let (updated, changed) = inject_other_ldflags(&content, &flags);
-    if changed {
-        fs::write(&pbxproj_path, updated)
-            .await
-            .wrap_err_with(|| format!("Failed to write {}", pbxproj_path.display()))?;
-        info!(
-            "Updated {} to link dav1d from {}",
-            pbxproj_path.display(),
-            lib_dir
-        );
-    }
-    Ok(())
-}
-
 fn inject_other_ldflags(content: &str, required_flags: &[&str]) -> (String, bool) {
     let mut changed = false;
     let mut lines = Vec::new();
@@ -292,7 +249,6 @@ pub async fn package_apple(
     }
 
     ensure_apple_framework_linking(&xcodeproj).await?;
-    ensure_dav1d_linking(&xcodeproj, platform).await?;
     validate_local_apple_backend(project).await?;
 
     // Copy project assets and fonts
