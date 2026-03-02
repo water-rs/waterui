@@ -108,6 +108,7 @@ waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
 waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
 waterkit-codec = { version = "0.1.0", path = "kit/codec", default-features = false }
 waterkit-video = { version = "0.1.0", path = "kit/video" }
+waterkit-regional = { version = "0.1.0", path = "kit/regional" }
 waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
