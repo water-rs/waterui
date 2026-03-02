@@ -49,16 +49,12 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     } else {
         "debug"
     };
-    let host_target = target_lexicon::Triple::host().to_string();
 
     let mut cargo = smol::process::Command::new("cargo");
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     if options.is_release() {
         cargo.arg("--release");
-    }
-    for (key, value) in crate::toolchain::dav1d::cargo_env_for_target(&host_target).await {
-        cargo.env(key, value);
     }
 
     let output = cargo.output().await?;
