@@ -7,21 +7,18 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libegl1 \
     libgles2 \
     libgbm1 \
+    libgbm-dev \
     libdrm2 \
+    libdrm-dev \
+    libva-dev \
     libvulkan1 \
     mesa-vulkan-drivers \
     mesa-utils \
     wayland-utils \
     libudev-dev \
     libasound2-dev \
-    libavutil-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libavfilter-dev \
-    libavdevice-dev \
-    libswscale-dev \
-    libswresample-dev \
-    libdav1d-dev \
+    libfontconfig-dev \
+    libfreetype6-dev \
     fonts-dejavu-core \
     fonts-noto-core \
     clang \
