@@ -70,7 +70,14 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
             renderer.dispatch(view, &env, bounds);
             renderer.finish_rebuild_frame();
-            renderer.render_scene_to_texture(device, queue, frame.view(), width, height);
+            renderer.render_scene_to_texture(
+                device,
+                queue,
+                frame.view(),
+                width,
+                height,
+                vello::peniko::Color::TRANSPARENT,
+            );
             let rgba_data = readback_texture_rgba8(device, queue, frame.texture(), width, height);
             renderer.clear_frame_resources();
             rgba_data

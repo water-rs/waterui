@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 
 use crate::color::ResolvedColor;
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuView, GpuSurface};
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::include_shader;
 use waterui_core::View;
 
@@ -218,7 +218,11 @@ impl AnimatedMeshRenderer {
 }
 
 impl GpuView for AnimatedMeshRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let shader = crate::shared_context::create_cached_shader_module_prewarmed(
             ctx.device,
             &ANIMATED_MESH_SHADER,
