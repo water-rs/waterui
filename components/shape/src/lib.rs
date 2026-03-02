@@ -29,7 +29,7 @@ use core::time::Duration;
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
-use waterui_graphics::{GpuContext, GpuFrame, GpuView, GpuSurface};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
 
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
 const MORPH_SHADER_SOURCE: &str = include_str!("shaders/morph.wgsl");
@@ -910,7 +910,11 @@ impl MorphShapeRenderer {
 }
 
 impl GpuView for MorphShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl core::future::Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
             ctx.device,
             MORPH_SHADER_LABEL,

@@ -118,9 +118,7 @@ impl InspectorServerConfig {
                     format!("Invalid WATERUI_INSPECTOR_WARN_RATIO `{raw}`: {error}")
                 })?;
                 if !parsed.is_finite() || parsed <= 0.0 {
-                    return Err(
-                        "WATERUI_INSPECTOR_WARN_RATIO must be finite and > 0".to_string(),
-                    );
+                    return Err("WATERUI_INSPECTOR_WARN_RATIO must be finite and > 0".to_string());
                 }
                 parsed
             }
@@ -138,9 +136,7 @@ impl InspectorServerConfig {
                     format!("Invalid WATERUI_INSPECTOR_FLUSH_INTERVAL_MS `{raw}`: {error}")
                 })?;
                 if parsed == 0 {
-                    return Err(
-                        "WATERUI_INSPECTOR_FLUSH_INTERVAL_MS must be > 0".to_string(),
-                    );
+                    return Err("WATERUI_INSPECTOR_FLUSH_INTERVAL_MS must be > 0".to_string());
                 }
                 parsed
             }
@@ -397,7 +393,8 @@ fn run_server(
         let spawn_result = thread::Builder::new()
             .name("waterui-inspector-client".to_string())
             .spawn(move || {
-                if let Err(error) = handle_connection(stream, &state, token.as_str(), flush_interval)
+                if let Err(error) =
+                    handle_connection(stream, &state, token.as_str(), flush_interval)
                 {
                     tracing::warn!(
                         target: "waterui::inspector",
