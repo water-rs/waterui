@@ -464,7 +464,7 @@ impl AndroidPlatform {
             .with_env("ANDROID_ABI", abi.as_str())
             .with_env("ANDROID_PLATFORM", android_platform)
             // Allow pkg-config probes that are intentionally scoped to cross targets.
-            // This is required by some build scripts (e.g. dav1d-sys internal build flow).
+            // This is required by cross-target native dependency build scripts.
             .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
             .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
             .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{}", triple), "1");
