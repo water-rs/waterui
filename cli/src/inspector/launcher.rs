@@ -236,14 +236,14 @@ async fn remove_dir_all_retry(path: &Path) -> Result<()> {
 }
 
 async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirements) -> Result<()> {
-    use crate::project::{CreateOptions, Manifest as WaterManifest};
+    use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
 
     let waterui_path = requirements.waterui_root.clone();
 
     let options = CreateOptions {
         name: "WaterUI Inspector".to_string(),
         bundle_identifier: "dev.waterui.inspector".to_string(),
-        playground: true,
+        package_type: PackageType::Playground,
         waterui_path: Some(waterui_path.clone()),
         author: String::new(),
     };
@@ -256,21 +256,15 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
     manifest.package.accessory = false;
     manifest.save(project.root()).await?;
 
-    let ctx = TemplateContext {
-        app_display_name: "WaterUI Inspector".to_string(),
-        app_name: "WaterUIInspector".to_string(),
-        crate_name: project.crate_name().to_string(),
-        bundle_identifier: "dev.waterui.inspector".to_string(),
-        author: String::new(),
-        android_backend_path: Some(waterui_path.join("backends/android")),
-        use_remote_dev_backend: false,
-        waterui_path: Some(waterui_path),
-        backend_project_path: None,
-        android_permissions: Vec::new(),
-        ios_permissions: Vec::new(),
-        accessory: false,
-        preview_runtime_fingerprint: None,
-    };
+    let ctx = TemplateContext::for_support_playground(
+        "WaterUI Inspector",
+        "WaterUIInspector",
+        project.crate_name().to_string(),
+        "dev.waterui.inspector",
+        waterui_path,
+        false,
+        None,
+    );
 
     crate::templates::inspector::scaffold(project.root(), &ctx)
         .await

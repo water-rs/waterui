@@ -11,6 +11,7 @@ use crate::{
     build::BuildOptions,
     device::Artifact,
     gtk4::backend::Gtk4Backend,
+    hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
 };
@@ -27,13 +28,17 @@ pub struct Backends {
     android: Option<AndroidBackend>,
     apple: Option<AppleBackend>,
     gtk4: Option<Gtk4Backend>,
+    hydrolysis: Option<HydrolysisBackend>,
 }
 
 impl Backends {
     /// Check if no backends are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.android.is_none() && self.apple.is_none() && self.gtk4.is_none()
+        self.android.is_none()
+            && self.apple.is_none()
+            && self.gtk4.is_none()
+            && self.hydrolysis.is_none()
     }
 
     /// Get the base path for backends, relative to project root.
@@ -64,9 +69,19 @@ impl Backends {
         self.apple = Some(backend);
     }
 
+    /// Remove Apple backend configuration.
+    pub fn clear_apple(&mut self) {
+        self.apple = None;
+    }
+
     /// Set the Android backend configuration.
     pub fn set_android(&mut self, backend: AndroidBackend) {
         self.android = Some(backend);
+    }
+
+    /// Remove Android backend configuration.
+    pub fn clear_android(&mut self) {
+        self.android = None;
     }
 
     /// Get the GTK4 backend configuration, if any.
@@ -78,6 +93,27 @@ impl Backends {
     /// Set the GTK4 backend configuration.
     pub fn set_gtk4(&mut self, backend: Gtk4Backend) {
         self.gtk4 = Some(backend);
+    }
+
+    /// Remove GTK4 backend configuration.
+    pub fn clear_gtk4(&mut self) {
+        self.gtk4 = None;
+    }
+
+    /// Get the hydrolysis backend configuration, if any.
+    #[must_use]
+    pub const fn hydrolysis(&self) -> Option<&HydrolysisBackend> {
+        self.hydrolysis.as_ref()
+    }
+
+    /// Set the hydrolysis backend configuration.
+    pub fn set_hydrolysis(&mut self, backend: HydrolysisBackend) {
+        self.hydrolysis = Some(backend);
+    }
+
+    /// Remove hydrolysis backend configuration.
+    pub fn clear_hydrolysis(&mut self) {
+        self.hydrolysis = None;
     }
 }
 

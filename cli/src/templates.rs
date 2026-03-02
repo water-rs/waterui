@@ -10,6 +10,7 @@ use std::{
 
 const WATERUI_VERSION: &str = "0.2";
 const WATERUI_FFI_VERSION: &str = "0.2";
+const WATERUI_HYDROLYSIS_VERSION: &str = "0.1";
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
@@ -27,6 +28,7 @@ mod embedded {
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
+    pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
@@ -63,9 +65,121 @@ pub struct TemplateContext {
     pub accessory: bool,
     /// Preview runtime fingerprint inserted into preview support app templates.
     pub preview_runtime_fingerprint: Option<String>,
+    /// Package type of the project being scaffolded.
+    pub package_type: crate::project::PackageType,
 }
 
 impl TemplateContext {
+    /// Build a template context for a new root project scaffold.
+    #[must_use]
+    pub fn for_create_options(
+        options: &crate::project::CreateOptions,
+        crate_name: impl Into<String>,
+    ) -> Self {
+        let waterui_path = options.waterui_path.clone();
+        Self {
+            app_display_name: options.name.clone(),
+            app_name: options.name.replace(' ', ""),
+            crate_name: crate_name.into(),
+            bundle_identifier: options.bundle_identifier.clone(),
+            author: options.author.clone(),
+            android_backend_path: waterui_path
+                .as_ref()
+                .map(|path| path.join("backends/android")),
+            use_remote_dev_backend: waterui_path.is_none(),
+            waterui_path,
+            backend_project_path: None,
+            android_permissions: Vec::new(),
+            ios_permissions: Vec::new(),
+            accessory: false,
+            preview_runtime_fingerprint: None,
+            package_type: options.package_type,
+        }
+    }
+
+    /// Build a context from an existing project manifest for backend scaffolding.
+    #[must_use]
+    pub fn for_project_manifest(
+        manifest: &crate::project::Manifest,
+        crate_name: impl Into<String>,
+        app_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_display_name: manifest.package.name.clone(),
+            app_name: app_name.into(),
+            crate_name: crate_name.into(),
+            bundle_identifier: manifest.package.bundle_identifier.clone(),
+            author: String::new(),
+            android_backend_path: None,
+            use_remote_dev_backend: manifest.waterui_path.is_none(),
+            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            backend_project_path: None,
+            android_permissions: Vec::new(),
+            ios_permissions: Vec::new(),
+            accessory: manifest.package.accessory,
+            preview_runtime_fingerprint: None,
+            package_type: manifest.package.package_type,
+        }
+    }
+
+    /// Build a context for support applications that always run as playground projects.
+    #[must_use]
+    pub fn for_support_playground(
+        app_display_name: impl Into<String>,
+        app_name: impl Into<String>,
+        crate_name: impl Into<String>,
+        bundle_identifier: impl Into<String>,
+        waterui_path: PathBuf,
+        accessory: bool,
+        preview_runtime_fingerprint: Option<String>,
+    ) -> Self {
+        let android_backend_path = Some(waterui_path.join("backends/android"));
+        Self {
+            app_display_name: app_display_name.into(),
+            app_name: app_name.into(),
+            crate_name: crate_name.into(),
+            bundle_identifier: bundle_identifier.into(),
+            author: String::new(),
+            android_backend_path,
+            use_remote_dev_backend: false,
+            waterui_path: Some(waterui_path),
+            backend_project_path: None,
+            android_permissions: Vec::new(),
+            ios_permissions: Vec::new(),
+            accessory,
+            preview_runtime_fingerprint,
+            package_type: crate::project::PackageType::Playground,
+        }
+    }
+
+    /// Set backend project path for template rendering.
+    #[must_use]
+    pub fn with_backend_project_path(mut self, path: PathBuf) -> Self {
+        self.backend_project_path = Some(path);
+        self
+    }
+
+    /// Set optional Android backend path for template rendering.
+    #[must_use]
+    pub fn with_android_backend_path(mut self, path: Option<PathBuf>) -> Self {
+        self.android_backend_path = path;
+        self
+    }
+
+    /// Set Android permissions for template rendering.
+    #[must_use]
+    pub fn with_android_permissions(mut self, permissions: Vec<String>) -> Self {
+        self.android_permissions = permissions;
+        self
+    }
+
+    /// Set iOS permissions for template rendering.
+    #[must_use]
+    pub fn with_ios_permissions(mut self, permissions: Vec<(String, String)>) -> Self {
+        self.ios_permissions = permissions;
+        self
+    }
+
     /// Render a template string by replacing all placeholders.
     #[must_use]
     pub fn render(&self, template: &str) -> String {
@@ -129,6 +243,14 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                 self.preview_runtime_fingerprint
                     .as_deref()
                     .unwrap_or_default(),
+            )
+            .replace(
+                "__FFI_EXPORT__",
+                if self.package_type == crate::project::PackageType::App {
+                    "waterui_ffi::export!();"
+                } else {
+                    ""
+                },
             )
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
@@ -337,6 +459,7 @@ mod tests {
             ios_permissions: Vec::new(),
             accessory: false,
             preview_runtime_fingerprint: None,
+            package_type: crate::project::PackageType::App,
         }
     }
 
@@ -501,6 +624,72 @@ async fn write_support_cargo_toml(
     Ok(())
 }
 
+async fn write_native_backend_bin_cargo_toml(
+    base_dir: &Path,
+    ctx: &TemplateContext,
+    package_name: &str,
+    backend_crate_name: &str,
+    backend_version: &str,
+    backend_path_name: &str,
+    backend_features: &[&str],
+) -> io::Result<()> {
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
+
+    let mut manifest = Manifest::<()>::default();
+    manifest.package = Some(Package::new(package_name.to_string(), "0.1.0".to_string()));
+    if let Some(ref mut package) = manifest.package {
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+    }
+
+    manifest.dependencies.insert(
+        ctx.crate_name.clone(),
+        Dependency::Detailed(Box::new(DependencyDetail {
+            path: Some(ctx.project_root_relative_path()),
+            ..Default::default()
+        })),
+    );
+
+    let features = backend_features
+        .iter()
+        .map(|item| item.to_string())
+        .collect();
+    if let Some(waterui_path) = &ctx.waterui_path {
+        let backend_path = if waterui_path.is_absolute() {
+            waterui_path.join("backends").join(backend_path_name)
+        } else {
+            std::path::PathBuf::from(ctx.project_root_relative_path())
+                .join(waterui_path)
+                .join("backends")
+                .join(backend_path_name)
+        };
+        manifest.dependencies.insert(
+            backend_crate_name.to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(normalize_path_for_config(&backend_path)),
+                features,
+                ..Default::default()
+            })),
+        );
+    } else {
+        manifest.dependencies.insert(
+            backend_crate_name.to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                version: Some(backend_version.to_string()),
+                features,
+                ..Default::default()
+            })),
+        );
+    }
+
+    manifest.workspace = Some(Workspace::default());
+
+    let toml_string = toml::to_string_pretty(&manifest)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::create_dir_all(base_dir).await?;
+    fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+    Ok(())
+}
+
 fn dependency_path(path: &Path) -> SupportDependencyValue {
     SupportDependencyValue::Detailed(SupportDependencyDetail {
         path: normalize_path_for_config(path),
@@ -583,9 +772,9 @@ pub mod android {
 
 /// GTK4 backend templates.
 pub mod gtk4 {
-    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
-
-    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
+    use super::{
+        Path, TemplateContext, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
+    };
 
     const WATERUI_GTK_VERSION: &str = "0.1";
 
@@ -594,84 +783,73 @@ pub mod gtk4 {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
         // Generate Cargo.toml programmatically
-        generate_cargo_toml(base_dir, ctx).await?;
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
 
         // Scaffold remaining template files (main.rs, etc.)
         scaffold_dir(&embedded::GTK4, base_dir, ctx).await
     }
 
     /// Generate GTK4 Cargo.toml programmatically using cargo_toml crate.
-    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        let mut manifest = Manifest::<()>::default();
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        write_native_backend_bin_cargo_toml(
+            base_dir,
+            ctx,
+            package_name,
+            "waterui-gtk",
+            WATERUI_GTK_VERSION,
+            "gtk",
+            &[],
+        )
+        .await
+    }
+}
 
-        // Package section
-        manifest.package = Some(Package::new(
-            format!("{}-gtk4", ctx.crate_name),
-            "0.1.0".to_string(),
-        ));
-        if let Some(ref mut pkg) = manifest.package {
-            pkg.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
-        }
+/// Hydrolysis backend templates.
+pub mod hydrolysis {
+    use super::{
+        Path, TemplateContext, WATERUI_HYDROLYSIS_VERSION, embedded, io, scaffold_dir,
+        write_native_backend_bin_cargo_toml,
+    };
 
-        // Add the user's crate as a path dependency
-        manifest.dependencies.insert(
-            ctx.crate_name.clone(),
-            Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(ctx.project_root_relative_path()),
-                ..Default::default()
-            })),
-        );
+    /// Write all hydrolysis templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        scaffold_dir(&embedded::HYDROLYSIS, base_dir, ctx).await
+    }
 
-        // Keep GTK4 backend lean by default.
-        // Optional integrations (for example WebKit) should be enabled explicitly.
-        let gtk_features = vec![];
-
-        if let Some(waterui_path) = &ctx.waterui_path {
-            // Path from GTK4 backend to waterui-gtk:
-            // 1. Go up to project root
-            // 2. Apply waterui_path (relative to project root)
-            // 3. Append backends/gtk
-            let gtk_path = if waterui_path.is_absolute() {
-                waterui_path.join("backends").join("gtk")
-            } else {
-                std::path::PathBuf::from(ctx.project_root_relative_path())
-                    .join(waterui_path)
-                    .join("backends")
-                    .join("gtk")
-            };
-            manifest.dependencies.insert(
-                "waterui-gtk".to_string(),
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(normalize_path_for_config(&gtk_path)),
-                    features: gtk_features,
-                    ..Default::default()
-                })),
-            );
-        } else {
-            manifest.dependencies.insert(
-                "waterui-gtk".to_string(),
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(WATERUI_GTK_VERSION.to_string()),
-                    features: gtk_features,
-                    ..Default::default()
-                })),
-            );
-        }
-
-        // Empty workspace section to exclude from parent workspace
-        manifest.workspace = Some(Workspace::default());
-
-        // Serialize to TOML
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        let cargo_path = base_dir.join("Cargo.toml");
-        fs::create_dir_all(base_dir).await?;
-        fs::write(&cargo_path, toml_string).await?;
-
-        Ok(())
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        write_native_backend_bin_cargo_toml(
+            base_dir,
+            ctx,
+            package_name,
+            "hydrolysis",
+            WATERUI_HYDROLYSIS_VERSION,
+            "hydrolysis",
+            &["winit"],
+        )
+        .await
     }
 }
 
@@ -763,31 +941,32 @@ pub mod root {
         let mut dependencies = BTreeMap::new();
 
         if let Some(waterui_path) = &ctx.waterui_path {
-            // Local path dependencies
             dependencies.insert(
                 "waterui".to_string(),
                 DependencyValue::Detailed(DependencyDetail {
                     path: normalize_path_for_config(waterui_path),
                 }),
             );
-
-            let ffi_path = waterui_path.join("ffi");
-            dependencies.insert(
-                "waterui-ffi".to_string(),
-                DependencyValue::Detailed(DependencyDetail {
-                    path: normalize_path_for_config(&ffi_path),
-                }),
-            );
+            if ctx.package_type == crate::project::PackageType::App {
+                let ffi_path = waterui_path.join("ffi");
+                dependencies.insert(
+                    "waterui-ffi".to_string(),
+                    DependencyValue::Detailed(DependencyDetail {
+                        path: normalize_path_for_config(&ffi_path),
+                    }),
+                );
+            }
         } else {
-            // Registry dependencies
             dependencies.insert(
                 "waterui".to_string(),
                 DependencyValue::Simple(WATERUI_VERSION.to_string()),
             );
-            dependencies.insert(
-                "waterui-ffi".to_string(),
-                DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
-            );
+            if ctx.package_type == crate::project::PackageType::App {
+                dependencies.insert(
+                    "waterui-ffi".to_string(),
+                    DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
+                );
+            }
         }
 
         let manifest = CargoManifest {
@@ -798,11 +977,15 @@ pub mod root {
                 authors: vec![ctx.author.clone()],
             },
             lib: LibSection {
-                crate_type: vec![
-                    "staticlib".to_string(),
-                    "cdylib".to_string(),
-                    "rlib".to_string(),
-                ],
+                crate_type: if ctx.package_type == crate::project::PackageType::App {
+                    vec![
+                        "staticlib".to_string(),
+                        "cdylib".to_string(),
+                        "rlib".to_string(),
+                    ]
+                } else {
+                    vec!["lib".to_string()]
+                },
             },
             dependencies,
             workspace: WorkspaceSection {},

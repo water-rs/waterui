@@ -109,21 +109,14 @@ impl Backend for AndroidBackend {
             .map(|(name, _)| name.clone())
             .collect();
 
-        let ctx = TemplateContext {
-            app_display_name: manifest.package.name.clone(),
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            project.crate_name().to_string(),
             app_name,
-            crate_name: project.crate_name().to_string(),
-            bundle_identifier: manifest.package.bundle_identifier.clone(),
-            author: String::new(),
-            android_backend_path,
-            use_remote_dev_backend: manifest.waterui_path.is_none(),
-            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            backend_project_path: Some(backend_relative_path),
-            android_permissions,
-            ios_permissions: Vec::new(),
-            accessory: manifest.package.accessory,
-            preview_runtime_fingerprint: None,
-        };
+        )
+        .with_backend_project_path(backend_relative_path)
+        .with_android_backend_path(android_backend_path)
+        .with_android_permissions(android_permissions);
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

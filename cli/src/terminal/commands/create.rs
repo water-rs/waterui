@@ -2,14 +2,14 @@
 
 use std::path::PathBuf;
 
-use clap::Args as ClapArgs;
+use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToSnakeCase};
 
 use crate::shell;
 use crate::{header, line, success};
-use waterui_cli::project::{CreateOptions, Project};
+use waterui_cli::project::{CreateOptions, PackageType, Project};
 
 /// Arguments for the create command.
 #[derive(ClapArgs, Debug)]
@@ -21,7 +21,7 @@ pub struct Args {
     #[arg(long)]
     bundle_id: Option<String>,
 
-    /// Backends to scaffold (apple, android, gtk4).
+    /// Backends to scaffold (apple, android, gtk4, hydrolysis).
     #[arg(long, value_delimiter = ',')]
     backends: Option<Vec<String>>,
 
@@ -33,9 +33,9 @@ pub struct Args {
     #[arg(long, conflicts_with = "waterui_path")]
     dev: bool,
 
-    /// Create a playground project (auto-managed backends, no manual backend files).
-    #[arg(long)]
-    playground: bool,
+    /// Project mode (`app` or `playground`).
+    #[arg(long, value_enum, default_value_t = ProjectMode::App)]
+    mode: ProjectMode,
 }
 
 /// Backend options for scaffolding.
@@ -44,16 +44,34 @@ enum Backend {
     Apple,
     Android,
     Gtk4,
+    Hydrolysis,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum ProjectMode {
+    #[default]
+    App,
+    Playground,
+}
+
+impl ProjectMode {
+    const fn package_type(self) -> PackageType {
+        match self {
+            Self::App => PackageType::App,
+            Self::Playground => PackageType::Playground,
+        }
+    }
 }
 
 impl Backend {
-    const ALL: [Self; 3] = [Self::Apple, Self::Android, Self::Gtk4];
+    const ALL: [Self; 4] = [Self::Apple, Self::Android, Self::Gtk4, Self::Hydrolysis];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Apple => "Apple (iOS/macOS)",
             Self::Android => "Android",
             Self::Gtk4 => "GTK4 (Linux/macOS/Windows)",
+            Self::Hydrolysis => "Hydrolysis (Linux/macOS)",
         }
     }
 
@@ -62,6 +80,7 @@ impl Backend {
             "apple" | "ios" | "macos" => Some(Self::Apple),
             "android" => Some(Self::Android),
             "gtk" | "gtk4" | "linux" => Some(Self::Gtk4),
+            "hydrolysis" => Some(Self::Hydrolysis),
             _ => None,
         }
     }
@@ -70,6 +89,7 @@ impl Backend {
 /// Run the create command.
 pub async fn run(args: Args) -> Result<()> {
     let interactive = shell::is_interactive();
+    let package_type = args.mode.package_type();
 
     // Gather config - use CLI args if provided, otherwise prompt
     let name = match args.name.clone() {
@@ -108,16 +128,22 @@ pub async fn run(args: Args) -> Result<()> {
         None => default_bundle_id(&name),
     };
 
-    let backends = match &args.backends {
-        Some(b) => parse_backends(b)?,
-        None if interactive => prompt_backends()?,
-        None => vec![Backend::Apple, Backend::Android],
+    if package_type == PackageType::Playground && args.backends.is_some() {
+        bail!("Playground mode does not support --backends; backend projects are auto-managed.");
+    }
+
+    let backends = if package_type == PackageType::Playground {
+        Vec::new()
+    } else {
+        match &args.backends {
+            Some(values) => parse_backends(values)?,
+            None if interactive => prompt_backends()?,
+            None => vec![Backend::Apple, Backend::Android],
+        }
     };
 
-    if !args.playground && backends.is_empty() {
-        bail!(
-            "At least one backend is required. Choose from: apple, android, gtk4 (or use --playground)."
-        );
+    if package_type == PackageType::App && backends.is_empty() {
+        bail!("At least one backend is required. Choose from: apple, android, gtk4.");
     }
 
     // Compute project path
@@ -133,7 +159,7 @@ pub async fn run(args: Args) -> Result<()> {
         CreateOptions {
             name: name.clone(),
             bundle_identifier: bundle_id,
-            playground: args.playground,
+            package_type,
             waterui_path,
             author: whoami::username(),
         },
@@ -145,10 +171,11 @@ pub async fn run(args: Args) -> Result<()> {
     success!("Created Cargo.toml and src/lib.rs");
 
     // Initialize backends (skip for playground projects)
-    if !args.playground {
+    if package_type == PackageType::App {
         let has_apple = backends.iter().any(|b| matches!(b, Backend::Apple));
         let has_android = backends.iter().any(|b| matches!(b, Backend::Android));
         let has_gtk4 = backends.iter().any(|b| matches!(b, Backend::Gtk4));
+        let has_hydrolysis = backends.iter().any(|b| matches!(b, Backend::Hydrolysis));
 
         if has_apple {
             let spinner = shell::spinner("Scaffolding Apple backend...");
@@ -156,7 +183,7 @@ pub async fn run(args: Args) -> Result<()> {
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Created Apple backend in apple/");
+            success!("Created Apple backend");
         }
 
         if has_android {
@@ -165,7 +192,7 @@ pub async fn run(args: Args) -> Result<()> {
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Created Android backend in android/");
+            success!("Created Android backend");
         }
 
         if has_gtk4 {
@@ -174,7 +201,16 @@ pub async fn run(args: Args) -> Result<()> {
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Created GTK4 backend in gtk4/");
+            success!("Created GTK4 backend");
+        }
+
+        if has_hydrolysis {
+            let spinner = shell::spinner("Scaffolding hydrolysis backend...");
+            project.init_hydrolysis_backend().await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Created hydrolysis backend");
         }
     }
 
@@ -184,7 +220,7 @@ pub async fn run(args: Args) -> Result<()> {
     line!();
     line!("Next steps:");
     line!("  cd {folder_name}");
-    if let Some(command) = next_run_command(&backends) {
+    if let Some(command) = next_run_command(package_type, &backends) {
         line!("  {command}");
     }
 
@@ -232,13 +268,27 @@ fn parse_backends(backends: &[String]) -> Result<Vec<Backend>> {
         Ok(parsed)
     } else {
         bail!(
-            "Unknown backend(s): {}. Valid values: apple, android, gtk4",
+            "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis",
             invalid.join(", ")
         )
     }
 }
 
-fn next_run_command(backends: &[Backend]) -> Option<&'static str> {
+fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&'static str> {
+    if package_type == PackageType::Playground {
+        #[cfg(target_os = "macos")]
+        return Some("water run --platform macos");
+
+        #[cfg(target_os = "linux")]
+        return Some("water run --platform linux");
+
+        #[cfg(target_os = "windows")]
+        return Some("water run --platform windows");
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        return None;
+    }
+
     if backends.iter().any(|b| matches!(b, Backend::Apple)) {
         return Some("water run --platform ios");
     }
@@ -253,6 +303,17 @@ fn next_run_command(backends: &[Backend]) -> Option<&'static str> {
 
         #[cfg(target_os = "linux")]
         return Some("water run --platform linux");
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        return None;
+    }
+
+    if backends.iter().any(|b| matches!(b, Backend::Hydrolysis)) {
+        #[cfg(target_os = "macos")]
+        return Some("water run --platform macos --backend hydrolysis");
+
+        #[cfg(target_os = "linux")]
+        return Some("water run --platform linux --backend hydrolysis");
 
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         return None;
