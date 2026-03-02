@@ -126,7 +126,9 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             )
             .replace(
                 "__PREVIEW_RUNTIME_FINGERPRINT__",
-                self.preview_runtime_fingerprint.as_deref().unwrap_or_default(),
+                self.preview_runtime_fingerprint
+                    .as_deref()
+                    .unwrap_or_default(),
             )
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
@@ -868,22 +870,19 @@ pub mod preview {
 
         if let Some(waterui_path) = &ctx.waterui_path {
             // Local path dependencies
-            dependencies.insert(
-                "waterui".to_string(),
-                dependency_path(waterui_path),
-            );
+            dependencies.insert("waterui".to_string(), dependency_path(waterui_path));
 
             let ffi_path = waterui_path.join("ffi");
             dependencies.insert("waterui-ffi".to_string(), dependency_path(&ffi_path));
 
             let preview_path = waterui_path.join("components").join("preview");
-            dependencies.insert("waterui-preview".to_string(), dependency_path(&preview_path));
+            dependencies.insert(
+                "waterui-preview".to_string(),
+                dependency_path(&preview_path),
+            );
         } else {
             // Registry dependencies
-            dependencies.insert(
-                "waterui".to_string(),
-                dependency_version(WATERUI_VERSION),
-            );
+            dependencies.insert("waterui".to_string(), dependency_version(WATERUI_VERSION));
             dependencies.insert(
                 "waterui-ffi".to_string(),
                 dependency_version(WATERUI_FFI_VERSION),

@@ -3,8 +3,8 @@
 use core::num::NonZeroU32;
 
 use nami::Signal;
-use waterui_core::{Environment, View};
 use waterui_canvas::Canvas;
+use waterui_core::{Environment, View};
 
 use crate::charts::canvas::{draw_radar, reactive_canvas};
 use crate::data::RadarData;
