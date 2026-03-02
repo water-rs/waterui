@@ -782,14 +782,14 @@ mod tests {
             let Ok(decoded) = waterkit_codec::decode_image(&bytes) else {
                 continue;
             };
-            if decoded.pixel_format != waterkit_codec::DecodedPixelFormat::Rgba16Float
-                || !decoded.hdr
+            if decoded.pixel_format() != waterkit_codec::DecodedPixelFormat::Rgba16Float
+                || !decoded.hdr()
             {
                 continue;
             }
-            let first = &decoded.pixels[0..8];
-            let non_uniform = decoded.pixels.chunks_exact(8).any(|px| px != first);
-            let nonzero_rgb = decoded.pixels.chunks_exact(8).any(|px| {
+            let first = &decoded.pixels()[0..8];
+            let non_uniform = decoded.pixels().chunks_exact(8).any(|px| px != first);
+            let nonzero_rgb = decoded.pixels().chunks_exact(8).any(|px| {
                 px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0 || px[4] != 0 || px[5] != 0
             });
             if non_uniform && nonzero_rgb {
@@ -842,15 +842,15 @@ mod tests {
             let decoded =
                 waterkit_codec::decode_image(&bytes).expect("platform decode should work");
             assert_eq!(
-                decoded.pixel_format,
+                decoded.pixel_format(),
                 waterkit_codec::DecodedPixelFormat::Rgba16Float
             );
-            assert!(decoded.hdr);
+            assert!(decoded.hdr());
 
             let mut max_rgb = 0.0f32;
             let mut gt_one = 0usize;
             let mut total = 0usize;
-            for px in decoded.pixels.chunks_exact(8) {
+            for px in decoded.pixels().chunks_exact(8) {
                 let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]]));
                 let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]]));
                 let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]]));

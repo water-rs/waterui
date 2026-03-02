@@ -24,7 +24,7 @@ filtrate.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true
-waterkit-codec.workspace = true
+waterkit-codec = { workspace = true, features = ["software-fallback"] }
 mime = "0.3.17"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 blocking = "1.6.2"
