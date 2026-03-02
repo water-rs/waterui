@@ -293,14 +293,14 @@ mod tests {
                 let Ok(decoded) = waterkit_codec::decode_image(&bytes) else {
                     continue;
                 };
-                if decoded.pixel_format != waterkit_codec::DecodedPixelFormat::Rgba16Float
-                    || !decoded.hdr
+                if decoded.pixel_format() != waterkit_codec::DecodedPixelFormat::Rgba16Float
+                    || !decoded.hdr()
                 {
                     continue;
                 }
-                let first = &decoded.pixels[0..8];
-                let non_uniform = decoded.pixels.chunks_exact(8).any(|px| px != first);
-                let nonzero_rgb = decoded.pixels.chunks_exact(8).any(|px| {
+                let first = &decoded.pixels()[0..8];
+                let non_uniform = decoded.pixels().chunks_exact(8).any(|px| px != first);
+                let nonzero_rgb = decoded.pixels().chunks_exact(8).any(|px| {
                     px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0 || px[4] != 0 || px[5] != 0
                 });
                 if non_uniform && nonzero_rgb {
@@ -311,12 +311,12 @@ mod tests {
 
             let decoded = selected.expect("no HDR AVIF sample decoded to non-black RGBA16F data");
             assert_eq!(
-                decoded.pixel_format,
+                decoded.pixel_format(),
                 waterkit_codec::DecodedPixelFormat::Rgba16Float,
                 "10-bit AVIF should decode to RGBA16F on HDR-capable platform decoder path"
             );
             assert!(
-                decoded.hdr,
+                decoded.hdr(),
                 "10-bit AVIF should be marked as HDR from platform decoder"
             );
         });
@@ -391,13 +391,45 @@ mod tests {
                 .await
                 .expect("body should load");
 
-            let final_image =
-                Image::from_encoded(&bytes).expect("AV1 should decode via platform path");
+            let platform_probe = crate::image_codec::decode_with_platform(&bytes);
+            let platform_ok = platform_probe.is_ok();
+            if let Err(err) = &platform_probe {
+                eprintln!(
+                    "[av1_decode_fallback_probe_smoke] platform AV1 decode unavailable, expecting software fallback: {err}"
+                );
+            }
+
+            let final_image = Image::from_encoded(&bytes)
+                .expect("AV1 should decode via platform or software path");
             let (decoded_with_path, path) =
-                Image::from_encoded_with_path(&bytes).expect("AV1 should decode via platform path");
+                Image::from_encoded_with_path(&bytes).expect("AV1 should decode via selected path");
+            let decoded_source =
+                waterkit_codec::decode_image(&bytes).expect("AV1 sample should decode to pixels");
+            assert!(
+                !decoded_source.hdr(),
+                "8bpc AVIF sample must stay SDR (hdr=false)"
+            );
             assert_eq!(final_image.width(), decoded_with_path.width());
             assert_eq!(final_image.height(), decoded_with_path.height());
-            assert_eq!(path, DecodePath::Platform);
+            if platform_ok {
+                assert_eq!(
+                    path,
+                    DecodePath::Platform,
+                    "decode path should stay platform when platform probe succeeds"
+                );
+            } else {
+                assert_eq!(
+                    path,
+                    DecodePath::SoftwareFallback,
+                    "decode path should fall back to software when platform probe fails"
+                );
+                let software_probe = crate::image_codec::decode_with_software_fallback(&bytes)
+                    .expect("AV1 software fallback should decode on platform AV1 decode miss");
+                assert!(software_probe.width > 0 && software_probe.height > 0);
+            }
+            eprintln!(
+                "[av1_decode_fallback_probe_smoke] platform_ok={platform_ok} selected_path={path:?}"
+            );
         });
     }
 
