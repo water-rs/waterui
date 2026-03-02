@@ -133,26 +133,16 @@ impl Backend for AppleBackend {
 
         let project_path = default_apple_project_path();
 
-        let ctx = TemplateContext {
-            app_display_name: manifest.package.name.clone(),
-            app_name,
-            crate_name: crate_name_for_template,
-            bundle_identifier: manifest.package.bundle_identifier.clone(),
-            author: String::new(),
-            android_backend_path: None,
-            use_remote_dev_backend: effective_waterui_path.is_none(),
-            waterui_path: effective_waterui_path.as_ref().map(PathBuf::from),
-            backend_project_path: Some(backend_relative_path),
-            android_permissions: Vec::new(),
-            ios_permissions: manifest
-                .permissions
-                .iter()
-                .filter(|(_, entry)| entry.is_enabled())
-                .map(|(name, entry)| (name.clone(), entry.description().to_string()))
-                .collect(),
-            accessory: manifest.package.accessory,
-            preview_runtime_fingerprint: None,
-        };
+        let ios_permissions = manifest
+            .permissions
+            .iter()
+            .filter(|(_, entry)| entry.is_enabled())
+            .map(|(name, entry)| (name.clone(), entry.description().to_string()))
+            .collect();
+        let ctx =
+            TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
+                .with_backend_project_path(backend_relative_path)
+                .with_ios_permissions(ios_permissions);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

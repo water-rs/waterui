@@ -51,6 +51,8 @@ dirs = "6"                    # Platform-specific directories (cache, config, et
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.10"                 # SHA256 hashing
 zip = "7.0"                   # ZIP archive extraction
+fs_extra = "1.3"
+askama = "0.14"
 waterui-preview-protocol = { path = "../components/preview-protocol" }
 waterui-inspector-protocol = { path = "../components/inspector-protocol" }
 
