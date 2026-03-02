@@ -97,11 +97,15 @@ fn install_locale_value(env: &mut WuiEnv, locale: Locale) {
     env.0.insert(locale.clone());
     regional::set_locale_tag(locale.canonical_tag())
         .expect("locale inserted into environment must be valid");
+    env.0.insert(regional::current_settings().with_locale(locale));
 }
 
 fn current_locale(env: &WuiEnv) -> Locale {
     if let Some(locale) = env.0.get::<Locale>().cloned() {
         return locale;
+    }
+    if let Some(context) = env.0.get::<regional::RegionalContext>() {
+        return context.locale().clone();
     }
     parse_locale(regional::current_settings().locale_tag())
 }
@@ -236,6 +240,12 @@ mod tests {
             let locale = env.0.get::<Locale>().expect("Locale should be installed");
             assert_eq!(locale.language.as_str(), "en");
             assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
+            let settings = env
+                .0
+                .get::<regional::RegionalContext>()
+                .expect("RegionalContext should be installed");
+            assert_eq!(settings.locale_tag(), "en-GB");
+            assert!(!settings.timezone().is_empty());
 
             drop(Box::from_raw(env_ptr));
         }
@@ -274,6 +284,11 @@ mod tests {
             let locale_value = env.0.get::<Locale>().expect("Locale should be installed");
             assert_eq!(locale_value.language.as_str(), "en");
             assert_eq!(locale_value.region.as_ref().map(|r| r.as_str()), Some("GB"));
+            let settings = env
+                .0
+                .get::<regional::RegionalContext>()
+                .expect("RegionalContext should be installed");
+            assert_eq!(settings.locale_tag(), "en-GB");
             assert_eq!(waterui_env_get_locale(env_ptr), WuiLocale::EnGb);
 
             drop(Box::from_raw(env_ptr));
