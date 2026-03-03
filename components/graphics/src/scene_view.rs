@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
@@ -12,17 +11,10 @@ use crate::scene2d_vello::VelloScene2D;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SceneViewMergeToParent;
 
-pub type SceneInvalidator = Rc<dyn Fn()>;
-
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
     /// Build commands into the provided scene.
-    ///
-    /// Returns true when the content requires another frame to be rendered.
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool;
-
-    /// Installs an invalidation callback that content can trigger from signal watchers.
-    fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32);
 }
 
 /// A view that renders scene content either directly (backend) or via `GpuSurface`.
@@ -105,10 +97,6 @@ impl GpuView for SceneSurfaceRenderer {
         ctx: &GpuContext,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let redraw_handle = ctx.redraw_handle.clone();
-        self.content
-            .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
-
         self.renderer = Some(
             vello::Renderer::new(
                 ctx.device,
@@ -241,11 +229,11 @@ impl GpuView for SceneSurfaceRenderer {
             .expect("SceneView intermediate view missing");
 
         self.scene.reset();
-        let needs_next_frame = {
+        {
             let mut scene2d = VelloScene2D::new(&mut self.scene);
             self.content
-                .build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
-        };
+                .build_scene(&mut scene2d, frame.width as f32, frame.height as f32);
+        }
 
         renderer
             .render_to_texture(
@@ -318,8 +306,5 @@ impl GpuView for SceneSurfaceRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-        if needs_next_frame {
-            frame.request_redraw();
-        }
     }
 }
