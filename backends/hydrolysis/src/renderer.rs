@@ -8161,9 +8161,6 @@ impl HydrolysisRenderer {
         request: AccessibilityActionRequest,
         env: &Environment,
     ) -> bool {
-        if request.target_tree != AccessibilityTreeId::ROOT {
-            return false;
-        }
         let action = request.action;
         let action_data = request.data;
         let target_node = request.target_node;
