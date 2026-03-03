@@ -54,9 +54,6 @@ pub mod prelude {
 
     pub use crate::include_markdown;
 
-    // Filter extension trait for GPU filters
-    pub use super::graphics::FilterViewExt;
-
     pub use super::color::*;
     pub use super::fullscreen::*;
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
