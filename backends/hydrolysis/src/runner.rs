@@ -566,6 +566,12 @@ mod winit_runner {
                 platform.native_window(),
                 self.event_proxy.clone(),
             );
+            tracing::trace!(
+                target: "waterui::hydrolysis::a11y",
+                window_id = ?platform.id(),
+                title = window.title.get().as_str(),
+                "created accesskit adapter for window"
+            );
             platform.native_window().set_visible(true);
             (
                 RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config),
@@ -613,24 +619,60 @@ mod winit_runner {
                     }
                     InputEvent::PointerDown { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_pointer_down(x, y, button, env) {
+                        let changed = runtime.renderer.handle_pointer_down(x, y, button, env);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "pointer_down",
+                            x,
+                            y,
+                            button = ?button,
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::PointerUp { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_pointer_up(x, y, button, env) {
+                        let changed = runtime.renderer.handle_pointer_up(x, y, button, env);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "pointer_up",
+                            x,
+                            y,
+                            button = ?button,
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::PointerMove { x, y } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_pointer_move(x, y, env) {
+                        let changed = runtime.renderer.handle_pointer_move(x, y, env);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "pointer_move",
+                            x,
+                            y,
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::PointerCancel => {
-                        if runtime.renderer.handle_pointer_cancel(env) {
+                        let changed = runtime.renderer.handle_pointer_cancel(env);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "pointer_cancel",
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
@@ -642,7 +684,19 @@ mod winit_runner {
                         is_line_delta,
                     } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta) {
+                        let changed = runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "scroll",
+                            x,
+                            y,
+                            dx,
+                            dy,
+                            is_line_delta,
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
@@ -666,22 +720,54 @@ mod winit_runner {
                         state: KeyState::Pressed,
                         modifiers,
                     } => {
-                        if runtime.renderer.handle_key(&key, modifiers) {
+                        let changed = runtime.renderer.handle_key(&key, modifiers);
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "key_pressed",
+                            key = ?key,
+                            modifiers = ?modifiers,
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::ImePreedit { text } => {
-                        if runtime.renderer.handle_ime_preedit(text.as_str()) {
+                        let changed = runtime.renderer.handle_ime_preedit(text.as_str());
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "ime_preedit",
+                            text = text.as_str(),
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::ImeCommit { text } => {
-                        if runtime.renderer.handle_ime_commit(text.as_str()) {
+                        let changed = runtime.renderer.handle_ime_commit(text.as_str());
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "ime_commit",
+                            text = text.as_str(),
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
                     InputEvent::ImeDisabled => {
-                        if runtime.renderer.handle_ime_disabled() {
+                        let changed = runtime.renderer.handle_ime_disabled();
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "ime_disabled",
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
                             runtime.needs_rebuild = true;
                         }
                     }
@@ -761,7 +847,18 @@ mod winit_runner {
             if let WindowEvent::RedrawRequested = event {
                 render_window(runtime, &self.env);
                 if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?window_id,
+                        "publishing accessibility tree update on redraw"
+                    );
                     adapter.update_if_active(|| update);
+                } else {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?window_id,
+                        "no accessibility tree update available on redraw"
+                    );
                 }
             }
         }
@@ -815,15 +912,37 @@ mod winit_runner {
                         .expect("hydrolysis runner missing AccessKit adapter for user event");
                     match event.window_event {
                         AccessKitWindowEvent::InitialTreeRequested => {
+                            tracing::trace!(
+                                target: "waterui::hydrolysis::a11y",
+                                window_id = ?event.window_id,
+                                "accesskit initial tree requested"
+                            );
                             if let Some(update) = runtime.renderer.take_accessibility_tree_update()
                             {
+                                tracing::trace!(
+                                    target: "waterui::hydrolysis::a11y",
+                                    window_id = ?event.window_id,
+                                    "publishing accessibility tree update for initial request"
+                                );
                                 adapter.update_if_active(|| update);
                             } else {
+                                tracing::trace!(
+                                    target: "waterui::hydrolysis::a11y",
+                                    window_id = ?event.window_id,
+                                    "missing accessibility tree update for initial request, scheduling rebuild"
+                                );
                                 runtime.needs_rebuild = true;
                                 runtime.platform.request_redraw();
                             }
                         }
                         AccessKitWindowEvent::ActionRequested(request) => {
+                            tracing::trace!(
+                                target: "waterui::hydrolysis::a11y",
+                                window_id = ?event.window_id,
+                                action = ?request.action,
+                                target = ?request.target_node,
+                                "accesskit action requested"
+                            );
                             if runtime
                                 .renderer
                                 .handle_accessibility_action(request, &self.env)
