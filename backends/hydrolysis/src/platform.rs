@@ -534,6 +534,7 @@ mod winit_impl {
         surface: WinitSurface,
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
+        pointer_scale_factor: f64,
         modifiers: Modifiers,
         ime_allowed: bool,
         current_cursor_style: CursorStyle,
@@ -542,11 +543,13 @@ mod winit_impl {
     impl WinitWindow {
         pub async fn new(window: Arc<NativeWindow>) -> Self {
             let surface = WinitSurface::new(window.clone()).await;
+            let pointer_scale_factor = window.scale_factor();
             Self {
                 window,
                 surface,
                 pending_events: Vec::new(),
                 pointer_position: (0.0, 0.0),
+                pointer_scale_factor,
                 modifiers: Modifiers::default(),
                 ime_allowed: false,
                 current_cursor_style: CursorStyle::Arrow,
@@ -575,7 +578,15 @@ mod winit_impl {
                         height: size.height.max(1),
                     });
                 }
-                WindowEvent::ScaleFactorChanged { .. } => {
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    if !scale_factor.is_finite() || *scale_factor <= 0.0 {
+                        panic!(
+                            "hydrolysis winit backend received invalid scale factor {scale_factor}"
+                        );
+                    }
+                    let ratio = *scale_factor / self.pointer_scale_factor;
+                    self.pointer_position = scale_pointer_position(self.pointer_position, ratio);
+                    self.pointer_scale_factor = *scale_factor;
                     let size = self.window.inner_size();
                     self.surface.resize(size.width, size.height);
                     self.pending_events.push(InputEvent::Resize {
@@ -614,7 +625,8 @@ mod winit_impl {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let (dx, dy, is_line_delta) = map_scroll_delta(delta);
+                    let (dx, dy, is_line_delta) =
+                        map_scroll_delta(delta, self.window.scale_factor());
                     self.pending_events.push(InputEvent::Scroll {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -675,11 +687,24 @@ mod winit_impl {
         (position.x as f32, position.y as f32)
     }
 
-    fn map_scroll_delta(delta: &MouseScrollDelta) -> (f32, f32, bool) {
+    fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
+        }
         match delta {
             MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
-            MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32, false),
+            MouseScrollDelta::PixelDelta(delta) => {
+                let logical = delta.to_logical::<f64>(scale_factor);
+                (logical.x as f32, logical.y as f32, false)
+            }
         }
+    }
+
+    fn scale_pointer_position(position: (f32, f32), ratio: f64) -> (f32, f32) {
+        (
+            (f64::from(position.0) * ratio) as f32,
+            (f64::from(position.1) * ratio) as f32,
+        )
     }
 
     impl PlatformWindow for WinitWindow {
@@ -834,7 +859,7 @@ mod winit_impl {
         use winit::dpi::PhysicalPosition;
         use winit::event::MouseScrollDelta;
 
-        use super::{map_cursor_position, map_scroll_delta};
+        use super::{map_cursor_position, map_scroll_delta, scale_pointer_position};
 
         #[test]
         fn cursor_position_uses_physical_coordinates() {
@@ -844,21 +869,28 @@ mod winit_impl {
         }
 
         #[test]
-        fn pixel_scroll_delta_is_forwarded_without_scale_conversion() {
-            let (dx, dy, is_line_delta) = map_scroll_delta(&MouseScrollDelta::PixelDelta(
-                PhysicalPosition::new(120.0, -48.5),
-            ));
-            assert_eq!(dx, 120.0);
-            assert_eq!(dy, -48.5);
+        fn pixel_scroll_delta_is_converted_to_logical_space() {
+            let (dx, dy, is_line_delta) = map_scroll_delta(
+                &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
+                2.0,
+            );
+            assert_eq!(dx, 60.0);
+            assert_eq!(dy, -24.25);
             assert!(!is_line_delta);
         }
 
         #[test]
         fn line_scroll_delta_is_preserved() {
-            let (dx, dy, is_line_delta) = map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5));
+            let (dx, dy, is_line_delta) =
+                map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
             assert_eq!(dx, -2.0);
             assert_eq!(dy, 3.5);
             assert!(is_line_delta);
+        }
+
+        #[test]
+        fn pointer_position_scales_with_scale_factor_ratio() {
+            assert_eq!(scale_pointer_position((120.0, 80.0), 1.5), (180.0, 120.0));
         }
     }
 
