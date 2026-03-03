@@ -4,10 +4,13 @@
 //! both raw numeric literals (`0.5`, `1`, `2.0`) and reactive signals that
 //! produce numeric values, converting them uniformly to `Computed<f32>`.
 
-use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
+use nami::{Signal, SignalExt};
 
+/// Converts constants or reactive signals into an `f32` signal.
 pub trait IntoSignalF32 {
+    /// Concrete signal type after conversion.
     type Signal: Signal<Output = f32>;
+    /// Converts the input into an `f32` signal.
     fn into_signal_f32(self) -> Self::Signal;
 }
 
