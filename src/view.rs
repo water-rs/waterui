@@ -21,6 +21,13 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
+use waterui_graphics::filter_view::{
+    Blur as GraphicsBlur, Brightness as GraphicsBrightness, Contrast as GraphicsContrast,
+    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered,
+    Grayscale as GraphicsGrayscale, GpuFilter, HueRotation as GraphicsHueRotation,
+    Invert as GraphicsInvert, Saturation as GraphicsSaturation, Sepia as GraphicsSepia,
+    Sharpen as GraphicsSharpen, Vignette as GraphicsVignette,
+};
 
 use waterui_layout::{
     EdgeSet, IgnoreSafeArea, Overlay,
@@ -78,6 +85,80 @@ pub trait ViewExt: View + Sized {
     /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
     fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
         Metadata::new(self, Opacity::new(amount))
+    }
+
+    /// Applies a GPU filter to this view.
+    ///
+    /// This is the low-level entry for custom filters. Prefer convenience methods
+    /// like `.blur()` when possible.
+    fn filter<F: GpuFilter>(self, filter: F) -> GraphicsFiltered<Self, F> {
+        GraphicsFilterViewExt::filter(self, filter)
+    }
+
+    /// Applies a blur filter.
+    fn blur<T: IntoSignalF32>(self, radius: T) -> GraphicsFiltered<Self, GraphicsBlur> {
+        GraphicsFilterViewExt::blur(self, radius)
+    }
+
+    /// Applies a brightness filter.
+    fn brightness<T: IntoSignalF32>(
+        self,
+        amount: T,
+    ) -> GraphicsFiltered<Self, GraphicsBrightness> {
+        GraphicsFilterViewExt::brightness(self, amount)
+    }
+
+    /// Applies a contrast filter.
+    fn contrast<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsContrast> {
+        GraphicsFilterViewExt::contrast(self, amount)
+    }
+
+    /// Applies a saturation filter.
+    fn saturation<T: IntoSignalF32>(
+        self,
+        amount: T,
+    ) -> GraphicsFiltered<Self, GraphicsSaturation> {
+        GraphicsFilterViewExt::saturation(self, amount)
+    }
+
+    /// Applies a grayscale filter.
+    fn grayscale<T: IntoSignalF32>(
+        self,
+        intensity: T,
+    ) -> GraphicsFiltered<Self, GraphicsGrayscale> {
+        GraphicsFilterViewExt::grayscale(self, intensity)
+    }
+
+    /// Applies a hue-rotation filter.
+    fn hue_rotation<T: IntoSignalF32>(
+        self,
+        angle: T,
+    ) -> GraphicsFiltered<Self, GraphicsHueRotation> {
+        GraphicsFilterViewExt::hue_rotation(self, angle)
+    }
+
+    /// Applies an invert filter.
+    fn invert(self) -> GraphicsFiltered<Self, GraphicsInvert> {
+        GraphicsFilterViewExt::invert(self)
+    }
+
+    /// Applies a sepia filter.
+    fn sepia<T: IntoSignalF32>(self, intensity: T) -> GraphicsFiltered<Self, GraphicsSepia> {
+        GraphicsFilterViewExt::sepia(self, intensity)
+    }
+
+    /// Applies a sharpen filter.
+    fn sharpen<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsSharpen> {
+        GraphicsFilterViewExt::sharpen(self, amount)
+    }
+
+    /// Applies a vignette filter.
+    fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
+        self,
+        radius: R,
+        softness: S,
+    ) -> GraphicsFiltered<Self, GraphicsVignette> {
+        GraphicsFilterViewExt::vignette(self, radius, softness)
     }
 
     /// Sets the visibility of this view.
@@ -463,7 +544,10 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies explicit accessibility state metadata.
-    fn a11y_state(self, state: accessibility::AccessibilityState) -> IgnorableMetadata<AccessibilityState> {
+    fn a11y_state(
+        self,
+        state: accessibility::AccessibilityState,
+    ) -> IgnorableMetadata<AccessibilityState> {
         IgnorableMetadata::new(self, state)
     }
 

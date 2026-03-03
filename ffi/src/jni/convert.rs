@@ -728,114 +728,6 @@ impl ToJavaStruct for crate::WuiMetadataOffset {
     }
 }
 
-/// MetadataBlurStruct(contentPtr: Long, radiusPtr: Long)
-impl ToJavaStruct for crate::WuiMetadataBlur {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataBlurStruct")
-            .expect("MetadataBlurStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.radius as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataBlurStruct")
-    }
-}
-
-/// MetadataBrightnessStruct(contentPtr: Long, amountPtr: Long)
-impl ToJavaStruct for crate::WuiMetadataBrightness {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataBrightnessStruct")
-            .expect("MetadataBrightnessStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.amount as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataBrightnessStruct")
-    }
-}
-
-/// MetadataSaturationStruct(contentPtr: Long, amountPtr: Long)
-impl ToJavaStruct for crate::WuiMetadataSaturation {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataSaturationStruct")
-            .expect("MetadataSaturationStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.amount as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataSaturationStruct")
-    }
-}
-
-/// MetadataContrastStruct(contentPtr: Long, amountPtr: Long)
-impl ToJavaStruct for crate::WuiMetadataContrast {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataContrastStruct")
-            .expect("MetadataContrastStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.amount as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataContrastStruct")
-    }
-}
-
-/// MetadataHueRotationStruct(contentPtr: Long, anglePtr: Long)
-impl ToJavaStruct for crate::WuiMetadataHueRotation {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataHueRotationStruct")
-            .expect("MetadataHueRotationStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.angle as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataHueRotationStruct")
-    }
-}
-
-/// MetadataGrayscaleStruct(contentPtr: Long, intensityPtr: Long)
-impl ToJavaStruct for crate::WuiMetadataGrayscale {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/MetadataGrayscaleStruct")
-            .expect("MetadataGrayscaleStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.intensity as jlong),
-            ],
-        )
-        .expect("Failed to create MetadataGrayscaleStruct")
-    }
-}
-
 /// MetadataOpacityStruct(contentPtr: Long, valuePtr: Long)
 impl ToJavaStruct for crate::WuiMetadataOpacity {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
@@ -851,6 +743,24 @@ impl ToJavaStruct for crate::WuiMetadataOpacity {
             ],
         )
         .expect("Failed to create MetadataOpacityStruct")
+    }
+}
+
+/// FilteredBlurStruct(contentPtr: Long, radiusPtr: Long)
+impl ToJavaStruct for crate::components::filtered_blur::WuiFilteredBlur {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/FilteredBlurStruct")
+            .expect("FilteredBlurStruct class not found");
+        env.new_object(
+            &class,
+            "(JJ)V",
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.radius as jlong),
+            ],
+        )
+        .expect("Failed to create FilteredBlurStruct")
     }
 }
 
