@@ -14,9 +14,6 @@ use crate::platform::PlatformWindow;
 use crate::renderer::HydrolysisRenderer;
 
 fn init_main_thread_executors() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init();
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = waterui::inspector::maybe_init_from_env();
 }
