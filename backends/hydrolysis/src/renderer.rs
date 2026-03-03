@@ -65,6 +65,7 @@ use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Re
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::gpu_surface::resolve_surface_hdr_preference;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
     AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
@@ -81,7 +82,7 @@ use waterui_layout::stack::{
     Axis as StackAxis, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment,
 };
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
-use waterui_text::TextConfig;
+use waterui_text::{Text, TextConfig};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 
@@ -6848,24 +6849,39 @@ impl HydrolysisRenderer {
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
         let size = OffscreenSize::try_from_pixels(width, height)
             .expect("hydrolysis GpuSurface requires non-zero offscreen size");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+        let gpu_surface = surface.into_inner();
+        let prefers_hdr = resolve_surface_hdr_preference(gpu_surface.get_surface_prefers_hdr());
         let mut local_env = env.clone();
-        let output = surface
-            .into_inner()
-            .render_offscreen(config, &mut local_env)
-            .expect("hydrolysis failed to render GpuSurface offscreen");
+        let (output_width, output_height, rgba8) = if prefers_hdr {
+            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
+            let output = gpu_surface
+                .render_offscreen_hdr(config, &mut local_env)
+                .expect("hydrolysis failed to render HDR GpuSurface offscreen");
+            let width = output.width;
+            let height = output.height;
+            let rgba8 = output
+                .into_sdr_rgba8()
+                .expect("hydrolysis failed to tone-map HDR GpuSurface output");
+            (width, height, rgba8)
+        } else {
+            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+            let output = gpu_surface
+                .render_offscreen(config, &mut local_env)
+                .expect("hydrolysis failed to render GpuSurface offscreen");
+            (output.width, output.height, output.rgba8)
+        };
 
         let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(output.rgba8),
+            data: vello::peniko::Blob::from(rgba8),
             format: vello::peniko::ImageFormat::Rgba8,
             alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: output.width,
-            height: output.height,
+            width: output_width,
+            height: output_height,
         };
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output.width),
-                ctx.bounds.height() / f64::from(output.height),
+                ctx.bounds.width() / f64::from(output_width),
+                ctx.bounds.height() / f64::from(output_height),
             );
         let scene = unsafe { ctx.scene() };
         scene.draw_image(
@@ -8420,9 +8436,7 @@ impl HydrolysisRenderer {
                 if self.ime_preedit.is_some() || text.is_empty() {
                     return false;
                 }
-                self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(
-                    text.clone(),
-                )))
+                self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.clone())))
             }
             KeyCode::Named(_) | KeyCode::Unidentified => false,
         }
@@ -9487,6 +9501,9 @@ fn estimate_intrinsic_size(
             StyledStr::plain(text.clone()),
             env,
         );
+    }
+    if let Some(text) = view.downcast_ref::<Text>() {
+        return HydrolysisRenderer::measure_text_intrinsic_size(state, text.content().get(), env);
     }
 
     macro_rules! try_native_intrinsic {
