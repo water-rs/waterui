@@ -10,6 +10,7 @@ This crate is the macro engine behind WaterUI's ergonomic APIs. It provides four
 2. **Reactive Projections** - Decompose struct bindings into per-field bindings with `#[derive(Project)]`
 3. **Formatted Strings** - Create reactive formatted strings with the `s!` macro
 4. **Preview** - Enable instant view previews with `#[preview]`
+5. **UI Testing** - Build accessibility-first unit tests with `#[waterui::test(view_fn)]`
 
 This crate is typically accessed through the main `waterui` crate via `use waterui::prelude::*;` rather than being used directly.
 
@@ -237,6 +238,53 @@ fn sidebar() -> impl View {
 water preview sidebar --platform macos --output sidebar.png
 ```
 
+### UI Testing
+
+#### `#[waterui::test(view_fn)]`
+
+Attribute macro that wraps a WaterUI semantic test into a standard Rust `#[test]`.
+
+`view_fn` must be a no-arg function returning `impl View`, which lets one function be shared by
+preview and tests.
+
+```rust
+use waterui::prelude::*;
+
+fn login_preview() -> impl View {
+    text("Login")
+}
+
+#[waterui::test(login_preview)]
+fn login_smoke(app: &mut waterui_testing::MountedApp) {
+    app.assert_exists(
+        waterui_testing::Selector::default()
+            .role(waterui_testing::Role::LABEL)
+            .label("Login"),
+    );
+}
+```
+
+For async tests:
+
+```rust
+#[waterui::test(login_preview)]
+async fn login_async(app: &mut waterui_testing::MountedApp) {
+    let exists = app.wait_for_existence(
+        waterui_testing::Selector::default()
+            .role(waterui_testing::Role::LABEL)
+            .label("Login"),
+        std::time::Duration::from_millis(200),
+    );
+    assert!(exists);
+}
+```
+
+Requirements:
+
+- Add `waterui-testing` in `[dev-dependencies]`.
+- Test function signature must be exactly one mutable reference argument and no return value.
+- Do not combine `#[test]` with `#[waterui::test(...)]`.
+
 ## API Overview
 
 ### Derive Macros
@@ -248,6 +296,7 @@ water preview sidebar --platform macos --output sidebar.png
 
 - **`#[form]`** - Convenience macro for form structs (combines multiple derives)
 - **`#[preview]`** - Enable instant view previews
+- **`#[waterui::test(view_fn)]`** - Build semantic UI tests on top of regular unit test harness
 
 ### Function-like Macros
 
