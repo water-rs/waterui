@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use waterui_graphics::{
     color::ResolvedColor,
     gpu_surface::{GpuContext, GpuFrame, GpuView},
-    wgpu,
+    impl_gpu_subview, wgpu,
 };
 
 /// Resolved particle configuration ready for GPU.
@@ -144,11 +144,11 @@ impl ParticleRenderer {
 }
 
 impl GpuView for ParticleRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         let device = ctx.device;
 
         // 1. Create Buffers using encase size calculation
@@ -353,7 +353,6 @@ impl GpuView for ParticleRenderer {
         self.start_time = std::time::Instant::now();
         self.last_frame_time = std::time::Instant::now();
 
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -409,3 +408,5 @@ impl GpuView for ParticleRenderer {
         frame.request_redraw();
     }
 }
+
+impl_gpu_subview!(ParticleRenderer);

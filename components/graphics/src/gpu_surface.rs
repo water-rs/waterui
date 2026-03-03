@@ -12,7 +12,8 @@ use core::num::NonZeroU32;
 use core::pin::Pin;
 use std::sync::mpsc;
 
-use waterui_core::{layout::StretchAxis, raw_view};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::{Environment, Native, NativeView, View};
 
 /// A boxed future for async setup operations.
 pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
@@ -375,8 +376,8 @@ impl<'a> GpuFrame<'a> {
 ///
 /// # Async Setup
 ///
-/// The `setup` method returns a future, allowing async initialization (e.g., SVG parsing).
-/// For sync renderers, simply return `async {}` after doing sync work.
+/// The `setup` method is async, allowing async initialization (e.g., SVG parsing).
+/// For sync renderers, just run setup code directly and return.
 ///
 /// **Note:** The future does not require `Send` - it's created and awaited on the same thread.
 /// For heavy CPU work, use `smol::unblock` to run on a thread pool.
@@ -389,9 +390,8 @@ impl<'a> GpuFrame<'a> {
 /// }
 ///
 /// impl GpuView for TriangleRenderer {
-///     fn setup(&mut self, ctx: &GpuContext, _env: &mut waterui_core::Environment) -> impl Future<Output = ()> {
+///     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
 ///         self.pipeline = Some(ctx.device.create_render_pipeline(&...));
-///         async {}
 ///     }
 ///
 ///     fn render(&mut self, frame: &mut GpuFrame) {
@@ -401,7 +401,14 @@ impl<'a> GpuFrame<'a> {
 ///     }
 /// }
 /// ```
-pub trait GpuView: 'static {
+pub trait GpuView: SubView + 'static {
+    /// Whether layout measurement requires the main thread.
+    ///
+    /// GPU renderers default to thread-safe measurement.
+    fn require_main_thread(&self) -> bool {
+        false
+    }
+
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
@@ -410,13 +417,8 @@ pub trait GpuView: 'static {
     /// `ctx.redraw_handle` can be cloned here for external redraw triggers.
     /// `env` provides access to the WaterUI environment (theme, fonts, etc.).
     ///
-    /// Returns a future that completes when setup is done. For sync renderers,
-    /// return `async {}` after performing sync work.
-    fn setup(
-        &mut self,
-        ctx: &GpuContext,
-        env: &mut waterui_core::Environment,
-    ) -> impl Future<Output = ()>;
+    /// Async setup hook for GPU resources.
+    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut waterui_core::Environment);
 
     /// Called each frame to render.
     ///
@@ -425,6 +427,34 @@ pub trait GpuView: 'static {
     ///
     /// Call `frame.request_redraw()` to schedule another frame (for animations).
     fn render(&mut self, frame: &mut GpuFrame);
+}
+
+/// Implements `SubView` for a `GpuView` type using its layout defaults/overrides.
+///
+/// Use this macro at each concrete `impl GpuView for ...` site.
+#[macro_export]
+macro_rules! impl_gpu_subview {
+    ($ty:ty) => {
+        impl waterui_core::layout::SubView for $ty {
+            fn size_that_fits(
+                &self,
+                proposal: waterui_core::layout::ProposalSize,
+            ) -> waterui_core::layout::Size {
+                waterui_core::layout::Size::new(
+                    proposal.width.unwrap_or(0.0),
+                    proposal.height.unwrap_or(0.0),
+                )
+            }
+
+            fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+                waterui_core::layout::StretchAxis::Both
+            }
+
+            fn priority(&self) -> i32 {
+                0
+            }
+        }
+    };
 }
 
 /// Strongly-typed non-zero dimensions for offscreen rendering.
@@ -724,6 +754,10 @@ trait GpuViewImpl: 'static {
         env: &'a mut waterui_core::Environment,
     ) -> SetupFuture<'a>;
     fn render(&mut self, frame: &mut GpuFrame);
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size;
+    fn stretch_axis(&self) -> StretchAxis;
+    fn priority(&self) -> i32;
+    fn require_main_thread(&self) -> bool;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -738,6 +772,22 @@ impl<T: GpuView> GpuViewImpl for T {
     fn render(&mut self, frame: &mut GpuFrame) {
         GpuView::render(self, frame);
     }
+
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        SubView::size_that_fits(self, proposal)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        SubView::stretch_axis(self)
+    }
+
+    fn priority(&self) -> i32 {
+        SubView::priority(self)
+    }
+
+    fn require_main_thread(&self) -> bool {
+        GpuView::require_main_thread(self)
+    }
 }
 
 /// A raw view for high-performance GPU rendering.
@@ -748,8 +798,8 @@ impl<T: GpuView> GpuViewImpl for T {
 /// Native backends render when the surface is dirty (size/input updates) and
 /// keep rendering while `GpuFrame::request_redraw()` (or `RedrawHandle`) asks
 /// for another frame.
-/// It stretches to fill available space by default, similar to `SwiftUI`'s
-/// `Color`.
+/// It stretches to fill available space by default (like `SwiftUI`'s `Color`),
+/// but renderers can override layout behavior by providing a custom `SubView` implementation.
 ///
 /// # Layout Behavior
 ///
@@ -1066,10 +1116,61 @@ impl GpuSurface {
     pub fn render(&mut self, frame: &mut GpuFrame) {
         self.renderer.render(frame);
     }
+
+    /// Returns this surface's measured size for the given proposal.
+    #[must_use]
+    pub fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        self.renderer.size_that_fits(proposal)
+    }
+
+    /// Returns this surface's stretch behavior.
+    #[must_use]
+    pub fn stretch_axis(&self) -> StretchAxis {
+        self.renderer.stretch_axis()
+    }
+
+    /// Returns this surface's layout priority.
+    #[must_use]
+    pub fn priority(&self) -> i32 {
+        self.renderer.priority()
+    }
+
+    /// Returns whether layout measurement requires the main thread.
+    #[must_use]
+    pub fn require_main_thread(&self) -> bool {
+        self.renderer.require_main_thread()
+    }
 }
 
-// Stretches in both directions by default
-raw_view!(GpuSurface, StretchAxis::Both);
+impl SubView for GpuSurface {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        self.size_that_fits(proposal)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch_axis()
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority()
+    }
+}
+
+impl NativeView for GpuSurface {
+    fn stretch_axis(&self) -> StretchAxis {
+        SubView::stretch_axis(self)
+    }
+}
+
+impl View for GpuSurface {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        NativeView::stretch_axis(self)
+    }
+}
 
 fn readback_texture_rgba8(
     device: &wgpu::Device,
