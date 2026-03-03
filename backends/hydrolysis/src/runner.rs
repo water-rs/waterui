@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
@@ -22,22 +24,234 @@ fn install_native_component_hooks(env: &mut Environment) {
     }));
 }
 
+const DEFAULT_RENDER_DIAG_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_RENDER_DIAG_SLOW_FRAME_MS: u64 = 16;
+
+#[derive(Clone, Copy)]
+struct RenderDiagnosticsConfig {
+    enabled: bool,
+    interval: Duration,
+    slow_frame_threshold: Duration,
+}
+
+impl RenderDiagnosticsConfig {
+    fn from_env() -> Self {
+        let enabled = parse_bool_env("WATERUI_HYDROLYSIS_RENDER_DIAG", false);
+        let interval_ms = parse_positive_u64_env(
+            "WATERUI_HYDROLYSIS_RENDER_DIAG_INTERVAL_MS",
+            DEFAULT_RENDER_DIAG_INTERVAL_MS,
+        );
+        let slow_frame_ms = parse_positive_u64_env(
+            "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
+            DEFAULT_RENDER_DIAG_SLOW_FRAME_MS,
+        );
+
+        Self {
+            enabled,
+            interval: Duration::from_millis(interval_ms),
+            slow_frame_threshold: Duration::from_millis(slow_frame_ms),
+        }
+    }
+}
+
+fn parse_bool_env(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => panic!(
+                "hydrolysis runner: invalid {name} value `{raw}`; expected one of 1/0, true/false, yes/no, on/off"
+            ),
+        },
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => panic!("hydrolysis runner: invalid {name} environment value: {error}"),
+    }
+}
+
+fn parse_positive_u64_env(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(raw) => {
+            let parsed = raw.trim().parse::<u64>().unwrap_or_else(|error| {
+                panic!("hydrolysis runner: invalid {name} `{raw}`: {error}")
+            });
+            if parsed == 0 {
+                panic!("hydrolysis runner: {name} must be > 0");
+            }
+            parsed
+        }
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => panic!("hydrolysis runner: invalid {name} environment value: {error}"),
+    }
+}
+
+struct RenderPhaseSample {
+    rebuild: Duration,
+    acquire: Duration,
+    render: Duration,
+    present: Duration,
+    total: Duration,
+    rebuild_iterations: u32,
+    rebuilt: bool,
+}
+
+#[derive(Default)]
+struct RenderPhaseTotals {
+    frames: u64,
+    rebuild_frames: u64,
+    rebuild_iterations: u64,
+    slow_frames: u64,
+    rebuild: Duration,
+    acquire: Duration,
+    render: Duration,
+    present: Duration,
+    total: Duration,
+}
+
+struct RenderDiagnostics {
+    config: RenderDiagnosticsConfig,
+    report_started_at: Instant,
+    totals: RenderPhaseTotals,
+}
+
+impl RenderDiagnostics {
+    fn new(config: RenderDiagnosticsConfig) -> Self {
+        Self {
+            config,
+            report_started_at: Instant::now(),
+            totals: RenderPhaseTotals::default(),
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        self.config.enabled
+    }
+
+    fn record_frame(&mut self, window_title: &str, sample: RenderPhaseSample) {
+        if !self.config.enabled {
+            return;
+        }
+
+        self.totals.frames = self
+            .totals
+            .frames
+            .checked_add(1)
+            .expect("hydrolysis runner: render diagnostics frame counter overflow");
+        if sample.rebuilt {
+            self.totals.rebuild_frames = self
+                .totals
+                .rebuild_frames
+                .checked_add(1)
+                .expect("hydrolysis runner: render diagnostics rebuild frame counter overflow");
+        }
+        self.totals.rebuild_iterations = self
+            .totals
+            .rebuild_iterations
+            .checked_add(u64::from(sample.rebuild_iterations))
+            .expect("hydrolysis runner: render diagnostics rebuild iteration counter overflow");
+        self.totals.rebuild += sample.rebuild;
+        self.totals.acquire += sample.acquire;
+        self.totals.render += sample.render;
+        self.totals.present += sample.present;
+        self.totals.total += sample.total;
+
+        if sample.total >= self.config.slow_frame_threshold {
+            self.totals.slow_frames = self
+                .totals
+                .slow_frames
+                .checked_add(1)
+                .expect("hydrolysis runner: render diagnostics slow frame counter overflow");
+            tracing::warn!(
+                target: "waterui::hydrolysis::render",
+                window_title = %window_title,
+                total_ms = duration_ms(sample.total),
+                rebuild_ms = duration_ms(sample.rebuild),
+                acquire_ms = duration_ms(sample.acquire),
+                render_ms = duration_ms(sample.render),
+                present_ms = duration_ms(sample.present),
+                rebuild_iterations = sample.rebuild_iterations,
+                "Hydrolysis slow frame detected"
+            );
+        }
+
+        self.maybe_report(window_title);
+    }
+
+    fn maybe_report(&mut self, window_title: &str) {
+        if self.totals.frames == 0 {
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.report_started_at);
+        if elapsed < self.config.interval {
+            return;
+        }
+
+        let frame_count = self.totals.frames as f64;
+        let avg_total_ms = duration_ms(self.totals.total) / frame_count;
+        let avg_rebuild_ms = duration_ms(self.totals.rebuild) / frame_count;
+        let avg_acquire_ms = duration_ms(self.totals.acquire) / frame_count;
+        let avg_render_ms = duration_ms(self.totals.render) / frame_count;
+        let avg_present_ms = duration_ms(self.totals.present) / frame_count;
+        let rebuild_ratio = self.totals.rebuild_frames as f64 / frame_count;
+        let avg_rebuild_iterations = self.totals.rebuild_iterations as f64 / frame_count;
+        let fps = self.totals.frames as f64 / elapsed.as_secs_f64();
+
+        tracing::info!(
+            target: "waterui::hydrolysis::render",
+            window_title = %window_title,
+            frames = self.totals.frames,
+            interval_ms = duration_ms(elapsed),
+            fps,
+            rebuild_frames = self.totals.rebuild_frames,
+            rebuild_ratio,
+            avg_rebuild_iterations,
+            avg_total_ms,
+            avg_rebuild_ms,
+            avg_acquire_ms,
+            avg_render_ms,
+            avg_present_ms,
+            slow_frames = self.totals.slow_frames,
+            slow_frame_threshold_ms = duration_ms(self.config.slow_frame_threshold),
+            "Hydrolysis render diagnostics"
+        );
+
+        self.report_started_at = now;
+        self.totals = RenderPhaseTotals::default();
+    }
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+fn elapsed_or_zero(started_at: Option<Instant>) -> Duration {
+    started_at.map_or(Duration::ZERO, |value| value.elapsed())
+}
+
 struct RuntimeWindow<P: PlatformWindow> {
     window: Window,
     platform: P,
     renderer: HydrolysisRenderer,
     needs_rebuild: bool,
     pointer_position: Option<(f32, f32)>,
+    render_diagnostics: RenderDiagnostics,
 }
 
 impl<P: PlatformWindow> RuntimeWindow<P> {
-    fn new(window: Window, platform: P, renderer: HydrolysisRenderer) -> Self {
+    fn new(
+        window: Window,
+        platform: P,
+        renderer: HydrolysisRenderer,
+        render_diagnostics_config: RenderDiagnosticsConfig,
+    ) -> Self {
         Self {
             window,
             platform,
             renderer,
             needs_rebuild: true,
             pointer_position: None,
+            render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
         }
     }
 }
@@ -72,6 +286,8 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         .renderer
         .set_accessibility_root_label(runtime.window.title.get().as_str());
     {
+        let diagnostics_enabled = runtime.render_diagnostics.enabled();
+        let frame_started_at = diagnostics_enabled.then(Instant::now);
         let scale_factor = runtime.platform.scale_factor();
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
@@ -82,15 +298,20 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             .renderer
             .set_frame_resources(surface.device(), surface.queue());
 
+        let rebuild_started_at = diagnostics_enabled.then(Instant::now);
         if runtime.renderer.advance_animations() {
             runtime.needs_rebuild = true;
         }
 
+        let mut rebuild_iterations = 0u32;
         loop {
             let should_rebuild = runtime.needs_rebuild || runtime.renderer.take_rebuild_request();
             if !should_rebuild {
                 break;
             }
+            rebuild_iterations = rebuild_iterations
+                .checked_add(1)
+                .expect("hydrolysis runner: rebuild iteration counter overflow");
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
             let content = runtime.window.build_content();
@@ -105,11 +326,15 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 }
             }
         }
+        let rebuild_duration = elapsed_or_zero(rebuild_started_at);
 
         let clear_color = window_clear_color(&runtime.window, env);
+        let acquire_started_at = diagnostics_enabled.then(Instant::now);
         let frame = surface
             .acquire()
             .expect("hydrolysis runner: failed to acquire frame");
+        let acquire_duration = elapsed_or_zero(acquire_started_at);
+        let render_started_at = diagnostics_enabled.then(Instant::now);
         runtime.renderer.render_scene_to_surface(
             surface.device(),
             surface.queue(),
@@ -120,7 +345,26 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             clear_color,
         );
         runtime.renderer.clear_frame_resources();
+        let render_duration = elapsed_or_zero(render_started_at);
+        let present_started_at = diagnostics_enabled.then(Instant::now);
         surface.present(frame);
+        let present_duration = elapsed_or_zero(present_started_at);
+
+        if diagnostics_enabled {
+            let window_title = runtime.window.title.get();
+            runtime.render_diagnostics.record_frame(
+                window_title.as_str(),
+                RenderPhaseSample {
+                    rebuild: rebuild_duration,
+                    acquire: acquire_duration,
+                    render: render_duration,
+                    present: present_duration,
+                    total: elapsed_or_zero(frame_started_at),
+                    rebuild_iterations,
+                    rebuilt: rebuild_iterations > 0,
+                },
+            );
+        }
     }
 
     runtime
@@ -138,6 +382,7 @@ pub fn run(app: App) {
     init_main_thread_executors();
     let (windows, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -152,7 +397,7 @@ pub fn run(app: App) {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
-        let mut runtime = RuntimeWindow::new(window, platform, renderer);
+        let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env);
     }
 }
@@ -190,7 +435,7 @@ mod winit_runner {
 
     use crate::platform::{InputEvent, KeyState, PlatformWindow, WinitWindow};
     use crate::renderer::HydrolysisRenderer;
-    use crate::runner::{RuntimeWindow, render_window};
+    use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, render_window};
 
     #[derive(Debug)]
     enum RunnerEvent {
@@ -244,6 +489,7 @@ mod winit_runner {
 
         let (windows, env) = app.into_parts();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -255,6 +501,7 @@ mod winit_runner {
             accesskit_adapters: HashMap::new(),
             local_runnable_rx,
             event_proxy,
+            render_diagnostics_config,
         };
 
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -270,6 +517,7 @@ mod winit_runner {
         accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
         local_runnable_rx: mpsc::Receiver<Runnable>,
         event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
+        render_diagnostics_config: RenderDiagnosticsConfig,
     }
 
     impl WinitRunner {
@@ -318,7 +566,10 @@ mod winit_runner {
                 self.event_proxy.clone(),
             );
             platform.native_window().set_visible(true);
-            (RuntimeWindow::new(window, platform, renderer), adapter)
+            (
+                RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config),
+                adapter,
+            )
         }
 
         fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
