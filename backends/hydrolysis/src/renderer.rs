@@ -8042,7 +8042,6 @@ impl HydrolysisRenderer {
             self.accessibility_nodes.clear();
             self.accessibility_root_children.clear();
             self.accessibility_actions.clear();
-            self.accessibility_next_node_id = 1;
             self.accessibility_suppression_depth = 0;
         }
     }
