@@ -15,7 +15,11 @@ use waterkit_audio::{AudioPlayer, MediaMetadata, MediaSession, PlaybackState};
 use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
-use waterui_core::{AnyView, Binding, Environment, View, dynamic::Dynamic};
+use waterui_core::{
+    AnyView, Binding, Environment, View,
+    dynamic::Dynamic,
+    layout::{ProposalSize, Size, StretchAxis, SubView},
+};
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
 use waterui_layout::{
     overlay,
@@ -2262,17 +2266,35 @@ impl VideoRenderer {
 
         frame.queue.submit([encoder.finish()]);
     }
+
+    fn current_video_dimensions(&self) -> Option<(u32, u32)> {
+        if let Some(key) = self.vertex_layout_key {
+            return Some((key.video_width.max(1), key.video_height.max(1)));
+        }
+
+        if let Some(frame) = self.pending_frame.as_ref() {
+            return Some((frame.width.max(1), frame.height.max(1)));
+        }
+
+        self.y_texture
+            .as_ref()
+            .map(|texture| (texture.width().max(1), texture.height().max(1)))
+    }
+
+    fn current_video_aspect_ratio(&self) -> Option<f32> {
+        self.current_video_dimensions()
+            .map(|(width, height)| width as f32 / height as f32)
+    }
 }
 
 impl GpuView for VideoRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -2288,6 +2310,49 @@ impl GpuView for VideoRenderer {
         if needs_redraw {
             frame.request_redraw();
         }
+    }
+}
+
+impl SubView for VideoRenderer {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        if self.aspect_ratio != AspectRatio::Fit {
+            return Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            );
+        }
+
+        let ratio = self.current_video_aspect_ratio();
+        let Some(ratio) = ratio else {
+            return Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            );
+        };
+
+        match (proposal.width, proposal.height) {
+            (Some(width), Some(height)) => Size::new(width, height),
+            (Some(width), None) => Size::new(width, width / ratio),
+            (None, Some(height)) => Size::new(height * ratio, height),
+            (None, None) => {
+                if let Some((video_width, video_height)) = self.current_video_dimensions() {
+                    Size::new(video_width as f32, video_height as f32)
+                } else {
+                    Size::zero()
+                }
+            }
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        match self.aspect_ratio {
+            AspectRatio::Fit => StretchAxis::Horizontal,
+            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
 

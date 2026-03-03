@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
 /// Parsed SVG data reused across renderer paths.
@@ -199,11 +200,11 @@ impl VelloSvgRenderer {
 pub(crate) const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
 
 impl GpuView for VelloSvgRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         self.renderer = Some(
             vello::Renderer::new(
                 ctx.device,
@@ -310,7 +311,6 @@ impl GpuView for VelloSvgRenderer {
             },
         ));
 
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -353,5 +353,24 @@ impl GpuView for VelloSvgRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
+    }
+}
+
+impl SubView for VelloSvgRenderer {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        let svg_size = self.scene_data.svg_tree.size();
+        let intrinsic = Size::new(svg_size.width(), svg_size.height());
+        Size::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
