@@ -17,6 +17,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::image_codec::{self, DecodedRgba};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
@@ -406,11 +407,7 @@ impl ImageRenderer {
 }
 
 impl GpuView for ImageRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         tracing::debug!(
             "[ImageRenderer] setup() called with format: {:?}, size: {}x{}, source_hdr={}, source_wide_gamut={}",
             ctx.surface_format,
@@ -522,8 +519,6 @@ impl GpuView for ImageRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.bind_group = Some(bind_group);
         self.sampler = Some(sampler);
-
-        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -572,6 +567,24 @@ impl GpuView for ImageRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
+    }
+}
+
+impl SubView for ImageRenderer {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        let intrinsic = Size::new(self.width as f32, self.height as f32);
+        Size::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
 

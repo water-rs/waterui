@@ -218,11 +218,11 @@ impl AnimatedMeshRenderer {
 }
 
 impl GpuView for AnimatedMeshRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         let shader = crate::shared_context::create_cached_shader_module_prewarmed(
             ctx.device,
             &ANIMATED_MESH_SHADER,
@@ -312,7 +312,6 @@ impl GpuView for AnimatedMeshRenderer {
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
 
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -386,6 +385,8 @@ impl GpuView for AnimatedMeshRenderer {
         }
     }
 }
+
+crate::impl_gpu_subview!(AnimatedMeshRenderer);
 
 /// GPU-animated mesh gradient view.
 pub struct AnimatedMeshGradient {

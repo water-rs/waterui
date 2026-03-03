@@ -245,11 +245,7 @@ fn shader_source_hash(source: &str) -> u64 {
 }
 
 impl GpuView for ShaderRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         tracing::debug!(
             "[ShaderSurface] setup() called with format: {:?}",
             ctx.surface_format
@@ -392,8 +388,6 @@ impl GpuView for ShaderRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
-
-        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -475,3 +469,5 @@ impl GpuView for ShaderRenderer {
         frame.request_redraw();
     }
 }
+
+crate::impl_gpu_subview!(ShaderRenderer);
