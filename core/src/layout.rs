@@ -360,6 +360,29 @@ impl Point {
     }
 }
 
+macro_rules! impl_layout_signal_constant {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl nami::Signal for $ty {
+                type Output = Self;
+                type Guard = ();
+
+                fn get(&self) -> Self::Output {
+                    *self
+                }
+
+                fn watch(
+                    &self,
+                    _watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
+                ) {
+                }
+            }
+        )+
+    };
+}
+
+impl_layout_signal_constant!(Point, Size, Rect);
+
 // ============================================================================
 // ProposalSize
 // ============================================================================
