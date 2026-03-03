@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,25 @@ impl HydrolysisBackend {
     #[must_use]
     pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
+    }
+
+    /// Check whether generated hydrolysis backend files should be regenerated.
+    ///
+    /// This is used by playground mode where backend glue code is fully managed by the CLI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
+    pub fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
+        let cargo_toml_path = project.backend_path::<Self>().join("Cargo.toml");
+        if !cargo_toml_path.exists() {
+            return Ok(true);
+        }
+
+        let manifest = CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path)
+            .map_err(|error| eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display()))?;
+        Ok(!manifest.dependencies.contains_key("hydrolysis")
+            || !manifest.dependencies.contains_key("waterui"))
     }
 }
 
