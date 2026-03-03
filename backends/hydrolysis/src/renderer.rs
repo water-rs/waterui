@@ -31,7 +31,7 @@ use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
-use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
+use waterui::filter::Opacity;
 use waterui::gesture::{Gesture, GestureObserver, GesturePoint, TapEvent};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ContextMenu;
@@ -73,7 +73,9 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_layout::stack::Axis as StackAxis;
+use waterui_layout::stack::{
+    Axis as StackAxis, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment,
+};
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
 use waterui_text::font::FontWeight as TextFontWeight;
@@ -201,6 +203,10 @@ pub struct HydrolysisRenderer {
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
     hover_controller: HoverController,
+    lazy_stack_controller: LazyStackController,
+    lazy_list_controller: LazyListController,
+    lazy_table_controller: LazyTableController,
+    lazy_viewport_stack: Vec<vello::kurbo::Rect>,
     pending_scroll_handles: Vec<ScrollHandle>,
     navigation_slots: Vec<NavigationSlot>,
     pending_navigation_entries: Vec<(usize, NavigationEntries)>,
@@ -300,6 +306,66 @@ struct HoverSlot {
 #[derive(Debug)]
 struct HoverStateSlot {
     hovering: bool,
+}
+
+#[derive(Debug, Default)]
+struct LazyStackController {
+    slots: Vec<LazyStackSlot>,
+    cursor: usize,
+}
+
+#[derive(Debug, Default)]
+struct LazyListController {
+    slots: Vec<LazyListSlot>,
+    cursor: usize,
+}
+
+#[derive(Debug, Default)]
+struct LazyTableController {
+    slots: Vec<LazyTableSlot>,
+    cursor: usize,
+}
+
+#[derive(Debug, Default)]
+struct LazyStackSlot {
+    item_extents: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Default)]
+struct LazyListSlot {
+    row_extents: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Default)]
+struct LazyTableSlot {
+    column_widths: Vec<f64>,
+    max_rows: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VisibleIndexWindow {
+    start: usize,
+    end: usize,
+    leading_offset: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VisibleColumnWindow {
+    start: usize,
+    end: usize,
+    leading_offset: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LazyStackAxisConfig {
+    Vertical {
+        spacing: f64,
+        alignment: HorizontalAlignment,
+    },
+    Horizontal {
+        spacing: f64,
+        alignment: VerticalAlignment,
+    },
 }
 
 #[cfg(feature = "winit")]
@@ -530,6 +596,90 @@ impl HoverController {
     }
 }
 
+impl LazyStackController {
+    fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    fn bind(&mut self) -> usize {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("lazy stack controller cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(LazyStackSlot::default());
+        }
+        index
+    }
+}
+
+impl LazyListController {
+    fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    fn bind(&mut self) -> usize {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("lazy list controller cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(LazyListSlot::default());
+        }
+        index
+    }
+}
+
+impl LazyTableController {
+    fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    fn bind(&mut self) -> usize {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("lazy table controller cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(LazyTableSlot::default());
+        }
+        index
+    }
+}
+
+impl LazyStackSlot {
+    fn prepare_len(&mut self, len: usize) {
+        self.item_extents.resize(len, None);
+    }
+}
+
+impl LazyListSlot {
+    fn prepare_len(&mut self, len: usize) {
+        self.row_extents.resize(len, None);
+    }
+}
+
+impl LazyTableSlot {
+    fn prepare_columns(&mut self, len: usize) {
+        self.column_widths.resize(len, TABLE_MIN_COLUMN_WIDTH);
+    }
+}
+
 impl HydroSubview {
     fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
         Self {
@@ -673,6 +823,7 @@ const LIST_ROW_HORIZONTAL_PADDING: f64 = 12.0;
 const LIST_MOVE_CONTROL_WIDTH: f64 = 20.0;
 const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
 const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
+const LIST_ESTIMATED_ROW_HEIGHT: f64 = LIST_ROW_CONTENT_MIN_HEIGHT as f64 + LIST_ROW_VERTICAL_PADDING * 2.0;
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 const BUTTON_MIN_WIDTH: f64 = 44.0;
@@ -794,7 +945,6 @@ fn apply_backspace(buffer: &mut String) -> bool {
 
 struct TableMetrics {
     column_widths: Vec<f64>,
-    max_rows: usize,
     table_width: f64,
     table_height: f64,
 }
@@ -827,6 +977,107 @@ fn table_data_cell_rect(
         origin_x + x_offset + width,
         y0 + TABLE_ROW_HEIGHT,
     )
+}
+
+fn lazy_stack_axis_config(layout: &dyn Layout) -> LazyStackAxisConfig {
+    let layout_any = layout as &dyn core::any::Any;
+    if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
+        return LazyStackAxisConfig::Vertical {
+            spacing: f64::from(vstack.spacing),
+            alignment: vstack.alignment,
+        };
+    }
+    if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
+        return LazyStackAxisConfig::Horizontal {
+            spacing: f64::from(hstack.spacing),
+            alignment: hstack.alignment,
+        };
+    }
+    panic!("hydrolysis LazyContainer supports VStackLayout and HStackLayout only");
+}
+
+fn sum_cached_or_estimated(extents: &[Option<f64>], estimate: f64) -> f64 {
+    extents
+        .iter()
+        .map(|extent| extent.unwrap_or(estimate))
+        .sum::<f64>()
+}
+
+fn resolve_visible_index_window(
+    count: usize,
+    start_offset: f64,
+    end_offset: f64,
+    mut extent_at: impl FnMut(usize) -> f64,
+) -> VisibleIndexWindow {
+    if count == 0 {
+        return VisibleIndexWindow {
+            start: 0,
+            end: 0,
+            leading_offset: 0.0,
+        };
+    }
+
+    let clamped_start = start_offset.max(0.0);
+    let clamped_end = end_offset.max(clamped_start);
+    let mut index = 0usize;
+    let mut offset = 0.0;
+    while index < count {
+        let extent = extent_at(index);
+        if offset + extent > clamped_start {
+            break;
+        }
+        offset += extent;
+        index += 1;
+    }
+    let start = index.min(count);
+    let leading_offset = offset;
+    while index < count && offset < clamped_end {
+        offset += extent_at(index);
+        index += 1;
+    }
+    VisibleIndexWindow {
+        start,
+        end: index.min(count),
+        leading_offset,
+    }
+}
+
+fn resolve_visible_column_window(
+    widths: &[f64],
+    start_offset: f64,
+    end_offset: f64,
+) -> VisibleColumnWindow {
+    let count = widths.len();
+    if count == 0 {
+        return VisibleColumnWindow {
+            start: 0,
+            end: 0,
+            leading_offset: 0.0,
+        };
+    }
+    let clamped_start = start_offset.max(0.0);
+    let clamped_end = end_offset.max(clamped_start);
+    let mut index = 0usize;
+    let mut offset = 0.0;
+    while index < count {
+        let width = widths[index];
+        if offset + width > clamped_start {
+            break;
+        }
+        offset += width;
+        index += 1;
+    }
+    let start = index.min(count);
+    let leading_offset = offset;
+    while index < count && offset < clamped_end {
+        offset += widths[index];
+        index += 1;
+    }
+    VisibleColumnWindow {
+        start,
+        end: index.min(count),
+        leading_offset,
+    }
 }
 
 fn navigation_bar_height(view: &NavigationView) -> f64 {
@@ -980,57 +1231,59 @@ fn measure_list_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    let editing = list.editing.get();
     let row_count = list.contents.len().get();
     if row_count == 0 {
         return LayoutSize::zero();
     }
+    let editing = list.editing.get();
+    let mut first_item = list
+        .contents
+        .get_view(0)
+        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
+    first_item.content = normalize_layout_view(first_item.content, env);
+    let content_size = estimate_intrinsic_size(&first_item.content, state, env);
+    let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
+        + LIST_ROW_VERTICAL_PADDING * 2.0;
 
-    let mut max_width: f64 = 0.0;
-    let mut total_height = 0.0;
-    for index in 0..row_count {
-        let item = list
-            .contents
-            .get_view(index)
-            .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
-        let content = normalize_layout_view(item.content, env);
-        let content_size = estimate_intrinsic_size(&content, state, env);
-        let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
-            + LIST_ROW_VERTICAL_PADDING * 2.0;
-        total_height += row_height;
-
-        let mut row_width = f64::from(content_size.width) + LIST_ROW_HORIZONTAL_PADDING * 2.0;
-        if editing && list.on_move.is_some() {
-            row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
-        }
-        if editing && list.on_delete.is_some() && item.deletable.get() {
-            row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
-        }
-        max_width = max_width.max(row_width);
+    let mut row_width = f64::from(content_size.width) + LIST_ROW_HORIZONTAL_PADDING * 2.0;
+    if editing && list.on_move.is_some() {
+        row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
     }
+    if editing && list.on_delete.is_some() {
+        row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+    }
+    let total_height = row_height * row_count as f64;
+    let max_width = row_width.max(LIST_ROW_HORIZONTAL_PADDING * 2.0);
 
     LayoutSize::new(max_width as f32, total_height as f32)
 }
 
-fn materialize_list_rows(
-    list: &ListConfig,
-    row_count: usize,
+fn materialize_list_item(
+    contents: &impl Views<View = ListItem>,
+    index: usize,
+    env: &Environment,
+) -> ListItem {
+    let mut item = contents
+        .get_view(index)
+        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
+    item.content = normalize_layout_view(item.content, env);
+    item
+}
+
+fn measure_list_item_row_height(item: &ListItem, state: &mut HydroState, env: &Environment) -> f64 {
+    let intrinsic = estimate_intrinsic_size(&item.content, state, env);
+    f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT)) + LIST_ROW_VERTICAL_PADDING * 2.0
+}
+
+fn materialize_list_row(
+    contents: &impl Views<View = ListItem>,
+    index: usize,
     state: &mut HydroState,
     env: &Environment,
-) -> Vec<(usize, ListItem, f64)> {
-    let mut rows = Vec::with_capacity(row_count);
-    for index in 0..row_count {
-        let mut item = list
-            .contents
-            .get_view(index)
-            .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
-        item.content = normalize_layout_view(item.content, env);
-        let intrinsic = estimate_intrinsic_size(&item.content, state, env);
-        let row_height = f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
-            + LIST_ROW_VERTICAL_PADDING * 2.0;
-        rows.push((index, item, row_height));
-    }
-    rows
+) -> (ListItem, f64) {
+    let item = materialize_list_item(contents, index, env);
+    let row_height = measure_list_item_row_height(&item, state, env);
+    (item, row_height)
 }
 
 fn measure_button_intrinsic(
@@ -1181,15 +1434,7 @@ fn measure_table_metrics(
         width = width.max(f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING);
 
         let rows = column.rows();
-        let row_count = rows.len().get();
-        max_rows = max_rows.max(row_count);
-        for index in 0..row_count {
-            if let Some(cell) = rows.get_view(index) {
-                let cell_view = normalize_layout_view(AnyView::new(cell), env);
-                let size = estimate_intrinsic_size(&cell_view, state, env);
-                width = width.max(f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING);
-            }
-        }
+        max_rows = max_rows.max(rows.len().get());
         column_widths.push(width);
     }
 
@@ -1197,9 +1442,73 @@ fn measure_table_metrics(
     let table_height = TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * max_rows as f64;
     TableMetrics {
         column_widths,
-        max_rows,
         table_width,
         table_height,
+    }
+}
+
+fn resolve_table_visible_rows(offset_y: f64, viewport_height: f64, max_rows: usize) -> VisibleIndexWindow {
+    let data_start = (offset_y - TABLE_HEADER_HEIGHT).max(0.0);
+    let data_end = (offset_y + viewport_height - TABLE_HEADER_HEIGHT).max(0.0);
+    let start = ((data_start / TABLE_ROW_HEIGHT).floor() as usize).min(max_rows);
+    let end = ((data_end / TABLE_ROW_HEIGHT).ceil() as usize).min(max_rows);
+    VisibleIndexWindow {
+        start,
+        end: end.max(start),
+        leading_offset: start as f64 * TABLE_ROW_HEIGHT,
+    }
+}
+
+fn refresh_table_slot_baseline(
+    columns: &[TableColumn],
+    slot: &mut LazyTableSlot,
+    state: &mut HydroState,
+    env: &Environment,
+) {
+    slot.prepare_columns(columns.len());
+    slot.max_rows = 0;
+    for (index, column) in columns.iter().enumerate() {
+        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
+        let label_size = estimate_intrinsic_size(&label_view, state, env);
+        let width =
+            (f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING).max(TABLE_MIN_COLUMN_WIDTH);
+        if slot.column_widths[index] < width {
+            slot.column_widths[index] = width;
+        }
+        slot.max_rows = slot.max_rows.max(column.rows().len().get());
+    }
+}
+
+fn update_table_slot_visible_cell_widths(
+    columns: &[TableColumn],
+    slot: &mut LazyTableSlot,
+    row_window: VisibleIndexWindow,
+    col_window: VisibleColumnWindow,
+    state: &mut HydroState,
+    env: &Environment,
+) {
+    for column_index in col_window.start..col_window.end {
+        let column = &columns[column_index];
+        let rows = column.rows();
+        for row_index in row_window.start..row_window.end {
+            if let Some(cell) = rows.get_view(row_index) {
+                let cell_view = normalize_layout_view(AnyView::new(cell), env);
+                let size = estimate_intrinsic_size(&cell_view, state, env);
+                let width =
+                    (f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING).max(TABLE_MIN_COLUMN_WIDTH);
+                if slot.column_widths[column_index] < width {
+                    slot.column_widths[column_index] = width;
+                }
+            }
+        }
+    }
+}
+
+fn table_metrics_from_slot(slot: &LazyTableSlot) -> TableMetrics {
+    TableMetrics {
+        column_widths: slot.column_widths.clone(),
+        table_width: slot.column_widths.iter().sum(),
+        table_height: TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * slot.max_rows as f64,
     }
 }
 
@@ -1385,14 +1694,27 @@ impl HydroNativeView for Native<LazyContainer> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         let child_count = children.len().get();
-        let mut materialized = Vec::with_capacity(child_count);
-        for index in 0..child_count {
-            let child = children.get_view(index).unwrap_or_else(|| {
-                panic!("LazyContainer failed to materialize child at index {index}")
-            });
-            materialized.push(normalize_layout_view(child, env));
+        if child_count == 0 {
+            return LayoutSize::zero();
         }
-        estimate_layout_intrinsic(layout, materialized.iter(), state, env)
+        let sample = children
+            .get_view(0)
+            .map(|view| normalize_layout_view(view, env))
+            .map(|view| estimate_intrinsic_size(&view, state, env))
+            .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index 0"));
+        let count = child_count as f64;
+        match lazy_stack_axis_config(layout) {
+            LazyStackAxisConfig::Vertical { spacing, .. } => {
+                let width = f64::from(sample.width);
+                let height = f64::from(sample.height) * count + spacing * (count - 1.0).max(0.0);
+                LayoutSize::new(width as f32, height as f32)
+            }
+            LazyStackAxisConfig::Horizontal { spacing, .. } => {
+                let width = f64::from(sample.width) * count + spacing * (count - 1.0).max(0.0);
+                let height = f64::from(sample.height);
+                LayoutSize::new(width as f32, height as f32)
+            }
+        }
     }
 }
 
@@ -1703,12 +2025,21 @@ impl HydroNativeView for Native<ListConfig> {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&row_count_signal)
         };
-        let rows = materialize_list_rows(list, row_count, state, env);
+        let slot_index = {
+            let renderer = unsafe { ctx.renderer() };
+            let index = renderer.lazy_list_controller.bind();
+            renderer.lazy_list_controller.slots[index].prepare_len(row_count);
+            index
+        };
         let viewport = ctx.bounds;
-        let content_height = rows
-            .iter()
-            .fold(0.0, |acc, (_index, _item, height)| acc + *height)
-            .max(viewport.height());
+        let content_height = {
+            let renderer = unsafe { ctx.renderer() };
+            sum_cached_or_estimated(
+                &renderer.lazy_list_controller.slots[slot_index].row_extents,
+                LIST_ESTIMATED_ROW_HEIGHT,
+            )
+            .max(viewport.height())
+        };
         let handle = {
             let renderer = unsafe { ctx.renderer() };
             let handle = renderer.scroll_controller.bind(
@@ -1724,6 +2055,27 @@ impl HydroNativeView for Native<ListConfig> {
         #[cfg(feature = "winit")]
         {
             let metrics = handle.metrics();
+            let window = resolve_visible_index_window(
+                row_count,
+                metrics.offset_y,
+                metrics.offset_y + viewport.height(),
+                |index| {
+                    let cached_extent = {
+                        let renderer = unsafe { ctx.renderer() };
+                        renderer.lazy_list_controller.slots[slot_index].row_extents[index]
+                    };
+                    if let Some(extent) = cached_extent {
+                        return extent;
+                    }
+                    let (_item, extent) = materialize_list_row(&list.contents, index, state, env);
+                    {
+                        let renderer = unsafe { ctx.renderer() };
+                        renderer.lazy_list_controller.slots[slot_index].row_extents[index] =
+                            Some(extent);
+                    }
+                    extent
+                },
+            );
             let renderer = unsafe { ctx.renderer() };
             let mut list_node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::List),
@@ -1737,8 +2089,21 @@ impl HydroNativeView for Native<ListConfig> {
             list_node.set_scroll_y_max(metrics.max_y);
             list_node.add_action(AccessibilityAction::ScrollUp);
             list_node.add_action(AccessibilityAction::ScrollDown);
-            let mut y = viewport.y0 - metrics.offset_y;
-            for (_index, item, row_height) in rows {
+            let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
+            for index in window.start..window.end {
+                let item = materialize_list_item(&list.contents, index, env);
+                let row_height = {
+                    let cached_extent =
+                        renderer.lazy_list_controller.slots[slot_index].row_extents[index];
+                    if let Some(extent) = cached_extent {
+                        extent
+                    } else {
+                        let extent = measure_list_item_row_height(&item, state, env);
+                        renderer.lazy_list_controller.slots[slot_index].row_extents[index] =
+                            Some(extent);
+                        extent
+                    }
+                };
                 let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
                 y += row_height;
                 if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
@@ -2136,8 +2501,22 @@ impl HydroNativeView for Native<TableConfig> {
         if columns.is_empty() {
             return;
         }
+        let slot_index = {
+            let renderer = unsafe { ctx.renderer() };
+            let index = renderer.lazy_table_controller.bind();
+            index
+        };
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &mut renderer.lazy_table_controller.slots[slot_index];
+            refresh_table_slot_baseline(&columns, slot, state, env);
+        }
         let viewport = ctx.bounds;
-        let table_metrics = measure_table_metrics(&columns, state, env);
+        let table_metrics = {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &renderer.lazy_table_controller.slots[slot_index];
+            table_metrics_from_slot(slot)
+        };
         let handle = {
             let renderer = unsafe { ctx.renderer() };
             let handle = renderer.scroll_controller.bind(
@@ -2153,6 +2532,37 @@ impl HydroNativeView for Native<TableConfig> {
         #[cfg(feature = "winit")]
         {
             let scroll_metrics = handle.metrics();
+            let row_window = {
+                let renderer = unsafe { ctx.renderer() };
+                let slot = &renderer.lazy_table_controller.slots[slot_index];
+                resolve_table_visible_rows(scroll_metrics.offset_y, viewport.height(), slot.max_rows)
+            };
+            let mut column_window = {
+                let renderer = unsafe { ctx.renderer() };
+                let slot = &renderer.lazy_table_controller.slots[slot_index];
+                resolve_visible_column_window(
+                    &slot.column_widths,
+                    scroll_metrics.offset_x,
+                    scroll_metrics.offset_x + viewport.width(),
+                )
+            };
+            {
+                let renderer = unsafe { ctx.renderer() };
+                let slot = &mut renderer.lazy_table_controller.slots[slot_index];
+                update_table_slot_visible_cell_widths(
+                    &columns,
+                    slot,
+                    row_window,
+                    column_window,
+                    state,
+                    env,
+                );
+                column_window = resolve_visible_column_window(
+                    &slot.column_widths,
+                    scroll_metrics.offset_x,
+                    scroll_metrics.offset_x + viewport.width(),
+                );
+            }
             let renderer = unsafe { ctx.renderer() };
             let mut table_node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Table),
@@ -2174,9 +2584,10 @@ impl HydroNativeView for Native<TableConfig> {
 
             let origin_x = viewport.x0 - scroll_metrics.offset_x;
             let origin_y = viewport.y0 - scroll_metrics.offset_y;
-            let mut x_offset = 0.0;
-            for (column_index, column) in columns.into_iter().enumerate() {
-                let width = table_metrics.column_widths[column_index];
+            let mut x_offset = column_window.leading_offset;
+            for column_index in column_window.start..column_window.end {
+                let column = &columns[column_index];
+                let width = renderer.lazy_table_controller.slots[slot_index].column_widths[column_index];
                 let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
                 let header_view = AnyView::new(column.label());
                 let mut header_node = AccessibilityNode::new(
@@ -2197,7 +2608,7 @@ impl HydroNativeView for Native<TableConfig> {
                     table_node.push_child(header_node_id);
                 }
                 let rows = column.rows();
-                for row_index in 0..table_metrics.max_rows {
+                for row_index in row_window.start..row_window.end {
                     let cell_rect =
                         table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
                     if let Some(cell) = rows.get_view(row_index) {
@@ -2598,6 +3009,10 @@ impl HydrolysisRenderer {
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
             hover_controller: HoverController::default(),
+            lazy_stack_controller: LazyStackController::default(),
+            lazy_list_controller: LazyListController::default(),
+            lazy_table_controller: LazyTableController::default(),
+            lazy_viewport_stack: Vec::new(),
             pending_scroll_handles: Vec::new(),
             navigation_slots: Vec::new(),
             pending_navigation_entries: Vec::new(),
@@ -2662,12 +3077,6 @@ impl HydrolysisRenderer {
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
         Self::register_passthrough_metadata::<Draggable>(dispatcher);
         Self::register_passthrough_metadata::<DropDestination>(dispatcher);
-        Self::register_passthrough_metadata::<Blur>(dispatcher);
-        Self::register_passthrough_metadata::<Brightness>(dispatcher);
-        Self::register_passthrough_metadata::<Contrast>(dispatcher);
-        Self::register_passthrough_metadata::<Saturation>(dispatcher);
-        Self::register_passthrough_metadata::<Grayscale>(dispatcher);
-        Self::register_passthrough_metadata::<HueRotation>(dispatcher);
         Self::register_passthrough_metadata::<Background>(dispatcher);
 
         Self::register_passthrough_ignorable_metadata::<MaterialBackground>(dispatcher);
@@ -3140,15 +3549,165 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let (layout, children) = container.into_inner().into_inner();
+        let axis_config = lazy_stack_axis_config(layout.as_ref());
         let count = children.len().get();
-        let mut materialized = Vec::with_capacity(count);
-        for index in 0..count {
-            let view = children.get_view(index).unwrap_or_else(|| {
-                panic!("LazyContainer failed to materialize child at index {index}")
-            });
-            materialized.push(view);
+        if count == 0 {
+            return;
         }
-        Self::render_layout_container(state, ctx, layout, materialized, env);
+        let visible_bounds = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer
+                .lazy_viewport_stack
+                .last()
+                .copied()
+                .unwrap_or(ctx.bounds)
+        };
+        let slot_index = {
+            let renderer = unsafe { ctx.renderer() };
+            let index = renderer.lazy_stack_controller.bind();
+            renderer.lazy_stack_controller.slots[index].prepare_len(count);
+            index
+        };
+        let (visible_start, visible_end, spacing) = match axis_config {
+            LazyStackAxisConfig::Vertical { spacing, .. } => {
+                (visible_bounds.y0, visible_bounds.y1, spacing)
+            }
+            LazyStackAxisConfig::Horizontal { spacing, .. } => {
+                (visible_bounds.x0, visible_bounds.x1, spacing)
+            }
+        };
+        let window = resolve_visible_index_window(count, visible_start, visible_end, |index| {
+            let cached_extent = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.lazy_stack_controller.slots[slot_index].item_extents[index]
+            };
+            let extent = if let Some(extent) = cached_extent {
+                extent
+            } else {
+                let child = children.get_view(index).unwrap_or_else(|| {
+                    panic!("LazyContainer failed to materialize child at index {index}")
+                });
+                let child = normalize_layout_view(child, env);
+                let subview = HydroSubview::from_view(&child, state, env);
+                let proposal = match axis_config {
+                    LazyStackAxisConfig::Vertical { .. } => {
+                        ProposalSize::new(Some(ctx.bounds.width() as f32), None)
+                    }
+                    LazyStackAxisConfig::Horizontal { .. } => {
+                        ProposalSize::new(None, Some(ctx.bounds.height() as f32))
+                    }
+                };
+                let size = subview.size_that_fits(proposal);
+                let extent = match axis_config {
+                    LazyStackAxisConfig::Vertical { .. } => f64::from(size.height),
+                    LazyStackAxisConfig::Horizontal { .. } => f64::from(size.width),
+                };
+                let renderer = unsafe { ctx.renderer() };
+                renderer.lazy_stack_controller.slots[slot_index].item_extents[index] = Some(extent);
+                extent
+            };
+            if index + 1 < count {
+                extent + spacing
+            } else {
+                extent
+            }
+        });
+
+        let mut cursor = window.leading_offset;
+        for index in window.start..window.end {
+            let child = children
+                .get_view(index)
+                .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index {index}"));
+            let child = normalize_layout_view(child, env);
+            let subview = HydroSubview::from_view(&child, state, env);
+            let proposal = match axis_config {
+                LazyStackAxisConfig::Vertical { .. } => {
+                    ProposalSize::new(Some(ctx.bounds.width() as f32), None)
+                }
+                LazyStackAxisConfig::Horizontal { .. } => {
+                    ProposalSize::new(None, Some(ctx.bounds.height() as f32))
+                }
+            };
+            let size = subview.size_that_fits(proposal);
+            let child_rect = match axis_config {
+                LazyStackAxisConfig::Vertical { alignment, .. } => {
+                    if matches!(
+                        subview.stretch_axis(),
+                        StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+                    ) {
+                        panic!(
+                            "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
+                        );
+                    }
+                    let child_width = if matches!(
+                        subview.stretch_axis(),
+                        StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+                    ) || size.width.is_infinite()
+                    {
+                        ctx.bounds.width()
+                    } else {
+                        f64::from(size.width).min(ctx.bounds.width())
+                    };
+                    let child_height = f64::from(size.height);
+                    let x = match alignment {
+                        HorizontalAlignment::Leading => ctx.bounds.x0,
+                        HorizontalAlignment::Center => {
+                            ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
+                        }
+                        HorizontalAlignment::Trailing => ctx.bounds.x1 - child_width,
+                    };
+                    vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
+                }
+                LazyStackAxisConfig::Horizontal { alignment, .. } => {
+                    if matches!(
+                        subview.stretch_axis(),
+                        StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
+                    ) {
+                        panic!(
+                            "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
+                        );
+                    }
+                    let child_width = f64::from(size.width);
+                    let child_height = if matches!(
+                        subview.stretch_axis(),
+                        StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
+                    ) || size.height.is_infinite()
+                    {
+                        ctx.bounds.height()
+                    } else {
+                        f64::from(size.height).min(ctx.bounds.height())
+                    };
+                    let y = match alignment {
+                        VerticalAlignment::Top => ctx.bounds.y0,
+                        VerticalAlignment::Center => {
+                            ctx.bounds.y0 + (ctx.bounds.height() - child_height) / 2.0
+                        }
+                        VerticalAlignment::Bottom => ctx.bounds.y1 - child_height,
+                    };
+                    vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
+                }
+            };
+            let extent = match axis_config {
+                LazyStackAxisConfig::Vertical { .. } => child_rect.height(),
+                LazyStackAxisConfig::Horizontal { .. } => child_rect.width(),
+            };
+            {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.lazy_stack_controller.slots[slot_index].item_extents[index] = Some(extent);
+            }
+            Self::dispatch_any(
+                ctx.child(
+                    vello::kurbo::Affine::translate((child_rect.x0, child_rect.y0)),
+                    vello::kurbo::Rect::new(0.0, 0.0, child_rect.width(), child_rect.height()),
+                ),
+                env,
+                child,
+            );
+            cursor += extent;
+            if index + 1 < count {
+                cursor += spacing;
+            }
+        }
     }
 
     fn render_scroll_view(
@@ -3186,16 +3745,38 @@ impl HydrolysisRenderer {
         let content_transform =
             vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
         let content_bounds = vello::kurbo::Rect::new(0.0, 0.0, content_width, content_height);
-        let scene = unsafe { ctx.scene() };
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            ctx.transform,
-            &viewport,
+        let lazy_viewport = vello::kurbo::Rect::new(
+            metrics.offset_x,
+            metrics.offset_y,
+            metrics.offset_x + viewport.width(),
+            metrics.offset_y + viewport.height(),
         );
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &viewport,
+            );
+        }
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.lazy_viewport_stack.push(lazy_viewport);
+        }
         Self::dispatch_any(ctx.child(content_transform, content_bounds), env, content);
-        scene.pop_layer();
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer
+                .lazy_viewport_stack
+                .pop()
+                .expect("lazy viewport stack underflow in render_scroll_view");
+        }
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.pop_layer();
+        }
 
         {
             let renderer = unsafe { ctx.renderer() };
@@ -3208,6 +3789,7 @@ impl HydrolysisRenderer {
             );
         }
 
+        let scene = unsafe { ctx.scene() };
         Self::draw_scroll_indicators(scene, ctx.transform, viewport, metrics, axis);
     }
 
@@ -3572,9 +4154,13 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&row_count_signal)
         };
-        let rows = materialize_list_rows(&list, row_count, state, env);
-        let delete_action = list.on_delete.map(Rc::new);
-        let move_action = list.on_move.map(Rc::new);
+        let contents = list.contents.clone();
+        let slot_index = {
+            let renderer = unsafe { ctx.renderer() };
+            let index = renderer.lazy_list_controller.bind();
+            renderer.lazy_list_controller.slots[index].prepare_len(row_count);
+            index
+        };
 
         let viewport = ctx.bounds;
         let handle = {
@@ -3593,9 +4179,46 @@ impl HydrolysisRenderer {
             );
         }
 
-        let total_rows = rows.len();
-        let mut y = viewport.y0 - metrics.offset_y;
-        for (index, item, row_height) in rows {
+        let window = resolve_visible_index_window(
+            row_count,
+            metrics.offset_y,
+            metrics.offset_y + viewport.height(),
+            |index| {
+                let cached_extent = {
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.lazy_list_controller.slots[slot_index].row_extents[index]
+                };
+                if let Some(extent) = cached_extent {
+                    return extent;
+                }
+                let (_item, extent) = materialize_list_row(&contents, index, state, env);
+                {
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.lazy_list_controller.slots[slot_index].row_extents[index] = Some(extent);
+                }
+                extent
+            },
+        );
+        let delete_action = list.on_delete.map(Rc::new);
+        let move_action = list.on_move.map(Rc::new);
+        let total_rows = row_count;
+        let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
+        for index in window.start..window.end {
+            let item = materialize_list_item(&contents, index, env);
+            let row_height = {
+                let cached_extent = {
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.lazy_list_controller.slots[slot_index].row_extents[index]
+                };
+                if let Some(extent) = cached_extent {
+                    extent
+                } else {
+                    let extent = measure_list_item_row_height(&item, state, env);
+                    let renderer = unsafe { ctx.renderer() };
+                    renderer.lazy_list_controller.slots[slot_index].row_extents[index] = Some(extent);
+                    extent
+                }
+            };
             let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
             y += row_height;
             if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
@@ -3778,13 +4401,62 @@ impl HydrolysisRenderer {
         if columns.is_empty() {
             return;
         }
-        let table_metrics = measure_table_metrics(&columns, state, env);
         let viewport = ctx.bounds;
         let handle = {
             let renderer = unsafe { ctx.renderer() };
             renderer.take_pending_scroll_handle("render_table")
         };
         let scroll_metrics = handle.metrics();
+        let slot_index = {
+            let renderer = unsafe { ctx.renderer() };
+            let index = renderer.lazy_table_controller.bind();
+            index
+        };
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &mut renderer.lazy_table_controller.slots[slot_index];
+            refresh_table_slot_baseline(&columns, slot, state, env);
+        }
+        let row_window = {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &renderer.lazy_table_controller.slots[slot_index];
+            resolve_table_visible_rows(scroll_metrics.offset_y, viewport.height(), slot.max_rows)
+        };
+        let mut column_window = {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &renderer.lazy_table_controller.slots[slot_index];
+            resolve_visible_column_window(
+                &slot.column_widths,
+                scroll_metrics.offset_x,
+                scroll_metrics.offset_x + viewport.width(),
+            )
+        };
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &mut renderer.lazy_table_controller.slots[slot_index];
+            update_table_slot_visible_cell_widths(
+                &columns,
+                slot,
+                row_window,
+                column_window,
+                state,
+                env,
+            );
+        }
+        {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &renderer.lazy_table_controller.slots[slot_index];
+            column_window = resolve_visible_column_window(
+                &slot.column_widths,
+                scroll_metrics.offset_x,
+                scroll_metrics.offset_x + viewport.width(),
+            );
+        }
+        let table_metrics = {
+            let renderer = unsafe { ctx.renderer() };
+            let slot = &renderer.lazy_table_controller.slots[slot_index];
+            table_metrics_from_slot(slot)
+        };
 
         {
             let scene = unsafe { ctx.scene() };
@@ -3816,8 +4488,9 @@ impl HydrolysisRenderer {
             );
         }
 
-        let mut x_offset = 0.0;
-        for (column_index, column) in columns.into_iter().enumerate() {
+        let mut x_offset = column_window.leading_offset;
+        for column_index in column_window.start..column_window.end {
+            let column = &columns[column_index];
             let width = table_metrics.column_widths[column_index];
             let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
             let header_view = AnyView::new(column.label());
@@ -3829,7 +4502,7 @@ impl HydrolysisRenderer {
             );
 
             let rows = column.rows();
-            for row_index in 0..table_metrics.max_rows {
+            for row_index in row_window.start..row_window.end {
                 let cell_rect =
                     table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
                 if let Some(cell) = rows.get_view(row_index) {
@@ -6185,6 +6858,10 @@ impl HydrolysisRenderer {
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.hover_controller.begin_rebuild_frame();
+        self.lazy_stack_controller.begin_rebuild_frame();
+        self.lazy_list_controller.begin_rebuild_frame();
+        self.lazy_table_controller.begin_rebuild_frame();
+        self.lazy_viewport_stack.clear();
         self.pending_scroll_handles.clear();
         self.pending_navigation_entries.clear();
         self.navigation_cursor = 0;
@@ -6221,6 +6898,9 @@ impl HydrolysisRenderer {
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
         self.hover_controller.finish_rebuild_frame();
+        self.lazy_stack_controller.finish_rebuild_frame();
+        self.lazy_list_controller.finish_rebuild_frame();
+        self.lazy_table_controller.finish_rebuild_frame();
         self.navigation_slots.truncate(self.navigation_cursor);
         self.picker_menu_slots.truncate(self.picker_menu_cursor);
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
@@ -7457,12 +8137,6 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
         ContextMenu,
         Draggable,
         DropDestination,
-        Blur,
-        Brightness,
-        Contrast,
-        Saturation,
-        Grayscale,
-        HueRotation,
         Background
     );
     passthrough_ignorable_metadata_content!(
@@ -7586,12 +8260,6 @@ fn normalize_layout_view_with_budget(
         ContextMenu,
         Draggable,
         DropDestination,
-        Blur,
-        Brightness,
-        Contrast,
-        Saturation,
-        Grayscale,
-        HueRotation,
         Background
     );
     normalize_passthrough_ignorable_metadata!(
@@ -7623,26 +8291,7 @@ fn normalize_layout_view_with_budget(
     }
 
     if view.is::<Native<LazyContainer>>() {
-        let native = *view
-            .downcast::<Native<LazyContainer>>()
-            .expect("layout normalization failed to downcast Native<LazyContainer>");
-        let (layout, children) = native.into_inner().into_inner();
-        let child_count = children.len().get();
-        let mut normalized_children = Vec::with_capacity(child_count);
-        for index in 0..child_count {
-            let child = children.get_view(index).unwrap_or_else(|| {
-                panic!("LazyContainer failed to materialize child at index {index}")
-            });
-            normalized_children.push(normalize_layout_view_with_budget(
-                child,
-                env,
-                next_remaining,
-            ));
-        }
-        return AnyView::new(Native::new(FixedContainer::from_parts(
-            layout,
-            normalized_children,
-        )));
+        return view;
     }
 
     if view.is::<Native<ScrollView>>() {
