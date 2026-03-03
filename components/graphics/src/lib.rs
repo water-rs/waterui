@@ -69,7 +69,7 @@ pub use filter_view::{
     HueRotation, Invert, Saturation, Sepia, Sharpen, Vignette,
 };
 
-pub use scene_view::{SceneContent, SceneView, SceneViewMergeToParent};
+pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
 pub use scene2d::Scene2D;
 pub use scene2d_vello::VelloScene2D;
 
