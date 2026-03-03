@@ -26,6 +26,7 @@
 //! )).spacing(8.0)                    // 8 logical pixels between items
 //! ```
 
+use core::any::Any;
 use core::fmt::Debug;
 
 use alloc::vec::Vec;
@@ -141,7 +142,7 @@ pub trait SubView {
 /// Safe area handling is intentionally **not** part of the Layout trait.
 /// Safe area is a platform-specific concept handled by backends. Views can
 /// use the `IgnoresSafeArea` metadata to opt out of safe area insets.
-pub trait Layout: Debug {
+pub trait Layout: Debug + Any {
     /// Calculate the size this layout wants given a proposal.
     ///
     /// The layout can query children multiple times with different proposals
