@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::{BarcodeSource, view::BarcodeFill};
-use waterui_graphics::{GpuContext, GpuFrame, GpuView, color::Srgb};
+use waterui_graphics::{GpuContext, GpuFrame, GpuView, color::Srgb, impl_gpu_subview};
 
 /// Uniforms consumed by `qr_render.wgsl`.
 #[repr(C)]
@@ -248,18 +248,16 @@ impl BarcodeRenderer {
 }
 
 impl GpuView for BarcodeRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl std::future::Future<Output = ()> {
+    ) {
         let (pipeline, bgl) =
             Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
         self.render_pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
         self.ensure_uniform_buffer(ctx.device);
-
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -343,3 +341,5 @@ impl GpuView for BarcodeRenderer {
         frame.queue.submit([encoder.finish()]);
     }
 }
+
+impl_gpu_subview!(BarcodeRenderer);
