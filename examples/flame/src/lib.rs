@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
+use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -302,11 +303,11 @@ impl FlameRenderer {
 }
 
 impl GpuView for FlameRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui::Environment,
+    ) {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 
@@ -592,7 +593,6 @@ impl GpuView for FlameRenderer {
         self.final_pipeline = Some(final_pipeline);
         self.final_format = Some(ctx.surface_format);
 
-        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -819,6 +819,20 @@ impl GpuView for FlameRenderer {
 
         frame.queue.submit(std::iter::once(encoder.finish()));
         frame.request_redraw();
+    }
+}
+
+impl SubView for FlameRenderer {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        Size::new(proposal.width.unwrap_or(0.0), proposal.height.unwrap_or(0.0))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
 
