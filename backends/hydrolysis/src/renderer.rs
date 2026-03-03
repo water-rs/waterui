@@ -8416,7 +8416,15 @@ impl HydrolysisRenderer {
                 }
                 self.dispatch_text_input_command(TextInputCommand::Backspace)
             }
-            KeyCode::Named(_) | KeyCode::Character(_) | KeyCode::Unidentified => false,
+            KeyCode::Character(text) => {
+                if self.ime_preedit.is_some() || text.is_empty() {
+                    return false;
+                }
+                self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(
+                    text.clone(),
+                )))
+            }
+            KeyCode::Named(_) | KeyCode::Unidentified => false,
         }
     }
 
