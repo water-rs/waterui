@@ -1,7 +1,5 @@
 //! Offscreen rendering regression test for `GpuSurface`.
 
-use core::future::Future;
-
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize, wgpu,
 };
@@ -12,13 +10,11 @@ struct SolidClearRenderer {
 }
 
 impl GpuView for SolidClearRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        _ctx: &GpuContext,
+        _ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl Future<Output = ()> {
-        async {}
-    }
+    ) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
         let mut encoder = frame
@@ -46,6 +42,8 @@ impl GpuView for SolidClearRenderer {
         frame.queue.submit([encoder.finish()]);
     }
 }
+
+waterui_graphics::impl_gpu_subview!(SolidClearRenderer);
 
 #[test]
 fn render_offscreen_returns_expected_rgba_and_png() {
