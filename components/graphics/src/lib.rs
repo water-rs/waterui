@@ -64,11 +64,12 @@ pub use view_effect::{
 };
 
 pub use filter_view::{
-    AppliedFilter, FilterAdapter, FilterContext, FilterInput, FilterOutput, FilterViewExt,
-    FilteredView, GpuFilter, HdrPolicy,
+    AppliedFilter, Blur, Brightness, Contrast, FilterAdapter, FilterContext, FilterInput,
+    FilterOutput, FilterViewExt, Filtered, FilteredView, Grayscale, GpuFilter, HdrPolicy,
+    HueRotation, Invert, Saturation, Sepia, Sharpen, Vignette,
 };
 
-pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
+pub use scene_view::{SceneContent, SceneView, SceneViewMergeToParent};
 pub use scene2d::Scene2D;
 pub use scene2d_vello::VelloScene2D;
 

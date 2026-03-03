@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use nami::watcher::Context;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, AnimationTrack};
 
 const VALUE_EPSILON: f32 = 0.000_01;
 
@@ -27,16 +27,9 @@ pub struct AnimatedScalarHandle {
 #[derive(Debug)]
 struct AnimatedScalarState {
     generation: u64,
-    current: f32,
-    active: Option<ActiveAnimation>,
-}
-
-#[derive(Debug, Clone)]
-struct ActiveAnimation {
-    animation: Animation,
-    start_time: Instant,
-    from: f32,
-    to: f32,
+    track: AnimationTrack<f32>,
+    active_target: Option<f32>,
+    last_tick: Instant,
 }
 
 impl AnimationController {
@@ -81,7 +74,7 @@ impl AnimatedScalarHandle {
     pub fn sample(&self, now: Instant) -> f32 {
         let mut state = self.state.borrow_mut();
         state.advance(now);
-        state.current
+        state.current()
     }
 
     pub fn apply_update_from_context(&self, update: Context<f32>, now: Instant) {
@@ -102,8 +95,9 @@ impl AnimatedScalarState {
     fn new(initial: f32) -> Self {
         Self {
             generation: 1,
-            current: initial,
-            active: None,
+            track: AnimationTrack::new(initial),
+            active_target: None,
+            last_tick: Instant::now(),
         }
     }
 
@@ -117,57 +111,51 @@ impl AnimatedScalarState {
     }
 
     fn reconcile_observed(&mut self, observed_value: f32) {
-        if let Some(active) = &self.active {
-            if !approx_eq(active.to, observed_value) {
-                self.active = None;
-                self.current = observed_value;
+        if let Some(target) = self.active_target {
+            if !approx_eq(target, observed_value) {
+                self.track.set_target(observed_value, None);
+                self.active_target = None;
             }
-        } else if !approx_eq(self.current, observed_value) {
-            self.current = observed_value;
+            return;
+        }
+
+        if !approx_eq(self.current(), observed_value) {
+            self.track.set_target(observed_value, None);
         }
     }
 
     fn apply_target(&mut self, target: f32, animation: Option<Animation>, now: Instant) {
         let _ = self.advance(now);
-        if approx_eq(self.current, target) {
-            self.current = target;
-            self.active = None;
+        if approx_eq(self.current(), target) {
+            self.track.set_target(target, None);
+            self.active_target = None;
             return;
         }
 
         match animation {
             Some(animation) => {
-                self.active = Some(ActiveAnimation {
-                    animation,
-                    start_time: now,
-                    from: self.current,
-                    to: target,
-                });
+                self.track.set_target(target, Some(animation));
+                self.active_target = Some(target);
             }
             None => {
-                self.current = target;
-                self.active = None;
+                self.track.set_target(target, None);
+                self.active_target = None;
             }
         }
     }
 
     fn advance(&mut self, now: Instant) -> bool {
-        let Some(active) = self.active.as_ref() else {
-            return false;
-        };
-
-        let elapsed = now.saturating_duration_since(active.start_time);
-        self.current = active
-            .animation
-            .interpolate(active.from, active.to, elapsed);
-
-        if active.animation.is_complete(elapsed) {
-            self.current = active.to;
-            self.active = None;
-            return false;
+        let delta = now.saturating_duration_since(self.last_tick);
+        self.last_tick = now;
+        let active = self.track.advance(delta);
+        if !active {
+            self.active_target = None;
         }
+        active
+    }
 
-        true
+    fn current(&self) -> f32 {
+        self.track.value()
     }
 }
 
