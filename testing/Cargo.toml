@@ -12,10 +12,13 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hydrolysis = { path = "../backends/hydrolysis" }
+hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility"] }
 waterui-core.workspace = true
+waterui.workspace = true
 wgpu.workspace = true
 vello.workspace = true
+accesskit = "0.24"
+pollster.workspace = true
 
 [lints]
 workspace = true

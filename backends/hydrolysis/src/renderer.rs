@@ -4,12 +4,12 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
@@ -217,23 +217,23 @@ pub struct HydrolysisRenderer {
     picker_menu_cursor: usize,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_root_children: Vec<AccessibilityNodeId>,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_next_node_id: u64,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_root_bounds: vello::kurbo::Rect,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_root_label: String,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_focus: AccessibilityNodeId,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility_suppression_depth: usize,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     pending_accessibility_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
@@ -369,10 +369,10 @@ enum LazyStackAxisConfig {
     },
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 #[derive(Clone)]
 enum AccessibilityActionTarget {
     PointerPrimaryClick {
@@ -432,11 +432,11 @@ struct DynamicSubtree {
     hover_targets: Vec<HoverTarget>,
     text_input_targets: Vec<TextInputTarget>,
     scroll_targets: Vec<ScrollTarget>,
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     accessibility: DynamicAccessibilitySubtree,
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 struct DynamicAccessibilitySubtree {
     nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
     root_children: Vec<AccessibilityNodeId>,
@@ -746,7 +746,7 @@ trait HydroNativeView: View + Sized + 'static {
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn register_native_view<V: HydroNativeView>(
     dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
 ) {
@@ -779,7 +779,7 @@ fn register_native_view<V: HydroNativeView>(
     });
 }
 
-#[cfg(not(feature = "winit"))]
+#[cfg(not(feature = "accessibility"))]
 fn register_native_view<V: HydroNativeView>(
     dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
 ) {
@@ -1652,7 +1652,7 @@ impl HydroNativeView for Native<TextConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let text = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -1760,7 +1760,7 @@ impl HydroNativeView for Native<ScrollView> {
             renderer.push_pending_scroll_handle(handle.clone());
             handle
         };
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let metrics = handle.metrics();
             let renderer = unsafe { ctx.renderer() };
@@ -1817,7 +1817,7 @@ impl HydroNativeView for Native<NavigationView> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let navigation = view.as_inner();
             let bar = &navigation.bar;
@@ -1914,7 +1914,7 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
             entries
         };
         let depth = entries.borrow().len();
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             if depth == 0 {
                 return;
@@ -1950,7 +1950,7 @@ impl HydroNativeView for Native<Tabs> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let tabs = view.as_inner();
             if tabs.tabs.is_empty() {
@@ -2053,7 +2053,7 @@ impl HydroNativeView for Native<ListConfig> {
             renderer.push_pending_scroll_handle(handle.clone());
             handle
         };
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let metrics = handle.metrics();
             let window = resolve_visible_index_window(
@@ -2151,7 +2151,7 @@ impl HydroNativeView for Native<ButtonConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let button = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2193,7 +2193,7 @@ impl HydroNativeView for Native<ToggleConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let toggle = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2237,7 +2237,7 @@ impl HydroNativeView for Native<StepperConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let stepper = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2287,7 +2287,7 @@ impl HydroNativeView for Native<ProgressConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let progress = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2319,7 +2319,7 @@ impl HydroNativeView for Native<TextFieldConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let text_field = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2379,7 +2379,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let secure_field = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2458,7 +2458,7 @@ impl HydroNativeView for Native<SystemIcon> {
         _view: &Self,
         _env: &Environment,
     ) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let icon = _view.as_inner();
             let renderer = unsafe { _ctx.renderer() };
@@ -2530,7 +2530,7 @@ impl HydroNativeView for Native<TableConfig> {
             renderer.push_pending_scroll_handle(handle.clone());
             handle
         };
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let scroll_metrics = handle.metrics();
             let row_window = {
@@ -2659,7 +2659,7 @@ impl HydroNativeView for Native<SliderConfig> {
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let slider = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2710,7 +2710,7 @@ impl HydroNativeView for Native<PickerConfig> {
     }
 
     fn accessibility(state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let picker = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
@@ -2873,7 +2873,7 @@ impl HydroNativeView for Native<GpuSurface> {
         _view: &Self,
         _env: &Environment,
     ) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let renderer = unsafe { _ctx.renderer() };
             let mut node = AccessibilityNode::new(
@@ -2907,7 +2907,7 @@ impl HydroNativeView for Native<SceneView> {
         _view: &Self,
         _env: &Environment,
     ) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let renderer = unsafe { _ctx.renderer() };
             let mut node = AccessibilityNode::new(
@@ -3023,23 +3023,23 @@ impl HydrolysisRenderer {
             picker_menu_cursor: 0,
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_nodes: Vec::new(),
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_root_children: Vec::new(),
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_actions: BTreeMap::new(),
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_next_node_id: 1,
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_root_bounds: vello::kurbo::Rect::ZERO,
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_root_label: String::from("WaterUI Window"),
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_focus: ACCESSIBILITY_ROOT_NODE_ID,
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility_suppression_depth: 0,
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             pending_accessibility_tree_update: None,
         }
     }
@@ -3126,7 +3126,7 @@ impl HydrolysisRenderer {
     }
 
     fn dispatch_any_without_accessibility(ctx: RenderContext, env: &Environment, content: AnyView) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
@@ -3134,7 +3134,7 @@ impl HydrolysisRenderer {
             renderer.pop_accessibility_suppression();
             return;
         }
-        #[cfg(not(feature = "winit"))]
+        #[cfg(not(feature = "accessibility"))]
         Self::dispatch_any(ctx, env, content);
     }
 
@@ -3197,11 +3197,11 @@ impl HydrolysisRenderer {
         let mut subtree_text_input_targets = Vec::new();
         let mut subtree_scroll_targets = Vec::new();
         let mut subtree_hover_controller = HoverController::default();
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         let mut subtree_accessibility_nodes = Vec::new();
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         let mut subtree_accessibility_root_children = Vec::new();
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         let mut subtree_accessibility_actions = BTreeMap::new();
 
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
@@ -3218,7 +3218,7 @@ impl HydrolysisRenderer {
             &mut subtree_text_input_targets,
         );
         core::mem::swap(&mut renderer.scroll_targets, &mut subtree_scroll_targets);
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             core::mem::swap(
                 &mut renderer.accessibility_nodes,
@@ -3254,7 +3254,7 @@ impl HydrolysisRenderer {
                 &mut subtree_accessibility_nodes,
             );
         }
-        #[cfg(not(feature = "winit"))]
+        #[cfg(not(feature = "accessibility"))]
         renderer.dispatcher.dispatch(content, env, ctx);
 
         core::mem::swap(&mut renderer.scroll_targets, &mut subtree_scroll_targets);
@@ -3280,7 +3280,7 @@ impl HydrolysisRenderer {
             hover_targets: subtree_hover_targets,
             text_input_targets: subtree_text_input_targets,
             scroll_targets: subtree_scroll_targets,
-            #[cfg(feature = "winit")]
+            #[cfg(feature = "accessibility")]
             accessibility: DynamicAccessibilitySubtree {
                 nodes: subtree_accessibility_nodes,
                 root_children: subtree_accessibility_root_children,
@@ -3329,11 +3329,11 @@ impl HydrolysisRenderer {
                 action: Rc::clone(&target.action),
             }));
 
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         self.replay_dynamic_accessibility_subtree(ctx.transform, &subtree.accessibility);
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn next_accessibility_node_id(&mut self) -> AccessibilityNodeId {
         let node_id = AccessibilityNodeId(self.accessibility_next_node_id);
         self.accessibility_next_node_id = self
@@ -3343,7 +3343,7 @@ impl HydrolysisRenderer {
         node_id
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn replay_dynamic_accessibility_subtree(
         &mut self,
         transform: vello::kurbo::Affine,
@@ -4598,7 +4598,7 @@ impl HydrolysisRenderer {
     }
 
     fn render_str(state: &mut HydroState, ctx: RenderContext, text: Str, env: &Environment) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             if !env
                 .get::<AccessibilityHidden>()
@@ -6857,7 +6857,7 @@ impl HydrolysisRenderer {
         self.text_input_targets.clear();
         self.scroll_targets.clear();
         self.scene.reset();
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             self.pending_accessibility_tree_update = None;
         }
@@ -6880,7 +6880,7 @@ impl HydrolysisRenderer {
         self.navigation_cursor = 0;
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             self.accessibility_nodes.clear();
             self.accessibility_root_children.clear();
@@ -6923,7 +6923,7 @@ impl HydrolysisRenderer {
             .state_mut()
             .dynamic_intrinsic_cache
             .retain(|identity, _| active_dynamic_identities.contains(identity));
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
 
@@ -6985,19 +6985,19 @@ impl HydrolysisRenderer {
             .map_or(CursorStyle::Arrow, |target| target.style)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility_root_label.clear();
         self.accessibility_root_label.push_str(label);
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     #[must_use]
     pub fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
         self.pending_accessibility_tree_update.take()
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
@@ -7108,7 +7108,7 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
     ) {
-        #[cfg(feature = "winit")]
+        #[cfg(feature = "accessibility")]
         {
             self.accessibility_root_bounds = transformed_rect(transform, bounds);
         }
@@ -7463,7 +7463,7 @@ impl HydrolysisRenderer {
         });
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn push_accessibility_suppression(&mut self) {
         self.accessibility_suppression_depth = self
             .accessibility_suppression_depth
@@ -7471,7 +7471,7 @@ impl HydrolysisRenderer {
             .expect("hydrolysis accessibility suppression depth overflow");
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn pop_accessibility_suppression(&mut self) {
         self.accessibility_suppression_depth = self
             .accessibility_suppression_depth
@@ -7479,7 +7479,7 @@ impl HydrolysisRenderer {
             .expect("hydrolysis accessibility suppression underflow");
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn apply_accessibility_state(&self, env: &Environment, node: &mut AccessibilityNode) {
         let Some(state) = env.get::<AccessibilityState>() else {
             return;
@@ -7504,7 +7504,7 @@ impl HydrolysisRenderer {
         }
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn register_accessibility_node_internal(
         &mut self,
         mut node: AccessibilityNode,
@@ -7532,7 +7532,7 @@ impl HydrolysisRenderer {
         Some(node_id)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn register_accessibility_node(
         &mut self,
         node: AccessibilityNode,
@@ -7543,7 +7543,7 @@ impl HydrolysisRenderer {
         self.register_accessibility_node_internal(node, bounds, env, action_target, true)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn register_accessibility_child_node(
         &mut self,
         node: AccessibilityNode,
@@ -7554,7 +7554,7 @@ impl HydrolysisRenderer {
         self.register_accessibility_node_internal(node, bounds, env, action_target, false)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn accessibility_label_from_view(
         &mut self,
         view: &AnyView,
@@ -7563,7 +7563,7 @@ impl HydrolysisRenderer {
         self.accessibility_label_from_view_with_budget(view, env, 32)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn accessibility_label_from_view_with_budget(
         &mut self,
         view: &AnyView,
@@ -7608,7 +7608,7 @@ impl HydrolysisRenderer {
         None
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn resolve_accessibility_label(
         &mut self,
         env: &Environment,
@@ -7619,7 +7619,7 @@ impl HydrolysisRenderer {
             .or(default_label)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn resolve_accessibility_role(
         &self,
         env: &Environment,
@@ -7630,7 +7630,7 @@ impl HydrolysisRenderer {
             .unwrap_or(default_role)
     }
 
-    #[cfg(feature = "winit")]
+    #[cfg(feature = "accessibility")]
     fn finalize_accessibility_tree_update(&mut self) {
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.accessibility_root_label.clone());
@@ -7666,7 +7666,7 @@ impl Drop for HydrolysisRenderer {
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn kurbo_rect_to_accesskit_rect(rect: vello::kurbo::Rect) -> AccessibilityRect {
     AccessibilityRect {
         x0: rect.x0,
@@ -7676,12 +7676,12 @@ fn kurbo_rect_to_accesskit_rect(rect: vello::kurbo::Rect) -> AccessibilityRect {
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn accesskit_rect_to_kurbo_rect(rect: AccessibilityRect) -> vello::kurbo::Rect {
     vello::kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn remap_accessibility_node_id(
     node_id: AccessibilityNodeId,
     id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
@@ -7691,7 +7691,7 @@ fn remap_accessibility_node_id(
         .expect("hydrolysis dynamic accessibility node mapping missing reference")
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn remap_accessibility_node_id_vec(
     node_ids: &[AccessibilityNodeId],
     id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
@@ -7703,7 +7703,7 @@ fn remap_accessibility_node_id_vec(
         .collect()
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn remap_accessibility_node_references(
     node: &mut AccessibilityNode,
     id_map: &BTreeMap<AccessibilityNodeId, AccessibilityNodeId>,
@@ -7772,7 +7772,7 @@ fn remap_accessibility_node_references(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn transform_accessibility_action_target(
     target: &AccessibilityActionTarget,
     transform: vello::kurbo::Affine,
@@ -7834,12 +7834,12 @@ fn transform_accessibility_action_target(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn accessibility_activation_point(bounds: vello::kurbo::Rect) -> vello::kurbo::Point {
     vello::kurbo::Point::new((bounds.x0 + bounds.x1) * 0.5, (bounds.y0 + bounds.y1) * 0.5)
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
@@ -7875,7 +7875,7 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_pointer_action(
     renderer: &mut HydrolysisRenderer,
     action: AccessibilityAction,
@@ -7897,7 +7897,7 @@ fn handle_accessibility_pointer_action(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_scroll_action(
     handle: &ScrollHandle,
     axis: ScrollAxis,
@@ -7928,7 +7928,7 @@ fn handle_accessibility_scroll_action(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
@@ -7939,7 +7939,7 @@ fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     span / 100.0
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_slider_action(
     value: &nami::Binding<f64>,
     start: f64,
@@ -7968,7 +7968,7 @@ fn handle_accessibility_slider_action(
     true
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_stepper_action(
     value: &nami::Binding<i32>,
     step: &nami::Computed<i32>,
@@ -8007,7 +8007,7 @@ fn handle_accessibility_stepper_action(
     true
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_text_field_action(
     renderer: &mut HydrolysisRenderer,
     value: &nami::Binding<StyledStr>,
@@ -8039,7 +8039,7 @@ fn handle_accessibility_text_field_action(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_secure_field_action(
     renderer: &mut HydrolysisRenderer,
     value: &nami::Binding<FormSecure>,
@@ -8066,7 +8066,7 @@ fn handle_accessibility_secure_field_action(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_picker_cycle_action(
     selection: &nami::Binding<waterui_core::id::Id>,
     ids: &[waterui_core::id::Id],
@@ -8092,7 +8092,7 @@ fn handle_accessibility_picker_cycle_action(
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(feature = "accessibility")]
 fn handle_accessibility_picker_select_action(
     selection: &nami::Binding<waterui_core::id::Id>,
     target: waterui_core::id::Id,
