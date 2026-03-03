@@ -936,10 +936,6 @@ mod winit_runner {
                             }
                         }
                         AccessKitWindowEvent::ActionRequested(request) => {
-                            panic!(
-                                "hydrolysis debug: received accesskit action {:?} target {:?}",
-                                request.action, request.target_node
-                            );
                             tracing::trace!(
                                 target: "waterui::hydrolysis::a11y",
                                 window_id = ?event.window_id,
