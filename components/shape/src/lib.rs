@@ -29,7 +29,7 @@ use core::time::Duration;
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, impl_gpu_subview};
 
 const MORPH_SHADER_LABEL: &str = "shaders/morph.wgsl";
 const MORPH_SHADER_SOURCE: &str = include_str!("shaders/morph.wgsl");
@@ -910,11 +910,11 @@ impl MorphShapeRenderer {
 }
 
 impl GpuView for MorphShapeRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
             ctx.device,
             MORPH_SHADER_LABEL,
@@ -1004,7 +1004,6 @@ impl GpuView for MorphShapeRenderer {
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
 
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -1091,6 +1090,8 @@ impl GpuView for MorphShapeRenderer {
         }
     }
 }
+
+impl_gpu_subview!(MorphShapeRenderer);
 
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes
