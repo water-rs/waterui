@@ -202,6 +202,7 @@ pub struct HydrolysisRenderer {
     scroll_targets: Vec<ScrollTarget>,
     hit_test_opacity: f32,
     render_depth: usize,
+    hit_test_order: usize,
     focused_text_input: Cell<Option<usize>>,
     ime_preedit: Option<Str>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
@@ -256,6 +257,7 @@ struct PointerTarget {
     bounds: vello::kurbo::Rect,
     captures_drag: bool,
     depth: usize,
+    order: usize,
     action: PointerAction,
 }
 
@@ -284,6 +286,7 @@ struct TextInputTarget {
     cursor_area: vello::kurbo::Rect,
     purpose: TextInputPurpose,
     depth: usize,
+    order: usize,
     action: TextInputAction,
 }
 
@@ -3958,6 +3961,7 @@ impl HydrolysisRenderer {
             scroll_targets: Vec::new(),
             hit_test_opacity: 1.0,
             render_depth: 0,
+            hit_test_order: 0,
             focused_text_input: Cell::new(None),
             ime_preedit: None,
             lifecycle_disappear_previous: BTreeMap::new(),
@@ -4070,11 +4074,18 @@ impl HydrolysisRenderer {
     }
 
     fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
-        if self.focused_text_input.get() == focused {
+        let previous = self.focused_text_input.get();
+        if previous == focused {
             return false;
         }
         self.focused_text_input.set(focused);
         self.ime_preedit = None;
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            previous_focus = ?previous,
+            next_focus = ?focused,
+            "text input focus changed"
+        );
         true
     }
 
@@ -4083,6 +4094,15 @@ impl HydrolysisRenderer {
             .render_depth
             .checked_add(1)
             .expect("hydrolysis render depth overflow");
+    }
+
+    fn next_hit_test_order(&mut self) -> usize {
+        let order = self.hit_test_order;
+        self.hit_test_order = self
+            .hit_test_order
+            .checked_add(1)
+            .expect("hydrolysis hit-test order overflow");
+        order
     }
 
     fn pop_render_depth(&mut self) {
@@ -6069,12 +6089,7 @@ impl HydrolysisRenderer {
 
         let hit_bounds = transformed_rect(
             ctx.transform,
-            vello::kurbo::Rect::new(
-                track_left,
-                track_center_y - (SLIDER_THUMB_RADIUS + 7.0),
-                track_right,
-                track_center_y + (SLIDER_THUMB_RADIUS + 7.0),
-            ),
+            vello::kurbo::Rect::new(track_left, control_top, track_right, control_bottom),
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
@@ -6082,6 +6097,17 @@ impl HydrolysisRenderer {
             panic!("hydrolysis slider resolved a non-positive track width");
         }
         let inverse_transform = ctx.transform.inverse();
+        tracing::trace!(
+            target: "waterui::hydrolysis::hit_region",
+            component = "slider",
+            layout_bounds = ?ctx.bounds,
+            hit_bounds = ?hit_bounds,
+            track_left,
+            track_right,
+            control_top,
+            control_bottom,
+            "register slider drag region"
+        );
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_drag_target(hit_bounds, move |point, _env| {
             let local_point = inverse_transform * point;
@@ -6160,6 +6186,14 @@ impl HydrolysisRenderer {
         let step_signal_plus = stepper.step;
 
         let renderer = unsafe { ctx.renderer() };
+        tracing::trace!(
+            target: "waterui::hydrolysis::hit_region",
+            component = "stepper",
+            layout_bounds = ?ctx.bounds,
+            minus_bounds = ?transformed_rect(ctx.transform, minus_bounds),
+            plus_bounds = ?transformed_rect(ctx.transform, plus_bounds),
+            "register stepper button regions"
+        );
         renderer.register_pointer_target(
             transformed_rect(ctx.transform, minus_bounds),
             move |_point, _env| {
@@ -6350,18 +6384,20 @@ impl HydrolysisRenderer {
         draw_input_field(scene, ctx.transform, field_rect);
 
         let prompt_signal = text_field.prompt.content();
-        let (prompt, value, preedit) = {
+        let (prompt, value, preedit, is_focused) = {
             let renderer = unsafe { ctx.renderer() };
-            let preedit =
-                if renderer.focused_text_input.get() == Some(renderer.text_input_targets.len()) {
-                    renderer.ime_preedit.clone().unwrap_or_default()
-                } else {
-                    Str::new()
-                };
+            let is_focused =
+                renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
+            let preedit = if is_focused {
+                renderer.ime_preedit.clone().unwrap_or_default()
+            } else {
+                Str::new()
+            };
             (
                 renderer.read_signal(&prompt_signal).to_plain(),
                 renderer.read_signal(&text_field.value).to_plain(),
                 preedit,
+                is_focused,
             )
         };
         let committed_with_preedit = value.clone() + preedit.as_str();
@@ -6406,9 +6442,28 @@ impl HydrolysisRenderer {
             Some(text_bounds.width() as f32),
         );
         let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit);
+        if is_focused {
+            let scene = unsafe { ctx.scene() };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.12, 0.14, 0.18, 1.0]),
+                None,
+                &cursor_area,
+            );
+        }
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
+        renderer.register_cursor_target(transformed_rect(ctx.transform, field_rect), CursorStyle::IBeam);
+        tracing::trace!(
+            target: "waterui::hydrolysis::hit_region",
+            component = "text_field",
+            layout_bounds = ?ctx.bounds,
+            field_bounds = ?transformed_rect(ctx.transform, field_rect),
+            cursor_area = ?transformed_rect(ctx.transform, cursor_area),
+            "register text field input region"
+        );
         renderer.register_text_input_target(
             transformed_rect(ctx.transform, field_rect),
             transformed_rect(ctx.transform, cursor_area),
@@ -6468,24 +6523,25 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let masked = {
+        let (masked, is_focused) = {
             let renderer = unsafe { ctx.renderer() };
-            let preedit_count =
-                if renderer.focused_text_input.get() == Some(renderer.text_input_targets.len()) {
-                    renderer
-                        .ime_preedit
-                        .as_ref()
-                        .map_or(0, |value| value.chars().count())
-                } else {
-                    0
-                };
+            let is_focused =
+                renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
+            let preedit_count = if is_focused {
+                renderer
+                    .ime_preedit
+                    .as_ref()
+                    .map_or(0, |value| value.chars().count())
+            } else {
+                0
+            };
             let count = renderer
                 .read_signal(&secure_field.value)
                 .expose()
                 .chars()
                 .count()
                 + preedit_count;
-            "*".repeat(count)
+            ("*".repeat(count), is_focused)
         };
         let text_bounds = inset_rect(
             field_rect,
@@ -6510,9 +6566,28 @@ impl HydrolysisRenderer {
             Some(text_bounds.width() as f32),
         );
         let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1));
+        if is_focused {
+            let scene = unsafe { ctx.scene() };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                vello::peniko::Color::new([0.12, 0.14, 0.18, 1.0]),
+                None,
+                &cursor_area,
+            );
+        }
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
+        renderer.register_cursor_target(transformed_rect(ctx.transform, field_rect), CursorStyle::IBeam);
+        tracing::trace!(
+            target: "waterui::hydrolysis::hit_region",
+            component = "secure_field",
+            layout_bounds = ?ctx.bounds,
+            field_bounds = ?transformed_rect(ctx.transform, field_rect),
+            cursor_area = ?transformed_rect(ctx.transform, cursor_area),
+            "register secure field input region"
+        );
         renderer.register_text_input_target(
             transformed_rect(ctx.transform, field_rect),
             transformed_rect(ctx.transform, cursor_area),
@@ -7868,6 +7943,7 @@ impl HydrolysisRenderer {
         self.lifecycle_disappear_current.clear();
         self.lifecycle_disappear_slot = 0;
         self.hit_test_opacity = 1.0;
+        self.hit_test_order = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.hover_controller.begin_rebuild_frame();
@@ -8238,30 +8314,43 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            pointer_targets = self.pointer_targets.len(),
+            text_inputs = self.text_input_targets.len(),
+            gesture_targets = self.gesture_targets.len(),
+            "pointer down begin"
+        );
 
         if let Some(previous) = self.active_gesture_recognizer.take() {
-            rebuild_requested |= previous
+            let changed = previous
                 .borrow_mut()
                 .input(GestureInput::PointerCancel { at }, env);
+            tracing::trace!(
+                target: "waterui::hydrolysis::gesture",
+                event = "pointer_cancel_previous",
+                changed,
+                "gesture recognizer cancel"
+            );
+            rebuild_requested |= changed;
         }
         if let Some(recognizer) = self.gesture_recognizer_at(point) {
-            rebuild_requested |= recognizer
+            let changed = recognizer
                 .borrow_mut()
                 .input(GestureInput::PointerDown { point, at }, env);
+            tracing::trace!(
+                target: "waterui::hydrolysis::gesture",
+                event = "pointer_down",
+                x,
+                y,
+                changed,
+                "gesture recognizer pointer down"
+            );
+            rebuild_requested |= changed;
             self.active_gesture_recognizer = Some(recognizer);
         }
-
-        let focused = self
-            .text_input_targets
-            .iter()
-            .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
-            .max_by(|(left_index, left), (right_index, right)| {
-                left.depth
-                    .cmp(&right.depth)
-                    .then(left_index.cmp(right_index))
-            })
-            .map(|(index, _)| index);
 
         let mut pointer_indices: Vec<usize> = self
             .pointer_targets
@@ -8274,25 +8363,57 @@ impl HydrolysisRenderer {
             let left_target = &self.pointer_targets[*left];
             let right_target = &self.pointer_targets[*right];
             right_target
-                .depth
-                .cmp(&left_target.depth)
+                .order
+                .cmp(&left_target.order)
                 .then(right.cmp(left))
         });
-
-        if let Some(focused_index) = focused {
-            let focused_priority = (self.text_input_targets[focused_index].depth, focused_index);
-            let pointer_priority = pointer_indices.first().map(|index| {
-                let target = &self.pointer_targets[*index];
-                (target.depth, *index)
-            });
-            if !matches!(pointer_priority, Some(priority) if priority > focused_priority) {
-                let changed = self.set_focused_text_input(Some(focused_index));
-                return rebuild_requested || changed;
-            }
+        let focused = self
+            .text_input_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                left.order
+                    .cmp(&right.order)
+                    .then(left_index.cmp(right_index))
+            })
+            .map(|(index, _)| index);
+        let top_pointer_order = pointer_indices
+            .first()
+            .map(|index| self.pointer_targets[*index].order);
+        let focused_order = focused.map(|index| self.text_input_targets[index].order);
+        let focus_wins = matches!(
+            (focused_order, top_pointer_order),
+            (Some(focus_order), Some(pointer_order)) if focus_order > pointer_order
+        ) || matches!((focused_order, top_pointer_order), (Some(_), None));
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            pointer_hits = ?pointer_indices,
+            pointer_top_order = ?top_pointer_order,
+            focused_candidate = ?focused,
+            focused_order = ?focused_order,
+            focus_wins,
+            "pointer down candidates"
+        );
+        if focus_wins {
+            let changed = self.set_focused_text_input(focused);
+            return rebuild_requested || changed;
         }
 
         for index in pointer_indices {
             let target = self.pointer_targets[index].clone();
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                x,
+                y,
+                pointer_index = index,
+                captures_drag = target.captures_drag,
+                bounds = ?target.bounds,
+                order = target.order,
+                "dispatch pointer target"
+            );
             let changed = (target.action.borrow_mut())(point, env);
             if !changed {
                 continue;
@@ -8300,9 +8421,24 @@ impl HydrolysisRenderer {
             if target.captures_drag {
                 self.active_pointer_drag_target = Some(Rc::clone(&target.action));
             }
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                x,
+                y,
+                pointer_index = index,
+                captures_drag = target.captures_drag,
+                order = target.order,
+                "pointer target handled event"
+            );
             return true;
         }
-
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            focused_candidate = ?focused,
+            "pointer down text-input fallback"
+        );
         if self.set_focused_text_input(focused) {
             rebuild_requested = true;
         }
@@ -8320,11 +8456,21 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut changed = self.handle_pointer_move(x, y, env);
         self.active_pointer_drag_target = None;
+        let mut gesture_changed = false;
         if let Some(recognizer) = self.active_gesture_recognizer.take() {
-            changed |= recognizer
+            gesture_changed = recognizer
                 .borrow_mut()
                 .input(GestureInput::PointerUp { point, at }, env);
+            changed |= gesture_changed;
         }
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            changed,
+            gesture_changed,
+            "pointer up handled"
+        );
         changed
     }
 
@@ -8332,13 +8478,17 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
         let mut rebuild_requested = false;
+        let mut drag_changed = false;
         if let Some(action) = self.active_pointer_drag_target.clone() {
-            rebuild_requested |= (action.borrow_mut())(point, env);
+            drag_changed = (action.borrow_mut())(point, env);
+            rebuild_requested |= drag_changed;
         }
+        let mut gesture_changed = false;
         if let Some(recognizer) = self.active_gesture_recognizer.as_ref() {
-            rebuild_requested |= recognizer
+            gesture_changed = recognizer
                 .borrow_mut()
                 .input(GestureInput::PointerMove { point, at }, env);
+            rebuild_requested |= gesture_changed;
         }
         for target in &mut self.hover_targets {
             let contains = target.bounds.contains(point);
@@ -8355,6 +8505,17 @@ impl HydrolysisRenderer {
                 }
             }
         }
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            changed = rebuild_requested,
+            drag_changed,
+            gesture_changed,
+            dragging = self.active_pointer_drag_target.is_some(),
+            gesture_active = self.active_gesture_recognizer.is_some(),
+            "pointer move handled"
+        );
         rebuild_requested
     }
 
@@ -8362,9 +8523,16 @@ impl HydrolysisRenderer {
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
         if let Some(recognizer) = self.active_gesture_recognizer.take() {
-            rebuild_requested |= recognizer
+            let changed = recognizer
                 .borrow_mut()
                 .input(GestureInput::PointerCancel { at: Instant::now() }, env);
+            tracing::trace!(
+                target: "waterui::hydrolysis::gesture",
+                event = "pointer_cancel",
+                changed,
+                "gesture recognizer pointer cancel"
+            );
+            rebuild_requested |= changed;
         }
         for target in &mut self.hover_targets {
             let hovering = self.hover_controller.slots[target.slot.index].hovering;
@@ -8488,14 +8656,34 @@ impl HydrolysisRenderer {
     pub fn handle_text_input(&mut self, text: &str) -> bool {
         let preedit_cleared = self.ime_preedit.take().is_some();
         if text.is_empty() {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                focused = ?self.focused_text_input.get(),
+                preedit_cleared,
+                "text input ignored empty payload"
+            );
             return preedit_cleared;
         }
-        self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
-            || preedit_cleared
+        let changed =
+            self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
+                || preedit_cleared;
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            focused = ?self.focused_text_input.get(),
+            text = text,
+            changed,
+            "text input handled"
+        );
+        changed
     }
 
     pub fn handle_ime_preedit(&mut self, text: &str) -> bool {
         if self.focused_text_input.get().is_none() {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                text = text,
+                "ime preedit dropped without focused text input"
+            );
             return false;
         }
         let next = if text.is_empty() {
@@ -8507,6 +8695,12 @@ impl HydrolysisRenderer {
             return false;
         }
         self.ime_preedit = next;
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            focused = ?self.focused_text_input.get(),
+            preedit = ?self.ime_preedit,
+            "ime preedit updated"
+        );
         true
     }
 
@@ -8515,29 +8709,52 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_ime_disabled(&mut self) -> bool {
-        self.ime_preedit.take().is_some()
+        let changed = self.ime_preedit.take().is_some();
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            changed,
+            "ime disabled handled"
+        );
+        changed
     }
 
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
         if modifiers.control || modifiers.alt || modifiers.super_key {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                key = ?key,
+                modifiers = ?modifiers,
+                "key ignored due command modifiers"
+            );
             return false;
         }
 
-        match key {
+        let changed = match key {
             KeyCode::Named(value) if value == "Backspace" => {
                 if self.ime_preedit.take().is_some() {
-                    return true;
+                    true
+                } else {
+                    self.dispatch_text_input_command(TextInputCommand::Backspace)
                 }
-                self.dispatch_text_input_command(TextInputCommand::Backspace)
             }
             KeyCode::Character(text) => {
                 if self.ime_preedit.is_some() || text.is_empty() {
-                    return false;
+                    false
+                } else {
+                    self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.clone())))
                 }
-                self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.clone())))
             }
             KeyCode::Named(_) | KeyCode::Unidentified => false,
-        }
+        };
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            key = ?key,
+            modifiers = ?modifiers,
+            focused = ?self.focused_text_input.get(),
+            changed,
+            "key handled"
+        );
+        changed
     }
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
@@ -8584,10 +8801,12 @@ impl HydrolysisRenderer {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let order = self.next_hit_test_order();
         self.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag,
             depth,
+            order,
             action,
         });
     }
@@ -8722,11 +8941,13 @@ impl HydrolysisRenderer {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let order = self.next_hit_test_order();
         self.text_input_targets.push(TextInputTarget {
             bounds,
             cursor_area,
             purpose,
             depth,
+            order,
             action,
         });
     }
