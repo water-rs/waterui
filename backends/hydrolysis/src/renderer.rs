@@ -2277,21 +2277,17 @@ fn measure_stepper_intrinsic(
 
 fn measure_progress_intrinsic(
     progress: &ProgressConfig,
-    state: &mut HydroState,
-    env: &Environment,
+    _state: &mut HydroState,
+    _env: &Environment,
 ) -> LayoutSize {
     match progress.style {
         ProgressStyle::Linear => {
-            let label_size = measure_view_intrinsic(&progress.label, state, env);
-            let value_label_size = measure_view_intrinsic(&progress.value_label, state, env);
-            let width = f64::from(label_size.width)
-                .max(f64::from(value_label_size.width))
-                .max(PROGRESS_LINEAR_MIN_TRACK_WIDTH + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET * 2.0);
-            let height = f64::from(label_size.height)
+            let width = PROGRESS_LINEAR_MIN_TRACK_WIDTH + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET * 2.0;
+            let height = PROGRESS_LINEAR_LABEL_HEIGHT
                 + PROGRESS_LINEAR_BAR_TOP_OFFSET
                 + PROGRESS_LINEAR_BAR_HEIGHT
                 + PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING
-                + f64::from(value_label_size.height);
+                + PROGRESS_LINEAR_LABEL_HEIGHT;
             LayoutSize::new(width as f32, height as f32)
         }
         ProgressStyle::Circular => LayoutSize::new(
@@ -6138,7 +6134,9 @@ impl HydrolysisRenderer {
         progress: Native<ProgressConfig>,
         env: &Environment,
     ) {
-        let progress = progress.into_inner();
+        let mut progress = progress.into_inner();
+        progress.label = normalize_layout_view(progress.label, env);
+        progress.value_label = normalize_layout_view(progress.value_label, env);
         let clamped = {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&progress.value).clamp(0.0, 1.0) as f64
