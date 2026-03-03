@@ -500,7 +500,7 @@ struct MeshGpuResources {
     pipeline_format: wgpu::TextureFormat,
 }
 
-fn create_mesh_resources(ctx: &GpuContext, label_prefix: &str) -> MeshGpuResources {
+fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
     let shader = crate::shared_context::create_cached_shader_module_prewarmed(
         ctx.device,
         &MESH_GRADIENT_SHADER,
@@ -775,13 +775,12 @@ impl StaticMeshRenderer {
 }
 
 impl GpuView for StaticMeshRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         self.resources = Some(create_mesh_resources(ctx, "Static Mesh Gradient"));
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -809,6 +808,8 @@ impl GpuView for StaticMeshRenderer {
         draw_mesh(frame, resources, "Static Mesh Gradient");
     }
 }
+
+crate::impl_gpu_subview!(StaticMeshRenderer);
 
 /// A mesh gradient that accepts reactive Signal parameters for animation.
 pub struct MeshGradient<C> {
@@ -879,11 +880,11 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         if self.watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
             let redraw_handle = ctx.redraw_handle.clone();
@@ -895,7 +896,6 @@ where
         }
 
         self.resources = Some(create_mesh_resources(ctx, "Reactive Mesh Gradient"));
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -954,6 +954,30 @@ where
         }
 
         draw_mesh(frame, resources, "Reactive Mesh Gradient");
+    }
+}
+
+impl<C> waterui_core::layout::SubView for ReactiveMeshRenderer<C>
+where
+    C: Signal + 'static,
+    C::Output: IntoIterator<Item = ResolvedColor>,
+{
+    fn size_that_fits(
+        &self,
+        proposal: waterui_core::layout::ProposalSize,
+    ) -> waterui_core::layout::Size {
+        waterui_core::layout::Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
+    }
+
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
 
