@@ -1,0 +1,5 @@
+error: `#[waterui::test(...)]` test functions must not return a value
+ --> tests/ui/waterui_test/fail_non_unit_return.rs:6:57
+  |
+6 | fn wrong_return(_app: &mut waterui_testing::MountedApp) -> bool {
+  |                                                         ^^^^^^^
