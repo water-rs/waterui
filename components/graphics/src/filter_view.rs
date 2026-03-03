@@ -22,16 +22,15 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
-use core::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use filtrate_core::{Chain, Filter, ParamArray};
-use nami::Signal;
-use waterui_core::animation::Animation;
-use waterui_core::easing::EasingCurve;
+use nami::{Computed, Signal, SignalExt as _};
+use waterui_core::animation::{Animation, AnimationTrack};
+use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, IntoSignalF32, Metadata, View};
+use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
 
 use crate::gpu_surface::SetupFuture;
 
@@ -235,27 +234,23 @@ impl AppliedFilter {
     }
 }
 
-/// A view with an applied GPU filter.
+/// Public filter wrapper returned by `ViewExt` APIs.
 ///
-/// `FilteredView` wraps a view and a `GpuFilter`, converting to `Metadata<AppliedFilter>`
-/// at the View boundary. For the simpler `Filter` trait, use `FilteredViewWithFilter`.
-///
-/// # Layout
-///
-/// `FilteredView` is transparent to layout - the child view's size determines
-/// the overall size. The filter does not affect layout calculations.
-pub struct FilteredView<V: View, F: GpuFilter> {
+/// `Filtered` preserves the concrete content type for fluent chaining. Its `body()`
+/// erases content to [`AnyView`] and yields [`FilteredView<F>`], which is the stable
+/// backend hook node.
+pub struct Filtered<V: View, F: GpuFilter> {
     content: V,
     filter: F,
 }
 
-impl<V: View, F: GpuFilter> core::fmt::Debug for FilteredView<V, F> {
+impl<V: View, F: GpuFilter> core::fmt::Debug for Filtered<V, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FilteredView").finish_non_exhaustive()
+        f.debug_struct("Filtered").finish_non_exhaustive()
     }
 }
 
-impl<V: View, F: GpuFilter> FilteredView<V, F> {
+impl<V: View, F: GpuFilter> Filtered<V, F> {
     /// Create a new filtered view with a `GpuFilter`.
     #[must_use]
     pub fn new(content: V, filter: F) -> Self {
@@ -264,10 +259,10 @@ impl<V: View, F: GpuFilter> FilteredView<V, F> {
 }
 
 #[allow(private_bounds)]
-impl<V: View, F: Filter + FilterGraph> FilteredView<V, FilterAdapter<F>> {
+impl<V: View, F: Filter + FilterGraph> Filtered<V, FilterAdapter<F>> {
     /// Chain another filter onto this view.
     ///
-    /// Returns a new `FilteredView` with the filters chained together.
+    /// Returns a new `Filtered` with the filters chained together.
     /// Consecutive color-only filters will be fused into a single GPU pass.
     ///
     /// # Example
@@ -282,8 +277,8 @@ impl<V: View, F: Filter + FilterGraph> FilteredView<V, FilterAdapter<F>> {
     pub fn then<F2: Filter + FilterGraph>(
         self,
         filter: F2,
-    ) -> FilteredView<V, FilterAdapter<Chain<F, F2>>> {
-        FilteredView::new(self.content, self.filter.then(filter))
+    ) -> Filtered<V, FilterAdapter<Chain<F, F2>>> {
+        Filtered::new(self.content, self.filter.then(filter))
     }
 
     /// Set HDR behavior policy for this filtered view.
@@ -312,9 +307,71 @@ impl<V: View, F: Filter + FilterGraph> FilteredView<V, FilterAdapter<F>> {
     }
 }
 
-impl<V: View, F: GpuFilter> View for FilteredView<V, F> {
+impl<V: View, F: GpuFilter> View for Filtered<V, F> {
+    fn body(self, _env: &Environment) -> impl View {
+        FilteredView::new(AnyView::new(self.content), self.filter)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+/// Stable backend hook node for filter dispatch.
+///
+/// Backends can register concrete handlers such as `FilteredView<Blur>`. If a
+/// backend does not hook this node, normal view expansion continues and falls back
+/// to `Metadata<AppliedFilter>`.
+pub struct FilteredView<F: GpuFilter> {
+    content: AnyView,
+    filter: F,
+}
+
+impl<F: GpuFilter> core::fmt::Debug for FilteredView<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FilteredView").finish_non_exhaustive()
+    }
+}
+
+impl<F: GpuFilter> FilteredView<F> {
+    /// Create a backend hook node with type-erased content.
+    #[must_use]
+    pub fn new(content: AnyView, filter: F) -> Self {
+        Self { content, filter }
+    }
+
+    /// Returns a reference to the wrapped content.
+    #[must_use]
+    pub fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Returns a reference to the wrapped filter.
+    #[must_use]
+    pub fn filter(&self) -> &F {
+        &self.filter
+    }
+
+    /// Takes ownership of the wrapped content.
+    #[must_use]
+    pub fn into_content(self) -> AnyView {
+        self.content
+    }
+
+    /// Takes ownership of the wrapped filter.
+    #[must_use]
+    pub fn into_filter(self) -> F {
+        self.filter
+    }
+}
+
+impl<F: GpuFilter> View for FilteredView<F> {
     fn body(self, _env: &Environment) -> impl View {
         Metadata::new(self.content, AppliedFilter::new(self.filter))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
     }
 }
 
@@ -734,126 +791,29 @@ fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str>
     Ok(passes)
 }
 
-/// Tracks the state of an in-progress animation for a single parameter.
-#[derive(Debug, Clone)]
-struct ParamAnimation {
-    /// The starting value when animation began.
-    start_value: f32,
-    /// The target value to animate towards.
-    target_value: f32,
-    /// When the animation started.
-    start_time: Instant,
-    /// The animation configuration.
-    animation: Animation,
-    /// Current interpolated value.
-    current_value: f32,
-    /// For spring animations: current velocity.
-    velocity: f32,
-}
+const PARAM_EPSILON: f32 = 0.000_01;
 
-impl ParamAnimation {
-    /// Create a new animation state.
-    fn new(start_value: f32, target_value: f32, animation: Animation) -> Self {
-        Self {
-            start_value,
-            target_value,
-            start_time: Instant::now(),
-            animation,
-            current_value: start_value,
-            velocity: 0.0,
-        }
-    }
-
-    /// Update the animation and return (current_value, is_complete).
-    fn update(&mut self) -> (f32, bool) {
-        let elapsed = self.start_time.elapsed();
-
-        match &self.animation {
-            Animation::Default => {
-                // Default uses ease-in-out with 250ms.
-                let (value, complete) = self.interpolate_with_curve(
-                    elapsed,
-                    Duration::from_millis(250),
-                    EasingCurve::EASE_IN_OUT,
-                );
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::Bezier { duration, .. } => {
-                // Use the unified easing system for custom bezier curves
-                let (value, complete) =
-                    self.interpolate_with_curve(elapsed, *duration, self.animation.curve());
-                self.current_value = value;
-                (value, complete)
-            }
-            Animation::Spring { stiffness, damping } => {
-                let (value, complete) = self.update_spring(*stiffness, *damping);
-                self.current_value = value;
-                (value, complete)
-            }
-        }
-    }
-
-    /// Interpolate using an EasingCurve (unified easing system).
-    fn interpolate_with_curve(
-        &self,
-        elapsed: Duration,
-        duration: Duration,
-        curve: EasingCurve,
-    ) -> (f32, bool) {
-        if duration.is_zero() {
-            return (self.target_value, true);
-        }
-
-        let t = elapsed.as_secs_f32() / duration.as_secs_f32();
-        if t >= 1.0 {
-            (self.target_value, true)
-        } else {
-            let eased_t = curve.ease(t);
-            let value = self.start_value + (self.target_value - self.start_value) * eased_t;
-            (value, false)
-        }
-    }
-
-    /// Update spring physics simulation.
-    fn update_spring(&mut self, stiffness: f32, damping: f32) -> (f32, bool) {
-        // Spring physics: F = -kx - cv
-        // where k = stiffness, c = damping, x = displacement, v = velocity
-        const DT: f32 = 1.0 / 60.0; // Assume 60fps for physics step
-        const VELOCITY_THRESHOLD: f32 = 0.001;
-        const POSITION_THRESHOLD: f32 = 0.0001;
-
-        let displacement = self.current_value - self.target_value;
-        let spring_force = -stiffness * displacement;
-        let damping_force = -damping * self.velocity;
-        let acceleration = spring_force + damping_force;
-
-        self.velocity += acceleration * DT;
-        self.current_value += self.velocity * DT;
-
-        // Check if animation is complete (settled)
-        let is_settled = self.velocity.abs() < VELOCITY_THRESHOLD
-            && (self.current_value - self.target_value).abs() < POSITION_THRESHOLD;
-
-        if is_settled {
-            self.current_value = self.target_value;
-            self.velocity = 0.0;
-            (self.target_value, true)
-        } else {
-            (self.current_value, false)
-        }
-    }
+#[derive(Debug)]
+struct ParamTrackState {
+    track: AnimationTrack<f32>,
+    animated_target: Option<f32>,
 }
 
 /// Shared animation state that can be updated from watcher callbacks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SharedAnimationState {
-    /// Active animations for each parameter index.
-    animations: Vec<Option<ParamAnimation>>,
+    /// Animation timeline for each parameter index.
+    tracks: Vec<ParamTrackState>,
     /// Current values for each parameter (either animated or direct).
     current_values: Vec<f32>,
     /// Whether any animation is active.
     has_active_animation: bool,
+    /// Last timestamp used for animation advancement.
+    last_tick: Instant,
+}
+
+const fn approx_param_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() <= PARAM_EPSILON
 }
 
 #[derive(Debug, Clone)]
@@ -925,13 +885,21 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     #[must_use]
     pub fn new(filter: F) -> Self {
         let param_count = <F::Params as ParamArray>::LEN;
-        let animation_state = SharedAnimationState {
-            animations: alloc::vec![None; param_count],
-            current_values: alloc::vec![0.0; param_count],
-            has_active_animation: false,
-        };
         let mut target_params = alloc::vec![0.0; param_count];
         filter.params().write_to(&mut target_params);
+        let animation_state = SharedAnimationState {
+            tracks: target_params
+                .iter()
+                .copied()
+                .map(|value| ParamTrackState {
+                    track: AnimationTrack::new(value),
+                    animated_target: None,
+                })
+                .collect(),
+            current_values: target_params.clone(),
+            has_active_animation: false,
+            last_tick: Instant::now(),
+        };
         let staged_params = target_params.clone();
         let (animation_events_tx, animation_events) = mpsc::channel();
 
@@ -1002,7 +970,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     fn apply_target_params_to_current_values(&mut self) {
         let param_count = self.target_params.len();
         for i in 0..param_count {
-            self.animation_state.current_values[i] = self.target_params[i];
+            let target = self.target_params[i];
+            self.animation_state.current_values[i] = target;
+            self.animation_state.tracks[i].track.set_target(target, None);
+            self.animation_state.tracks[i].animated_target = None;
         }
         self.target_params_dirty = false;
     }
@@ -1014,12 +985,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     if event.param_index >= self.animation_state.current_values.len() {
                         continue;
                     }
-                    let start = self.animation_state.current_values[event.param_index];
-                    self.animation_state.animations[event.param_index] = Some(ParamAnimation::new(
-                        start,
-                        event.target_value,
-                        event.animation,
-                    ));
+                    let entry = &mut self.animation_state.tracks[event.param_index];
+                    entry
+                        .track
+                        .set_target(event.target_value, Some(event.animation));
+                    entry.animated_target = Some(event.target_value);
                     self.animation_state.has_active_animation = true;
                 }
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
@@ -1034,33 +1004,38 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             return false;
         }
         self.consume_animation_events();
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.animation_state.last_tick);
+        self.animation_state.last_tick = now;
 
         let mut needs_redraw = false;
 
         for i in 0..param_count {
             let target = self.target_params[i];
+            let entry = &mut self.animation_state.tracks[i];
 
-            if let Some(ref mut anim) = self.animation_state.animations[i] {
-                // Check if target changed during animation
-                if (anim.target_value - target).abs() > f32::EPSILON {
-                    // Retarget: start new animation from current position
-                    anim.start_value = anim.current_value;
-                    anim.target_value = target;
-                    anim.start_time = Instant::now();
-                    anim.velocity = 0.0; // Reset velocity for spring
+            if let Some(animated_target) = entry.animated_target {
+                // Underlying target changed without a new animation event:
+                // fail fast to direct target sync so state stays coherent.
+                if !approx_param_eq(animated_target, target) {
+                    entry.track.set_target(target, None);
+                    entry.animated_target = None;
                 }
+            }
 
-                let (value, complete) = anim.update();
-                self.animation_state.current_values[i] = value;
+            if entry.animated_target.is_none()
+                && !approx_param_eq(self.animation_state.current_values[i], target)
+            {
+                entry.track.set_target(target, None);
+            }
 
-                if complete {
-                    self.animation_state.animations[i] = None;
-                } else {
-                    needs_redraw = true;
-                }
+            let active = entry.track.advance(delta);
+            self.animation_state.current_values[i] = entry.track.value();
+
+            if active {
+                needs_redraw = true;
             } else {
-                // No animation, use target directly
-                self.animation_state.current_values[i] = target;
+                entry.animated_target = None;
             }
         }
 
@@ -2755,14 +2730,44 @@ mod tests {
     }
 }
 
+/// Concrete filter aliases with stable type identities.
+///
+/// These aliases intentionally normalize reactive parameters to `Computed<f32>`
+/// so backend hook nodes remain concrete (`FilteredView<Blur>`, etc.).
+pub type Blur = FilterAdapter<filtrate_core::filters::Blur<Computed<f32>>>;
+pub type Brightness = FilterAdapter<filtrate_core::filters::Brightness<Computed<f32>>>;
+pub type Contrast = FilterAdapter<filtrate_core::filters::Contrast<Computed<f32>>>;
+pub type Saturation = FilterAdapter<filtrate_core::filters::Saturation<Computed<f32>>>;
+pub type Grayscale = FilterAdapter<filtrate_core::filters::Grayscale<Computed<f32>>>;
+pub type HueRotation = FilterAdapter<filtrate_core::filters::HueRotation<Computed<f32>>>;
+pub type Invert = FilterAdapter<filtrate_core::filters::Invert>;
+pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
+pub type Sharpen = FilterAdapter<filtrate_core::filters::Sharpen<Computed<f32>>>;
+pub type Vignette =
+    FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
+
+impl Blur {
+    /// Returns the reactive blur radius signal driving this filter.
+    #[must_use]
+    pub fn radius_signal(&self) -> &Computed<f32> {
+        &self.filter.0
+    }
+}
+
+/// Rebuilds the canonical blur filter adapter from a reactive radius signal.
+#[must_use]
+pub fn blur_from_radius_signal(radius: Computed<f32>) -> Blur {
+    FilterAdapter::new(filtrate_core::filters::Blur(radius))
+}
+
 /// Extension methods for applying filters to views.
 pub trait FilterViewExt: View + Sized {
     /// Apply a `GpuFilter` to this view.
     ///
     /// For the high-level `Filter` API with automatic optimization,
     /// use convenience methods like `.blur()`, `.brightness()`, etc.
-    fn filter<F: GpuFilter>(self, filter: F) -> FilteredView<Self, F> {
-        FilteredView::new(self, filter)
+    fn filter<F: GpuFilter>(self, filter: F) -> Filtered<Self, F> {
+        Filtered::new(self, filter)
     }
 
     // ========================================================================
@@ -2786,126 +2791,87 @@ pub trait FilterViewExt: View + Sized {
     fn blur<T: IntoSignalF32>(
         self,
         radius: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Blur<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    ) -> Filtered<Self, Blur> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Blur(radius.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Blur(
+                radius.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply a brightness filter.
-    fn brightness<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Brightness<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn brightness<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Brightness> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Brightness(amount.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Brightness(
+                amount.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply a contrast filter.
-    fn contrast<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Contrast<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn contrast<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Contrast> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Contrast(amount.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Contrast(
+                amount.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply a saturation filter.
-    fn saturation<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Saturation<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn saturation<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Saturation> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Saturation(amount.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Saturation(
+                amount.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply a grayscale filter.
-    fn grayscale<T: IntoSignalF32>(
-        self,
-        intensity: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Grayscale<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn grayscale<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Grayscale> {
+        Filtered::new(
             self,
             FilterAdapter::new(filtrate_core::filters::Grayscale(
-                intensity.into_signal_f32(),
+                intensity.into_signal_f32().computed(),
             )),
         )
     }
 
     /// Apply a hue rotation filter.
-    fn hue_rotation<T: IntoSignalF32>(
-        self,
-        angle: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::HueRotation<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn hue_rotation<T: IntoSignalF32>(self, angle: T) -> Filtered<Self, HueRotation> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::HueRotation(angle.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::HueRotation(
+                angle.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply an invert filter.
-    fn invert(self) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Invert>> {
-        FilteredView::new(self, FilterAdapter::new(filtrate_core::filters::Invert))
+    fn invert(self) -> Filtered<Self, Invert> {
+        Filtered::new(self, FilterAdapter::new(filtrate_core::filters::Invert))
     }
 
     /// Apply a sepia filter.
-    fn sepia<T: IntoSignalF32>(
-        self,
-        intensity: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sepia<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn sepia<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Sepia> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sepia(intensity.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Sepia(
+                intensity.into_signal_f32().computed(),
+            )),
         )
     }
 
     /// Apply a sharpen filter.
-    fn sharpen<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sharpen<T::Signal>>>
-    where
-        T::Signal: Signal<Output = f32> + 'static,
-        <T::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    fn sharpen<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Sharpen> {
+        Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sharpen(amount.into_signal_f32())),
+            FilterAdapter::new(filtrate_core::filters::Sharpen(
+                amount.into_signal_f32().computed(),
+            )),
         )
     }
 
@@ -2914,18 +2880,12 @@ pub trait FilterViewExt: View + Sized {
         self,
         radius: R,
         softness: S,
-    ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Vignette<R::Signal, S::Signal>>>
-    where
-        R::Signal: Signal<Output = f32> + 'static,
-        S::Signal: Signal<Output = f32> + 'static,
-        <R::Signal as Signal>::Guard: 'static,
-        <S::Signal as Signal>::Guard: 'static,
-    {
-        FilteredView::new(
+    ) -> Filtered<Self, Vignette> {
+        Filtered::new(
             self,
             FilterAdapter::new(filtrate_core::filters::Vignette(
-                radius.into_signal_f32(),
-                softness.into_signal_f32(),
+                radius.into_signal_f32().computed(),
+                softness.into_signal_f32().computed(),
             )),
         )
     }
