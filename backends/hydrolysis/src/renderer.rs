@@ -1785,6 +1785,8 @@ const TOGGLE_SWITCH_WIDTH: f64 = 51.0;
 const TOGGLE_SWITCH_HEIGHT: f64 = 31.0;
 const TOGGLE_CHECKBOX_SIZE: f64 = 22.0;
 const TOGGLE_LABEL_SPACING: f64 = 8.0;
+const CONTROL_SPRING_STIFFNESS: f32 = 300.0;
+const CONTROL_SPRING_DAMPING: f32 = 20.0;
 
 const STEPPER_BUTTON_MIN_SIZE: f64 = 24.0;
 const STEPPER_BUTTON_MAX_SIZE: f64 = 32.0;
@@ -4429,7 +4431,7 @@ impl HydrolysisRenderer {
             .bind_scalar(if signal.get() { 1.0 } else { 0.0 });
         let watcher_handle = handle.clone();
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
-        let default_animation = Animation::ease_in_out(Duration::from_millis(180));
+        let default_animation = Animation::spring(CONTROL_SPRING_STIFFNESS, CONTROL_SPRING_DAMPING);
         let guard = signal.watch(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
             let animation = update
