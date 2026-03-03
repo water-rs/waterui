@@ -4,6 +4,8 @@
 //! including form generation, reactive signal formatting, and view builder patterns.
 
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::Span;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod locale;
@@ -926,4 +928,203 @@ impl Parse for PreviewArg {
         let value: Expr = input.parse()?;
         Ok(Self { name, value })
     }
+}
+
+fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {
+    match crate_name("waterui-testing") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = syn::Ident::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(_) => Err(syn::Error::new(
+            Span::call_site(),
+            "`#[waterui::test(...)]` requires the `waterui-testing` crate as a dependency (it may be renamed in Cargo.toml).",
+        )),
+    }
+}
+
+fn is_unit_output(output: &syn::ReturnType) -> bool {
+    match output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, ty) => {
+            matches!(ty.as_ref(), syn::Type::Tuple(tuple) if tuple.elems.is_empty())
+        }
+    }
+}
+
+/// Attribute macro for WaterUI accessibility-first unit tests.
+///
+/// # Example
+///
+/// ```ignore
+/// fn login_view() -> impl View {
+///     // ...
+/// }
+///
+/// #[waterui::test(login_view)]
+/// fn login_flow(app: &mut waterui_testing::MountedApp) {
+///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
+/// }
+/// ```
+///
+/// The macro always expands into a regular `#[test]` wrapper.
+#[proc_macro_attribute]
+pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
+    let view_args =
+        parse_macro_input!(args with Punctuated::<syn::Path, Token![,]>::parse_terminated);
+    if view_args.len() != 1 {
+        return syn::Error::new(
+            Span::call_site(),
+            "`#[waterui::test(...)]` requires exactly one argument: a no-arg view function path",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let view_fn = view_args.first().expect("checked length above").clone();
+
+    let input_fn = parse_macro_input!(input as ItemFn);
+
+    if input_fn.sig.constness.is_some() {
+        return syn::Error::new_spanned(
+            &input_fn.sig.constness,
+            "`#[waterui::test(...)]` does not support const functions",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if input_fn.sig.unsafety.is_some() {
+        return syn::Error::new_spanned(
+            &input_fn.sig.unsafety,
+            "`#[waterui::test(...)]` does not support unsafe functions",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if input_fn.sig.abi.is_some() {
+        return syn::Error::new_spanned(
+            &input_fn.sig.abi,
+            "`#[waterui::test(...)]` does not support extern ABI",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if input_fn.sig.variadic.is_some() {
+        return syn::Error::new_spanned(
+            &input_fn.sig.variadic,
+            "`#[waterui::test(...)]` does not support variadic arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !input_fn.sig.generics.params.is_empty() || input_fn.sig.generics.where_clause.is_some() {
+        return syn::Error::new_spanned(
+            &input_fn.sig.generics,
+            "`#[waterui::test(...)]` does not support generic test functions",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !is_unit_output(&input_fn.sig.output) {
+        return syn::Error::new_spanned(
+            &input_fn.sig.output,
+            "`#[waterui::test(...)]` test functions must not return a value",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if input_fn.sig.inputs.len() != 1 {
+        return syn::Error::new_spanned(
+            &input_fn.sig.inputs,
+            "`#[waterui::test(...)]` test function must take exactly one `&mut` parameter",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let Some(first_arg) = input_fn.sig.inputs.first() else {
+        return syn::Error::new_spanned(
+            &input_fn.sig.inputs,
+            "`#[waterui::test(...)]` missing test function parameter",
+        )
+        .to_compile_error()
+        .into();
+    };
+    let typed_arg = match first_arg {
+        syn::FnArg::Typed(arg) => arg,
+        syn::FnArg::Receiver(receiver) => {
+            return syn::Error::new_spanned(
+                receiver,
+                "`#[waterui::test(...)]` test function must take one explicit `&mut` parameter",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let syn::Type::Reference(reference) = typed_arg.ty.as_ref() else {
+        return syn::Error::new_spanned(
+            &typed_arg.ty,
+            "`#[waterui::test(...)]` parameter must be a mutable reference",
+        )
+        .to_compile_error()
+        .into();
+    };
+    if reference.mutability.is_none() {
+        return syn::Error::new_spanned(
+            &typed_arg.ty,
+            "`#[waterui::test(...)]` parameter must be `&mut ...`",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    for attr in &input_fn.attrs {
+        if attr.path().is_ident("test") {
+            return syn::Error::new_spanned(
+                attr,
+                "Do not combine `#[test]` with `#[waterui::test(...)]`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
+
+    let testing_path = match testing_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
+    let attrs = &input_fn.attrs;
+    let visibility = &input_fn.vis;
+    let fn_name = &input_fn.sig.ident;
+    let fn_body = &input_fn.block;
+    let arg_pattern = &typed_arg.pat;
+    let arg_type = &typed_arg.ty;
+    let async_wrapper = input_fn.sig.asyncness.is_some();
+
+    let run_body = if async_wrapper {
+        quote! {
+            #testing_path::block_on(async {
+                let #arg_pattern: #arg_type = &mut __waterui_test_mounted_app;
+                #fn_body
+            });
+        }
+    } else {
+        quote! {
+            let #arg_pattern: #arg_type = &mut __waterui_test_mounted_app;
+            #fn_body
+        }
+    };
+
+    let expanded = quote! {
+        #(#attrs)*
+        #[test]
+        #visibility fn #fn_name() {
+            let mut __waterui_test_mounted_app = #testing_path::UiTest::new().mount(#view_fn);
+            #run_body
+        }
+    };
+
+    TokenStream::from(expanded)
 }
