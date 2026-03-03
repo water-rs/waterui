@@ -193,6 +193,7 @@ pub struct HydrolysisRenderer {
     surface_blit: Option<SurfaceBlitState>,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
+    active_pointer_drag_target: Option<PointerAction>,
     gesture_targets: Vec<GestureTarget>,
     active_gesture_recognizer: Option<GestureRecognizerHandle>,
     cursor_targets: Vec<CursorTarget>,
@@ -252,6 +253,7 @@ struct HydroSubview {
 #[derive(Clone)]
 struct PointerTarget {
     bounds: vello::kurbo::Rect,
+    captures_drag: bool,
     action: PointerAction,
 }
 
@@ -2033,11 +2035,7 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
     }
 }
 
-fn measure_view_intrinsic(
-    view: &AnyView,
-    state: &mut HydroState,
-    env: &Environment,
-) -> LayoutSize {
+fn measure_view_intrinsic(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
     estimate_intrinsic_size(view, state, env)
 }
 
@@ -2278,16 +2276,20 @@ fn measure_stepper_intrinsic(
 fn measure_progress_intrinsic(
     progress: &ProgressConfig,
     _state: &mut HydroState,
-    _env: &Environment,
+    env: &Environment,
 ) -> LayoutSize {
     match progress.style {
         ProgressStyle::Linear => {
-            let width = PROGRESS_LINEAR_MIN_TRACK_WIDTH + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET * 2.0;
-            let height = PROGRESS_LINEAR_LABEL_HEIGHT
+            let label_height =
+                f64::from(waterui_text::font::Font::default().resolve(env).get().size)
+                    .max(PROGRESS_LINEAR_LABEL_HEIGHT);
+            let width =
+                PROGRESS_LINEAR_MIN_TRACK_WIDTH + PROGRESS_LINEAR_BAR_HORIZONTAL_INSET * 2.0;
+            let height = label_height
                 + PROGRESS_LINEAR_BAR_TOP_OFFSET
                 + PROGRESS_LINEAR_BAR_HEIGHT
                 + PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING
-                + PROGRESS_LINEAR_LABEL_HEIGHT;
+                + label_height;
             LayoutSize::new(width as f32, height as f32)
         }
         ProgressStyle::Circular => LayoutSize::new(
@@ -2304,6 +2306,8 @@ fn measure_text_field_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let label_size = measure_view_intrinsic(&text_field.label, state, env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label_height = f64::from(label_size.height).max(INPUT_LABEL_HEIGHT);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     let prompt = text_field.prompt.content().get();
     let value = text_field.value.get();
@@ -2321,8 +2325,8 @@ fn measure_text_field_intrinsic(
     let field_width = content_width.max(INPUT_FIELD_MIN_WIDTH);
     let field_height = content_height.max(INPUT_FIELD_MIN_HEIGHT);
     let width = f64::from(label_size.width).max(field_width);
-    let height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        INPUT_LABEL_HEIGHT + field_height
+    let height = if has_label {
+        label_height + field_height
     } else {
         field_height
     };
@@ -2335,6 +2339,8 @@ fn measure_secure_field_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let label_size = measure_view_intrinsic(&secure_field.label, state, env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label_height = f64::from(label_size.height).max(INPUT_LABEL_HEIGHT);
     let secure_len = secure_field.value.get().expose().chars().count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")
@@ -2347,8 +2353,8 @@ fn measure_secure_field_intrinsic(
     let field_height = (f64::from(value_size.height) + INPUT_FIELD_VERTICAL_INSET * 2.0)
         .max(INPUT_FIELD_MIN_HEIGHT);
     let width = f64::from(label_size.width).max(field_width);
-    let height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        INPUT_LABEL_HEIGHT + field_height
+    let height = if has_label {
+        label_height + field_height
     } else {
         field_height
     };
@@ -3937,6 +3943,7 @@ impl HydrolysisRenderer {
             surface_blit: None,
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
+            active_pointer_drag_target: None,
             gesture_targets: Vec::new(),
             active_gesture_recognizer: None,
             cursor_targets: Vec::new(),
@@ -4236,42 +4243,43 @@ impl HydrolysisRenderer {
     fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
         self.scene.append(&subtree.scene, Some(ctx.transform));
 
-        self.pointer_targets
-            .extend(subtree.pointer_targets.iter().map(|target| PointerTarget {
-                bounds: transformed_rect(ctx.transform, target.bounds),
-                action: Rc::clone(&target.action),
-            }));
-        self.gesture_targets
-            .extend(subtree.gesture_targets.iter().map(|target| GestureTarget {
-                bounds: transformed_rect(ctx.transform, target.bounds),
-                recognizer: Rc::clone(&target.recognizer),
-            }));
-        self.cursor_targets
-            .extend(subtree.cursor_targets.iter().map(|target| CursorTarget {
-                bounds: transformed_rect(ctx.transform, target.bounds),
-                style: target.style,
-            }));
+        for target in &subtree.pointer_targets {
+            self.register_pointer_target_action(
+                transformed_rect(ctx.transform, target.bounds),
+                target.captures_drag,
+                Rc::clone(&target.action),
+            );
+        }
+        for target in &subtree.gesture_targets {
+            self.register_gesture_target_recognizer(
+                transformed_rect(ctx.transform, target.bounds),
+                Rc::clone(&target.recognizer),
+            );
+        }
+        for target in &subtree.cursor_targets {
+            self.register_cursor_target_style(
+                transformed_rect(ctx.transform, target.bounds),
+                target.style,
+            );
+        }
         for target in &subtree.hover_targets {
             let bounds = transformed_rect(ctx.transform, target.bounds);
             self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
         }
-        self.text_input_targets
-            .extend(
-                subtree
-                    .text_input_targets
-                    .iter()
-                    .map(|target| TextInputTarget {
-                        bounds: transformed_rect(ctx.transform, target.bounds),
-                        cursor_area: transformed_rect(ctx.transform, target.cursor_area),
-                        purpose: target.purpose,
-                        action: Rc::clone(&target.action),
-                    }),
+        for target in &subtree.text_input_targets {
+            self.register_text_input_target_action(
+                transformed_rect(ctx.transform, target.bounds),
+                transformed_rect(ctx.transform, target.cursor_area),
+                target.purpose,
+                Rc::clone(&target.action),
             );
-        self.scroll_targets
-            .extend(subtree.scroll_targets.iter().map(|target| ScrollTarget {
-                bounds: transformed_rect(ctx.transform, target.bounds),
-                action: Rc::clone(&target.action),
-            }));
+        }
+        for target in &subtree.scroll_targets {
+            self.register_scroll_target_action(
+                transformed_rect(ctx.transform, target.bounds),
+                Rc::clone(&target.action),
+            );
+        }
 
         #[cfg(feature = "accessibility")]
         self.replay_dynamic_accessibility_subtree(ctx.transform, &subtree.accessibility);
@@ -6028,7 +6036,7 @@ impl HydrolysisRenderer {
         }
         let inverse_transform = ctx.transform.inverse();
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_pointer_target(hit_bounds, move |point, _env| {
+        renderer.register_pointer_drag_target(hit_bounds, move |point, _env| {
             let local_point = inverse_transform * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
@@ -6134,7 +6142,7 @@ impl HydrolysisRenderer {
     }
 
     fn render_progress(
-        _state: &mut HydroState,
+        state: &mut HydroState,
         ctx: RenderContext,
         progress: Native<ProgressConfig>,
         env: &Environment,
@@ -6149,8 +6157,9 @@ impl HydrolysisRenderer {
 
         match progress.style {
             ProgressStyle::Linear => {
-                let label_height = if ctx.bounds.height() >= 40.0 {
-                    PROGRESS_LINEAR_LABEL_HEIGHT
+                let label_size = measure_view_intrinsic(&progress.label, state, env);
+                let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
+                    f64::from(label_size.height).max(PROGRESS_LINEAR_LABEL_HEIGHT)
                 } else {
                     0.0
                 };
@@ -6265,10 +6274,12 @@ impl HydrolysisRenderer {
         text_field: Native<TextFieldConfig>,
         env: &Environment,
     ) {
-        let text_field = text_field.into_inner();
+        let mut text_field = text_field.into_inner();
+        text_field.label = normalize_layout_view(text_field.label, env);
         let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-        let label_height = if ctx.bounds.height() >= 36.0 {
-            INPUT_LABEL_HEIGHT
+        let label_size = measure_view_intrinsic(&text_field.label, state, env);
+        let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
+            f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
         } else {
             0.0
         };
@@ -6352,7 +6363,7 @@ impl HydrolysisRenderer {
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, ctx.bounds),
+            transformed_rect(ctx.transform, field_rect),
             transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Normal,
             move |command| {
@@ -6383,9 +6394,11 @@ impl HydrolysisRenderer {
         secure_field: Native<SecureFieldConfig>,
         env: &Environment,
     ) {
-        let secure_field = secure_field.into_inner();
-        let label_height = if ctx.bounds.height() >= 36.0 {
-            INPUT_LABEL_HEIGHT
+        let mut secure_field = secure_field.into_inner();
+        secure_field.label = normalize_layout_view(secure_field.label, env);
+        let label_size = measure_view_intrinsic(&secure_field.label, state, env);
+        let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
+            f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
         } else {
             0.0
         };
@@ -6454,7 +6467,7 @@ impl HydrolysisRenderer {
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, ctx.bounds),
+            transformed_rect(ctx.transform, field_rect),
             transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Password,
             move |command| {
@@ -7505,17 +7518,19 @@ impl HydrolysisRenderer {
         }
 
         renderer.pointer_targets.truncate(pointer_start);
+        renderer.ensure_active_pointer_drag_target_is_live();
         renderer.gesture_targets.truncate(gesture_start);
         renderer.ensure_active_gesture_target_is_live();
         renderer.cursor_targets.truncate(cursor_start);
         renderer.hover_targets.truncate(hover_start);
         renderer.hover_controller.rewind_to(hover_cursor_start);
         renderer.scroll_targets.truncate(scroll_start);
+        let text_end = renderer.text_input_targets.len();
         renderer.text_input_targets.truncate(text_start);
 
         if matches!(
             renderer.focused_text_input.get(),
-            Some(index) if index >= text_start
+            Some(index) if index >= text_start && index < text_end
         ) {
             renderer.set_focused_text_input(None);
         }
@@ -7789,6 +7804,7 @@ impl HydrolysisRenderer {
             self.vello_renderer.unregister_texture(image);
         }
         self.pointer_targets.clear();
+        self.active_pointer_drag_target = None;
         self.gesture_targets.clear();
         self.active_gesture_recognizer = None;
         self.cursor_targets.clear();
@@ -7819,6 +7835,7 @@ impl HydrolysisRenderer {
         self.navigation_cursor = 0;
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
+        self.dispatcher.state_mut().dynamic_intrinsic_cache.clear();
         #[cfg(feature = "accessibility")]
         {
             self.accessibility_nodes.clear();
@@ -7850,6 +7867,7 @@ impl HydrolysisRenderer {
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
         self.hover_controller.finish_rebuild_frame();
+        self.ensure_active_pointer_drag_target_is_live();
         self.lazy_stack_controller.finish_rebuild_frame();
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
@@ -8174,6 +8192,7 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
         let mut rebuild_requested = false;
+        self.active_pointer_drag_target = None;
 
         if let Some(previous) = self.active_gesture_recognizer.take() {
             rebuild_requested |= previous
@@ -8187,6 +8206,21 @@ impl HydrolysisRenderer {
             self.active_gesture_recognizer = Some(recognizer);
         }
 
+        for index in (0..self.pointer_targets.len()).rev() {
+            let target = self.pointer_targets[index].clone();
+            if !target.bounds.contains(point) {
+                continue;
+            }
+            let changed = (target.action.borrow_mut())(point, env);
+            if !changed {
+                continue;
+            }
+            if target.captures_drag {
+                self.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            }
+            return true;
+        }
+
         let focused = self
             .text_input_targets
             .iter()
@@ -8196,12 +8230,6 @@ impl HydrolysisRenderer {
             .map(|(index, _)| index);
         if self.set_focused_text_input(focused) {
             rebuild_requested = true;
-        }
-
-        for target in self.pointer_targets.iter_mut().rev() {
-            if target.bounds.contains(point) {
-                return (target.action.borrow_mut())(point, env) || rebuild_requested;
-            }
         }
         rebuild_requested
     }
@@ -8216,6 +8244,7 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
         let mut changed = self.handle_pointer_move(x, y, env);
+        self.active_pointer_drag_target = None;
         if let Some(recognizer) = self.active_gesture_recognizer.take() {
             changed |= recognizer
                 .borrow_mut()
@@ -8228,6 +8257,9 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
         let mut rebuild_requested = false;
+        if let Some(action) = self.active_pointer_drag_target.clone() {
+            rebuild_requested |= (action.borrow_mut())(point, env);
+        }
         if let Some(recognizer) = self.active_gesture_recognizer.as_ref() {
             rebuild_requested |= recognizer
                 .borrow_mut()
@@ -8253,6 +8285,7 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let mut rebuild_requested = false;
+        self.active_pointer_drag_target = None;
         if let Some(recognizer) = self.active_gesture_recognizer.take() {
             rebuild_requested |= recognizer
                 .borrow_mut()
@@ -8446,12 +8479,29 @@ impl HydrolysisRenderer {
     where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
+        self.register_pointer_target_action(bounds, false, Rc::new(RefCell::new(action)));
+    }
+
+    fn register_pointer_drag_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
+    {
+        self.register_pointer_target_action(bounds, true, Rc::new(RefCell::new(action)));
+    }
+
+    fn register_pointer_target_action(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        captures_drag: bool,
+        action: PointerAction,
+    ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
         self.pointer_targets.push(PointerTarget {
             bounds,
-            action: Rc::new(RefCell::new(action)),
+            captures_drag,
+            action,
         });
     }
 
@@ -8461,13 +8511,22 @@ impl HydrolysisRenderer {
         gesture: Gesture,
         action: BoxedAction<()>,
     ) {
+        self.register_gesture_target_recognizer(
+            bounds,
+            Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
+        );
+    }
+
+    fn register_gesture_target_recognizer(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        recognizer: GestureRecognizerHandle,
+    ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_targets.push(GestureTarget {
-            bounds,
-            recognizer: Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
-        });
+        self.gesture_targets
+            .push(GestureTarget { bounds, recognizer });
     }
 
     fn gesture_recognizer_at(&self, point: vello::kurbo::Point) -> Option<GestureRecognizerHandle> {
@@ -8491,7 +8550,24 @@ impl HydrolysisRenderer {
         }
     }
 
+    fn ensure_active_pointer_drag_target_is_live(&mut self) {
+        let Some(active) = self.active_pointer_drag_target.as_ref() else {
+            return;
+        };
+        let alive = self
+            .pointer_targets
+            .iter()
+            .any(|target| Rc::ptr_eq(&target.action, active));
+        if !alive {
+            self.active_pointer_drag_target = None;
+        }
+    }
+
     fn register_cursor_target(&mut self, bounds: vello::kurbo::Rect, style: CursorStyle) {
+        self.register_cursor_target_style(bounds, style);
+    }
+
+    fn register_cursor_target_style(&mut self, bounds: vello::kurbo::Rect, style: CursorStyle) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
@@ -8539,6 +8615,21 @@ impl HydrolysisRenderer {
     ) where
         F: 'static + FnMut(TextInputCommand) -> bool,
     {
+        self.register_text_input_target_action(
+            bounds,
+            cursor_area,
+            purpose,
+            Rc::new(RefCell::new(action)),
+        );
+    }
+
+    fn register_text_input_target_action(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        cursor_area: vello::kurbo::Rect,
+        purpose: TextInputPurpose,
+        action: TextInputAction,
+    ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
@@ -8546,7 +8637,7 @@ impl HydrolysisRenderer {
             bounds,
             cursor_area,
             purpose,
-            action: Rc::new(RefCell::new(action)),
+            action,
         });
     }
 
@@ -8554,13 +8645,14 @@ impl HydrolysisRenderer {
     where
         F: 'static + FnMut(f32, f32, bool) -> bool,
     {
+        self.register_scroll_target_action(bounds, Rc::new(RefCell::new(action)));
+    }
+
+    fn register_scroll_target_action(&mut self, bounds: vello::kurbo::Rect, action: ScrollAction) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.scroll_targets.push(ScrollTarget {
-            bounds,
-            action: Rc::new(RefCell::new(action)),
-        });
+        self.scroll_targets.push(ScrollTarget { bounds, action });
     }
 
     #[cfg(feature = "accessibility")]
