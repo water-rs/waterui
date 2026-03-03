@@ -49,6 +49,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
+use waterui_canvas::Canvas;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::AnyViewBuilder;
@@ -5930,14 +5931,26 @@ impl HydrolysisRenderer {
         _env: &Environment,
     ) {
         let mut scene_view = scene_view.into_inner();
+        let rebuild_handle = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.rebuild_handle()
+        };
+        scene_view
+            .content_mut()
+            .set_invalidator(Some(Rc::new(move || rebuild_handle.set(true))));
+
         let scene = unsafe { ctx.scene() };
         let mut scene2d = VelloScene2D::new(scene);
         #[allow(clippy::cast_precision_loss)]
-        scene_view.content_mut().build_scene(
+        let needs_next_frame = scene_view.content_mut().build_scene(
             &mut scene2d,
             ctx.bounds.width() as f32,
             ctx.bounds.height() as f32,
         );
+        if needs_next_frame {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.request_rebuild();
+        }
     }
 
     fn render_view_effect(
@@ -6938,6 +6951,11 @@ impl HydrolysisRenderer {
 
     pub fn request_rebuild(&self) {
         self.rebuild_requested.set(true);
+    }
+
+    #[must_use]
+    pub fn rebuild_handle(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.rebuild_requested)
     }
 
     pub fn take_rebuild_request(&self) -> bool {
@@ -8339,6 +8357,10 @@ fn estimate_intrinsic_size(
     }
 
     if view.downcast_ref::<()>().is_some() {
+        return LayoutSize::zero();
+    }
+
+    if view.downcast_ref::<Canvas>().is_some() {
         return LayoutSize::zero();
     }
 
