@@ -201,6 +201,7 @@ pub struct HydrolysisRenderer {
     text_input_targets: Vec<TextInputTarget>,
     scroll_targets: Vec<ScrollTarget>,
     hit_test_opacity: f32,
+    render_depth: usize,
     focused_text_input: Cell<Option<usize>>,
     ime_preedit: Option<Str>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
@@ -254,6 +255,7 @@ struct HydroSubview {
 struct PointerTarget {
     bounds: vello::kurbo::Rect,
     captures_drag: bool,
+    depth: usize,
     action: PointerAction,
 }
 
@@ -281,6 +283,7 @@ struct TextInputTarget {
     bounds: vello::kurbo::Rect,
     cursor_area: vello::kurbo::Rect,
     purpose: TextInputPurpose,
+    depth: usize,
     action: TextInputAction,
 }
 
@@ -1365,6 +1368,7 @@ struct DynamicNode {
 
 struct DynamicSubtree {
     scene: vello::Scene,
+    depth_base: usize,
     pointer_targets: Vec<PointerTarget>,
     gesture_targets: Vec<GestureTarget>,
     cursor_targets: Vec<CursorTarget>,
@@ -3953,6 +3957,7 @@ impl HydrolysisRenderer {
             text_input_targets: Vec::new(),
             scroll_targets: Vec::new(),
             hit_test_opacity: 1.0,
+            render_depth: 0,
             focused_text_input: Cell::new(None),
             ime_preedit: None,
             lifecycle_disappear_previous: BTreeMap::new(),
@@ -4073,9 +4078,43 @@ impl HydrolysisRenderer {
         true
     }
 
+    fn push_render_depth(&mut self) {
+        self.render_depth = self
+            .render_depth
+            .checked_add(1)
+            .expect("hydrolysis render depth overflow");
+    }
+
+    fn pop_render_depth(&mut self) {
+        self.render_depth = self
+            .render_depth
+            .checked_sub(1)
+            .expect("hydrolysis render depth underflow");
+    }
+
+    fn dispatch_with_render_depth<V: View>(
+        &mut self,
+        view: V,
+        env: &Environment,
+        ctx: RenderContext,
+    ) {
+        self.push_render_depth();
+        self.dispatcher.dispatch(view, env, ctx);
+        self.pop_render_depth();
+    }
+
+    fn replay_target_depth(&self, subtree_depth_base: usize, target_depth: usize) -> usize {
+        let relative_depth = target_depth
+            .checked_sub(subtree_depth_base)
+            .expect("hydrolysis dynamic subtree target depth underflow");
+        self.render_depth
+            .checked_add(relative_depth)
+            .expect("hydrolysis dynamic subtree target depth overflow")
+    }
+
     fn dispatch_any(ctx: RenderContext, env: &Environment, content: AnyView) {
         let renderer = unsafe { ctx.renderer() };
-        renderer.dispatcher.dispatch(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, ctx);
     }
 
     fn dispatch_any_without_accessibility(ctx: RenderContext, env: &Environment, content: AnyView) {
@@ -4083,7 +4122,7 @@ impl HydrolysisRenderer {
         {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
-            renderer.dispatcher.dispatch(content, env, ctx);
+            renderer.dispatch_with_render_depth(content, env, ctx);
             renderer.pop_accessibility_suppression();
             return;
         }
@@ -4131,7 +4170,7 @@ impl HydrolysisRenderer {
         let renderer = unsafe { ctx.renderer() };
         let mut subtree_scene = vello::Scene::new();
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        renderer.dispatcher.dispatch(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         subtree_scene
     }
@@ -4142,6 +4181,7 @@ impl HydrolysisRenderer {
         content: AnyView,
     ) -> DynamicSubtree {
         let renderer = unsafe { ctx.renderer() };
+        let subtree_depth_base = renderer.render_depth;
         let mut subtree_scene = vello::Scene::new();
         let mut subtree_pointer_targets = Vec::new();
         let mut subtree_gesture_targets = Vec::new();
@@ -4190,7 +4230,7 @@ impl HydrolysisRenderer {
             let previous_accessibility_suppression_depth = renderer.accessibility_suppression_depth;
             renderer.accessibility_next_node_id = 1;
             renderer.accessibility_suppression_depth = 0;
-            renderer.dispatcher.dispatch(content, env, ctx);
+            renderer.dispatch_with_render_depth(content, env, ctx);
             renderer.accessibility_suppression_depth = previous_accessibility_suppression_depth;
             renderer.accessibility_next_node_id = previous_accessibility_next_node_id;
 
@@ -4208,7 +4248,7 @@ impl HydrolysisRenderer {
             );
         }
         #[cfg(not(feature = "accessibility"))]
-        renderer.dispatcher.dispatch(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, ctx);
 
         core::mem::swap(&mut renderer.scroll_targets, &mut subtree_scroll_targets);
         core::mem::swap(
@@ -4227,6 +4267,7 @@ impl HydrolysisRenderer {
 
         DynamicSubtree {
             scene: subtree_scene,
+            depth_base: subtree_depth_base,
             pointer_targets: subtree_pointer_targets,
             gesture_targets: subtree_gesture_targets,
             cursor_targets: subtree_cursor_targets,
@@ -4246,10 +4287,12 @@ impl HydrolysisRenderer {
         self.scene.append(&subtree.scene, Some(ctx.transform));
 
         for target in &subtree.pointer_targets {
+            let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             self.register_pointer_target_action(
                 transformed_rect(ctx.transform, target.bounds),
                 target.captures_drag,
                 Rc::clone(&target.action),
+                depth,
             );
         }
         for target in &subtree.gesture_targets {
@@ -4269,11 +4312,13 @@ impl HydrolysisRenderer {
             self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
         }
         for target in &subtree.text_input_targets {
+            let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             self.register_text_input_target_action(
                 transformed_rect(ctx.transform, target.bounds),
                 transformed_rect(ctx.transform, target.cursor_area),
                 target.purpose,
                 Rc::clone(&target.action),
+                depth,
             );
         }
         for target in &subtree.scroll_targets {
@@ -7100,9 +7145,7 @@ impl HydrolysisRenderer {
         _env: &Environment,
     ) {
         let renderer = unsafe { ctx.renderer() };
-        renderer
-            .dispatcher
-            .dispatch(metadata.content, &metadata.value, ctx);
+        renderer.dispatch_with_render_depth(metadata.content, &metadata.value, ctx);
     }
 
     fn render_retain_metadata(
@@ -7114,7 +7157,7 @@ impl HydrolysisRenderer {
         let Metadata { content, value } = metadata;
         let renderer = unsafe { ctx.renderer() };
         renderer.current_frame_retain.push(value);
-        renderer.dispatcher.dispatch(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, ctx);
     }
 
     fn render_opacity_metadata(
@@ -7142,7 +7185,7 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             let previous_opacity = renderer.hit_test_opacity;
             renderer.hit_test_opacity = previous_opacity * alpha;
-            renderer.dispatcher.dispatch(metadata.content, env, ctx);
+            renderer.dispatch_with_render_depth(metadata.content, env, ctx);
             renderer.hit_test_opacity = previous_opacity;
         }
 
@@ -7177,7 +7220,7 @@ impl HydrolysisRenderer {
 
         let mut subtree_scene = vello::Scene::new();
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
-        renderer.dispatcher.dispatch(content, env, ctx);
+        renderer.dispatch_with_render_depth(content, env, ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
         let input_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -8071,7 +8114,8 @@ impl HydrolysisRenderer {
             self.accessibility_root_bounds = transformed_rect(transform, bounds);
         }
         let ctx = RenderContext::with_renderer_transform(self, bounds, transform);
-        self.dispatcher.dispatch(view, env, ctx);
+        self.render_depth = 0;
+        self.dispatch_with_render_depth(view, env, ctx);
     }
 
     pub fn render_scene_to_texture(
@@ -8207,11 +8251,48 @@ impl HydrolysisRenderer {
             self.active_gesture_recognizer = Some(recognizer);
         }
 
-        for index in (0..self.pointer_targets.len()).rev() {
-            let target = self.pointer_targets[index].clone();
-            if !target.bounds.contains(point) {
-                continue;
+        let focused = self
+            .text_input_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                left.depth
+                    .cmp(&right.depth)
+                    .then(left_index.cmp(right_index))
+            })
+            .map(|(index, _)| index);
+
+        let mut pointer_indices: Vec<usize> = self
+            .pointer_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .map(|(index, _)| index)
+            .collect();
+        pointer_indices.sort_unstable_by(|left, right| {
+            let left_target = &self.pointer_targets[*left];
+            let right_target = &self.pointer_targets[*right];
+            right_target
+                .depth
+                .cmp(&left_target.depth)
+                .then(right.cmp(left))
+        });
+
+        if let Some(focused_index) = focused {
+            let focused_priority = (self.text_input_targets[focused_index].depth, focused_index);
+            let pointer_priority = pointer_indices.first().map(|index| {
+                let target = &self.pointer_targets[*index];
+                (target.depth, *index)
+            });
+            if !matches!(pointer_priority, Some(priority) if priority > focused_priority) {
+                let changed = self.set_focused_text_input(Some(focused_index));
+                return rebuild_requested || changed;
             }
+        }
+
+        for index in pointer_indices {
+            let target = self.pointer_targets[index].clone();
             let changed = (target.action.borrow_mut())(point, env);
             if !changed {
                 continue;
@@ -8222,13 +8303,6 @@ impl HydrolysisRenderer {
             return true;
         }
 
-        let focused = self
-            .text_input_targets
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, target)| target.bounds.contains(point))
-            .map(|(index, _)| index);
         if self.set_focused_text_input(focused) {
             rebuild_requested = true;
         }
@@ -8480,14 +8554,24 @@ impl HydrolysisRenderer {
     where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
-        self.register_pointer_target_action(bounds, false, Rc::new(RefCell::new(action)));
+        self.register_pointer_target_action(
+            bounds,
+            false,
+            Rc::new(RefCell::new(action)),
+            self.render_depth,
+        );
     }
 
     fn register_pointer_drag_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
     {
-        self.register_pointer_target_action(bounds, true, Rc::new(RefCell::new(action)));
+        self.register_pointer_target_action(
+            bounds,
+            true,
+            Rc::new(RefCell::new(action)),
+            self.render_depth,
+        );
     }
 
     fn register_pointer_target_action(
@@ -8495,6 +8579,7 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         captures_drag: bool,
         action: PointerAction,
+        depth: usize,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -8502,6 +8587,7 @@ impl HydrolysisRenderer {
         self.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag,
+            depth,
             action,
         });
     }
@@ -8621,6 +8707,7 @@ impl HydrolysisRenderer {
             cursor_area,
             purpose,
             Rc::new(RefCell::new(action)),
+            self.render_depth,
         );
     }
 
@@ -8630,6 +8717,7 @@ impl HydrolysisRenderer {
         cursor_area: vello::kurbo::Rect,
         purpose: TextInputPurpose,
         action: TextInputAction,
+        depth: usize,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -8638,6 +8726,7 @@ impl HydrolysisRenderer {
             bounds,
             cursor_area,
             purpose,
+            depth,
             action,
         });
     }
