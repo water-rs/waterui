@@ -43,7 +43,7 @@ struct AppSettings {
     notifications_enabled: bool,
 }
 
-fn main(settings: &Binding<AppSettings>) -> impl View {
+fn main(settings: Binding<AppSettings>) -> impl View {
     // Create reactive bindings for both forms
     let registration = RegistrationForm::binding();
     // Manual form controls for demonstration
@@ -84,7 +84,7 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
             vstack((
                 text("App Settings").sub_headline(),
                 "Another form with different field types",
-                form(settings),
+                form(&settings),
                 Divider,
                 text("Current Settings:").bold(),
                 hstack((
@@ -154,7 +154,7 @@ pub fn app(mut env: Environment) -> App {
 
     env.install(theme);
 
-    App::new(move || main(&settings), env)
+    App::new(move || main(settings.clone()), env)
 }
 
 waterui_ffi::export!();
