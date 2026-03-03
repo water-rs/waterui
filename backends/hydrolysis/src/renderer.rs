@@ -81,9 +81,9 @@ use waterui_layout::stack::{
     Axis as StackAxis, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment,
 };
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
-use waterui_text::{Text, TextConfig};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
+use waterui_text::{Text, TextConfig};
 
 use crate::animation::AnimationController;
 use crate::platform::{
@@ -1622,7 +1622,7 @@ impl HydroSubview {
     fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
         Self {
             stretch_axis: effective_stretch_axis(view),
-            intrinsic: estimate_intrinsic_size(view, state, env),
+            intrinsic: measure_view_intrinsic(view, state, env),
         }
     }
 }
@@ -2036,9 +2036,9 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
 fn measure_view_intrinsic(
     view: &AnyView,
     state: &mut HydroState,
-    _env: &Environment,
+    env: &Environment,
 ) -> LayoutSize {
-    estimate_intrinsic_size(view, state, _env)
+    estimate_intrinsic_size(view, state, env)
 }
 
 fn measure_navigation_view_intrinsic(
@@ -2180,7 +2180,7 @@ fn measure_list_intrinsic(
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     first_item.content = normalize_layout_view(first_item.content, env);
-    let content_size = estimate_intrinsic_size(&first_item.content, state, env);
+    let content_size = measure_view_intrinsic(&first_item.content, state, env);
     let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
         + LIST_ROW_VERTICAL_PADDING * 2.0;
 
@@ -2210,7 +2210,7 @@ fn materialize_list_item(
 }
 
 fn measure_list_item_row_height(item: &ListItem, state: &mut HydroState, env: &Environment) -> f64 {
-    let intrinsic = estimate_intrinsic_size(&item.content, state, env);
+    let intrinsic = measure_view_intrinsic(&item.content, state, env);
     f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT)) + LIST_ROW_VERTICAL_PADDING * 2.0
 }
 
@@ -2369,7 +2369,7 @@ fn measure_table_metrics(
     for column in columns {
         let mut width = TABLE_MIN_COLUMN_WIDTH;
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = estimate_intrinsic_size(&label_view, state, env);
+        let label_size = measure_view_intrinsic(&label_view, state, env);
         width = width.max(f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING);
 
         let rows = column.rows();
@@ -2412,7 +2412,7 @@ fn refresh_table_slot_baseline(
     slot.max_rows = 0;
     for (index, column) in columns.iter().enumerate() {
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = estimate_intrinsic_size(&label_view, state, env);
+        let label_size = measure_view_intrinsic(&label_view, state, env);
         let width = (f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING)
             .max(TABLE_MIN_COLUMN_WIDTH);
         if slot.column_widths[index] < width {
@@ -2436,7 +2436,7 @@ fn update_table_slot_visible_cell_widths(
         for row_index in row_window.start..row_window.end {
             if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = normalize_layout_view(AnyView::new(cell), env);
-                let size = estimate_intrinsic_size(&cell_view, state, env);
+                let size = measure_view_intrinsic(&cell_view, state, env);
                 let width = (f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING)
                     .max(TABLE_MIN_COLUMN_WIDTH);
                 if slot.column_widths[column_index] < width {
@@ -2643,7 +2643,7 @@ impl HydroNativeView for Native<LazyContainer> {
         let sample = children
             .get_view(0)
             .map(|view| normalize_layout_view(view, env))
-            .map(|view| estimate_intrinsic_size(&view, state, env))
+            .map(|view| measure_view_intrinsic(&view, state, env))
             .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index 0"));
         let count = child_count as f64;
         match lazy_stack_axis_config(layout) {
@@ -2668,13 +2668,13 @@ impl HydroNativeView for Native<ScrollView> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (_axis, content) = view.as_inner().as_parts();
-        estimate_intrinsic_size(content, state, env)
+        measure_view_intrinsic(content, state, env)
     }
 
     fn accessibility(state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
         let (axis, content) = view.as_inner().as_parts();
         let viewport = ctx.bounds;
-        let intrinsic = estimate_intrinsic_size(content, state, env);
+        let intrinsic = measure_view_intrinsic(content, state, env);
         let (content_width, content_height) = match axis {
             ScrollAxis::Horizontal => (
                 f64::from(intrinsic.width).max(viewport.width()),
@@ -3368,7 +3368,7 @@ impl HydroNativeView for Native<Dynamic> {
             return *size;
         }
         let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| estimate_intrinsic_size(content, state, env))
+            content.map(|content| measure_view_intrinsic(content, state, env))
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node");
@@ -4668,7 +4668,7 @@ impl HydrolysisRenderer {
         let (axis, content) = scroll.into_inner().into_inner();
         let content = normalize_layout_view(content, env);
         let viewport = ctx.bounds;
-        let intrinsic = estimate_intrinsic_size(&content, state, env);
+        let intrinsic = measure_view_intrinsic(&content, state, env);
         let (content_width, content_height) = match axis {
             ScrollAxis::Horizontal => (
                 f64::from(intrinsic.width).max(viewport.width()),
@@ -5890,9 +5890,12 @@ impl HydrolysisRenderer {
         slider: Native<SliderConfig>,
         env: &Environment,
     ) {
-        let slider = slider.into_inner();
+        let mut slider = slider.into_inner();
+        slider.label = normalize_layout_view(slider.label, env);
+        slider.min_value_label = normalize_layout_view(slider.min_value_label, env);
+        slider.max_value_label = normalize_layout_view(slider.max_value_label, env);
         let label_height = if ctx.bounds.height() >= 36.0 {
-            f64::from(estimate_intrinsic_size(&slider.label, state, env).height).max(20.0)
+            f64::from(measure_view_intrinsic(&slider.label, state, env).height).max(20.0)
         } else {
             0.0
         };
@@ -5906,8 +5909,8 @@ impl HydrolysisRenderer {
             Self::dispatch_in_rect_without_accessibility(ctx, env, slider.label, label_rect);
         }
 
-        let min_label_size = estimate_intrinsic_size(&slider.min_value_label, state, env);
-        let max_label_size = estimate_intrinsic_size(&slider.max_value_label, state, env);
+        let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
+        let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
         let min_label_width = f64::from(min_label_size.width);
         let max_label_width = f64::from(max_label_size.width);
         let min_label_x0 = ctx.bounds.x0 + SLIDER_HORIZONTAL_INSET;
@@ -6798,7 +6801,7 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
-            let intrinsic = estimate_intrinsic_size(&content, state, env);
+            let intrinsic = measure_view_intrinsic(&content, state, env);
             state.dynamic_intrinsic_cache.insert(identity, intrinsic);
             let local_ctx = RenderContext {
                 renderer_ptr: ctx.renderer_ptr,
@@ -6848,24 +6851,41 @@ impl HydrolysisRenderer {
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
         let size = OffscreenSize::try_from_pixels(width, height)
             .expect("hydrolysis GpuSurface requires non-zero offscreen size");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
         let mut local_env = env.clone();
-        let output = surface
-            .into_inner()
-            .render_offscreen(config, &mut local_env)
-            .expect("hydrolysis failed to render GpuSurface offscreen");
+        let surface = surface.into_inner();
+        let prefers_hdr = waterui_graphics::gpu_surface::resolve_surface_hdr_preference(
+            surface.get_surface_prefers_hdr(),
+        );
+        let (output_width, output_height, rgba8) = if prefers_hdr {
+            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
+            let output = surface
+                .render_offscreen_hdr(config, &mut local_env)
+                .expect("hydrolysis failed to render GpuSurface offscreen HDR");
+            let output_width = output.width;
+            let output_height = output.height;
+            let rgba8 = output
+                .into_sdr_rgba8()
+                .expect("hydrolysis failed to tone-map GpuSurface HDR offscreen output to SDR");
+            (output_width, output_height, rgba8)
+        } else {
+            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+            let output = surface
+                .render_offscreen(config, &mut local_env)
+                .expect("hydrolysis failed to render GpuSurface offscreen");
+            (output.width, output.height, output.rgba8)
+        };
 
         let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(output.rgba8),
+            data: vello::peniko::Blob::from(rgba8),
             format: vello::peniko::ImageFormat::Rgba8,
             alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: output.width,
-            height: output.height,
+            width: output_width,
+            height: output_height,
         };
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output.width),
-                ctx.bounds.height() / f64::from(output.height),
+                ctx.bounds.width() / f64::from(output_width),
+                ctx.bounds.height() / f64::from(output_height),
             );
         let scene = unsafe { ctx.scene() };
         scene.draw_image(
