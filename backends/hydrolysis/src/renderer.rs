@@ -8168,9 +8168,16 @@ impl HydrolysisRenderer {
             action,
             AccessibilityAction::Focus | AccessibilityAction::Click
         );
-        let Some(target) = self.accessibility_actions.get(&target_node).cloned() else {
-            return false;
-        };
+        let target = self
+            .accessibility_actions
+            .get(&target_node)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "hydrolysis accessibility action {:?} targets unmapped node {:?}",
+                    action, target_node
+                )
+            });
         let changed = match target {
             AccessibilityActionTarget::PointerPrimaryClick { point } => {
                 handle_accessibility_pointer_action(self, action, point, env)
