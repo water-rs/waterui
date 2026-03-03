@@ -154,7 +154,7 @@ pub fn app(mut env: Environment) -> App {
 
     env.install(theme);
 
-    App::new(main(&settings), env)
+    App::new(move || main(&settings), env)
 }
 
 waterui_ffi::export!();
