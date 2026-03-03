@@ -7,11 +7,12 @@
 
 use std::sync::Arc;
 
-use futures::{FutureExt, StreamExt, future::LocalBoxFuture, stream::LocalBoxStream};
-use waterkit_camera::{Camera, Frame};
+use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
+use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
+use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
 
@@ -20,15 +21,13 @@ fn main() -> impl View {
     let filter_strength = Binding::f64(0.75);
     let reconnect_ticket = Binding::usize(0);
 
-    let preview_status: Binding<Str> =
-        Binding::container(Str::from("Starting camera renderer..."));
+    let preview_status: Binding<Str> = Binding::container(Str::from("Starting camera renderer..."));
     let waterkit_status: Binding<Str> = Binding::container(Str::from(
         "Not synced. Tap the button below to query Waterkit.",
     ));
     let permission_status: Binding<Str> =
         Binding::container(Str::from("Permission status: unknown"));
-    let camera_inventory: Binding<Str> =
-        Binding::container(Str::from("No camera inventory yet."));
+    let camera_inventory: Binding<Str> = Binding::container(Str::from("No camera inventory yet."));
 
     let filter_label = active_filter.clone().map(filter_name);
 
@@ -140,7 +139,6 @@ struct CameraFilterRenderer {
 
     camera: Option<Camera>,
     camera_open_task: Option<LocalBoxFuture<'static, Result<Camera, String>>>,
-    frame_stream: Option<LocalBoxStream<'static, Frame>>,
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
@@ -165,7 +163,6 @@ impl CameraFilterRenderer {
             last_reconnect_ticket: 0,
             camera: None,
             camera_open_task: None,
-            frame_stream: None,
             pipeline: None,
             bind_group_layout: None,
             sampler: None,
@@ -294,7 +291,6 @@ impl CameraFilterRenderer {
         };
         self.preview_status.set(status.to_string().into());
         self.camera = None;
-        self.frame_stream = None;
         self.latest_texture = None;
         self.latest_bind_group = None;
 
@@ -314,7 +310,6 @@ impl CameraFilterRenderer {
 
         match task.as_mut().now_or_never() {
             Some(Ok(camera)) => {
-                self.frame_stream = Some(camera.frames().boxed_local());
                 self.camera = Some(camera);
                 self.preview_status.set(Str::from("Camera stream active."));
             }
@@ -345,11 +340,12 @@ impl CameraFilterRenderer {
     }
 
     fn pull_latest_frame(&mut self) {
-        let Some(mut frame_stream) = self.frame_stream.take() else {
+        let Some(camera) = self.camera.as_ref() else {
             return;
         };
 
         let poll_result = {
+            let mut frame_stream = camera.frames().boxed_local();
             let waker = futures::task::noop_waker_ref();
             let mut cx = std::task::Context::from_waker(waker);
             frame_stream.as_mut().poll_next(&mut cx)
@@ -358,7 +354,6 @@ impl CameraFilterRenderer {
         match poll_result {
             std::task::Poll::Ready(Some(frame)) => {
                 self.latest_texture = Some(frame.into_texture());
-                self.frame_stream = Some(frame_stream);
             }
             std::task::Poll::Ready(None) => {
                 self.camera = None;
@@ -367,22 +362,19 @@ impl CameraFilterRenderer {
                 self.preview_status
                     .set(Str::from("Camera stream ended unexpectedly."));
             }
-            std::task::Poll::Pending => {
-                self.frame_stream = Some(frame_stream);
-            }
+            std::task::Poll::Pending => {}
         }
     }
 }
 
 impl GpuView for CameraFilterRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui::Environment,
+    ) {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
-        async {}
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -459,6 +451,20 @@ impl GpuView for CameraFilterRenderer {
     }
 }
 
+impl SubView for CameraFilterRenderer {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        Size::new(proposal.width.unwrap_or(0.0), proposal.height.unwrap_or(0.0))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
 fn filter_params(filter_kind: usize, strength: f32) -> (f32, f32, f32, f32, f32) {
     match filter_kind {
         // Cinematic
@@ -516,10 +522,7 @@ async fn sync_waterkit_camera(
     ));
 
     let current = check(Permission::Camera).await;
-    permission.set(format!(
-        "Permission status: {}",
-        permission_status_text(current)
-    ).into());
+    permission.set(format!("Permission status: {}", permission_status_text(current)).into());
 
     let granted = if matches!(current, PermissionStatus::Granted) {
         true
@@ -529,10 +532,8 @@ async fn sync_waterkit_camera(
         ));
         match request(Permission::Camera).await {
             Ok(next) => {
-                permission.set(format!(
-                    "Permission status: {}",
-                    permission_status_text(next)
-                ).into());
+                permission
+                    .set(format!("Permission status: {}", permission_status_text(next)).into());
                 matches!(next, PermissionStatus::Granted)
             }
             Err(error) => {
@@ -580,10 +581,13 @@ async fn sync_waterkit_camera(
                 .collect::<Vec<_>>()
                 .join(" | ");
 
-            status.set(format!(
-                "Waterkit sync complete: {} camera(s) detected.",
-                cameras.len()
-            ).into());
+            status.set(
+                format!(
+                    "Waterkit sync complete: {} camera(s) detected.",
+                    cameras.len()
+                )
+                .into(),
+            );
             inventory.set(summary.into());
         }
         Err(error) => {
@@ -601,6 +605,7 @@ fn permission_status_text(status: PermissionStatus) -> &'static str {
         PermissionStatus::Denied => "denied",
         PermissionStatus::Restricted => "restricted",
         PermissionStatus::NotDetermined => "not determined",
+        _ => "unknown",
     }
 }
 

@@ -15,7 +15,14 @@ use std::sync::mpsc;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui_core::{Environment, Native, NativeView, View};
 
-/// A boxed future for async setup operations.
+#[doc(hidden)]
+pub use waterui_core::layout::{
+    ProposalSize as __GpuProposalSize, Size as __GpuSize, StretchAxis as __GpuStretchAxis,
+    SubView as __GpuSubView,
+};
+
+/// Internal boxed future for object-safe GPU setup dispatch.
+#[doc(hidden)]
 pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
 /// Picks the best surface format for a [`GpuSurface`].
@@ -402,13 +409,6 @@ impl<'a> GpuFrame<'a> {
 /// }
 /// ```
 pub trait GpuView: SubView + 'static {
-    /// Whether layout measurement requires the main thread.
-    ///
-    /// GPU renderers default to thread-safe measurement.
-    fn require_main_thread(&self) -> bool {
-        false
-    }
-
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
@@ -418,6 +418,7 @@ pub trait GpuView: SubView + 'static {
     /// `env` provides access to the WaterUI environment (theme, fonts, etc.).
     ///
     /// Async setup hook for GPU resources.
+    #[allow(async_fn_in_trait)]
     async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut waterui_core::Environment);
 
     /// Called each frame to render.
@@ -435,19 +436,19 @@ pub trait GpuView: SubView + 'static {
 #[macro_export]
 macro_rules! impl_gpu_subview {
     ($ty:ty) => {
-        impl waterui_core::layout::SubView for $ty {
+        impl $crate::gpu_surface::__GpuSubView for $ty {
             fn size_that_fits(
                 &self,
-                proposal: waterui_core::layout::ProposalSize,
-            ) -> waterui_core::layout::Size {
-                waterui_core::layout::Size::new(
+                proposal: $crate::gpu_surface::__GpuProposalSize,
+            ) -> $crate::gpu_surface::__GpuSize {
+                $crate::gpu_surface::__GpuSize::new(
                     proposal.width.unwrap_or(0.0),
                     proposal.height.unwrap_or(0.0),
                 )
             }
 
-            fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-                waterui_core::layout::StretchAxis::Both
+            fn stretch_axis(&self) -> $crate::gpu_surface::__GpuStretchAxis {
+                $crate::gpu_surface::__GpuStretchAxis::Both
             }
 
             fn priority(&self) -> i32 {
@@ -786,7 +787,7 @@ impl<T: GpuView> GpuViewImpl for T {
     }
 
     fn require_main_thread(&self) -> bool {
-        GpuView::require_main_thread(self)
+        SubView::require_main_thread(self)
     }
 }
 
@@ -1153,6 +1154,10 @@ impl SubView for GpuSurface {
 
     fn priority(&self) -> i32 {
         self.priority()
+    }
+
+    fn require_main_thread(&self) -> bool {
+        GpuSurface::require_main_thread(self)
     }
 }
 
