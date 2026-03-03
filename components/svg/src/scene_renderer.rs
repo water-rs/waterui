@@ -17,8 +17,9 @@ impl SvgSceneContent {
 }
 
 impl SceneContent for SvgSceneContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) {
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
         let svg_scene = self.scene_data.build_scene(width, height);
         scene.append_vello_scene(&svg_scene, None);
+        false
     }
 }

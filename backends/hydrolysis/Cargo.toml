@@ -17,6 +17,7 @@ waterui.workspace = true
 tracing.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
+waterui-canvas.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
