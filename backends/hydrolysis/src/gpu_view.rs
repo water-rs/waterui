@@ -1,5 +1,6 @@
 use waterui::View;
 use waterui_core::Environment;
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, SceneViewMergeToParent};
 
 use crate::renderer::HydrolysisRenderer;
@@ -35,14 +36,13 @@ impl<V> GpuView for HydrolysisGpuView<V>
 where
     V: View + Clone + 'static,
 {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         env: &mut Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         self.renderer = Some(HydrolysisRenderer::new(ctx.device));
         self.env = Some(env.extending(SceneViewMergeToParent));
-        async {}
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -86,6 +86,26 @@ where
         if animation_dirty || next_rebuild {
             frame.request_redraw();
         }
+    }
+}
+
+impl<V> SubView for HydrolysisGpuView<V>
+where
+    V: View + Clone + 'static,
+{
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.view.stretch_axis()
+    }
+
+    fn priority(&self) -> i32 {
+        0
     }
 }
 
