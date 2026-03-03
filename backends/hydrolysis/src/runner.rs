@@ -414,6 +414,7 @@ mod winit_runner {
     use std::future::Future;
     use std::mem;
     use std::sync::{Arc, mpsc};
+    use std::time::Instant;
 
     use accesskit_winit::{
         Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
@@ -628,6 +629,11 @@ mod winit_runner {
                             runtime.needs_rebuild = true;
                         }
                     }
+                    InputEvent::PointerCancel => {
+                        if runtime.renderer.handle_pointer_cancel(env) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
                     InputEvent::Scroll {
                         x,
                         y,
@@ -637,6 +643,21 @@ mod winit_runner {
                     } => {
                         runtime.pointer_position = Some((x, y));
                         if runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta) {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::Magnification { x, y, delta, phase } => {
+                        runtime.pointer_position = Some((x, y));
+                        if runtime
+                            .renderer
+                            .handle_magnification(x, y, delta, phase, env)
+                        {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
+                    InputEvent::Rotation { x, y, delta, phase } => {
+                        runtime.pointer_position = Some((x, y));
+                        if runtime.renderer.handle_rotation(x, y, delta, phase, env) {
                             runtime.needs_rebuild = true;
                         }
                     }
@@ -664,7 +685,10 @@ mod winit_runner {
                             runtime.needs_rebuild = true;
                         }
                     }
-                    _ => {}
+                    InputEvent::Key {
+                        state: KeyState::Released,
+                        ..
+                    } => {}
                 }
             }
             runtime
@@ -745,19 +769,35 @@ mod winit_runner {
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.drain_local_executor_queue();
             self.mount_pending_windows(event_loop);
+            let now = Instant::now();
+            let mut next_gesture_deadline: Option<Instant> = None;
             for runtime in self.windows.values_mut() {
                 runtime
                     .platform
                     .sync_text_input_state(runtime.renderer.focused_text_input_state());
+                if runtime.renderer.handle_gesture_tick(now, &self.env) {
+                    runtime.needs_rebuild = true;
+                }
                 if runtime.renderer.advance_animations() {
                     runtime.needs_rebuild = true;
                 }
                 if runtime.renderer.take_rebuild_request() {
                     runtime.needs_rebuild = true;
                 }
+                if let Some(deadline) = runtime.renderer.next_gesture_deadline() {
+                    next_gesture_deadline = Some(match next_gesture_deadline {
+                        Some(existing) => existing.min(deadline),
+                        None => deadline,
+                    });
+                }
                 if runtime.needs_rebuild {
                     runtime.platform.request_redraw();
                 }
+            }
+            if let Some(deadline) = next_gesture_deadline {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            } else {
+                event_loop.set_control_flow(ControlFlow::Wait);
             }
             self.remove_closed_windows(event_loop);
         }
