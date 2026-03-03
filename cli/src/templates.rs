@@ -624,14 +624,67 @@ async fn write_support_cargo_toml(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum NativeBackendDependencyPathKind<'a> {
+    WateruiRoot,
+    BackendsSubdir(&'a str),
+}
+
+#[derive(Clone, Copy)]
+struct NativeBackendDependencySpec<'a> {
+    crate_name: &'a str,
+    version: &'a str,
+    features: &'a [&'a str],
+    path_kind: Option<NativeBackendDependencyPathKind<'a>>,
+}
+
+impl<'a> NativeBackendDependencySpec<'a> {
+    const fn new(
+        crate_name: &'a str,
+        version: &'a str,
+        features: &'a [&'a str],
+        path_kind: Option<NativeBackendDependencyPathKind<'a>>,
+    ) -> Self {
+        Self {
+            crate_name,
+            version,
+            features,
+            path_kind,
+        }
+    }
+}
+
+fn compute_native_backend_dependency_path(
+    ctx: &TemplateContext,
+    waterui_path: &Path,
+    path_kind: NativeBackendDependencyPathKind<'_>,
+) -> String {
+    if waterui_path.is_absolute() {
+        let absolute_path = match path_kind {
+            NativeBackendDependencyPathKind::WateruiRoot => waterui_path.to_path_buf(),
+            NativeBackendDependencyPathKind::BackendsSubdir(subdir) => {
+                waterui_path.join("backends").join(subdir)
+            }
+        };
+        return normalize_path_for_config(&absolute_path);
+    }
+
+    let project_relative_root = PathBuf::from(ctx.project_root_relative_path());
+    let relative_path = match path_kind {
+        NativeBackendDependencyPathKind::WateruiRoot => project_relative_root.join(waterui_path),
+        NativeBackendDependencyPathKind::BackendsSubdir(subdir) => project_relative_root
+            .join(waterui_path)
+            .join("backends")
+            .join(subdir),
+    };
+    normalize_path_for_config(&relative_path)
+}
+
 async fn write_native_backend_bin_cargo_toml(
     base_dir: &Path,
     ctx: &TemplateContext,
     package_name: &str,
-    backend_crate_name: &str,
-    backend_version: &str,
-    backend_path_name: &str,
-    backend_features: &[&str],
+    dependencies: &[NativeBackendDependencySpec<'_>],
 ) -> io::Result<()> {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
@@ -649,32 +702,33 @@ async fn write_native_backend_bin_cargo_toml(
         })),
     );
 
-    let features = backend_features
-        .iter()
-        .map(|item| item.to_string())
-        .collect();
-    if let Some(waterui_path) = &ctx.waterui_path {
-        let backend_path = if waterui_path.is_absolute() {
-            waterui_path.join("backends").join(backend_path_name)
-        } else {
-            std::path::PathBuf::from(ctx.project_root_relative_path())
-                .join(waterui_path)
-                .join("backends")
-                .join(backend_path_name)
-        };
+    for dependency in dependencies {
+        let features = dependency
+            .features
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>();
+
+        if let Some(waterui_path) = &ctx.waterui_path
+            && let Some(path_kind) = dependency.path_kind
+        {
+            let dependency_path =
+                compute_native_backend_dependency_path(ctx, waterui_path, path_kind);
+            manifest.dependencies.insert(
+                dependency.crate_name.to_string(),
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    path: Some(dependency_path),
+                    features,
+                    ..Default::default()
+                })),
+            );
+            continue;
+        }
+
         manifest.dependencies.insert(
-            backend_crate_name.to_string(),
+            dependency.crate_name.to_string(),
             Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(normalize_path_for_config(&backend_path)),
-                features,
-                ..Default::default()
-            })),
-        );
-    } else {
-        manifest.dependencies.insert(
-            backend_crate_name.to_string(),
-            Dependency::Detailed(Box::new(DependencyDetail {
-                version: Some(backend_version.to_string()),
+                version: Some(dependency.version.to_string()),
                 features,
                 ..Default::default()
             })),
@@ -773,7 +827,8 @@ pub mod android {
 /// GTK4 backend templates.
 pub mod gtk4 {
     use super::{
-        Path, TemplateContext, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
+        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
+        embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
     };
 
     const WATERUI_GTK_VERSION: &str = "0.1";
@@ -801,23 +856,21 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        write_native_backend_bin_cargo_toml(
-            base_dir,
-            ctx,
-            package_name,
+        let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             WATERUI_GTK_VERSION,
-            "gtk",
             &[],
-        )
-        .await
+            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+        )];
+        write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
     }
 }
 
 /// Hydrolysis backend templates.
 pub mod hydrolysis {
     use super::{
-        Path, TemplateContext, WATERUI_HYDROLYSIS_VERSION, embedded, io, scaffold_dir,
+        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
+        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, embedded, io, scaffold_dir,
         write_native_backend_bin_cargo_toml,
     };
 
@@ -840,16 +893,23 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        write_native_backend_bin_cargo_toml(
-            base_dir,
-            ctx,
-            package_name,
-            "hydrolysis",
-            WATERUI_HYDROLYSIS_VERSION,
-            "hydrolysis",
-            &["winit"],
-        )
-        .await
+        let dependencies = [
+            NativeBackendDependencySpec::new(
+                "hydrolysis",
+                WATERUI_HYDROLYSIS_VERSION,
+                &["winit"],
+                Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                    "hydrolysis",
+                )),
+            ),
+            NativeBackendDependencySpec::new(
+                "waterui",
+                WATERUI_VERSION,
+                &[],
+                Some(NativeBackendDependencyPathKind::WateruiRoot),
+            ),
+        ];
+        write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
     }
 }
 
