@@ -6851,41 +6851,24 @@ impl HydrolysisRenderer {
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
         let size = OffscreenSize::try_from_pixels(width, height)
             .expect("hydrolysis GpuSurface requires non-zero offscreen size");
+        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
         let mut local_env = env.clone();
-        let surface = surface.into_inner();
-        let prefers_hdr = waterui_graphics::gpu_surface::resolve_surface_hdr_preference(
-            surface.get_surface_prefers_hdr(),
-        );
-        let (output_width, output_height, rgba8) = if prefers_hdr {
-            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba16Float);
-            let output = surface
-                .render_offscreen_hdr(config, &mut local_env)
-                .expect("hydrolysis failed to render GpuSurface offscreen HDR");
-            let output_width = output.width;
-            let output_height = output.height;
-            let rgba8 = output
-                .into_sdr_rgba8()
-                .expect("hydrolysis failed to tone-map GpuSurface HDR offscreen output to SDR");
-            (output_width, output_height, rgba8)
-        } else {
-            let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
-            let output = surface
-                .render_offscreen(config, &mut local_env)
-                .expect("hydrolysis failed to render GpuSurface offscreen");
-            (output.width, output.height, output.rgba8)
-        };
+        let output = surface
+            .into_inner()
+            .render_offscreen(config, &mut local_env)
+            .expect("hydrolysis failed to render GpuSurface offscreen");
 
         let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(rgba8),
+            data: vello::peniko::Blob::from(output.rgba8),
             format: vello::peniko::ImageFormat::Rgba8,
             alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: output_width,
-            height: output_height,
+            width: output.width,
+            height: output.height,
         };
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output_width),
-                ctx.bounds.height() / f64::from(output_height),
+                ctx.bounds.width() / f64::from(output.width),
+                ctx.bounds.height() / f64::from(output.height),
             );
         let scene = unsafe { ctx.scene() };
         scene.draw_image(
