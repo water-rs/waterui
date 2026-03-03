@@ -61,6 +61,7 @@ impl TestHost {
             frame.view(),
             self.width.max(1),
             self.height.max(1),
+            vello::peniko::Color::TRANSPARENT,
         );
         let rgba8 = readback_texture_rgba8(
             surface.device(),
