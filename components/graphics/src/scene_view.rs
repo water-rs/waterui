@@ -100,11 +100,11 @@ impl SceneSurfaceRenderer {
 }
 
 impl GpuView for SceneSurfaceRenderer {
-    fn setup(
+    async fn setup(
         &mut self,
-        ctx: &GpuContext,
+        ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
+    ) {
         let redraw_handle = ctx.redraw_handle.clone();
         self.content
             .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
@@ -204,7 +204,6 @@ impl GpuView for SceneSurfaceRenderer {
 
         self.blit_bind_group_layout = Some(bind_group_layout);
 
-        async {}
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -323,3 +322,5 @@ impl GpuView for SceneSurfaceRenderer {
         }
     }
 }
+
+crate::impl_gpu_subview!(SceneSurfaceRenderer);
