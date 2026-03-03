@@ -596,6 +596,13 @@ mod winit_impl {
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer_position = map_cursor_position(position);
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::input_raw",
+                        event = "cursor_moved",
+                        x = self.pointer_position.0,
+                        y = self.pointer_position.1,
+                        "winit raw input event"
+                    );
                     self.pending_events.push(InputEvent::PointerMove {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -607,6 +614,15 @@ mod winit_impl {
                 WindowEvent::MouseInput { state, button, .. } => {
                     let mapped_button = map_button(*button);
                     let (x, y) = self.pointer_position;
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::input_raw",
+                        event = "mouse_input",
+                        x,
+                        y,
+                        state = ?state,
+                        button = ?mapped_button,
+                        "winit raw input event"
+                    );
                     match state {
                         ElementState::Pressed => {
                             self.pending_events.push(InputEvent::PointerDown {
@@ -655,6 +671,14 @@ mod winit_impl {
                     self.modifiers = modifiers.state().into();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::input_raw",
+                        event = "keyboard_input",
+                        state = ?event.state,
+                        logical_key = ?event.logical_key,
+                        modifiers = ?self.modifiers,
+                        "winit raw input event"
+                    );
                     self.pending_events.push(InputEvent::Key {
                         key: map_key(&event.logical_key),
                         state: match event.state {
@@ -666,14 +690,31 @@ mod winit_impl {
                 }
                 WindowEvent::Ime(ime) => match ime {
                     Ime::Preedit(text, _) => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_preedit",
+                            text = text.as_str(),
+                            "winit raw input event"
+                        );
                         self.pending_events
                             .push(InputEvent::ImePreedit { text: text.clone() });
                     }
                     Ime::Commit(text) => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_commit",
+                            text = text.as_str(),
+                            "winit raw input event"
+                        );
                         self.pending_events
                             .push(InputEvent::ImeCommit { text: text.clone() });
                     }
                     Ime::Disabled => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_disabled",
+                            "winit raw input event"
+                        );
                         self.pending_events.push(InputEvent::ImeDisabled);
                     }
                     Ime::Enabled => {}
