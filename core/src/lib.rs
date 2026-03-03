@@ -105,7 +105,7 @@ pub mod handler;
 pub mod plugin;
 pub use anyhow::Error;
 pub mod animation;
-pub use animation::AnimationExt;
+pub use animation::{Animatable, AnimationExt, AnimationTrack};
 /// Unified easing system for animations.
 pub mod easing;
 pub use easing::{EasingCurve, Interpolatable};

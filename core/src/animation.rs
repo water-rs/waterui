@@ -138,6 +138,204 @@ use core::time::Duration;
 
 use crate::easing::{EasingCurve, Interpolatable};
 
+/// SwiftUI-style animation protocol.
+///
+/// Types expose an animatable representation (`AnimatableData`) that can be
+/// linearly interpolated by the animation system.
+pub trait Animatable: Clone {
+    /// Interpolatable payload used for frame-to-frame value blending.
+    type AnimatableData: Interpolatable;
+
+    /// Exports the value to its animatable representation.
+    fn animatable_data(&self) -> Self::AnimatableData;
+
+    /// Reconstructs the value from animatable data.
+    fn from_animatable_data(data: Self::AnimatableData) -> Self;
+}
+
+impl Animatable for f32 {
+    type AnimatableData = f32;
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        *self
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        data
+    }
+}
+
+impl Animatable for f64 {
+    type AnimatableData = f64;
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        *self
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        data
+    }
+}
+
+impl<A: Animatable, B: Animatable> Animatable for (A, B) {
+    type AnimatableData = (A::AnimatableData, B::AnimatableData);
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        (self.0.animatable_data(), self.1.animatable_data())
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        (
+            A::from_animatable_data(data.0),
+            B::from_animatable_data(data.1),
+        )
+    }
+}
+
+impl<A: Animatable, B: Animatable, C: Animatable> Animatable for (A, B, C) {
+    type AnimatableData = (A::AnimatableData, B::AnimatableData, C::AnimatableData);
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        (
+            self.0.animatable_data(),
+            self.1.animatable_data(),
+            self.2.animatable_data(),
+        )
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        (
+            A::from_animatable_data(data.0),
+            B::from_animatable_data(data.1),
+            C::from_animatable_data(data.2),
+        )
+    }
+}
+
+impl<A: Animatable, B: Animatable, C: Animatable, D: Animatable> Animatable for (A, B, C, D) {
+    type AnimatableData = (
+        A::AnimatableData,
+        B::AnimatableData,
+        C::AnimatableData,
+        D::AnimatableData,
+    );
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        (
+            self.0.animatable_data(),
+            self.1.animatable_data(),
+            self.2.animatable_data(),
+            self.3.animatable_data(),
+        )
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        (
+            A::from_animatable_data(data.0),
+            B::from_animatable_data(data.1),
+            C::from_animatable_data(data.2),
+            D::from_animatable_data(data.3),
+        )
+    }
+}
+
+impl<T: Animatable + Copy, const N: usize> Animatable for [T; N]
+where
+    T::AnimatableData: Copy,
+{
+    type AnimatableData = [T::AnimatableData; N];
+
+    fn animatable_data(&self) -> Self::AnimatableData {
+        core::array::from_fn(|index| self[index].animatable_data())
+    }
+
+    fn from_animatable_data(data: Self::AnimatableData) -> Self {
+        core::array::from_fn(|index| T::from_animatable_data(data[index].clone()))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveTrack<T: Animatable> {
+    animation: Animation,
+    elapsed: Duration,
+    from: T,
+    to: T,
+}
+
+/// Shared animation timeline state for values implementing [`Animatable`].
+#[derive(Debug, Clone)]
+pub struct AnimationTrack<T: Animatable> {
+    current: T,
+    active: Option<ActiveTrack<T>>,
+}
+
+impl<T: Animatable> AnimationTrack<T> {
+    /// Create a track seeded with an initial value.
+    #[must_use]
+    pub const fn new(initial: T) -> Self {
+        Self {
+            current: initial,
+            active: None,
+        }
+    }
+
+    /// Current sampled value.
+    #[must_use]
+    pub fn value(&self) -> T {
+        self.current.clone()
+    }
+
+    /// Replace the target value.
+    ///
+    /// If animation metadata is absent, the value is applied immediately.
+    pub fn set_target(&mut self, target: T, animation: Option<Animation>) {
+        let from = self.current.clone();
+        match animation {
+            Some(animation) if !animation.duration().is_zero() => {
+                self.active = Some(ActiveTrack {
+                    animation,
+                    elapsed: Duration::ZERO,
+                    from,
+                    to: target,
+                });
+            }
+            _ => {
+                self.current = target;
+                self.active = None;
+            }
+        }
+    }
+
+    /// Advance by a frame delta.
+    ///
+    /// Returns `true` while an animation remains active after advancement.
+    pub fn advance(&mut self, delta: Duration) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+
+        active.elapsed = active.elapsed.saturating_add(delta);
+        self.current =
+            active
+                .animation
+                .interpolate(active.from.clone(), active.to.clone(), active.elapsed);
+
+        if active.animation.is_complete(active.elapsed) {
+            self.current = active.to.clone();
+            self.active = None;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Whether this track has an active animation.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
 /// Default duration for timed animations.
 const DEFAULT_TIMED_DURATION: Duration = Duration::from_millis(250);
 /// Default spring animation duration (used for timing calculations).
@@ -377,9 +575,12 @@ impl Animation {
     /// let value = anim.interpolate(0.0_f32, 100.0_f32, elapsed);
     /// // value is approximately 50.0, but eased
     /// ```
-    pub fn interpolate<T: Interpolatable>(&self, from: T, to: T, elapsed: Duration) -> T {
+    pub fn interpolate<T: Animatable>(&self, from: T, to: T, elapsed: Duration) -> T {
         let progress = self.progress(elapsed);
-        from.lerp(&to, progress)
+        let from_data = from.animatable_data();
+        let to_data = to.animatable_data();
+        let blended = from_data.lerp(&to_data, progress);
+        T::from_animatable_data(blended)
     }
 
     /// Returns true if the animation is complete.
@@ -485,5 +686,52 @@ mod tests {
     #[should_panic(expected = "x1/x2 in [0, 1]")]
     fn bezier_rejects_invalid_x_range() {
         let _ = Animation::bezier(Duration::from_millis(100), -0.1, 0.0, 0.5, 1.0);
+    }
+
+    #[test]
+    fn animation_track_advances_to_target() {
+        let mut track = AnimationTrack::new(0.0_f32);
+        track.set_target(
+            1.0,
+            Some(Animation::ease_in_out(Duration::from_millis(120))),
+        );
+        assert!(track.advance(Duration::from_millis(60)));
+        let mid = track.value();
+        assert!(mid > 0.0 && mid < 1.0);
+        assert!(!track.advance(Duration::from_millis(120)));
+        assert!((track.value() - 1.0).abs() < 0.0001);
+    }
+
+    #[derive(Clone)]
+    struct Pair {
+        x: f32,
+        y: f32,
+    }
+
+    impl Animatable for Pair {
+        type AnimatableData = (f32, f32);
+
+        fn animatable_data(&self) -> Self::AnimatableData {
+            (self.x, self.y)
+        }
+
+        fn from_animatable_data(data: Self::AnimatableData) -> Self {
+            Self {
+                x: data.0,
+                y: data.1,
+            }
+        }
+    }
+
+    #[test]
+    fn custom_animatable_interpolates() {
+        let animation = Animation::linear(Duration::from_millis(100));
+        let value = animation.interpolate(
+            Pair { x: 0.0, y: 0.0 },
+            Pair { x: 10.0, y: 20.0 },
+            Duration::from_millis(50),
+        );
+        assert!((value.x - 5.0).abs() < 0.001);
+        assert!((value.y - 10.0).abs() < 0.001);
     }
 }

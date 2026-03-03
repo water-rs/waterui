@@ -61,15 +61,8 @@ pub use image::{CanvasImage, ImageError};
 pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
-use alloc::borrow::Cow;
-use core::any::Any;
-use core::cell::Cell;
 
-use nami::signal::IntoSignal;
-use nami::Signal;
-use waterui_core::layout::{Point, Rect, Size, StretchAxis};
-use waterui_core::IntoSignalF32;
+use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
 use kurbo::{self, Shape as _};
@@ -77,14 +70,14 @@ use peniko;
 
 use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::state::{DrawingState, FillStyle, StrokeStyle};
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{Scene2D, SceneContent, SceneView};
 
 /// A canvas for 2D vector graphics rendering.
 ///
 /// Canvas provides a simple callback-based API where you receive a
 /// [`DrawingContext`] to draw shapes, paths, and text.
 pub struct Canvas {
-    draw_fn: Box<dyn FnMut(&mut DrawingContext)>,
+    draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
 }
 
 impl core::fmt::Debug for Canvas {
@@ -110,7 +103,7 @@ impl Canvas {
     #[must_use]
     pub fn new<F>(draw: F) -> Self
     where
-        F: FnMut(&mut DrawingContext) + 'static,
+        F: FnMut(&mut DrawingContext) + Send + 'static,
     {
         Self {
             draw_fn: Box::new(draw),
@@ -122,62 +115,7 @@ impl waterui_core::View for Canvas {
     fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
         SceneView::new(CanvasContent {
             draw_fn: self.draw_fn,
-            invalidator: None,
-            pending_redraw: Rc::new(Cell::new(false)),
-            active_guards: Vec::new(),
-            text_engine: TextEngine::default(),
         })
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-}
-
-struct TextEngine {
-    font_cx: parley::FontContext,
-    layout_cx: parley::LayoutContext,
-}
-
-impl Default for TextEngine {
-    fn default() -> Self {
-        Self {
-            font_cx: parley::FontContext::new(),
-            layout_cx: parley::LayoutContext::new(),
-        }
-    }
-}
-
-struct ReactiveFrameState<'a> {
-    pending_redraw: Rc<Cell<bool>>,
-    invalidator: Option<SceneInvalidator>,
-    guards: &'a mut Vec<Box<dyn Any>>,
-}
-
-/// Drawable resource for unified Canvas resource rendering.
-#[derive(Debug, Clone, Copy)]
-pub enum CanvasResource<'a> {
-    /// Raster image resource.
-    Image(&'a CanvasImage),
-    /// Plain text resource.
-    Text(&'a str),
-}
-
-impl<'a> From<&'a CanvasImage> for CanvasResource<'a> {
-    fn from(value: &'a CanvasImage) -> Self {
-        Self::Image(value)
-    }
-}
-
-impl<'a> From<&'a str> for CanvasResource<'a> {
-    fn from(value: &'a str) -> Self {
-        Self::Text(value)
-    }
-}
-
-impl<'a> From<&'a String> for CanvasResource<'a> {
-    fn from(value: &'a String) -> Self {
-        Self::Text(value.as_str())
     }
 }
 
@@ -198,9 +136,6 @@ pub struct DrawingContext<'a> {
     state_stack: Vec<DrawingState>,
     /// Current drawing state.
     current_state: DrawingState,
-    reactive: ReactiveFrameState<'a>,
-    text_engine: &'a mut TextEngine,
-    requested_next_frame: bool,
 }
 
 impl core::fmt::Debug for DrawingContext<'_> {
@@ -225,54 +160,10 @@ impl DrawingContext<'_> {
         Point::new(self.width / 2.0, self.height / 2.0)
     }
 
-    /// Requests another frame after the current one completes.
-    pub fn request_next_frame(&mut self) {
-        self.requested_next_frame = true;
-    }
-
-    fn track_signal<S>(&mut self, signal: &S)
-    where
-        S: Signal + 'static,
-        S::Guard: 'static,
-    {
-        let pending_redraw = Rc::clone(&self.reactive.pending_redraw);
-        let invalidator = self.reactive.invalidator.clone();
-        let guard = signal.watch(move |_| {
-            pending_redraw.set(true);
-            if let Some(invalidator) = &invalidator {
-                invalidator();
-            }
-        });
-        self.reactive.guards.push(Box::new(guard));
-    }
-
-    fn resolve_signal<T, S>(&mut self, value: S) -> T
-    where
-        T: 'static,
-        S: IntoSignal<T>,
-        S::Signal: Signal<Output = T> + 'static,
-        <S::Signal as Signal>::Guard: 'static,
-    {
-        let signal = value.into_signal();
-        self.track_signal(&signal);
-        signal.get()
-    }
-
-    fn resolve_f32(&mut self, value: impl IntoSignalF32) -> f32 {
-        let signal = value.into_signal_f32();
-        self.track_signal(&signal);
-        let resolved = signal.get();
-        if !resolved.is_finite() {
-            panic!("Canvas f32 signal resolved to a non-finite value");
-        }
-        resolved
-    }
-
     /// Pushes a clip layer, clipping subsequent drawing to the given rectangle.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_clip_rect(&mut self, rect: impl IntoSignal<Rect>) {
-        let rect = self.resolve_signal(rect);
+    pub fn push_clip_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
         let clip_path = kurbo_rect.to_path(0.1);
         self.scene.push_clip_layer(
@@ -296,13 +187,7 @@ impl DrawingContext<'_> {
     /// Pushes a layer with alpha (opacity), clipping content to the given rectangle.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_alpha_rect(
-        &mut self,
-        alpha: impl IntoSignalF32,
-        rect: impl IntoSignal<Rect>,
-    ) {
-        let alpha = self.resolve_f32(alpha);
-        let rect = self.resolve_signal(rect);
+    pub fn push_alpha_rect(&mut self, alpha: f32, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
         let clip_path = kurbo_rect.to_path(0.1);
         self.scene.push_layer(
@@ -317,8 +202,7 @@ impl DrawingContext<'_> {
     /// Pushes a layer with alpha (opacity), clipping content to the given path.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_alpha_path(&mut self, alpha: impl IntoSignalF32, path: &Path) {
-        let alpha = self.resolve_f32(alpha);
+    pub fn push_alpha_path(&mut self, alpha: f32, path: &Path) {
         self.scene.push_layer(
             self.current_state.fill_rule,
             self.current_state.blend_mode,
@@ -331,37 +215,6 @@ impl DrawingContext<'_> {
     /// Pops the current layer.
     pub fn pop_layer(&mut self) {
         self.scene.pop_layer();
-    }
-
-    // ========================================================================
-    // Unified Resource Drawing
-    // ========================================================================
-
-    /// Draws an image/text resource at a point.
-    pub fn draw_resource<'a>(
-        &mut self,
-        resource: impl Into<CanvasResource<'a>>,
-        pos: impl IntoSignal<Point>,
-    ) {
-        match resource.into() {
-            CanvasResource::Image(image) => self.draw_image(image, pos),
-            CanvasResource::Text(text) => self.draw_text(text, pos),
-        }
-    }
-
-    /// Draws an image/text resource within a rectangle.
-    ///
-    /// Image is scaled to the rectangle.
-    /// Text is wrapped to rectangle width and clipped to the rectangle bounds.
-    pub fn draw_resource_in<'a>(
-        &mut self,
-        resource: impl Into<CanvasResource<'a>>,
-        rect: impl IntoSignal<Rect>,
-    ) {
-        match resource.into() {
-            CanvasResource::Image(image) => self.draw_image_scaled(image, rect),
-            CanvasResource::Text(text) => self.draw_text_in_rect(text, rect),
-        }
     }
 
     // ========================================================================
@@ -402,9 +255,7 @@ impl DrawingContext<'_> {
     /// Translates the current transform by (x, y).
     ///
     /// This affects all subsequent drawing operations until `restore()`.
-    pub fn translate(&mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) {
-        let x = self.resolve_f32(x);
-        let y = self.resolve_f32(y);
+    pub fn translate(&mut self, x: f32, y: f32) {
         let translation = kurbo::Affine::translate((f64::from(x), f64::from(y)));
         self.current_state.transform *= translation;
     }
@@ -412,8 +263,7 @@ impl DrawingContext<'_> {
     /// Rotates the current transform by the given angle (in radians).
     ///
     /// Positive angles rotate clockwise.
-    pub fn rotate(&mut self, angle: impl IntoSignalF32) {
-        let angle = self.resolve_f32(angle);
+    pub fn rotate(&mut self, angle: f32) {
         let rotation = kurbo::Affine::rotate(f64::from(angle));
         self.current_state.transform *= rotation;
     }
@@ -421,9 +271,7 @@ impl DrawingContext<'_> {
     /// Scales the current transform by (x, y).
     ///
     /// Values less than 1.0 shrink, greater than 1.0 enlarge.
-    pub fn scale(&mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) {
-        let x = self.resolve_f32(x);
-        let y = self.resolve_f32(y);
+    pub fn scale(&mut self, x: f32, y: f32) {
         let scale = kurbo::Affine::scale_non_uniform(f64::from(x), f64::from(y));
         self.current_state.transform *= scale;
     }
@@ -433,21 +281,7 @@ impl DrawingContext<'_> {
     /// The transform is specified as a 2x3 matrix: [a, b, c, d, e, f]
     /// which represents the matrix [[a, c, e], [b, d, f], [0, 0, 1]].
     #[allow(clippy::many_single_char_names)]
-    pub fn transform(
-        &mut self,
-        a: impl IntoSignalF32,
-        b: impl IntoSignalF32,
-        c: impl IntoSignalF32,
-        d: impl IntoSignalF32,
-        e: impl IntoSignalF32,
-        f: impl IntoSignalF32,
-    ) {
-        let a = self.resolve_f32(a);
-        let b = self.resolve_f32(b);
-        let c = self.resolve_f32(c);
-        let d = self.resolve_f32(d);
-        let e = self.resolve_f32(e);
-        let f = self.resolve_f32(f);
+    pub fn transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
         let affine = kurbo::Affine::new([
             f64::from(a),
             f64::from(b),
@@ -461,21 +295,7 @@ impl DrawingContext<'_> {
 
     /// Replaces the current transform with the specified matrix.
     #[allow(clippy::many_single_char_names)]
-    pub fn set_transform(
-        &mut self,
-        a: impl IntoSignalF32,
-        b: impl IntoSignalF32,
-        c: impl IntoSignalF32,
-        d: impl IntoSignalF32,
-        e: impl IntoSignalF32,
-        f: impl IntoSignalF32,
-    ) {
-        let a = self.resolve_f32(a);
-        let b = self.resolve_f32(b);
-        let c = self.resolve_f32(c);
-        let d = self.resolve_f32(d);
-        let e = self.resolve_f32(e);
-        let f = self.resolve_f32(f);
+    pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
         self.current_state.transform = kurbo::Affine::new([
             f64::from(a),
             f64::from(b),
@@ -538,8 +358,7 @@ impl DrawingContext<'_> {
     // ========================================================================
 
     /// Fills a rectangle with the current fill style.
-    pub fn fill_rect(&mut self, rect: impl IntoSignal<Rect>) {
-        let rect = self.resolve_signal(rect);
+    pub fn fill_rect(&mut self, rect: Rect) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -557,8 +376,7 @@ impl DrawingContext<'_> {
     }
 
     /// Strokes a rectangle with the current stroke style.
-    pub fn stroke_rect(&mut self, rect: impl IntoSignal<Rect>) {
-        let rect = self.resolve_signal(rect);
+    pub fn stroke_rect(&mut self, rect: Rect) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -573,8 +391,7 @@ impl DrawingContext<'_> {
     }
 
     /// Clears a rectangle to transparent black.
-    pub fn clear_rect(&mut self, rect: impl IntoSignal<Rect>) {
-        let rect = self.resolve_signal(rect);
+    pub fn clear_rect(&mut self, rect: Rect) {
         let kurbo_rect = rect_to_kurbo(rect);
         let shape_path = kurbo_rect.to_path(0.1);
         let brush: peniko::Brush = peniko::Color::TRANSPARENT.into();
@@ -591,9 +408,7 @@ impl DrawingContext<'_> {
     // ========================================================================
 
     /// Fills a circle with the current fill style.
-    pub fn fill_circle(&mut self, center: impl IntoSignal<Point>, radius: impl IntoSignalF32) {
-        let center = self.resolve_signal(center);
-        let radius = self.resolve_f32(radius);
+    pub fn fill_circle(&mut self, center: Point, radius: f32) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -611,9 +426,7 @@ impl DrawingContext<'_> {
     }
 
     /// Strokes a circle with the current stroke style.
-    pub fn stroke_circle(&mut self, center: impl IntoSignal<Point>, radius: impl IntoSignalF32) {
-        let center = self.resolve_signal(center);
-        let radius = self.resolve_f32(radius);
+    pub fn stroke_circle(&mut self, center: Point, radius: f32) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -628,9 +441,7 @@ impl DrawingContext<'_> {
     }
 
     /// Strokes a line segment with the current stroke style.
-    pub fn stroke_line(&mut self, start: impl IntoSignal<Point>, end: impl IntoSignal<Point>) {
-        let start = self.resolve_signal(start);
-        let end = self.resolve_signal(end);
+    pub fn stroke_line(&mut self, start: Point, end: Point) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -659,8 +470,7 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the line width for stroking operations.
-    pub fn set_line_width(&mut self, width: impl IntoSignalF32) {
-        let width = self.resolve_f32(width);
+    pub const fn set_line_width(&mut self, width: f32) {
         self.current_state.line_width = width;
     }
 
@@ -675,38 +485,33 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the miter limit for miter line joins.
-    pub fn set_miter_limit(&mut self, limit: impl IntoSignalF32) {
-        let limit = self.resolve_f32(limit);
+    pub const fn set_miter_limit(&mut self, limit: f32) {
         self.current_state.miter_limit = limit;
     }
 
     /// Sets the line dash pattern.
     ///
     /// Pass an empty vector to disable dashing.
-    pub fn set_line_dash(&mut self, segments: impl IntoSignal<Vec<f32>>) {
-        let segments = self.resolve_signal(segments);
+    pub fn set_line_dash(&mut self, segments: Vec<f32>) {
         self.current_state.line_dash = segments;
     }
 
     /// Sets the line dash offset (where the dash pattern starts).
-    pub fn set_line_dash_offset(&mut self, offset: impl IntoSignalF32) {
-        let offset = self.resolve_f32(offset);
+    pub const fn set_line_dash_offset(&mut self, offset: f32) {
         self.current_state.line_dash_offset = offset;
     }
 
     /// Sets the global alpha (opacity) for all drawing operations.
     ///
     /// Values range from 0.0 (transparent) to 1.0 (opaque).
-    pub fn set_global_alpha(&mut self, alpha: impl IntoSignalF32) {
-        let alpha = self.resolve_f32(alpha);
+    pub const fn set_global_alpha(&mut self, alpha: f32) {
         self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
     }
 
     /// Sets the shadow blur radius.
     ///
     /// A blur value of 0 means sharp shadows, higher values create softer shadows.
-    pub fn set_shadow_blur(&mut self, blur: impl IntoSignalF32) {
-        let blur = self.resolve_f32(blur);
+    pub const fn set_shadow_blur(&mut self, blur: f32) {
         self.current_state.shadow_blur = blur.max(0.0);
     }
 
@@ -720,9 +525,7 @@ impl DrawingContext<'_> {
     /// # Arguments
     /// * `x` - Horizontal offset (positive = right)
     /// * `y` - Vertical offset (positive = down)
-    pub fn set_shadow_offset(&mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) {
-        let x = self.resolve_f32(x);
-        let y = self.resolve_f32(y);
+    pub const fn set_shadow_offset(&mut self, x: f32, y: f32) {
         self.current_state.shadow_offset_x = x;
         self.current_state.shadow_offset_y = y;
     }
@@ -829,8 +632,7 @@ impl DrawingContext<'_> {
     /// let image = CanvasImage::from_bytes(png_data)?;
     /// ctx.draw_image(&image, Point::new(10.0, 10.0));
     /// ```
-    pub fn draw_image(&mut self, image: &CanvasImage, pos: impl IntoSignal<Point>) {
-        let pos = self.resolve_signal(pos);
+    pub fn draw_image(&mut self, image: &CanvasImage, pos: Point) {
         let size = image.size();
         let dest_rect = Rect::new(pos, size);
         self.draw_image_scaled(image, dest_rect);
@@ -849,8 +651,7 @@ impl DrawingContext<'_> {
     /// let dest = Rect::new(Point::ZERO, Size::new(200.0, 150.0));
     /// ctx.draw_image_scaled(&image, dest);
     /// ```
-    pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: impl IntoSignal<Rect>) {
-        let dest = self.resolve_signal(dest);
+    pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: Rect) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -895,14 +696,7 @@ impl DrawingContext<'_> {
     /// let dest = Rect::new(Point::new(100.0, 100.0), Size::new(64.0, 64.0));
     /// ctx.draw_image_sub(&sprite_sheet, src, dest);
     /// ```
-    pub fn draw_image_sub(
-        &mut self,
-        image: &CanvasImage,
-        src: impl IntoSignal<Rect>,
-        dest: impl IntoSignal<Rect>,
-    ) {
-        let src = self.resolve_signal(src);
-        let dest = self.resolve_signal(dest);
+    pub fn draw_image_sub(&mut self, image: &CanvasImage, src: Rect, dest: Rect) {
         if self.skip_draw_for_zero_alpha() {
             return;
         }
@@ -990,47 +784,46 @@ impl DrawingContext<'_> {
         TextMetrics::new(width, height)
     }
 
-    /// Draws filled text at the specified position.
-    pub fn draw_text(&mut self, text: &str, pos: impl IntoSignal<Point>) {
-        if text.is_empty() || self.skip_draw_for_zero_alpha() {
-            return;
-        }
-
-        let pos = self.resolve_signal(pos);
-        let layout = self.build_text_layout(text, None);
-        self.draw_text_layout(&layout, pos);
-    }
-
-    /// Draws text inside a rectangle.
-    ///
-    /// The text layout is width-constrained and clipped to rectangle bounds.
-    pub fn draw_text_in_rect(&mut self, text: &str, rect: impl IntoSignal<Rect>) {
-        if text.is_empty() || self.skip_draw_for_zero_alpha() {
-            return;
-        }
-        let rect = self.resolve_signal(rect);
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
-        }
-        let layout = self.build_text_layout(text, Some(rect.width()));
-        let clip_path = rect_to_kurbo(rect).to_path(0.1);
-        self.scene.push_clip_layer(
-            self.current_state.fill_rule,
-            self.current_state.transform,
-            &clip_path,
-        );
-        self.draw_text_layout(&layout, rect.origin());
-        self.scene.pop_layer();
-    }
-
     /// Fills text at the specified position.
-    pub fn fill_text(&mut self, text: &str, pos: impl IntoSignal<Point>) {
-        self.draw_text(text, pos);
+    ///
+    /// Note: This is a simplified implementation. Full text rendering with
+    /// complex layouts, bidirectional text, and font fallbacks requires
+    /// integration with Parley's text layout engine.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.fill_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn fill_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement full text rendering with Parley
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. Iterate through glyphs in the layout
+        // 3. Use Scene::draw_glyphs() to render each glyph run
+        // 4. Apply current fill style to glyphs
+
+        tracing::warn!("fill_text is not yet fully implemented - requires Parley integration");
     }
 
     /// Strokes text at the specified position.
-    pub fn stroke_text(&mut self, _text: &str, _pos: impl IntoSignal<Point>) {
-        panic!("Canvas stroke_text is not implemented");
+    ///
+    /// Note: This is a simplified implementation. Stroke text requires
+    /// converting glyphs to paths using skrifa.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.stroke_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn stroke_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement stroke text
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. For each glyph, use skrifa to convert it to a path
+        // 3. Stroke each path with current stroke style
+
+        tracing::warn!("stroke_text is not yet fully implemented - requires skrifa integration");
     }
 
     // ========================================================================
@@ -1094,124 +887,22 @@ impl DrawingContext<'_> {
             self.scene.pop_layer();
         }
     }
-
-    fn build_text_layout(&mut self, text: &str, max_width: Option<f32>) -> parley::Layout<[u8; 4]> {
-        let font = self.current_state.font.clone();
-        let family = font.family.trim().to_owned();
-
-        let mut builder = self.text_engine.layout_cx.ranged_builder(
-            &mut self.text_engine.font_cx,
-            text,
-            1.0,
-            true,
-        );
-        builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
-        builder.push_default(parley::StyleProperty::FontSize(font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(font.weight)));
-        builder.push_default(parley::StyleProperty::FontStyle(parley_font_style(font.style)));
-        if !family.is_empty() {
-            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
-                parley::FontFamily::Named(Cow::Owned(family)),
-            )));
-        }
-
-        let mut layout = builder.build(text);
-        layout.break_all_lines(max_width);
-        layout.align(
-            max_width,
-            parley::Alignment::Start,
-            parley::AlignmentOptions::default(),
-        );
-        layout
-    }
-
-    fn draw_text_layout(&mut self, layout: &parley::Layout<[u8; 4]>, origin: Point) {
-        if layout.is_empty() {
-            return;
-        }
-
-        let brush = self.resolve_fill_style();
-        let alpha = self.normalized_global_alpha();
-        let transform = self.current_state.transform
-            * kurbo::Affine::translate((f64::from(origin.x), f64::from(origin.y)));
-        let mut text_scene = vello::Scene::new();
-
-        for line in layout.lines() {
-            for item in line.items() {
-                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let normalized_coords: Vec<vello::NormalizedCoord> =
-                        run.normalized_coords().to_vec();
-                    let mut run_x = glyph_run.offset();
-                    let run_y = glyph_run.baseline();
-                    let glyphs = glyph_run.glyphs().map(move |glyph| {
-                        let x = run_x + glyph.x;
-                        let y = run_y - glyph.y;
-                        run_x += glyph.advance;
-                        vello::Glyph { id: glyph.id, x, y }
-                    });
-
-                    text_scene
-                        .draw_glyphs(run.font())
-                        .brush(&brush)
-                        .brush_alpha(alpha)
-                        .transform(transform)
-                        .font_size(run.font_size())
-                        .normalized_coords(&normalized_coords)
-                        .draw(peniko::Fill::NonZero, glyphs);
-                }
-            }
-        }
-
-        self.scene.append_vello_scene(&text_scene, None);
-    }
-}
-
-fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
-    parley::FontWeight::new(f32::from(weight.value()))
-}
-
-fn parley_font_style(style: FontStyle) -> parley::FontStyle {
-    match style {
-        FontStyle::Normal => parley::FontStyle::Normal,
-        FontStyle::Italic => parley::FontStyle::Italic,
-        FontStyle::Oblique => parley::FontStyle::Oblique(None),
-    }
 }
 
 struct CanvasContent {
-    draw_fn: Box<dyn FnMut(&mut DrawingContext)>,
-    invalidator: Option<SceneInvalidator>,
-    pending_redraw: Rc<Cell<bool>>,
-    active_guards: Vec<Box<dyn Any>>,
-    text_engine: TextEngine,
+    draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
 }
 
 impl SceneContent for CanvasContent {
     #[allow(clippy::cast_precision_loss)]
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        self.active_guards.clear();
-        self.pending_redraw.set(false);
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) {
         let mut ctx = DrawingContext {
             scene,
             width,
             height,
             state_stack: Vec::new(),
             current_state: DrawingState::new(),
-            reactive: ReactiveFrameState {
-                pending_redraw: Rc::clone(&self.pending_redraw),
-                invalidator: self.invalidator.clone(),
-                guards: &mut self.active_guards,
-            },
-            text_engine: &mut self.text_engine,
-            requested_next_frame: false,
         };
         (self.draw_fn)(&mut ctx);
-        let requested_next_frame = ctx.requested_next_frame;
-        requested_next_frame || self.pending_redraw.replace(false)
-    }
-
-    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        self.invalidator = invalidator;
     }
 }
