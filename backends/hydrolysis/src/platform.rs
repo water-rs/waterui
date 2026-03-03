@@ -43,6 +43,15 @@ pub enum TextInputPurpose {
     Password,
 }
 
+/// Gesture/touch lifecycle phase mapped from the platform event stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextInputState {
@@ -70,12 +79,25 @@ pub enum InputEvent {
         x: f32,
         y: f32,
     },
+    PointerCancel,
     Scroll {
         x: f32,
         y: f32,
         dx: f32,
         dy: f32,
         is_line_delta: bool,
+    },
+    Magnification {
+        x: f32,
+        y: f32,
+        delta: f32,
+        phase: TouchPhase,
+    },
+    Rotation {
+        x: f32,
+        y: f32,
+        delta: f32,
+        phase: TouchPhase,
     },
     Key {
         key: KeyCode,
@@ -353,7 +375,10 @@ mod winit_impl {
     use waterui_graphics::gpu_surface::preferred_surface_format;
     use winit::{
         dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
-        event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
+        event::{
+            ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase,
+            WindowEvent,
+        },
         keyboard::{Key, ModifiersState},
         window::{
             Cursor as WinitCursor, CursorIcon, Fullscreen, ImePurpose, Window as NativeWindow,
@@ -363,7 +388,7 @@ mod winit_impl {
 
     use super::{
         CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
+        SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
     };
 
     pub struct WinitSurface {
@@ -565,6 +590,9 @@ mod winit_impl {
                         y: self.pointer_position.1,
                     });
                 }
+                WindowEvent::CursorLeft { .. } => {
+                    self.pending_events.push(InputEvent::PointerCancel);
+                }
                 WindowEvent::MouseInput { state, button, .. } => {
                     let mapped_button = map_button(*button);
                     let (x, y) = self.pointer_position;
@@ -593,6 +621,22 @@ mod winit_impl {
                         dx,
                         dy,
                         is_line_delta,
+                    });
+                }
+                WindowEvent::PinchGesture { delta, phase, .. } => {
+                    self.pending_events.push(InputEvent::Magnification {
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                        delta: *delta as f32,
+                        phase: (*phase).into(),
+                    });
+                }
+                WindowEvent::RotationGesture { delta, phase, .. } => {
+                    self.pending_events.push(InputEvent::Rotation {
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                        delta: *delta as f32,
+                        phase: (*phase).into(),
                     });
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
@@ -729,6 +773,17 @@ mod winit_impl {
                 control: value.control_key(),
                 alt: value.alt_key(),
                 super_key: value.super_key(),
+            }
+        }
+    }
+
+    impl From<WinitTouchPhase> for TouchPhase {
+        fn from(value: WinitTouchPhase) -> Self {
+            match value {
+                WinitTouchPhase::Started => Self::Started,
+                WinitTouchPhase::Moved => Self::Moved,
+                WinitTouchPhase::Ended => Self::Ended,
+                WinitTouchPhase::Cancelled => Self::Cancelled,
             }
         }
     }
