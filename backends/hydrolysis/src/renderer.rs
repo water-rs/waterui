@@ -7835,7 +7835,6 @@ impl HydrolysisRenderer {
         self.navigation_cursor = 0;
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
-        self.dispatcher.state_mut().dynamic_intrinsic_cache.clear();
         #[cfg(feature = "accessibility")]
         {
             self.accessibility_nodes.clear();
