@@ -301,27 +301,33 @@ pub async fn run(args: Args) -> Result<()> {
         }
     }
 
-    // Playground mode keeps generated backends in `.water`; initialize them lazily.
+    // Playground mode keeps generated backends in `.water`; regenerate managed backend glue when needed.
     match backend {
-        TargetBackend::Gtk4 if project.is_playground() && project.gtk4_backend().is_none() => {
-            let spinner = shell::spinner("Initializing GTK4 backend...");
-            reinit_backend::<Gtk4Backend>(&project).await?;
-            project = Project::open(&project_path).await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
+        TargetBackend::Gtk4 if project.is_playground() => {
+            let needs_reinit = project.gtk4_backend().is_none()
+                || !project.backend_path::<Gtk4Backend>().join("Cargo.toml").exists();
+            if needs_reinit {
+                let spinner = shell::spinner("Initializing GTK4 backend...");
+                reinit_backend::<Gtk4Backend>(&project).await?;
+                project = Project::open(&project_path).await?;
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                success!("GTK4 backend initialized");
             }
-            success!("GTK4 backend initialized");
         }
-        TargetBackend::Hydrolysis
-            if project.is_playground() && project.hydrolysis_backend().is_none() =>
-        {
-            let spinner = shell::spinner("Initializing hydrolysis backend...");
-            reinit_backend::<HydrolysisBackend>(&project).await?;
-            project = Project::open(&project_path).await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
+        TargetBackend::Hydrolysis if project.is_playground() => {
+            let needs_reinit = project.hydrolysis_backend().is_none()
+                || HydrolysisBackend::requires_regeneration(&project)?;
+            if needs_reinit {
+                let spinner = shell::spinner("Initializing hydrolysis backend...");
+                reinit_backend::<HydrolysisBackend>(&project).await?;
+                project = Project::open(&project_path).await?;
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                success!("Hydrolysis backend initialized");
             }
-            success!("Hydrolysis backend initialized");
         }
         _ => {}
     }
