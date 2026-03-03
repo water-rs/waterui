@@ -5870,7 +5870,7 @@ impl HydrolysisRenderer {
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }
 
-        let hit_bounds = transformed_rect(ctx.transform, control_bounds);
+        let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
         let toggle_binding = toggle.toggle;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(hit_bounds, move |_point, _env| {
@@ -6023,9 +6023,14 @@ impl HydrolysisRenderer {
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
+        if usable_track <= 0.0 {
+            panic!("hydrolysis slider resolved a non-positive track width");
+        }
+        let inverse_transform = ctx.transform.inverse();
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(hit_bounds, move |point, _env| {
-            let x = point.x.clamp(track_left, track_right);
+            let local_point = inverse_transform * point;
+            let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             value_binding.set(range_start + span * t);
             true
@@ -6347,7 +6352,7 @@ impl HydrolysisRenderer {
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, field_rect),
+            transformed_rect(ctx.transform, ctx.bounds),
             transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Normal,
             move |command| {
@@ -6449,7 +6454,7 @@ impl HydrolysisRenderer {
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, field_rect),
+            transformed_rect(ctx.transform, ctx.bounds),
             transformed_rect(ctx.transform, cursor_area),
             TextInputPurpose::Password,
             move |command| {
