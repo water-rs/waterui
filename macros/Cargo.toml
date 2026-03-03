@@ -22,5 +22,10 @@ icu_locid_transform = "1.5"
 toml = "0.8"
 proc-macro-crate = "3"
 
+[dev-dependencies]
+trybuild = "1.0"
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true
