@@ -1,5 +1,5 @@
-use waterui::window::{Window as WuiWindow, WindowState};
 use waterui::cursor::CursorStyle;
+use waterui::window::{Window as WuiWindow, WindowState};
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +355,10 @@ mod winit_impl {
         dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
         event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
         keyboard::{Key, ModifiersState},
-        window::{Cursor as WinitCursor, CursorIcon, Fullscreen, ImePurpose, Window as NativeWindow, WindowId},
+        window::{
+            Cursor as WinitCursor, CursorIcon, Fullscreen, ImePurpose, Window as NativeWindow,
+            WindowId,
+        },
     };
 
     use super::{
@@ -556,8 +559,7 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    let logical = position.to_logical::<f64>(self.window.scale_factor());
-                    self.pointer_position = (logical.x as f32, logical.y as f32);
+                    self.pointer_position = (position.x as f32, position.y as f32);
                     self.pending_events.push(InputEvent::PointerMove {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -586,10 +588,7 @@ mod winit_impl {
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (dx, dy, is_line_delta) = match delta {
                         MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
-                        MouseScrollDelta::PixelDelta(delta) => {
-                            let scale = self.window.scale_factor() as f32;
-                            (delta.x as f32 / scale, delta.y as f32 / scale, false)
-                        }
+                        MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32, false),
                     };
                     self.pending_events.push(InputEvent::Scroll {
                         x: self.pointer_position.0,
