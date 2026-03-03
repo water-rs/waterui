@@ -1,6 +1,7 @@
 use hydrolysis::HydrolysisExt;
-use waterui::Environment;
-use waterui::prelude::*;
+use waterui::Color;
+use waterui::View;
+use waterui::env::Environment;
 use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
 
 #[derive(Clone)]

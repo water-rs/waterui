@@ -559,7 +559,7 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer_position = (position.x as f32, position.y as f32);
+                    self.pointer_position = map_cursor_position(position);
                     self.pending_events.push(InputEvent::PointerMove {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -586,10 +586,7 @@ mod winit_impl {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let (dx, dy, is_line_delta) = match delta {
-                        MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
-                        MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32, false),
-                    };
+                    let (dx, dy, is_line_delta) = map_scroll_delta(delta);
                     self.pending_events.push(InputEvent::Scroll {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
@@ -627,6 +624,17 @@ mod winit_impl {
                 },
                 _ => {}
             }
+        }
+    }
+
+    fn map_cursor_position(position: &PhysicalPosition<f64>) -> (f32, f32) {
+        (position.x as f32, position.y as f32)
+    }
+
+    fn map_scroll_delta(delta: &MouseScrollDelta) -> (f32, f32, bool) {
+        match delta {
+            MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
+            MouseScrollDelta::PixelDelta(delta) => (delta.x as f32, delta.y as f32, false),
         }
     }
 
@@ -763,6 +771,39 @@ mod winit_impl {
             CursorStyle::Wait => CursorIcon::Wait,
             CursorStyle::Copy => CursorIcon::Copy,
             _ => panic!("unsupported CursorStyle variant in hydrolysis winit backend"),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::MouseScrollDelta;
+
+        use super::{map_cursor_position, map_scroll_delta};
+
+        #[test]
+        fn cursor_position_uses_physical_coordinates() {
+            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25));
+            assert_eq!(x, 384.5);
+            assert_eq!(y, 216.25);
+        }
+
+        #[test]
+        fn pixel_scroll_delta_is_forwarded_without_scale_conversion() {
+            let (dx, dy, is_line_delta) = map_scroll_delta(&MouseScrollDelta::PixelDelta(
+                PhysicalPosition::new(120.0, -48.5),
+            ));
+            assert_eq!(dx, 120.0);
+            assert_eq!(dy, -48.5);
+            assert!(!is_line_delta);
+        }
+
+        #[test]
+        fn line_scroll_delta_is_preserved() {
+            let (dx, dy, is_line_delta) = map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5));
+            assert_eq!(dx, -2.0);
+            assert_eq!(dy, 3.5);
+            assert!(is_line_delta);
         }
     }
 
