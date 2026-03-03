@@ -1339,11 +1339,9 @@ enum AccessibilityActionTarget {
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
-        point: vello::kurbo::Point,
     },
     SecureField {
         value: nami::Binding<FormSecure>,
-        point: vello::kurbo::Point,
     },
     PickerCycle {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -3211,6 +3209,11 @@ impl HydroNativeView for Native<StepperConfig> {
             node.set_numeric_value(f64::from(current));
             node.set_min_numeric_value(f64::from(start));
             node.set_max_numeric_value(f64::from(end));
+            let step = stepper.step.get();
+            if step <= 0 {
+                panic!("hydrolysis stepper requires positive step");
+            }
+            node.set_numeric_value_step(f64::from(step));
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Increment);
             node.add_action(AccessibilityAction::Decrement);
@@ -3315,7 +3318,6 @@ impl HydroNativeView for Native<TextFieldConfig> {
                 Some(AccessibilityActionTarget::TextField {
                     value: text_field.value.clone(),
                     line_limit,
-                    point: accessibility_activation_point(bounds),
                 }),
             );
         }
@@ -3360,7 +3362,6 @@ impl HydroNativeView for Native<SecureFieldConfig> {
                 env,
                 Some(AccessibilityActionTarget::SecureField {
                     value: secure_field.value.clone(),
-                    point: accessibility_activation_point(bounds),
                 }),
             );
         }
@@ -4087,6 +4088,86 @@ impl HydrolysisRenderer {
             "text input focus changed"
         );
         true
+    }
+
+    fn target_hit_priority(depth: usize, order: usize, index: usize) -> (usize, usize, usize) {
+        (depth, order, index)
+    }
+
+    fn topmost_text_input_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
+        self.text_input_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                Self::target_hit_priority(left.depth, left.order, *left_index).cmp(
+                    &Self::target_hit_priority(right.depth, right.order, *right_index),
+                )
+            })
+            .map(|(index, _)| index)
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn accessibility_text_input_focus_node_at_point(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<AccessibilityNodeId> {
+        let mut focused = None;
+        for (node_id, node) in &self.accessibility_nodes {
+            let Some(bounds) = node.bounds() else {
+                continue;
+            };
+            if !accesskit_rect_to_kurbo_rect(bounds).contains(point) {
+                continue;
+            }
+            match node.role() {
+                AccessibilityNodeRole::TextInput
+                | AccessibilityNodeRole::MultilineTextInput
+                | AccessibilityNodeRole::PasswordInput => {
+                    focused = Some(*node_id);
+                }
+                _ => {}
+            }
+        }
+        focused
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
+        let index = self.focused_text_input.get()?;
+        let target = self.text_input_targets.as_slice().get(index)?;
+        let center = accessibility_activation_point(target.bounds);
+        self.accessibility_text_input_focus_node_at_point(center)
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn focus_text_input_for_accessibility_node(&mut self, node_id: AccessibilityNodeId) -> bool {
+        let node = self
+            .accessibility_nodes
+            .iter()
+            .find_map(|(id, node)| (*id == node_id).then_some(node))
+            .unwrap_or_else(|| {
+                panic!(
+                    "hydrolysis accessibility focus target node {:?} is missing in current tree",
+                    node_id
+                )
+            });
+        let bounds = node.bounds().unwrap_or_else(|| {
+            panic!(
+                "hydrolysis accessibility focus target node {:?} is missing bounds",
+                node_id
+            )
+        });
+        let point = accessibility_activation_point(accesskit_rect_to_kurbo_rect(bounds));
+        let focused = self
+            .topmost_text_input_index_at_point(point)
+            .unwrap_or_else(|| {
+                panic!(
+                    "hydrolysis accessibility focus target node {:?} has no matching text input target",
+                    node_id
+                )
+            });
+        self.set_focused_text_input(Some(focused))
     }
 
     fn push_render_depth(&mut self) {
@@ -8128,24 +8209,21 @@ impl HydrolysisRenderer {
             AccessibilityActionTarget::TextField {
                 value,
                 line_limit,
-                point,
             } => handle_accessibility_text_field_action(
                 self,
+                target_node,
                 &value,
                 line_limit,
-                point,
                 action,
                 action_data,
-                env,
             ),
-            AccessibilityActionTarget::SecureField { value, point } => {
+            AccessibilityActionTarget::SecureField { value } => {
                 handle_accessibility_secure_field_action(
                     self,
+                    target_node,
                     &value,
-                    point,
                     action,
                     action_data,
-                    env,
                 )
             }
             AccessibilityActionTarget::PickerCycle { selection, ids } => {
@@ -8362,38 +8440,31 @@ impl HydrolysisRenderer {
         pointer_indices.sort_unstable_by(|left, right| {
             let left_target = &self.pointer_targets[*left];
             let right_target = &self.pointer_targets[*right];
-            right_target
-                .order
-                .cmp(&left_target.order)
-                .then(right.cmp(left))
+            Self::target_hit_priority(right_target.depth, right_target.order, *right).cmp(
+                &Self::target_hit_priority(left_target.depth, left_target.order, *left),
+            )
         });
-        let focused = self
-            .text_input_targets
-            .iter()
-            .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
-            .max_by(|(left_index, left), (right_index, right)| {
-                left.order
-                    .cmp(&right.order)
-                    .then(left_index.cmp(right_index))
-            })
-            .map(|(index, _)| index);
-        let top_pointer_order = pointer_indices
-            .first()
-            .map(|index| self.pointer_targets[*index].order);
-        let focused_order = focused.map(|index| self.text_input_targets[index].order);
+        let focused = self.topmost_text_input_index_at_point(point);
+        let top_pointer_priority = pointer_indices.first().map(|index| {
+            let target = &self.pointer_targets[*index];
+            Self::target_hit_priority(target.depth, target.order, *index)
+        });
+        let focused_priority = focused.map(|index| {
+            let target = &self.text_input_targets[index];
+            Self::target_hit_priority(target.depth, target.order, index)
+        });
         let focus_wins = matches!(
-            (focused_order, top_pointer_order),
-            (Some(focus_order), Some(pointer_order)) if focus_order > pointer_order
-        ) || matches!((focused_order, top_pointer_order), (Some(_), None));
+            (focused_priority, top_pointer_priority),
+            (Some(focus_priority), Some(pointer_priority)) if focus_priority > pointer_priority
+        ) || matches!((focused_priority, top_pointer_priority), (Some(_), None));
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
             y,
             pointer_hits = ?pointer_indices,
-            pointer_top_order = ?top_pointer_order,
+            pointer_top_priority = ?top_pointer_priority,
             focused_candidate = ?focused,
-            focused_order = ?focused_order,
+            focused_priority = ?focused_priority,
             focus_wins,
             "pointer down candidates"
         );
@@ -9142,6 +9213,9 @@ impl HydrolysisRenderer {
         let mut nodes = Vec::with_capacity(self.accessibility_nodes.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
         nodes.extend(self.accessibility_nodes.iter().cloned());
+        self.accessibility_focus = self
+            .focused_text_input_accessibility_node()
+            .unwrap_or(ACCESSIBILITY_ROOT_NODE_ID);
         if !self
             .accessibility_nodes
             .iter()
@@ -9306,17 +9380,12 @@ fn transform_accessibility_action_target(
         AccessibilityActionTarget::TextField {
             value,
             line_limit,
-            point,
         } => AccessibilityActionTarget::TextField {
             value: value.clone(),
             line_limit: *line_limit,
-            point: transform * *point,
         },
-        AccessibilityActionTarget::SecureField { value, point } => {
-            AccessibilityActionTarget::SecureField {
-                value: value.clone(),
-                point: transform * *point,
-            }
+        AccessibilityActionTarget::SecureField { value } => {
+            AccessibilityActionTarget::SecureField { value: value.clone() }
         }
         AccessibilityActionTarget::PickerCycle { selection, ids } => {
             AccessibilityActionTarget::PickerCycle {
@@ -9513,16 +9582,15 @@ fn handle_accessibility_stepper_action(
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_text_field_action(
     renderer: &mut HydrolysisRenderer,
+    node_id: AccessibilityNodeId,
     value: &nami::Binding<StyledStr>,
     line_limit: Option<usize>,
-    point: vello::kurbo::Point,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
-    env: &Environment,
 ) -> bool {
     match action {
         AccessibilityAction::Click | AccessibilityAction::Focus => {
-            handle_accessibility_pointer_action(renderer, action, point, env)
+            renderer.focus_text_input_for_accessibility_node(node_id)
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
@@ -9545,15 +9613,14 @@ fn handle_accessibility_text_field_action(
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_secure_field_action(
     renderer: &mut HydrolysisRenderer,
+    node_id: AccessibilityNodeId,
     value: &nami::Binding<FormSecure>,
-    point: vello::kurbo::Point,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
-    env: &Environment,
 ) -> bool {
     match action {
         AccessibilityAction::Click | AccessibilityAction::Focus => {
-            handle_accessibility_pointer_action(renderer, action, point, env)
+            renderer.focus_text_input_for_accessibility_node(node_id)
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
