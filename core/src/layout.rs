@@ -89,8 +89,9 @@ impl StretchAxis {
 ///
 /// # Pure Functions
 ///
-/// All methods are pure (take `&self`) with no side effects. Caching of
-/// measurement results is handled by the native backend, not in Rust.
+/// All methods are pure (take `&self`) with no side effects. Any measurement
+/// caching should be owned by leaf implementations, while containers can
+/// re-query freely.
 pub trait SubView {
     /// Query the child's size for a given proposal.
     ///
@@ -119,6 +120,14 @@ pub trait SubView {
     ///
     /// Higher priority views are measured first and get space preference.
     fn priority(&self) -> i32;
+
+    /// Whether size measurement for this view must run on the main thread.
+    ///
+    /// Views that bridge into UI frameworks with main-thread-only measurement APIs
+    /// should override this to return `true`.
+    fn require_main_thread(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
