@@ -16,7 +16,7 @@ waterui-graphics.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
 nami.workspace = true
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 
 [lints]
 workspace = true
