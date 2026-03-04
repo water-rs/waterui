@@ -315,16 +315,17 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
             let content = runtime.window.build_content();
+            runtime.renderer.dispatch_with_transform(
+                content,
+                env,
+                bounds,
+                root_transform,
+                vello::kurbo::Affine::IDENTITY,
+            );
+            runtime.renderer.finish_rebuild_frame();
             runtime
                 .renderer
-                .dispatch_with_transform(
-                    content,
-                    env,
-                    bounds,
-                    root_transform,
-                    vello::kurbo::Affine::IDENTITY,
-                );
-            runtime.renderer.finish_rebuild_frame();
+                .sync_active_interactions_after_layout(runtime.pointer_position);
             runtime.needs_rebuild = false;
             if let Some((x, y)) = runtime.pointer_position {
                 if runtime.renderer.handle_pointer_move(x, y, env) {
