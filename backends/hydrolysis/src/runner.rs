@@ -557,7 +557,7 @@ mod winit_runner {
             pending_windows: windows,
             windows: HashMap::new(),
             accesskit_adapters: HashMap::new(),
-            accessibility_enabled: probe_accessibility_runtime(),
+            accessibility_enabled: super::probe_accessibility_runtime(),
             local_runnable_rx,
             event_proxy,
             render_diagnostics_config,
