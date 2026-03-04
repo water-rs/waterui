@@ -1,4 +1,6 @@
 use std::time::{Duration, Instant};
+#[cfg(feature = "winit")]
+use std::{process::Command, str};
 
 use nami::Signal as _;
 use waterui::app::App;
@@ -227,6 +229,43 @@ fn duration_ms(duration: Duration) -> f64 {
 
 fn elapsed_or_zero(started_at: Option<Instant>) -> Duration {
     started_at.map_or(Duration::ZERO, |value| value.elapsed())
+}
+
+#[cfg(feature = "winit")]
+fn probe_accessibility_runtime() -> bool {
+    let output = Command::new("busctl")
+        .args([
+            "--user",
+            "get-property",
+            "org.a11y.Bus",
+            "/org/a11y/bus",
+            "org.a11y.Status",
+            "ScreenReaderEnabled",
+        ])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => {
+            let stderr = str::from_utf8(&output.stderr)
+                .map(str::trim)
+                .unwrap_or("<non-utf8 stderr>");
+            tracing::warn!(
+                target: "waterui::hydrolysis::a11y",
+                status = %output.status,
+                stderr,
+                "disabling accesskit adapter: org.a11y.Bus probe failed"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::a11y",
+                error = %error,
+                "disabling accesskit adapter: failed to execute busctl probe"
+            );
+            false
+        }
+    }
 }
 
 struct RuntimeWindow<P: PlatformWindow> {
@@ -518,6 +557,7 @@ mod winit_runner {
             pending_windows: windows,
             windows: HashMap::new(),
             accesskit_adapters: HashMap::new(),
+            accessibility_enabled: probe_accessibility_runtime(),
             local_runnable_rx,
             event_proxy,
             render_diagnostics_config,
@@ -534,6 +574,7 @@ mod winit_runner {
         pending_windows: Vec<Window>,
         windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
         accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
+        accessibility_enabled: bool,
         local_runnable_rx: mpsc::Receiver<Runnable>,
         event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
         render_diagnostics_config: RenderDiagnosticsConfig,
@@ -557,7 +598,7 @@ mod winit_runner {
             &mut self,
             event_loop: &ActiveEventLoop,
             window: Window,
-        ) -> (RuntimeWindow<WinitWindow>, AccessKitAdapter) {
+        ) -> (RuntimeWindow<WinitWindow>, Option<AccessKitAdapter>) {
             let frame = window.frame.get();
             let attributes = NativeWindow::default_attributes()
                 .with_title(window.title.get().as_str())
@@ -579,17 +620,28 @@ mod winit_runner {
                 let surface = platform.surface();
                 HydrolysisRenderer::new(surface.device())
             };
-            let adapter = AccessKitAdapter::with_event_loop_proxy(
-                event_loop,
-                platform.native_window(),
-                self.event_proxy.clone(),
-            );
-            tracing::trace!(
-                target: "waterui::hydrolysis::a11y",
-                window_id = ?platform.id(),
-                title = window.title.get().as_str(),
-                "created accesskit adapter for window"
-            );
+            let adapter = if self.accessibility_enabled {
+                let adapter = AccessKitAdapter::with_event_loop_proxy(
+                    event_loop,
+                    platform.native_window(),
+                    self.event_proxy.clone(),
+                );
+                tracing::trace!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?platform.id(),
+                    title = window.title.get().as_str(),
+                    "created accesskit adapter for window"
+                );
+                Some(adapter)
+            } else {
+                tracing::warn!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?platform.id(),
+                    title = window.title.get().as_str(),
+                    "accessibility adapter disabled: org.a11y.Bus is unavailable"
+                );
+                None
+            };
             platform.native_window().set_visible(true);
             (
                 RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config),
@@ -603,7 +655,9 @@ mod winit_runner {
                 let (runtime, adapter) = self.create_runtime_window(event_loop, window);
                 let id = runtime.platform.id();
                 self.windows.insert(id, runtime);
-                self.accesskit_adapters.insert(id, adapter);
+                if let Some(adapter) = adapter {
+                    self.accesskit_adapters.insert(id, adapter);
+                }
             }
         }
 
@@ -845,11 +899,9 @@ mod winit_runner {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
-            let adapter = self
-                .accesskit_adapters
-                .get_mut(&window_id)
-                .expect("hydrolysis runner missing AccessKit adapter for window");
-            adapter.process_event(runtime.platform.native_window(), &event);
+            if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
+                adapter.process_event(runtime.platform.native_window(), &event);
+            }
             runtime.platform.handle_window_event(&event);
             let should_close = Self::handle_input_events(runtime, &self.env);
 
@@ -864,19 +916,21 @@ mod winit_runner {
 
             if let WindowEvent::RedrawRequested = event {
                 render_window(runtime, &self.env);
-                if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
-                    tracing::trace!(
-                        target: "waterui::hydrolysis::a11y",
-                        window_id = ?window_id,
-                        "publishing accessibility tree update on redraw"
-                    );
-                    adapter.update_if_active(|| update);
-                } else {
-                    tracing::trace!(
-                        target: "waterui::hydrolysis::a11y",
-                        window_id = ?window_id,
-                        "no accessibility tree update available on redraw"
-                    );
+                if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
+                    if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::a11y",
+                            window_id = ?window_id,
+                            "publishing accessibility tree update on redraw"
+                        );
+                        adapter.update_if_active(|| update);
+                    } else {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::a11y",
+                            window_id = ?window_id,
+                            "no accessibility tree update available on redraw"
+                        );
+                    }
                 }
             }
         }
@@ -924,10 +978,9 @@ mod winit_runner {
                     let Some(runtime) = self.windows.get_mut(&event.window_id) else {
                         return;
                     };
-                    let adapter = self
-                        .accesskit_adapters
-                        .get_mut(&event.window_id)
-                        .expect("hydrolysis runner missing AccessKit adapter for user event");
+                    let Some(adapter) = self.accesskit_adapters.get_mut(&event.window_id) else {
+                        return;
+                    };
                     match event.window_event {
                         AccessKitWindowEvent::InitialTreeRequested => {
                             tracing::trace!(
