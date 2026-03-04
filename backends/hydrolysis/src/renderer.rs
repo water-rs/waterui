@@ -5312,7 +5312,12 @@ impl HydrolysisRenderer {
 
         let hit_bounds = transformed_rect(
             ctx.hit_transform,
-            vello::kurbo::Rect::new(track_left, control_top, track_right, control_bottom),
+            vello::kurbo::Rect::new(
+                track_left - SLIDER_THUMB_RADIUS,
+                control_top,
+                track_right + SLIDER_THUMB_RADIUS,
+                control_bottom,
+            ),
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
