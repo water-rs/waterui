@@ -374,7 +374,7 @@ mod winit_impl {
     use waterui::window::WindowState;
     use waterui_graphics::gpu_surface::preferred_surface_format;
     use winit::{
-        dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+        dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::{
             ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase,
             WindowEvent,
@@ -534,7 +534,6 @@ mod winit_impl {
         surface: WinitSurface,
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
-        pointer_scale_factor: f64,
         modifiers: Modifiers,
         ime_allowed: bool,
         current_cursor_style: CursorStyle,
@@ -543,13 +542,11 @@ mod winit_impl {
     impl WinitWindow {
         pub async fn new(window: Arc<NativeWindow>) -> Self {
             let surface = WinitSurface::new(window.clone()).await;
-            let pointer_scale_factor = window.scale_factor();
             Self {
                 window,
                 surface,
                 pending_events: Vec::new(),
                 pointer_position: (0.0, 0.0),
-                pointer_scale_factor,
                 modifiers: Modifiers::default(),
                 ime_allowed: false,
                 current_cursor_style: CursorStyle::Arrow,
@@ -584,9 +581,6 @@ mod winit_impl {
                             "hydrolysis winit backend received invalid scale factor {scale_factor}"
                         );
                     }
-                    let ratio = *scale_factor / self.pointer_scale_factor;
-                    self.pointer_position = scale_pointer_position(self.pointer_position, ratio);
-                    self.pointer_scale_factor = *scale_factor;
                     let size = self.window.inner_size();
                     self.surface.resize(size.width, size.height);
                     self.pending_events.push(InputEvent::Resize {
@@ -595,7 +589,8 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer_position = map_cursor_position(position);
+                    self.pointer_position =
+                        map_cursor_position(position, self.window.scale_factor());
                     tracing::trace!(
                         target: "waterui::hydrolysis::input_raw",
                         event = "cursor_moved",
@@ -724,8 +719,12 @@ mod winit_impl {
         }
     }
 
-    fn map_cursor_position(position: &PhysicalPosition<f64>) -> (f32, f32) {
-        (position.x as f32, position.y as f32)
+    fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
+        }
+        let logical = position.to_logical::<f64>(scale_factor);
+        (logical.x as f32, logical.y as f32)
     }
 
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
@@ -739,13 +738,6 @@ mod winit_impl {
                 (logical.x as f32, logical.y as f32, false)
             }
         }
-    }
-
-    fn scale_pointer_position(position: (f32, f32), ratio: f64) -> (f32, f32) {
-        (
-            (f64::from(position.0) * ratio) as f32,
-            (f64::from(position.1) * ratio) as f32,
-        )
     }
 
     impl PlatformWindow for WinitWindow {
@@ -813,11 +805,18 @@ mod winit_impl {
                 TextInputPurpose::Password => ImePurpose::Password,
             };
             self.window.set_ime_purpose(purpose);
+            let scale_factor = self.window.scale_factor();
+            if !scale_factor.is_finite() || scale_factor <= 0.0 {
+                panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
+            }
+            let cursor_origin = LogicalPosition::new(state.x, state.y).to_physical::<f64>(scale_factor);
+            let cursor_size = LogicalSize::new(state.width.max(1.0), state.height.max(1.0))
+                .to_physical::<f64>(scale_factor);
             self.window.set_ime_cursor_area(
-                PhysicalPosition::new(state.x.round() as i32, state.y.round() as i32),
+                PhysicalPosition::new(cursor_origin.x.round() as i32, cursor_origin.y.round() as i32),
                 PhysicalSize::new(
-                    state.width.max(1.0).ceil() as u32,
-                    state.height.max(1.0).ceil() as u32,
+                    cursor_size.width.ceil() as u32,
+                    cursor_size.height.ceil() as u32,
                 ),
             );
         }
@@ -900,13 +899,13 @@ mod winit_impl {
         use winit::dpi::PhysicalPosition;
         use winit::event::MouseScrollDelta;
 
-        use super::{map_cursor_position, map_scroll_delta, scale_pointer_position};
+        use super::{map_cursor_position, map_scroll_delta};
 
         #[test]
-        fn cursor_position_uses_physical_coordinates() {
-            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25));
-            assert_eq!(x, 384.5);
-            assert_eq!(y, 216.25);
+        fn cursor_position_is_converted_to_logical_coordinates() {
+            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
+            assert_eq!(x, 192.25);
+            assert_eq!(y, 108.125);
         }
 
         #[test]
@@ -930,8 +929,11 @@ mod winit_impl {
         }
 
         #[test]
-        fn pointer_position_scales_with_scale_factor_ratio() {
-            assert_eq!(scale_pointer_position((120.0, 80.0), 1.5), (180.0, 120.0));
+        fn cursor_position_panics_with_invalid_scale_factor() {
+            let result = std::panic::catch_unwind(|| {
+                let _ = map_cursor_position(&PhysicalPosition::new(120.0, 80.0), 0.0);
+            });
+            assert!(result.is_err());
         }
     }
 
