@@ -21,13 +21,17 @@ type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
 #[derive(Clone)]
 pub(crate) struct GestureTarget {
     pub bounds: vello::kurbo::Rect,
+    pub depth: usize,
+    pub order: usize,
     recognizer: GestureRecognizerHandle,
 }
 
 impl GestureTarget {
-    pub(crate) fn with_bounds(&self, bounds: vello::kurbo::Rect) -> Self {
+    pub(crate) fn with_bounds_and_depth(&self, bounds: vello::kurbo::Rect, depth: usize) -> Self {
         Self {
             bounds,
+            depth,
+            order: self.order,
             recognizer: Rc::clone(&self.recognizer),
         }
     }
@@ -177,9 +181,13 @@ impl GestureEngine {
         bounds: vello::kurbo::Rect,
         gesture: Gesture,
         action: BoxedAction<()>,
+        depth: usize,
+        order: usize,
     ) {
         self.register_target_recognizer(
             bounds,
+            depth,
+            order,
             Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
         );
     }
@@ -187,9 +195,16 @@ impl GestureEngine {
     fn register_target_recognizer(
         &mut self,
         bounds: vello::kurbo::Rect,
+        depth: usize,
+        order: usize,
         recognizer: GestureRecognizerHandle,
     ) {
-        self.targets.push(GestureTarget { bounds, recognizer });
+        self.targets.push(GestureTarget {
+            bounds,
+            depth,
+            order,
+            recognizer,
+        });
     }
 
     pub(crate) fn register_existing_target(&mut self, target: GestureTarget) {
@@ -351,12 +366,20 @@ impl GestureEngine {
             .and_then(|recognizer| recognizer.borrow().next_deadline())
     }
 
+    fn target_priority(target: &GestureTarget, index: usize) -> (usize, usize, usize) {
+        (target.depth, target.order, index)
+    }
+
     fn recognizer_at(&self, point: vello::kurbo::Point) -> Option<GestureRecognizerHandle> {
         self.targets
             .iter()
-            .rev()
-            .find(|target| target.bounds.contains(point))
-            .map(|target| Rc::clone(&target.recognizer))
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                Self::target_priority(left, *left_index)
+                    .cmp(&Self::target_priority(right, *right_index))
+            })
+            .map(|(_, target)| Rc::clone(&target.recognizer))
     }
 
     fn ensure_active_recognizer_is_live(&mut self) {
