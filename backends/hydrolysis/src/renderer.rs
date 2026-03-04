@@ -136,6 +136,7 @@ impl HydroState {
 pub struct RenderContext {
     renderer_ptr: *mut HydrolysisRenderer,
     pub transform: vello::kurbo::Affine,
+    pub hit_transform: vello::kurbo::Affine,
     pub bounds: vello::kurbo::Rect,
 }
 
@@ -147,18 +148,21 @@ impl RenderContext {
         Self {
             renderer_ptr: renderer as *mut HydrolysisRenderer,
             transform: vello::kurbo::Affine::IDENTITY,
+            hit_transform: vello::kurbo::Affine::IDENTITY,
             bounds,
         }
     }
 
-    pub(crate) fn with_renderer_transform(
+    pub(crate) fn with_renderer_transforms(
         renderer: &mut HydrolysisRenderer,
         bounds: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
+        hit_transform: vello::kurbo::Affine,
     ) -> Self {
         Self {
             renderer_ptr: renderer as *mut HydrolysisRenderer,
             transform,
+            hit_transform,
             bounds,
         }
     }
@@ -180,6 +184,7 @@ impl RenderContext {
         Self {
             renderer_ptr: self.renderer_ptr,
             transform: self.transform * transform,
+            hit_transform: self.hit_transform * transform,
             bounds,
         }
     }
@@ -205,6 +210,8 @@ pub struct HydrolysisRenderer {
     hit_test_order: usize,
     focused_text_input: Cell<Option<usize>>,
     ime_preedit: Option<Str>,
+    text_caret_visible: bool,
+    text_caret_next_toggle_at: Option<Instant>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
@@ -1812,6 +1819,8 @@ const INPUT_FIELD_MIN_WIDTH: f64 = 72.0;
 const INPUT_FIELD_MIN_HEIGHT: f64 = 30.0;
 const INPUT_FIELD_HORIZONTAL_INSET: f64 = 8.0;
 const INPUT_FIELD_VERTICAL_INSET: f64 = 6.0;
+const INPUT_CARET_BLINK_ON_DURATION: Duration = Duration::from_millis(530);
+const INPUT_CARET_BLINK_OFF_DURATION: Duration = Duration::from_millis(530);
 
 const PICKER_MIN_WIDTH: f64 = 72.0;
 const PICKER_MIN_HEIGHT: f64 = 30.0;
@@ -1844,6 +1853,10 @@ fn button_min_size(style: ButtonStyle) -> (f64, f64) {
         ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => (0.0, 0.0),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     }
+}
+
+fn input_placeholder_color() -> Color {
+    Color::srgb(142, 142, 147).with_opacity(0.8)
 }
 
 fn toggle_control_size(style: ToggleStyle) -> (f64, f64) {
@@ -2619,7 +2632,7 @@ impl HydroNativeView for Native<TextConfig> {
             node.set_label(label);
             let _ = renderer.register_accessibility_node(
                 node,
-                transformed_rect(ctx.transform, ctx.bounds),
+                transformed_rect(ctx.hit_transform, ctx.bounds),
                 env,
                 None,
             );
@@ -2747,7 +2760,7 @@ impl HydroNativeView for Native<ScrollView> {
             }
             let _ = renderer.register_accessibility_node(
                 node,
-                transformed_rect(ctx.transform, viewport),
+                transformed_rect(ctx.hit_transform, viewport),
                 env,
                 Some(AccessibilityActionTarget::Scroll {
                     handle: handle.clone(),
@@ -2826,7 +2839,7 @@ impl HydroNativeView for Native<NavigationView> {
                 }
                 if let Some(title_node_id) = renderer.register_accessibility_child_node(
                     title_node,
-                    transformed_rect(ctx.transform, title_rect),
+                    transformed_rect(ctx.hit_transform, title_rect),
                     env,
                     None,
                 ) {
@@ -2835,7 +2848,7 @@ impl HydroNativeView for Native<NavigationView> {
             }
             let _ = renderer.register_accessibility_node(
                 bar_node,
-                transformed_rect(ctx.transform, bar_rect),
+                transformed_rect(ctx.hit_transform, bar_rect),
                 env,
                 None,
             );
@@ -2878,7 +2891,7 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
             back_node.add_action(AccessibilityAction::Focus);
             back_node.add_action(AccessibilityAction::Click);
             let back_bounds =
-                transformed_rect(ctx.transform, navigation_back_button_rect(ctx.bounds));
+                transformed_rect(ctx.hit_transform, navigation_back_button_rect(ctx.bounds));
             let _ = renderer.register_accessibility_node(
                 back_node,
                 back_bounds,
@@ -2936,7 +2949,7 @@ impl HydroNativeView for Native<Tabs> {
                 tab_node.add_action(AccessibilityAction::Focus);
                 tab_node.add_action(AccessibilityAction::Click);
                 let tab_bounds = transformed_rect(
-                    ctx.transform,
+                    ctx.hit_transform,
                     tabs_button_rect(bar_rect, tabs.tabs.len(), index),
                 );
                 if let Some(tab_node_id) = renderer.register_accessibility_child_node(
@@ -2953,7 +2966,7 @@ impl HydroNativeView for Native<Tabs> {
             }
             let _ = renderer.register_accessibility_node(
                 tab_list,
-                transformed_rect(ctx.transform, bar_rect),
+                transformed_rect(ctx.hit_transform, bar_rect),
                 env,
                 None,
             );
@@ -3072,7 +3085,7 @@ impl HydroNativeView for Native<ListConfig> {
                 row_node.add_action(AccessibilityAction::Focus);
                 if let Some(row_node_id) = renderer.register_accessibility_child_node(
                     row_node,
-                    transformed_rect(ctx.transform, row_rect),
+                    transformed_rect(ctx.hit_transform, row_rect),
                     env,
                     None,
                 ) {
@@ -3081,7 +3094,7 @@ impl HydroNativeView for Native<ListConfig> {
             }
             let _ = renderer.register_accessibility_node(
                 list_node,
-                transformed_rect(ctx.transform, viewport),
+                transformed_rect(ctx.hit_transform, viewport),
                 env,
                 Some(AccessibilityActionTarget::Scroll {
                     handle: handle.clone(),
@@ -3120,7 +3133,7 @@ impl HydroNativeView for Native<ButtonConfig> {
             }
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Click);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let activation_point = accessibility_activation_point(bounds);
             let _ = renderer.register_accessibility_node(
                 node,
@@ -3165,7 +3178,7 @@ impl HydroNativeView for Native<ToggleConfig> {
             node.set_toggled(AccessibilityToggled::from(checked));
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Click);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -3218,7 +3231,7 @@ impl HydroNativeView for Native<StepperConfig> {
             node.add_action(AccessibilityAction::Increment);
             node.add_action(AccessibilityAction::Decrement);
             node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -3259,7 +3272,7 @@ impl HydroNativeView for Native<ProgressConfig> {
             node.set_numeric_value(value);
             node.set_min_numeric_value(0.0);
             node.set_max_numeric_value(1.0);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(node, bounds, env, None);
         }
     }
@@ -3310,7 +3323,7 @@ impl HydroNativeView for Native<TextFieldConfig> {
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Click);
             node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -3355,7 +3368,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Click);
             node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -3426,7 +3439,7 @@ impl HydroNativeView for Native<SystemIcon> {
             }
             let _ = renderer.register_accessibility_node(
                 node,
-                transformed_rect(_ctx.transform, _ctx.bounds),
+                transformed_rect(_ctx.hit_transform, _ctx.bounds),
                 _env,
                 None,
             );
@@ -3561,7 +3574,7 @@ impl HydroNativeView for Native<TableConfig> {
                 header_node.add_action(AccessibilityAction::Focus);
                 if let Some(header_node_id) = renderer.register_accessibility_child_node(
                     header_node,
-                    transformed_rect(ctx.transform, header_cell),
+                    transformed_rect(ctx.hit_transform, header_cell),
                     env,
                     None,
                 ) {
@@ -3584,7 +3597,7 @@ impl HydroNativeView for Native<TableConfig> {
                         cell_node.add_action(AccessibilityAction::Focus);
                         if let Some(cell_node_id) = renderer.register_accessibility_child_node(
                             cell_node,
-                            transformed_rect(ctx.transform, cell_rect),
+                            transformed_rect(ctx.hit_transform, cell_rect),
                             env,
                             None,
                         ) {
@@ -3597,7 +3610,7 @@ impl HydroNativeView for Native<TableConfig> {
 
             let _ = renderer.register_accessibility_node(
                 table_node,
-                transformed_rect(ctx.transform, viewport),
+                transformed_rect(ctx.hit_transform, viewport),
                 env,
                 Some(AccessibilityActionTarget::Scroll {
                     handle: handle.clone(),
@@ -3644,7 +3657,7 @@ impl HydroNativeView for Native<SliderConfig> {
             node.add_action(AccessibilityAction::Increment);
             node.add_action(AccessibilityAction::Decrement);
             node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.transform, ctx.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
             let _ = renderer.register_accessibility_node(
                 node,
                 bounds,
@@ -3727,7 +3740,7 @@ impl HydroNativeView for Native<PickerConfig> {
                         option.add_action(AccessibilityAction::Focus);
                         option.add_action(AccessibilityAction::Click);
                         let option_bounds = transformed_rect(
-                            ctx.transform,
+                            ctx.hit_transform,
                             menu_picker_option_rect(popup_rect, row_height, index),
                         );
                         if let Some(option_id) = renderer.register_accessibility_child_node(
@@ -3743,7 +3756,7 @@ impl HydroNativeView for Native<PickerConfig> {
                         }
                     }
                     let ids = items.iter().map(|item| item.tag).collect::<Vec<_>>();
-                    let bounds = transformed_rect(ctx.transform, ctx.bounds);
+                    let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
                     let _ = renderer.register_accessibility_node(
                         node,
                         bounds,
@@ -3762,7 +3775,7 @@ impl HydroNativeView for Native<PickerConfig> {
                     if let Some(label) = group_label {
                         group.set_label(label);
                     }
-                    let group_bounds = transformed_rect(ctx.transform, ctx.bounds);
+                    let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
                     let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
                     let selected = renderer.read_signal(&picker.selection);
                     for item in &items {
@@ -3796,7 +3809,7 @@ impl HydroNativeView for Native<PickerConfig> {
                         option.set_selected(is_selected);
                         option.add_action(AccessibilityAction::Focus);
                         option.add_action(AccessibilityAction::Click);
-                        let row_bounds = transformed_rect(ctx.transform, row_rect);
+                        let row_bounds = transformed_rect(ctx.hit_transform, row_rect);
                         if let Some(child_id) = renderer.register_accessibility_child_node(
                             option,
                             row_bounds,
@@ -3843,7 +3856,7 @@ impl HydroNativeView for Native<GpuSurface> {
             }
             let _ = renderer.register_accessibility_node(
                 node,
-                transformed_rect(_ctx.transform, _ctx.bounds),
+                transformed_rect(_ctx.hit_transform, _ctx.bounds),
                 _env,
                 None,
             );
@@ -3877,7 +3890,7 @@ impl HydroNativeView for Native<SceneView> {
             }
             let _ = renderer.register_accessibility_node(
                 node,
-                transformed_rect(_ctx.transform, _ctx.bounds),
+                transformed_rect(_ctx.hit_transform, _ctx.bounds),
                 _env,
                 None,
             );
@@ -3965,6 +3978,8 @@ impl HydrolysisRenderer {
             hit_test_order: 0,
             focused_text_input: Cell::new(None),
             ime_preedit: None,
+            text_caret_visible: false,
+            text_caret_next_toggle_at: None,
             lifecycle_disappear_previous: BTreeMap::new(),
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
@@ -4074,6 +4089,45 @@ impl HydrolysisRenderer {
             .register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
     }
 
+    fn reset_text_caret_blink(&mut self, now: Instant) {
+        self.text_caret_visible = true;
+        self.text_caret_next_toggle_at = Some(
+            now.checked_add(INPUT_CARET_BLINK_ON_DURATION)
+                .expect("hydrolysis text caret blink timestamp overflow"),
+        );
+    }
+
+    fn clear_text_caret_blink(&mut self) {
+        self.text_caret_visible = false;
+        self.text_caret_next_toggle_at = None;
+    }
+
+    fn advance_text_caret_blink(&mut self, now: Instant) -> bool {
+        if self.focused_text_input.get().is_none() {
+            return false;
+        }
+        let mut changed = false;
+        let mut next = self.text_caret_next_toggle_at.unwrap_or_else(|| {
+            self.reset_text_caret_blink(now);
+            self.text_caret_next_toggle_at
+                .expect("hydrolysis text caret blink state missing next toggle timestamp")
+        });
+        while now >= next {
+            self.text_caret_visible = !self.text_caret_visible;
+            let duration = if self.text_caret_visible {
+                INPUT_CARET_BLINK_ON_DURATION
+            } else {
+                INPUT_CARET_BLINK_OFF_DURATION
+            };
+            next = next
+                .checked_add(duration)
+                .expect("hydrolysis text caret blink timestamp overflow");
+            changed = true;
+        }
+        self.text_caret_next_toggle_at = Some(next);
+        changed
+    }
+
     fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
         let previous = self.focused_text_input.get();
         if previous == focused {
@@ -4081,6 +4135,11 @@ impl HydrolysisRenderer {
         }
         self.focused_text_input.set(focused);
         self.ime_preedit = None;
+        if focused.is_some() {
+            self.reset_text_caret_blink(Instant::now());
+        } else {
+            self.clear_text_caret_blink();
+        }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             previous_focus = ?previous,
@@ -4390,7 +4449,7 @@ impl HydrolysisRenderer {
         for target in &subtree.pointer_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             self.register_pointer_target_action(
-                transformed_rect(ctx.transform, target.bounds),
+                transformed_rect(ctx.hit_transform, target.bounds),
                 target.captures_drag,
                 Rc::clone(&target.action),
                 depth,
@@ -4398,25 +4457,25 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.gesture_targets {
             self.register_gesture_target_recognizer(
-                transformed_rect(ctx.transform, target.bounds),
+                transformed_rect(ctx.hit_transform, target.bounds),
                 Rc::clone(&target.recognizer),
             );
         }
         for target in &subtree.cursor_targets {
             self.register_cursor_target_style(
-                transformed_rect(ctx.transform, target.bounds),
+                transformed_rect(ctx.hit_transform, target.bounds),
                 target.style,
             );
         }
         for target in &subtree.hover_targets {
-            let bounds = transformed_rect(ctx.transform, target.bounds);
+            let bounds = transformed_rect(ctx.hit_transform, target.bounds);
             self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
         }
         for target in &subtree.text_input_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             self.register_text_input_target_action(
-                transformed_rect(ctx.transform, target.bounds),
-                transformed_rect(ctx.transform, target.cursor_area),
+                transformed_rect(ctx.hit_transform, target.bounds),
+                transformed_rect(ctx.hit_transform, target.cursor_area),
                 target.purpose,
                 Rc::clone(&target.action),
                 depth,
@@ -4424,13 +4483,13 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.scroll_targets {
             self.register_scroll_target_action(
-                transformed_rect(ctx.transform, target.bounds),
+                transformed_rect(ctx.hit_transform, target.bounds),
                 Rc::clone(&target.action),
             );
         }
 
         #[cfg(feature = "accessibility")]
-        self.replay_dynamic_accessibility_subtree(ctx.transform, &subtree.accessibility);
+        self.replay_dynamic_accessibility_subtree(ctx.hit_transform, &subtree.accessibility);
     }
 
     #[cfg(feature = "accessibility")]
@@ -4883,7 +4942,7 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             let target_handle = handle.clone();
             renderer.register_scroll_target(
-                transformed_rect(ctx.transform, viewport),
+                transformed_rect(ctx.hit_transform, viewport),
                 move |dx, dy, is_line_delta| {
                     target_handle.apply_scroll_delta(dx, dy, is_line_delta)
                 },
@@ -5019,6 +5078,7 @@ impl HydrolysisRenderer {
         let local_ctx = RenderContext {
             renderer_ptr: ctx.renderer_ptr,
             transform: vello::kurbo::Affine::IDENTITY,
+            hit_transform: vello::kurbo::Affine::IDENTITY,
             bounds: ctx.bounds,
         };
         let active_scene = Self::render_subtree_scene(local_ctx, &local_env, active);
@@ -5128,7 +5188,7 @@ impl HydrolysisRenderer {
         };
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(
-            transformed_rect(ctx.transform, back_button_rect),
+            transformed_rect(ctx.hit_transform, back_button_rect),
             move |_point, _env| {
                 if entries_for_pop.borrow_mut().pop().is_some() {
                     rebuild_requested.set(true);
@@ -5222,7 +5282,7 @@ impl HydrolysisRenderer {
             let selection_binding = selection.clone();
             let renderer = unsafe { ctx.renderer() };
             renderer.register_pointer_target(
-                transformed_rect(ctx.transform, button_rect),
+                transformed_rect(ctx.hit_transform, button_rect),
                 move |_point, _env| {
                     if selection_binding.get() != tab_id {
                         selection_binding.set(tab_id);
@@ -5391,7 +5451,7 @@ impl HydrolysisRenderer {
                     let action = Rc::clone(move_action.as_ref().expect("move action missing"));
                     let renderer = unsafe { ctx.renderer() };
                     renderer.register_pointer_target(
-                        transformed_rect(ctx.transform, up_rect),
+                        transformed_rect(ctx.hit_transform, up_rect),
                         move |_point, env| {
                             (action.as_ref())(env, index, index - 1);
                             true
@@ -5408,7 +5468,7 @@ impl HydrolysisRenderer {
                     let action = Rc::clone(move_action.as_ref().expect("move action missing"));
                     let renderer = unsafe { ctx.renderer() };
                     renderer.register_pointer_target(
-                        transformed_rect(ctx.transform, down_rect),
+                        transformed_rect(ctx.hit_transform, down_rect),
                         move |_point, env| {
                             (action.as_ref())(env, index, index + 1);
                             true
@@ -5438,7 +5498,7 @@ impl HydrolysisRenderer {
                 let action = Rc::clone(delete_action.as_ref().expect("delete action missing"));
                 let renderer = unsafe { ctx.renderer() };
                 renderer.register_pointer_target(
-                    transformed_rect(ctx.transform, delete_rect),
+                    transformed_rect(ctx.hit_transform, delete_rect),
                     move |_point, env| {
                         (action.as_ref())(env, index);
                         true
@@ -5477,7 +5537,7 @@ impl HydrolysisRenderer {
         let renderer = unsafe { ctx.renderer() };
         let handle_for_input = handle.clone();
         renderer.register_scroll_target(
-            transformed_rect(ctx.transform, viewport),
+            transformed_rect(ctx.hit_transform, viewport),
             move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
         );
         let scene = unsafe { ctx.scene() };
@@ -5653,7 +5713,7 @@ impl HydrolysisRenderer {
         let renderer = unsafe { ctx.renderer() };
         let handle_for_input = handle.clone();
         renderer.register_scroll_target(
-            transformed_rect(ctx.transform, viewport),
+            transformed_rect(ctx.hit_transform, viewport),
             move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
         );
         let scene = unsafe { ctx.scene() };
@@ -5716,7 +5776,7 @@ impl HydrolysisRenderer {
                     node.set_label(label);
                     let _ = renderer.register_accessibility_node(
                         node,
-                        transformed_rect(ctx.transform, ctx.bounds),
+                        transformed_rect(ctx.hit_transform, ctx.bounds),
                         env,
                         None,
                     );
@@ -5961,7 +6021,7 @@ impl HydrolysisRenderer {
             Self::dispatch_any_without_accessibility(ctx, env, button.label);
         }
 
-        let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         {
             let renderer = unsafe { ctx.renderer() };
             let mut action = button.action;
@@ -6026,7 +6086,7 @@ impl HydrolysisRenderer {
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         }
 
-        let hit_bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let toggle_binding = toggle.toggle;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_pointer_target(hit_bounds, move |_point, _env| {
@@ -6169,7 +6229,7 @@ impl HydrolysisRenderer {
         );
 
         let hit_bounds = transformed_rect(
-            ctx.transform,
+            ctx.hit_transform,
             vello::kurbo::Rect::new(track_left, control_top, track_right, control_bottom),
         );
         let value_binding = slider.value;
@@ -6177,7 +6237,7 @@ impl HydrolysisRenderer {
         if usable_track <= 0.0 {
             panic!("hydrolysis slider resolved a non-positive track width");
         }
-        let inverse_transform = ctx.transform.inverse();
+        let inverse_transform = ctx.hit_transform.inverse();
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "slider",
@@ -6271,12 +6331,12 @@ impl HydrolysisRenderer {
             target: "waterui::hydrolysis::hit_region",
             component = "stepper",
             layout_bounds = ?ctx.bounds,
-            minus_bounds = ?transformed_rect(ctx.transform, minus_bounds),
-            plus_bounds = ?transformed_rect(ctx.transform, plus_bounds),
+            minus_bounds = ?transformed_rect(ctx.hit_transform, minus_bounds),
+            plus_bounds = ?transformed_rect(ctx.hit_transform, plus_bounds),
             "register stepper button regions"
         );
         renderer.register_pointer_target(
-            transformed_rect(ctx.transform, minus_bounds),
+            transformed_rect(ctx.hit_transform, minus_bounds),
             move |_point, _env| {
                 let step = step_signal_minus.get();
                 if step <= 0 {
@@ -6289,7 +6349,7 @@ impl HydrolysisRenderer {
             },
         );
         renderer.register_pointer_target(
-            transformed_rect(ctx.transform, plus_bounds),
+            transformed_rect(ctx.hit_transform, plus_bounds),
             move |_point, _env| {
                 let step = step_signal_plus.get();
                 if step <= 0 {
@@ -6465,7 +6525,7 @@ impl HydrolysisRenderer {
         draw_input_field(scene, ctx.transform, field_rect);
 
         let prompt_signal = text_field.prompt.content();
-        let (prompt, value, preedit, is_focused) = {
+        let (prompt, value, preedit, show_caret) = {
             let renderer = unsafe { ctx.renderer() };
             let is_focused =
                 renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
@@ -6478,14 +6538,20 @@ impl HydrolysisRenderer {
                 renderer.read_signal(&prompt_signal).to_plain(),
                 renderer.read_signal(&text_field.value).to_plain(),
                 preedit,
-                is_focused,
+                is_focused && renderer.text_caret_visible,
             )
         };
         let committed_with_preedit = value.clone() + preedit.as_str();
-        let display = if committed_with_preedit.is_empty() {
+        let use_placeholder = committed_with_preedit.is_empty();
+        let display = if use_placeholder {
             prompt
         } else {
             committed_with_preedit.clone()
+        };
+        let display_styled = if use_placeholder {
+            StyledStr::plain(display).foreground(input_placeholder_color())
+        } else {
+            StyledStr::plain(display)
         };
         let text_bounds = inset_rect(
             field_rect,
@@ -6508,7 +6574,7 @@ impl HydrolysisRenderer {
                 vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
-            StyledStr::plain(display),
+            display_styled,
             env,
             line_limit,
         );
@@ -6522,8 +6588,10 @@ impl HydrolysisRenderer {
             env,
             Some(text_bounds.width() as f32),
         );
-        let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit);
-        if is_focused {
+        let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
+        let cursor_area =
+            text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit, caret_height);
+        if show_caret {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -6536,18 +6604,18 @@ impl HydrolysisRenderer {
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_cursor_target(transformed_rect(ctx.transform, field_rect), CursorStyle::IBeam);
+        renderer.register_cursor_target(transformed_rect(ctx.hit_transform, field_rect), CursorStyle::IBeam);
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "text_field",
             layout_bounds = ?ctx.bounds,
-            field_bounds = ?transformed_rect(ctx.transform, field_rect),
-            cursor_area = ?transformed_rect(ctx.transform, cursor_area),
+            field_bounds = ?transformed_rect(ctx.hit_transform, field_rect),
+            cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
             "register text field input region"
         );
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, field_rect),
-            transformed_rect(ctx.transform, cursor_area),
+            transformed_rect(ctx.hit_transform, field_rect),
+            transformed_rect(ctx.hit_transform, cursor_area),
             TextInputPurpose::Normal,
             move |command| {
                 let mut plain = value_binding.get().to_plain().to_string();
@@ -6604,7 +6672,7 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let (masked, is_focused) = {
+        let (masked, show_caret) = {
             let renderer = unsafe { ctx.renderer() };
             let is_focused =
                 renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
@@ -6622,7 +6690,7 @@ impl HydrolysisRenderer {
                 .chars()
                 .count()
                 + preedit_count;
-            ("*".repeat(count), is_focused)
+            ("*".repeat(count), is_focused && renderer.text_caret_visible)
         };
         let text_bounds = inset_rect(
             field_rect,
@@ -6646,8 +6714,10 @@ impl HydrolysisRenderer {
             env,
             Some(text_bounds.width() as f32),
         );
-        let cursor_area = text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1));
-        if is_focused {
+        let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
+        let cursor_area =
+            text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1), caret_height);
+        if show_caret {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -6660,18 +6730,18 @@ impl HydrolysisRenderer {
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_cursor_target(transformed_rect(ctx.transform, field_rect), CursorStyle::IBeam);
+        renderer.register_cursor_target(transformed_rect(ctx.hit_transform, field_rect), CursorStyle::IBeam);
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "secure_field",
             layout_bounds = ?ctx.bounds,
-            field_bounds = ?transformed_rect(ctx.transform, field_rect),
-            cursor_area = ?transformed_rect(ctx.transform, cursor_area),
+            field_bounds = ?transformed_rect(ctx.hit_transform, field_rect),
+            cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
             "register secure field input region"
         );
         renderer.register_text_input_target(
-            transformed_rect(ctx.transform, field_rect),
-            transformed_rect(ctx.transform, cursor_area),
+            transformed_rect(ctx.hit_transform, field_rect),
+            transformed_rect(ctx.hit_transform, cursor_area),
             TextInputPurpose::Password,
             move |command| {
                 let mut plain = value_binding.get().expose().to_owned();
@@ -6785,7 +6855,7 @@ impl HydrolysisRenderer {
         let renderer = unsafe { ctx.renderer() };
         let field_open_state = Rc::clone(&menu_open);
         renderer.register_pointer_target(
-            transformed_rect(ctx.transform, ctx.bounds),
+            transformed_rect(ctx.hit_transform, ctx.bounds),
             move |_point, _env| {
                 field_open_state.set(!field_open_state.get());
                 true
@@ -6864,7 +6934,7 @@ impl HydrolysisRenderer {
             let tag = item.tag;
             let renderer = unsafe { ctx.renderer() };
             renderer.register_pointer_target(
-                transformed_rect(ctx.transform, row_rect),
+                transformed_rect(ctx.hit_transform, row_rect),
                 move |_point, _env| {
                     if selection.get() != tag {
                         selection.set(tag);
@@ -6963,7 +7033,7 @@ impl HydrolysisRenderer {
 
             let tag = item.tag;
             let renderer = unsafe { ctx.renderer() };
-            renderer.register_pointer_target(transformed_rect(ctx.transform, row_rect), {
+            renderer.register_pointer_target(transformed_rect(ctx.hit_transform, row_rect), {
                 let selection = selection.clone();
                 move |_point, _env| {
                     if selection.get() == tag {
@@ -7025,6 +7095,7 @@ impl HydrolysisRenderer {
             let local_ctx = RenderContext {
                 renderer_ptr: ctx.renderer_ptr,
                 transform: vello::kurbo::Affine::IDENTITY,
+                hit_transform: vello::kurbo::Affine::IDENTITY,
                 bounds: ctx.bounds,
             };
             let subtree = Self::render_dynamic_subtree(local_ctx, env, content);
@@ -7748,7 +7819,7 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&value.style)
         };
-        let bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let renderer = unsafe { ctx.renderer() };
         renderer.register_cursor_target(bounds, style);
         Self::dispatch_any(ctx, env, content);
@@ -7764,7 +7835,7 @@ impl HydrolysisRenderer {
         let GestureObserver {
             gesture, action, ..
         } = value;
-        let bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let renderer = unsafe { ctx.renderer() };
         renderer.register_gesture_target(bounds, gesture, action);
 
@@ -7801,7 +7872,7 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let event = value.event();
-        let bounds = transformed_rect(ctx.transform, ctx.bounds);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let renderer = unsafe { ctx.renderer() };
         match event {
             Event::HoverEnter => {
@@ -8257,10 +8328,17 @@ impl HydrolysisRenderer {
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
             })
+            || self.advance_text_caret_blink(now)
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
-        self.dispatch_with_transform(view, env, bounds, vello::kurbo::Affine::IDENTITY);
+        self.dispatch_with_transform(
+            view,
+            env,
+            bounds,
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Affine::IDENTITY,
+        );
     }
 
     pub fn dispatch_with_transform<V: View>(
@@ -8269,12 +8347,13 @@ impl HydrolysisRenderer {
         env: &Environment,
         bounds: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
+        hit_transform: vello::kurbo::Affine,
     ) {
         #[cfg(feature = "accessibility")]
         {
-            self.accessibility_root_bounds = transformed_rect(transform, bounds);
+            self.accessibility_root_bounds = transformed_rect(hit_transform, bounds);
         }
-        let ctx = RenderContext::with_renderer_transform(self, bounds, transform);
+        let ctx = RenderContext::with_renderer_transforms(self, bounds, transform, hit_transform);
         self.render_depth = 0;
         self.dispatch_with_render_depth(view, env, ctx);
     }
@@ -8713,9 +8792,20 @@ impl HydrolysisRenderer {
     }
 
     pub fn next_gesture_deadline(&self) -> Option<Instant> {
-        self.active_gesture_recognizer
+        let gesture_deadline = self
+            .active_gesture_recognizer
             .as_ref()
-            .and_then(|recognizer| recognizer.borrow().next_deadline())
+            .and_then(|recognizer| recognizer.borrow().next_deadline());
+        let caret_deadline = self
+            .focused_text_input
+            .get()
+            .and(self.text_caret_next_toggle_at);
+        match (gesture_deadline, caret_deadline) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(left), None) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        }
     }
 
     fn dispatch_text_input_command(&mut self, command: TextInputCommand) -> bool {
@@ -8745,6 +8835,9 @@ impl HydrolysisRenderer {
         let changed =
             self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
                 || preedit_cleared;
+        if changed {
+            self.reset_text_caret_blink(Instant::now());
+        }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             focused = ?self.focused_text_input.get(),
@@ -8773,6 +8866,7 @@ impl HydrolysisRenderer {
             return false;
         }
         self.ime_preedit = next;
+        self.reset_text_caret_blink(Instant::now());
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             focused = ?self.focused_text_input.get(),
@@ -8824,6 +8918,9 @@ impl HydrolysisRenderer {
             }
             KeyCode::Named(_) | KeyCode::Unidentified => false,
         };
+        if changed {
+            self.reset_text_caret_blink(Instant::now());
+        }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             key = ?key,
@@ -10356,13 +10453,15 @@ fn text_cursor_area_from_layout(
     text_bounds: vello::kurbo::Rect,
     layout: &parley::Layout<[u8; 4]>,
     max_lines: Option<usize>,
+    fallback_line_height: f64,
 ) -> vello::kurbo::Rect {
     let left = text_bounds.x0;
     let right = text_bounds.x1.max(left + 1.0);
     let top = text_bounds.y0;
     let bottom = text_bounds.y1.max(top + 1.0);
     if layout.is_empty() {
-        return vello::kurbo::Rect::new(left, top, left + 1.0, (top + 1.0).min(bottom));
+        let line_height = fallback_line_height.clamp(1.0, bottom - top);
+        return vello::kurbo::Rect::new(left, top, left + 1.0, (top + line_height).min(bottom));
     }
 
     let mut caret_x = left;
