@@ -927,6 +927,10 @@ fn toggle_control_size(style: ToggleStyle) -> (f64, f64) {
     }
 }
 
+fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
+    (span / track_width).abs().max(f64::EPSILON)
+}
+
 fn normalized_insert_text(inserted: &str, max_lines: Option<usize>) -> String {
     if max_lines == Some(1) {
         inserted
@@ -5303,6 +5307,7 @@ impl HydrolysisRenderer {
             panic!("hydrolysis slider resolved a non-positive track width");
         }
         let inverse_transform = ctx.hit_transform.inverse();
+        let value_epsilon = slider_value_epsilon(span, usable_track);
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "slider",
@@ -5320,7 +5325,7 @@ impl HydrolysisRenderer {
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             let next = range_start + span * t;
-            if (value_binding.get() - next).abs() <= f64::EPSILON {
+            if (value_binding.get() - next).abs() <= value_epsilon {
                 return false;
             }
             value_binding.set(next);
@@ -7696,21 +7701,7 @@ impl HydrolysisRenderer {
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
         rebuild_requested |= gesture_changed;
-        for target in &mut self.hover_targets {
-            let contains = target.bounds.contains(point);
-            let slot_hovering = self.hover_controller.slots[target.slot.index].hovering;
-            if contains && !slot_hovering {
-                self.hover_controller.set_hovering(target.slot, true);
-                if let Some(on_enter) = target.on_enter.as_mut() {
-                    rebuild_requested |= (on_enter.borrow_mut())(env);
-                }
-            } else if !contains && slot_hovering {
-                self.hover_controller.set_hovering(target.slot, false);
-                if let Some(on_exit) = target.on_exit.as_mut() {
-                    rebuild_requested |= (on_exit.borrow_mut())(env);
-                }
-            }
-        }
+        rebuild_requested |= self.sync_hover_targets(point, env);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -7723,6 +7714,41 @@ impl HydrolysisRenderer {
             "pointer move handled"
         );
         rebuild_requested
+    }
+
+    pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let changed = self.sync_hover_targets(point, env);
+        tracing::trace!(
+            target: "waterui::hydrolysis::input",
+            x,
+            y,
+            changed,
+            dragging = self.active_pointer_drag_target.is_some(),
+            gesture_active = self.gesture_engine.has_active_recognizer(),
+            "pointer hover sync handled"
+        );
+        changed
+    }
+
+    fn sync_hover_targets(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+        let mut changed = false;
+        for target in &mut self.hover_targets {
+            let contains = target.bounds.contains(point);
+            let slot_hovering = self.hover_controller.slots[target.slot.index].hovering;
+            if contains && !slot_hovering {
+                self.hover_controller.set_hovering(target.slot, true);
+                if let Some(on_enter) = target.on_enter.as_mut() {
+                    changed |= (on_enter.borrow_mut())(env);
+                }
+            } else if !contains && slot_hovering {
+                self.hover_controller.set_hovering(target.slot, false);
+                if let Some(on_exit) = target.on_exit.as_mut() {
+                    changed |= (on_exit.borrow_mut())(env);
+                }
+            }
+        }
+        changed
     }
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
