@@ -7309,6 +7309,20 @@ impl HydrolysisRenderer {
             action,
             AccessibilityAction::Focus | AccessibilityAction::Click
         );
+        if target_node == ACCESSIBILITY_ROOT_NODE_ID {
+            return match action {
+                AccessibilityAction::Focus => {
+                    let changed = self.accessibility_focus != ACCESSIBILITY_ROOT_NODE_ID;
+                    self.accessibility_focus = ACCESSIBILITY_ROOT_NODE_ID;
+                    changed
+                }
+                AccessibilityAction::Click => false,
+                _ => panic!(
+                    "hydrolysis accessibility root does not support action {:?}",
+                    action
+                ),
+            };
+        }
         let target = self
             .accessibility_actions
             .get(&target_node)
