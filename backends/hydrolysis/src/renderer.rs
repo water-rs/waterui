@@ -32,10 +32,7 @@ use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
-use waterui::gesture::{
-    DragEvent, Gesture, GestureObserver, GesturePhase, GesturePoint, LongPressEvent,
-    MagnificationEvent, TapEvent,
-};
+use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::ContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
@@ -86,6 +83,7 @@ use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
 
 use crate::animation::AnimationController;
+use crate::gesture::{GestureEngine, GestureTarget};
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
@@ -199,8 +197,7 @@ pub struct HydrolysisRenderer {
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     active_pointer_drag_target: Option<PointerAction>,
-    gesture_targets: Vec<GestureTarget>,
-    active_gesture_recognizer: Option<GestureRecognizerHandle>,
+    gesture_engine: GestureEngine,
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
     text_input_targets: Vec<TextInputTarget>,
@@ -303,947 +300,10 @@ struct ScrollTarget {
     action: ScrollAction,
 }
 
-#[derive(Clone)]
-struct GestureTarget {
-    bounds: vello::kurbo::Rect,
-    recognizer: GestureRecognizerHandle,
-}
-
 type PointerAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
 type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
 type TextInputAction = Rc<RefCell<dyn FnMut(TextInputCommand) -> bool>>;
 type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
-type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
-
-#[derive(Clone, Copy)]
-enum GestureInput {
-    PointerDown {
-        point: vello::kurbo::Point,
-        at: Instant,
-    },
-    PointerMove {
-        point: vello::kurbo::Point,
-        at: Instant,
-    },
-    PointerUp {
-        point: vello::kurbo::Point,
-        at: Instant,
-    },
-    PointerCancel {
-        at: Instant,
-    },
-    Tick {
-        at: Instant,
-    },
-    Magnification {
-        center: vello::kurbo::Point,
-        delta: f32,
-        phase: TouchPhase,
-        at: Instant,
-    },
-    Rotation {
-        center: vello::kurbo::Point,
-        delta: f32,
-        phase: TouchPhase,
-        at: Instant,
-    },
-}
-
-#[derive(Clone)]
-enum GesturePayload {
-    None,
-    Tap(TapEvent),
-    LongPress(LongPressEvent),
-    Drag(DragEvent),
-    Magnification(MagnificationEvent),
-}
-
-#[derive(Default)]
-struct GestureDetection {
-    recognized: Option<GesturePayload>,
-    failed: bool,
-}
-
-impl GestureDetection {
-    fn recognized(payload: GesturePayload) -> Self {
-        Self {
-            recognized: Some(payload),
-            failed: false,
-        }
-    }
-
-    fn failed() -> Self {
-        Self {
-            recognized: None,
-            failed: true,
-        }
-    }
-}
-
-trait GestureDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection;
-    fn next_deadline(&self) -> Option<Instant> {
-        None
-    }
-    fn reset(&mut self) {}
-}
-
-struct GestureBinding {
-    gesture: Gesture,
-    action: Rc<RefCell<BoxedAction<()>>>,
-    detector: Box<dyn GestureDetector>,
-}
-
-impl GestureBinding {
-    fn new(gesture: Gesture, action: BoxedAction<()>) -> Self {
-        Self {
-            detector: build_gesture_detector(&gesture),
-            gesture,
-            action: Rc::new(RefCell::new(action)),
-        }
-    }
-
-    fn input(&mut self, input: GestureInput, env: &Environment) -> bool {
-        let detection = self.detector.input(input);
-        let Some(payload) = detection.recognized else {
-            return false;
-        };
-        let mut local_env = env.clone();
-        local_env.insert(self.gesture.clone());
-        match payload {
-            GesturePayload::None => {}
-            GesturePayload::Tap(event) => local_env.insert(event),
-            GesturePayload::LongPress(event) => local_env.insert(event),
-            GesturePayload::Drag(event) => local_env.insert(event),
-            GesturePayload::Magnification(event) => local_env.insert(event),
-        }
-        (self.action.borrow_mut())(&local_env);
-        true
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        self.detector.next_deadline()
-    }
-}
-
-const TAP_REPEAT_WINDOW: Duration = Duration::from_millis(320);
-const TAP_SPATIAL_TOLERANCE: f64 = 24.0;
-const LONG_PRESS_SLOP: f64 = 10.0;
-const EXCLUSIVE_RECOGNITION_WINDOW: Duration = Duration::from_millis(50);
-
-struct TapDetector {
-    required_count: u32,
-    pressed_point: Option<vello::kurbo::Point>,
-    streak: u32,
-    last_tap_at: Option<Instant>,
-    last_tap_point: Option<vello::kurbo::Point>,
-}
-
-impl TapDetector {
-    fn new(required_count: u32) -> Self {
-        Self {
-            required_count: required_count.max(1),
-            pressed_point: None,
-            streak: 0,
-            last_tap_at: None,
-            last_tap_point: None,
-        }
-    }
-}
-
-impl GestureDetector for TapDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        match input {
-            GestureInput::PointerDown { point, .. } => {
-                self.pressed_point = Some(point);
-                GestureDetection::default()
-            }
-            GestureInput::PointerUp { point, at } => {
-                if self.pressed_point.take().is_none() {
-                    return GestureDetection::default();
-                }
-
-                let within_time = self
-                    .last_tap_at
-                    .is_some_and(|previous| at.duration_since(previous) <= TAP_REPEAT_WINDOW);
-                let within_distance = self.last_tap_point.is_some_and(|previous| {
-                    (point.x - previous.x).hypot(point.y - previous.y) <= TAP_SPATIAL_TOLERANCE
-                });
-
-                if within_time && within_distance {
-                    self.streak = self
-                        .streak
-                        .checked_add(1)
-                        .expect("tap streak counter overflow");
-                } else {
-                    self.streak = 1;
-                }
-
-                self.last_tap_at = Some(at);
-                self.last_tap_point = Some(point);
-                if self.streak < self.required_count {
-                    return GestureDetection::default();
-                }
-
-                self.streak = 0;
-                GestureDetection::recognized(GesturePayload::Tap(TapEvent {
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
-                    count: self.required_count,
-                }))
-            }
-            GestureInput::PointerCancel { .. } => {
-                self.pressed_point = None;
-                GestureDetection::failed()
-            }
-            _ => GestureDetection::default(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.pressed_point = None;
-        self.streak = 0;
-    }
-}
-
-struct LongPressDetector {
-    duration: Duration,
-    started_at: Option<Instant>,
-    started_point: Option<vello::kurbo::Point>,
-    fired: bool,
-}
-
-impl LongPressDetector {
-    fn new(duration: Duration) -> Self {
-        Self {
-            duration,
-            started_at: None,
-            started_point: None,
-            fired: false,
-        }
-    }
-}
-
-impl GestureDetector for LongPressDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        match input {
-            GestureInput::PointerDown { point, at } => {
-                self.started_at = Some(at);
-                self.started_point = Some(point);
-                self.fired = false;
-                GestureDetection::default()
-            }
-            GestureInput::PointerMove { point, .. } => {
-                if self.fired {
-                    return GestureDetection::default();
-                }
-                let Some(start_point) = self.started_point else {
-                    return GestureDetection::default();
-                };
-                if (point.x - start_point.x).hypot(point.y - start_point.y) <= LONG_PRESS_SLOP {
-                    return GestureDetection::default();
-                }
-                self.reset();
-                GestureDetection::failed()
-            }
-            GestureInput::PointerUp { point, at } => {
-                let Some(started_at) = self.started_at else {
-                    return GestureDetection::default();
-                };
-                if self.fired {
-                    self.reset();
-                    return GestureDetection::default();
-                }
-                if at.duration_since(started_at) < self.duration {
-                    self.reset();
-                    return GestureDetection::failed();
-                }
-                self.fired = true;
-                let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                let payload = GesturePayload::LongPress(LongPressEvent {
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
-                    duration: duration_ms,
-                });
-                self.reset();
-                GestureDetection::recognized(payload)
-            }
-            GestureInput::PointerCancel { .. } => {
-                if self.started_at.is_some() && !self.fired {
-                    self.reset();
-                    return GestureDetection::failed();
-                }
-                self.reset();
-                GestureDetection::default()
-            }
-            GestureInput::Tick { at } => {
-                let (Some(started_at), Some(started_point)) = (self.started_at, self.started_point)
-                else {
-                    return GestureDetection::default();
-                };
-                if self.fired || at.duration_since(started_at) < self.duration {
-                    return GestureDetection::default();
-                }
-                self.fired = true;
-                let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent {
-                    location: GesturePoint::new(started_point.x as f32, started_point.y as f32),
-                    duration: duration_ms,
-                }))
-            }
-            _ => GestureDetection::default(),
-        }
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        if self.fired {
-            return None;
-        }
-        self.started_at.map(|started_at| started_at + self.duration)
-    }
-
-    fn reset(&mut self) {
-        self.started_at = None;
-        self.started_point = None;
-        self.fired = false;
-    }
-}
-
-struct DragDetector {
-    min_distance: f32,
-    start_point: Option<vello::kurbo::Point>,
-    last_point: Option<vello::kurbo::Point>,
-    last_at: Option<Instant>,
-    started: bool,
-}
-
-impl DragDetector {
-    fn new(min_distance: f32) -> Self {
-        Self {
-            min_distance,
-            start_point: None,
-            last_point: None,
-            last_at: None,
-            started: false,
-        }
-    }
-}
-
-impl GestureDetector for DragDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        match input {
-            GestureInput::PointerDown { point, at } => {
-                self.start_point = Some(point);
-                self.last_point = Some(point);
-                self.last_at = Some(at);
-                self.started = false;
-                GestureDetection::default()
-            }
-            GestureInput::PointerMove { point, at } => {
-                let (Some(start_point), Some(previous_point), Some(previous_at)) =
-                    (self.start_point, self.last_point, self.last_at)
-                else {
-                    return GestureDetection::default();
-                };
-
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
-                let distance = dx.hypot(dy);
-                let dt = at
-                    .duration_since(previous_at)
-                    .as_secs_f32()
-                    .max(f32::EPSILON);
-                let velocity = GesturePoint::new(
-                    ((point.x - previous_point.x) as f32) / dt,
-                    ((point.y - previous_point.y) as f32) / dt,
-                );
-
-                self.last_point = Some(point);
-                self.last_at = Some(at);
-                if !self.started {
-                    if distance < self.min_distance {
-                        return GestureDetection::default();
-                    }
-                    self.started = true;
-                    return GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                        phase: GesturePhase::Started,
-                        location: GesturePoint::new(point.x as f32, point.y as f32),
-                        translation: GesturePoint::new(dx, dy),
-                        velocity,
-                    }));
-                }
-
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Updated,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
-                    translation: GesturePoint::new(dx, dy),
-                    velocity,
-                }))
-            }
-            GestureInput::PointerUp { point, at } => {
-                let Some(start_point) = self.start_point else {
-                    return GestureDetection::default();
-                };
-                let previous_point = self.last_point.unwrap_or(start_point);
-                let previous_at = self.last_at.unwrap_or(at);
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
-                let dt = at
-                    .duration_since(previous_at)
-                    .as_secs_f32()
-                    .max(f32::EPSILON);
-                let velocity = GesturePoint::new(
-                    ((point.x - previous_point.x) as f32) / dt,
-                    ((point.y - previous_point.y) as f32) / dt,
-                );
-                if !self.started {
-                    self.reset();
-                    return GestureDetection::failed();
-                }
-                self.reset();
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Ended,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
-                    translation: GesturePoint::new(dx, dy),
-                    velocity,
-                }))
-            }
-            GestureInput::PointerCancel { .. } => {
-                let Some(start_point) = self.start_point else {
-                    return GestureDetection::default();
-                };
-                if !self.started {
-                    self.reset();
-                    return GestureDetection::failed();
-                }
-                let point = self.last_point.unwrap_or(start_point);
-                let dx = (point.x - start_point.x) as f32;
-                let dy = (point.y - start_point.y) as f32;
-                self.reset();
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Cancelled,
-                    location: GesturePoint::new(point.x as f32, point.y as f32),
-                    translation: GesturePoint::new(dx, dy),
-                    velocity: GesturePoint::new(0.0, 0.0),
-                }))
-            }
-            _ => GestureDetection::default(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.start_point = None;
-        self.last_point = None;
-        self.last_at = None;
-        self.started = false;
-    }
-}
-
-struct MagnificationDetector {
-    initial_scale: f32,
-    scale: f32,
-    last_at: Option<Instant>,
-    active: bool,
-}
-
-impl MagnificationDetector {
-    fn new(initial_scale: f32) -> Self {
-        Self {
-            initial_scale,
-            scale: initial_scale,
-            last_at: None,
-            active: false,
-        }
-    }
-}
-
-impl GestureDetector for MagnificationDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        let GestureInput::Magnification {
-            center,
-            delta,
-            phase,
-            at,
-        } = input
-        else {
-            return GestureDetection::default();
-        };
-        let mapped_phase = map_touch_phase_to_gesture_phase(phase);
-        match phase {
-            TouchPhase::Started => {
-                self.scale = self.initial_scale;
-                self.active = true;
-                self.last_at = Some(at);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: GesturePoint::new(center.x as f32, center.y as f32),
-                    scale: self.scale,
-                    velocity: 0.0,
-                }))
-            }
-            TouchPhase::Moved => {
-                if !self.active {
-                    self.active = true;
-                    self.scale = self.initial_scale;
-                }
-                let previous_at = self.last_at.unwrap_or(at);
-                let dt = at
-                    .duration_since(previous_at)
-                    .as_secs_f32()
-                    .max(f32::EPSILON);
-                self.last_at = Some(at);
-                self.scale = (self.scale * (1.0 + delta)).max(0.01);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: GesturePoint::new(center.x as f32, center.y as f32),
-                    scale: self.scale,
-                    velocity: delta / dt,
-                }))
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                let payload = GestureDetection::recognized(GesturePayload::Magnification(
-                    MagnificationEvent {
-                        phase: mapped_phase,
-                        center: GesturePoint::new(center.x as f32, center.y as f32),
-                        scale: self.scale,
-                        velocity: 0.0,
-                    },
-                ));
-                self.reset();
-                payload
-            }
-        }
-    }
-
-    fn reset(&mut self) {
-        self.scale = self.initial_scale;
-        self.last_at = None;
-        self.active = false;
-    }
-}
-
-struct RotationDetector {
-    active: bool,
-    angle: f32,
-}
-
-impl RotationDetector {
-    fn new() -> Self {
-        Self {
-            active: false,
-            angle: 0.0,
-        }
-    }
-}
-
-impl GestureDetector for RotationDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        let GestureInput::Rotation {
-            center,
-            delta,
-            phase,
-            ..
-        } = input
-        else {
-            return GestureDetection::default();
-        };
-        let _ = center;
-        match phase {
-            TouchPhase::Started => {
-                self.active = true;
-                self.angle = 0.0;
-                GestureDetection::recognized(GesturePayload::None)
-            }
-            TouchPhase::Moved => {
-                if !self.active {
-                    return GestureDetection::default();
-                }
-                self.angle += delta;
-                GestureDetection::recognized(GesturePayload::None)
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                if !self.active {
-                    return GestureDetection::default();
-                }
-                self.active = false;
-                self.angle += delta;
-                GestureDetection::recognized(GesturePayload::None)
-            }
-        }
-    }
-
-    fn reset(&mut self) {
-        self.active = false;
-        self.angle = 0.0;
-    }
-}
-
-struct ThenDetector {
-    first: Box<dyn GestureDetector>,
-    second: Box<dyn GestureDetector>,
-    awaiting_second: bool,
-}
-
-impl ThenDetector {
-    fn new(first: Box<dyn GestureDetector>, second: Box<dyn GestureDetector>) -> Self {
-        Self {
-            first,
-            second,
-            awaiting_second: false,
-        }
-    }
-}
-
-impl GestureDetector for ThenDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        if !self.awaiting_second {
-            let detection = self.first.input(input);
-            if detection.recognized.is_some() {
-                self.awaiting_second = true;
-                self.second.reset();
-            }
-            return GestureDetection::default();
-        }
-
-        let detection = self.second.input(input);
-        if detection.recognized.is_some() {
-            self.awaiting_second = false;
-            self.first.reset();
-            return GestureDetection::recognized(GesturePayload::None);
-        }
-        if detection.failed {
-            self.awaiting_second = false;
-            self.first.reset();
-        }
-        GestureDetection::default()
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        if self.awaiting_second {
-            return self.second.next_deadline();
-        }
-        self.first.next_deadline()
-    }
-
-    fn reset(&mut self) {
-        self.awaiting_second = false;
-        self.first.reset();
-        self.second.reset();
-    }
-}
-
-struct SimultaneousDetector {
-    first: Box<dyn GestureDetector>,
-    second: Box<dyn GestureDetector>,
-}
-
-impl SimultaneousDetector {
-    fn new(first: Box<dyn GestureDetector>, second: Box<dyn GestureDetector>) -> Self {
-        Self { first, second }
-    }
-}
-
-impl GestureDetector for SimultaneousDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        let first = self.first.input(input);
-        if first.recognized.is_some() {
-            return GestureDetection::recognized(GesturePayload::None);
-        }
-        let second = self.second.input(input);
-        if second.recognized.is_some() {
-            return GestureDetection::recognized(GesturePayload::None);
-        }
-        GestureDetection::default()
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        match (self.first.next_deadline(), self.second.next_deadline()) {
-            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
-            (Some(value), None) | (None, Some(value)) => Some(value),
-            (None, None) => None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.first.reset();
-        self.second.reset();
-    }
-}
-
-struct ExclusiveDetector {
-    first: Box<dyn GestureDetector>,
-    second: Box<dyn GestureDetector>,
-    suppress_until: Option<Instant>,
-}
-
-impl ExclusiveDetector {
-    fn new(first: Box<dyn GestureDetector>, second: Box<dyn GestureDetector>) -> Self {
-        Self {
-            first,
-            second,
-            suppress_until: None,
-        }
-    }
-}
-
-impl GestureDetector for ExclusiveDetector {
-    fn input(&mut self, input: GestureInput) -> GestureDetection {
-        let now = gesture_input_instant(input);
-        if self.suppress_until.is_some_and(|deadline| now < deadline) {
-            return GestureDetection::default();
-        }
-
-        let first = self.first.input(input);
-        if first.recognized.is_some() {
-            self.second.reset();
-            self.suppress_until = Some(now + EXCLUSIVE_RECOGNITION_WINDOW);
-            return GestureDetection::recognized(GesturePayload::None);
-        }
-
-        let second = self.second.input(input);
-        if second.recognized.is_some() {
-            self.first.reset();
-            self.suppress_until = Some(now + EXCLUSIVE_RECOGNITION_WINDOW);
-            return GestureDetection::recognized(GesturePayload::None);
-        }
-        GestureDetection::default()
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        let composed = match (self.first.next_deadline(), self.second.next_deadline()) {
-            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
-            (Some(value), None) | (None, Some(value)) => Some(value),
-            (None, None) => None,
-        };
-        match (self.suppress_until, composed) {
-            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
-            (Some(value), None) | (None, Some(value)) => Some(value),
-            (None, None) => None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.suppress_until = None;
-        self.first.reset();
-        self.second.reset();
-    }
-}
-
-fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
-    match phase {
-        TouchPhase::Started => GesturePhase::Started,
-        TouchPhase::Moved => GesturePhase::Updated,
-        TouchPhase::Ended => GesturePhase::Ended,
-        TouchPhase::Cancelled => GesturePhase::Cancelled,
-    }
-}
-
-fn gesture_input_instant(input: GestureInput) -> Instant {
-    match input {
-        GestureInput::PointerDown { at, .. }
-        | GestureInput::PointerMove { at, .. }
-        | GestureInput::PointerUp { at, .. }
-        | GestureInput::PointerCancel { at }
-        | GestureInput::Tick { at }
-        | GestureInput::Magnification { at, .. }
-        | GestureInput::Rotation { at, .. } => at,
-    }
-}
-
-fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
-    match gesture {
-        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count)),
-        Gesture::LongPress(long_press) => Box::new(LongPressDetector::new(Duration::from_millis(
-            u64::from(long_press.duration),
-        ))),
-        Gesture::Drag(drag) => Box::new(DragDetector::new(drag.min_distance)),
-        Gesture::Magnification(magnification) => {
-            Box::new(MagnificationDetector::new(magnification.initial_scale))
-        }
-        Gesture::Rotation(_) => Box::new(RotationDetector::new()),
-        Gesture::Then(pair) => Box::new(ThenDetector::new(
-            build_gesture_detector(pair.first()),
-            build_gesture_detector(pair.then()),
-        )),
-        Gesture::Simultaneous(pair) => Box::new(SimultaneousDetector::new(
-            build_gesture_detector(pair.first()),
-            build_gesture_detector(pair.second()),
-        )),
-        Gesture::Exclusive(pair) => Box::new(ExclusiveDetector::new(
-            build_gesture_detector(pair.first()),
-            build_gesture_detector(pair.second()),
-        )),
-        _ => panic!("hydrolysis gesture variant is not implemented"),
-    }
-}
-
-#[cfg(test)]
-mod gesture_detector_tests {
-    use super::*;
-
-    #[test]
-    fn long_press_fires_after_tick_deadline() {
-        let mut detector = LongPressDetector::new(Duration::from_millis(300));
-        let start = Instant::now();
-        let point = vello::kurbo::Point::new(12.0, 24.0);
-
-        let down = detector.input(GestureInput::PointerDown { point, at: start });
-        assert!(down.recognized.is_none());
-
-        let before_deadline = detector.input(GestureInput::Tick {
-            at: start + Duration::from_millis(200),
-        });
-        assert!(before_deadline.recognized.is_none());
-
-        let at_deadline = detector.input(GestureInput::Tick {
-            at: start + Duration::from_millis(300),
-        });
-        assert!(matches!(
-            at_deadline.recognized,
-            Some(GesturePayload::LongPress(_))
-        ));
-    }
-
-    #[test]
-    fn drag_waits_for_min_distance_then_emits_phases() {
-        let mut detector = DragDetector::new(10.0);
-        let start = Instant::now();
-        let origin = vello::kurbo::Point::new(0.0, 0.0);
-
-        detector.input(GestureInput::PointerDown {
-            point: origin,
-            at: start,
-        });
-
-        let below_threshold = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(6.0, 2.0),
-            at: start + Duration::from_millis(16),
-        });
-        assert!(below_threshold.recognized.is_none());
-
-        let started = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(12.0, 0.0),
-            at: start + Duration::from_millis(32),
-        });
-        assert!(matches!(
-            started.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Started,
-                ..
-            }))
-        ));
-
-        let updated = detector.input(GestureInput::PointerMove {
-            point: vello::kurbo::Point::new(24.0, 6.0),
-            at: start + Duration::from_millis(48),
-        });
-        assert!(matches!(
-            updated.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Updated,
-                ..
-            }))
-        ));
-
-        let ended = detector.input(GestureInput::PointerUp {
-            point: vello::kurbo::Point::new(30.0, 8.0),
-            at: start + Duration::from_millis(64),
-        });
-        assert!(matches!(
-            ended.recognized,
-            Some(GesturePayload::Drag(DragEvent {
-                phase: GesturePhase::Ended,
-                ..
-            }))
-        ));
-    }
-
-    #[test]
-    fn magnification_accumulates_scale() {
-        let mut detector = MagnificationDetector::new(1.0);
-        let start = Instant::now();
-        let center = vello::kurbo::Point::new(10.0, 20.0);
-
-        let started = detector.input(GestureInput::Magnification {
-            center,
-            delta: 0.0,
-            phase: TouchPhase::Started,
-            at: start,
-        });
-        assert!(matches!(
-            started.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent { scale, .. }))
-                if (scale - 1.0).abs() < f32::EPSILON
-        ));
-
-        let updated = detector.input(GestureInput::Magnification {
-            center,
-            delta: 0.1,
-            phase: TouchPhase::Moved,
-            at: start + Duration::from_millis(16),
-        });
-        assert!(matches!(
-            updated.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent { scale, .. }))
-                if (scale - 1.1).abs() < 0.0001
-        ));
-
-        let ended = detector.input(GestureInput::Magnification {
-            center,
-            delta: 0.0,
-            phase: TouchPhase::Ended,
-            at: start + Duration::from_millis(32),
-        });
-        assert!(matches!(
-            ended.recognized,
-            Some(GesturePayload::Magnification(MagnificationEvent {
-                phase: GesturePhase::Ended,
-                ..
-            }))
-        ));
-    }
-
-    #[test]
-    fn then_detector_requires_second_gesture_after_first() {
-        let mut detector = ThenDetector::new(
-            Box::new(TapDetector::new(1)),
-            Box::new(LongPressDetector::new(Duration::from_millis(100))),
-        );
-        let start = Instant::now();
-        let point = vello::kurbo::Point::new(5.0, 7.0);
-
-        detector.input(GestureInput::PointerDown { point, at: start });
-        let first = detector.input(GestureInput::PointerUp {
-            point,
-            at: start + Duration::from_millis(10),
-        });
-        assert!(first.recognized.is_none());
-
-        detector.input(GestureInput::PointerDown {
-            point,
-            at: start + Duration::from_millis(20),
-        });
-        let second = detector.input(GestureInput::Tick {
-            at: start + Duration::from_millis(120),
-        });
-        assert!(matches!(second.recognized, Some(GesturePayload::None)));
-    }
-
-    #[test]
-    fn simultaneous_detector_fires_when_any_child_recognizes() {
-        let mut detector = SimultaneousDetector::new(
-            Box::new(TapDetector::new(1)),
-            Box::new(LongPressDetector::new(Duration::from_millis(100))),
-        );
-        let start = Instant::now();
-        let point = vello::kurbo::Point::new(2.0, 3.0);
-
-        detector.input(GestureInput::PointerDown { point, at: start });
-        let recognized = detector.input(GestureInput::PointerUp {
-            point,
-            at: start + Duration::from_millis(10),
-        });
-        assert!(matches!(recognized.recognized, Some(GesturePayload::None)));
-    }
-}
 
 #[derive(Debug, Default)]
 struct HoverController {
@@ -3967,8 +3027,7 @@ impl HydrolysisRenderer {
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             active_pointer_drag_target: None,
-            gesture_targets: Vec::new(),
-            active_gesture_recognizer: None,
+            gesture_engine: GestureEngine::default(),
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
             text_input_targets: Vec::new(),
@@ -4359,7 +3418,9 @@ impl HydrolysisRenderer {
 
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         core::mem::swap(&mut renderer.pointer_targets, &mut subtree_pointer_targets);
-        core::mem::swap(&mut renderer.gesture_targets, &mut subtree_gesture_targets);
+        renderer
+            .gesture_engine
+            .swap_targets(&mut subtree_gesture_targets);
         core::mem::swap(&mut renderer.cursor_targets, &mut subtree_cursor_targets);
         core::mem::swap(&mut renderer.hover_targets, &mut subtree_hover_targets);
         core::mem::swap(
@@ -4421,7 +3482,9 @@ impl HydrolysisRenderer {
         );
         core::mem::swap(&mut renderer.hover_targets, &mut subtree_hover_targets);
         core::mem::swap(&mut renderer.cursor_targets, &mut subtree_cursor_targets);
-        core::mem::swap(&mut renderer.gesture_targets, &mut subtree_gesture_targets);
+        renderer
+            .gesture_engine
+            .swap_targets(&mut subtree_gesture_targets);
         core::mem::swap(&mut renderer.pointer_targets, &mut subtree_pointer_targets);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
@@ -4458,7 +3521,7 @@ impl HydrolysisRenderer {
         for target in &subtree.gesture_targets {
             self.register_gesture_target_recognizer(
                 transformed_rect(ctx.hit_transform, target.bounds),
-                Rc::clone(&target.recognizer),
+                target.clone(),
             );
         }
         for target in &subtree.cursor_targets {
@@ -6254,7 +5317,11 @@ impl HydrolysisRenderer {
             let local_point = inverse_transform * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
-            value_binding.set(range_start + span * t);
+            let next = range_start + span * t;
+            if (value_binding.get() - next).abs() <= f64::EPSILON {
+                return false;
+            }
+            value_binding.set(next);
             true
         });
     }
@@ -6604,7 +5671,10 @@ impl HydrolysisRenderer {
 
         let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_cursor_target(transformed_rect(ctx.hit_transform, field_rect), CursorStyle::IBeam);
+        renderer.register_cursor_target(
+            transformed_rect(ctx.hit_transform, field_rect),
+            CursorStyle::IBeam,
+        );
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "text_field",
@@ -6730,7 +5800,10 @@ impl HydrolysisRenderer {
 
         let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_cursor_target(transformed_rect(ctx.hit_transform, field_rect), CursorStyle::IBeam);
+        renderer.register_cursor_target(
+            transformed_rect(ctx.hit_transform, field_rect),
+            CursorStyle::IBeam,
+        );
         tracing::trace!(
             target: "waterui::hydrolysis::hit_region",
             component = "secure_field",
@@ -7776,7 +6849,7 @@ impl HydrolysisRenderer {
         };
         let renderer = unsafe { ctx.renderer() };
         let pointer_start = renderer.pointer_targets.len();
-        let gesture_start = renderer.gesture_targets.len();
+        let gesture_start = renderer.gesture_engine.target_count();
         let cursor_start = renderer.cursor_targets.len();
         let hover_start = renderer.hover_targets.len();
         let hover_cursor_start = renderer.hover_controller.cursor();
@@ -7791,8 +6864,7 @@ impl HydrolysisRenderer {
 
         renderer.pointer_targets.truncate(pointer_start);
         renderer.ensure_active_pointer_drag_target_is_live();
-        renderer.gesture_targets.truncate(gesture_start);
-        renderer.ensure_active_gesture_target_is_live();
+        renderer.gesture_engine.truncate_targets(gesture_start);
         renderer.cursor_targets.truncate(cursor_start);
         renderer.hover_targets.truncate(hover_start);
         renderer.hover_controller.rewind_to(hover_cursor_start);
@@ -8076,9 +7148,7 @@ impl HydrolysisRenderer {
             self.vello_renderer.unregister_texture(image);
         }
         self.pointer_targets.clear();
-        self.active_pointer_drag_target = None;
-        self.gesture_targets.clear();
-        self.active_gesture_recognizer = None;
+        self.gesture_engine.clear_targets();
         self.cursor_targets.clear();
         self.hover_targets.clear();
         self.text_input_targets.clear();
@@ -8138,7 +7208,6 @@ impl HydrolysisRenderer {
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
         self.hover_controller.finish_rebuild_frame();
-        self.ensure_active_pointer_drag_target_is_live();
         self.lazy_stack_controller.finish_rebuild_frame();
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
@@ -8284,17 +7353,16 @@ impl HydrolysisRenderer {
                     action_data,
                 )
             }
-            AccessibilityActionTarget::TextField {
-                value,
-                line_limit,
-            } => handle_accessibility_text_field_action(
-                self,
-                target_node,
-                &value,
-                line_limit,
-                action,
-                action_data,
-            ),
+            AccessibilityActionTarget::TextField { value, line_limit } => {
+                handle_accessibility_text_field_action(
+                    self,
+                    target_node,
+                    &value,
+                    line_limit,
+                    action,
+                    action_data,
+                )
+            }
             AccessibilityActionTarget::SecureField { value } => {
                 handle_accessibility_secure_field_action(
                     self,
@@ -8484,37 +7552,12 @@ impl HydrolysisRenderer {
             y,
             pointer_targets = self.pointer_targets.len(),
             text_inputs = self.text_input_targets.len(),
-            gesture_targets = self.gesture_targets.len(),
+            gesture_targets = self.gesture_engine.target_count(),
             "pointer down begin"
         );
 
-        if let Some(previous) = self.active_gesture_recognizer.take() {
-            let changed = previous
-                .borrow_mut()
-                .input(GestureInput::PointerCancel { at }, env);
-            tracing::trace!(
-                target: "waterui::hydrolysis::gesture",
-                event = "pointer_cancel_previous",
-                changed,
-                "gesture recognizer cancel"
-            );
-            rebuild_requested |= changed;
-        }
-        if let Some(recognizer) = self.gesture_recognizer_at(point) {
-            let changed = recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerDown { point, at }, env);
-            tracing::trace!(
-                target: "waterui::hydrolysis::gesture",
-                event = "pointer_down",
-                x,
-                y,
-                changed,
-                "gesture recognizer pointer down"
-            );
-            rebuild_requested |= changed;
-            self.active_gesture_recognizer = Some(recognizer);
-        }
+        let gesture_changed = self.gesture_engine.handle_pointer_down(point, at, env);
+        rebuild_requested |= gesture_changed;
 
         let mut pointer_indices: Vec<usize> = self
             .pointer_targets
@@ -8572,11 +7615,11 @@ impl HydrolysisRenderer {
                 "dispatch pointer target"
             );
             let changed = (target.action.borrow_mut())(point, env);
-            if !changed {
-                continue;
-            }
             if target.captures_drag {
                 self.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            }
+            if !changed && !target.captures_drag {
+                continue;
             }
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
@@ -8587,7 +7630,7 @@ impl HydrolysisRenderer {
                 order = target.order,
                 "pointer target handled event"
             );
-            return true;
+            return rebuild_requested || changed;
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -8613,13 +7656,8 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut changed = self.handle_pointer_move(x, y, env);
         self.active_pointer_drag_target = None;
-        let mut gesture_changed = false;
-        if let Some(recognizer) = self.active_gesture_recognizer.take() {
-            gesture_changed = recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerUp { point, at }, env);
-            changed |= gesture_changed;
-        }
+        let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
+        changed |= gesture_changed;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -8640,13 +7678,8 @@ impl HydrolysisRenderer {
             drag_changed = (action.borrow_mut())(point, env);
             rebuild_requested |= drag_changed;
         }
-        let mut gesture_changed = false;
-        if let Some(recognizer) = self.active_gesture_recognizer.as_ref() {
-            gesture_changed = recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerMove { point, at }, env);
-            rebuild_requested |= gesture_changed;
-        }
+        let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
+        rebuild_requested |= gesture_changed;
         for target in &mut self.hover_targets {
             let contains = target.bounds.contains(point);
             let slot_hovering = self.hover_controller.slots[target.slot.index].hovering;
@@ -8670,7 +7703,7 @@ impl HydrolysisRenderer {
             drag_changed,
             gesture_changed,
             dragging = self.active_pointer_drag_target.is_some(),
-            gesture_active = self.active_gesture_recognizer.is_some(),
+            gesture_active = self.gesture_engine.has_active_recognizer(),
             "pointer move handled"
         );
         rebuild_requested
@@ -8679,18 +7712,10 @@ impl HydrolysisRenderer {
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
-        if let Some(recognizer) = self.active_gesture_recognizer.take() {
-            let changed = recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerCancel { at: Instant::now() }, env);
-            tracing::trace!(
-                target: "waterui::hydrolysis::gesture",
-                event = "pointer_cancel",
-                changed,
-                "gesture recognizer pointer cancel"
-            );
-            rebuild_requested |= changed;
-        }
+        let gesture_changed = self
+            .gesture_engine
+            .handle_pointer_cancel(Instant::now(), env);
+        rebuild_requested |= gesture_changed;
         for target in &mut self.hover_targets {
             let hovering = self.hover_controller.slots[target.slot.index].hovering;
             if !hovering {
@@ -8714,33 +7739,8 @@ impl HydrolysisRenderer {
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
-        let mut rebuild_requested = false;
-
-        if phase == TouchPhase::Started {
-            if let Some(previous) = self.active_gesture_recognizer.take() {
-                rebuild_requested |= previous
-                    .borrow_mut()
-                    .input(GestureInput::PointerCancel { at }, env);
-            }
-            self.active_gesture_recognizer = self.gesture_recognizer_at(center);
-        }
-
-        if let Some(recognizer) = self.active_gesture_recognizer.as_ref() {
-            rebuild_requested |= recognizer.borrow_mut().input(
-                GestureInput::Magnification {
-                    center,
-                    delta,
-                    phase,
-                    at,
-                },
-                env,
-            );
-        }
-
-        if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.active_gesture_recognizer = None;
-        }
-        rebuild_requested
+        self.gesture_engine
+            .handle_magnification(center, delta, phase, at, env)
     }
 
     pub fn handle_rotation(
@@ -8753,49 +7753,16 @@ impl HydrolysisRenderer {
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
-        let mut rebuild_requested = false;
-
-        if phase == TouchPhase::Started {
-            if let Some(previous) = self.active_gesture_recognizer.take() {
-                rebuild_requested |= previous
-                    .borrow_mut()
-                    .input(GestureInput::PointerCancel { at }, env);
-            }
-            self.active_gesture_recognizer = self.gesture_recognizer_at(center);
-        }
-
-        if let Some(recognizer) = self.active_gesture_recognizer.as_ref() {
-            rebuild_requested |= recognizer.borrow_mut().input(
-                GestureInput::Rotation {
-                    center,
-                    delta,
-                    phase,
-                    at,
-                },
-                env,
-            );
-        }
-
-        if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.active_gesture_recognizer = None;
-        }
-        rebuild_requested
+        self.gesture_engine
+            .handle_rotation(center, delta, phase, at, env)
     }
 
     pub fn handle_gesture_tick(&mut self, at: Instant, env: &Environment) -> bool {
-        let Some(recognizer) = self.active_gesture_recognizer.as_ref() else {
-            return false;
-        };
-        recognizer
-            .borrow_mut()
-            .input(GestureInput::Tick { at }, env)
+        self.gesture_engine.handle_tick(at, env)
     }
 
     pub fn next_gesture_deadline(&self) -> Option<Instant> {
-        let gesture_deadline = self
-            .active_gesture_recognizer
-            .as_ref()
-            .and_then(|recognizer| recognizer.borrow().next_deadline());
+        let gesture_deadline = self.gesture_engine.next_deadline();
         let caret_deadline = self
             .focused_text_input
             .get()
@@ -8806,6 +7773,49 @@ impl HydrolysisRenderer {
             (None, Some(right)) => Some(right),
             (None, None) => None,
         }
+    }
+
+    pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {
+        let pointer = pointer.map(|(x, y)| vello::kurbo::Point::new(f64::from(x), f64::from(y)));
+        self.gesture_engine.sync_after_layout(pointer);
+        self.sync_active_pointer_drag_target_after_layout(pointer);
+    }
+
+    fn sync_active_pointer_drag_target_after_layout(
+        &mut self,
+        pointer: Option<vello::kurbo::Point>,
+    ) {
+        let Some(active) = self.active_pointer_drag_target.as_ref() else {
+            return;
+        };
+        let alive = self
+            .pointer_targets
+            .iter()
+            .any(|target| Rc::ptr_eq(&target.action, active));
+        if alive {
+            return;
+        }
+        let Some(point) = pointer else {
+            self.active_pointer_drag_target = None;
+            return;
+        };
+        let mut indices: Vec<usize> = self
+            .pointer_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.captures_drag && target.bounds.contains(point))
+            .map(|(index, _)| index)
+            .collect();
+        indices.sort_unstable_by(|left, right| {
+            let left_target = &self.pointer_targets[*left];
+            let right_target = &self.pointer_targets[*right];
+            Self::target_hit_priority(right_target.depth, right_target.order, *right).cmp(
+                &Self::target_hit_priority(left_target.depth, left_target.order, *left),
+            )
+        });
+        self.active_pointer_drag_target = indices
+            .first()
+            .map(|index| Rc::clone(&self.pointer_targets[*index].action));
     }
 
     fn dispatch_text_input_command(&mut self, command: TextInputCommand) -> bool {
@@ -8832,9 +7842,9 @@ impl HydrolysisRenderer {
             );
             return preedit_cleared;
         }
-        let changed =
-            self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
-                || preedit_cleared;
+        let changed = self
+            .dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
+            || preedit_cleared;
         if changed {
             self.reset_text_caret_blink(Instant::now());
         }
@@ -8913,7 +7923,9 @@ impl HydrolysisRenderer {
                 if self.ime_preedit.is_some() || text.is_empty() {
                     false
                 } else {
-                    self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.clone())))
+                    self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(
+                        text.clone(),
+                    )))
                 }
             }
             KeyCode::Named(_) | KeyCode::Unidentified => false,
@@ -8992,43 +8004,22 @@ impl HydrolysisRenderer {
         gesture: Gesture,
         action: BoxedAction<()>,
     ) {
-        self.register_gesture_target_recognizer(
-            bounds,
-            Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
-        );
+        if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        self.gesture_engine.register_target(bounds, gesture, action);
     }
 
     fn register_gesture_target_recognizer(
         &mut self,
         bounds: vello::kurbo::Rect,
-        recognizer: GestureRecognizerHandle,
+        target: GestureTarget,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_targets
-            .push(GestureTarget { bounds, recognizer });
-    }
-
-    fn gesture_recognizer_at(&self, point: vello::kurbo::Point) -> Option<GestureRecognizerHandle> {
-        self.gesture_targets
-            .iter()
-            .rev()
-            .find(|target| target.bounds.contains(point))
-            .map(|target| Rc::clone(&target.recognizer))
-    }
-
-    fn ensure_active_gesture_target_is_live(&mut self) {
-        let Some(active) = self.active_gesture_recognizer.as_ref() else {
-            return;
-        };
-        let alive = self
-            .gesture_targets
-            .iter()
-            .any(|target| Rc::ptr_eq(&target.recognizer, active));
-        if !alive {
-            self.active_gesture_recognizer = None;
-        }
+        self.gesture_engine
+            .register_existing_target(target.with_bounds(bounds));
     }
 
     fn ensure_active_pointer_drag_target_is_live(&mut self) {
@@ -9481,15 +8472,16 @@ fn transform_accessibility_action_target(
                 range: range.clone(),
             }
         }
-        AccessibilityActionTarget::TextField {
-            value,
-            line_limit,
-        } => AccessibilityActionTarget::TextField {
-            value: value.clone(),
-            line_limit: *line_limit,
-        },
+        AccessibilityActionTarget::TextField { value, line_limit } => {
+            AccessibilityActionTarget::TextField {
+                value: value.clone(),
+                line_limit: *line_limit,
+            }
+        }
         AccessibilityActionTarget::SecureField { value } => {
-            AccessibilityActionTarget::SecureField { value: value.clone() }
+            AccessibilityActionTarget::SecureField {
+                value: value.clone(),
+            }
         }
         AccessibilityActionTarget::PickerCycle { selection, ids } => {
             AccessibilityActionTarget::PickerCycle {
