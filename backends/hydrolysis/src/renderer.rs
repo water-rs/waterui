@@ -8187,7 +8187,11 @@ impl HydrolysisRenderer {
                     binding.set(next);
                     true
                 }
-                _ => false,
+                AccessibilityAction::Focus => true,
+                _ => panic!(
+                    "hydrolysis accessibility toggle does not support action {:?}",
+                    action
+                ),
             },
             AccessibilityActionTarget::Slider { value, range, step } => {
                 handle_accessibility_slider_action(
@@ -9468,7 +9472,10 @@ fn handle_accessibility_pointer_action(
         AccessibilityAction::Focus => {
             renderer.handle_pointer_down(x, y, PointerButton::Primary, env)
         }
-        _ => false,
+        _ => panic!(
+            "hydrolysis accessibility pointer target does not support action {:?}",
+            action
+        ),
     }
 }
 
@@ -9523,6 +9530,9 @@ fn handle_accessibility_slider_action(
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
 ) -> bool {
+    if matches!(action, AccessibilityAction::Focus) {
+        return true;
+    }
     if step <= 0.0 {
         panic!("hydrolysis accessibility slider requires positive step");
     }
@@ -9532,9 +9542,14 @@ fn handle_accessibility_slider_action(
         AccessibilityAction::Decrement => (previous - step).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => target.clamp(start, end),
-            _ => return false,
+            _ => {
+                panic!("hydrolysis accessibility slider SetValue requires NumericValue data")
+            }
         },
-        _ => return false,
+        _ => panic!(
+            "hydrolysis accessibility slider does not support action {:?}",
+            action
+        ),
     };
     if (next - previous).abs() <= f64::EPSILON {
         return false;
@@ -9552,6 +9567,9 @@ fn handle_accessibility_stepper_action(
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
 ) -> bool {
+    if matches!(action, AccessibilityAction::Focus) {
+        return true;
+    }
     let step_value = step.get();
     if step_value <= 0 {
         panic!("hydrolysis accessibility stepper requires positive step");
@@ -9571,9 +9589,12 @@ fn handle_accessibility_stepper_action(
                     .expect("hydrolysis accessibility stepper SetValue text must parse as i32");
                 parsed.clamp(start, end)
             }
-            _ => return false,
+            _ => panic!("hydrolysis accessibility stepper SetValue requires numeric data"),
         },
-        _ => return false,
+        _ => panic!(
+            "hydrolysis accessibility stepper does not support action {:?}",
+            action
+        ),
     };
     if next == previous {
         return false;
@@ -9597,7 +9618,7 @@ fn handle_accessibility_text_field_action(
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                return false;
+                panic!("hydrolysis accessibility text field SetValue requires Value data");
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             if exceeds_line_limit(normalized.as_str(), line_limit) {
@@ -9609,7 +9630,27 @@ fn handle_accessibility_text_field_action(
             value.set(StyledStr::plain(normalized));
             true
         }
-        _ => false,
+        AccessibilityAction::ReplaceSelectedText => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!(
+                    "hydrolysis accessibility text field ReplaceSelectedText requires Value data"
+                );
+            };
+            let normalized = normalized_insert_text(text.as_ref(), line_limit);
+            let mut plain = value.get().to_plain().to_string();
+            if !apply_text_insert(&mut plain, normalized.as_str(), line_limit) {
+                panic!(
+                    "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
+                    line_limit
+                );
+            }
+            value.set(StyledStr::plain(plain));
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility text field does not support action {:?}",
+            action
+        ),
     }
 }
 
@@ -9627,7 +9668,7 @@ fn handle_accessibility_secure_field_action(
         }
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
-                return false;
+                panic!("hydrolysis accessibility secure field SetValue requires Value data");
             };
             let normalized = normalized_insert_text(text.as_ref(), Some(1));
             let mut next = FormSecure::default();
@@ -9635,7 +9676,27 @@ fn handle_accessibility_secure_field_action(
             value.set(next);
             true
         }
-        _ => false,
+        AccessibilityAction::ReplaceSelectedText => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!(
+                    "hydrolysis accessibility secure field ReplaceSelectedText requires Value data"
+                );
+            };
+            let mut plain = value.get().expose().to_owned();
+            if !apply_text_insert(&mut plain, text.as_ref(), Some(1)) {
+                panic!(
+                    "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
+                );
+            }
+            let mut next = FormSecure::default();
+            next.set(plain);
+            value.set(next);
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility secure field does not support action {:?}",
+            action
+        ),
     }
 }
 
@@ -9661,7 +9722,11 @@ fn handle_accessibility_picker_cycle_action(
             selection.set(next);
             true
         }
-        _ => false,
+        AccessibilityAction::Focus => true,
+        _ => panic!(
+            "hydrolysis accessibility picker cycle does not support action {:?}",
+            action
+        ),
     }
 }
 
@@ -9679,7 +9744,10 @@ fn handle_accessibility_picker_select_action(
             selection.set(target);
             true
         }
-        _ => false,
+        _ => panic!(
+            "hydrolysis accessibility picker select does not support action {:?}",
+            action
+        ),
     }
 }
 
