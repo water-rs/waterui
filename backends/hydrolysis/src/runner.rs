@@ -404,8 +404,19 @@ pub fn run(app: App) {
 
 #[cfg(feature = "winit")]
 pub fn run(app: App) {
+    initialize_tracing_from_env();
     init_main_thread_executors();
     winit_runner::run(app);
+}
+
+#[cfg(feature = "winit")]
+fn initialize_tracing_from_env() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 }
 
 #[cfg(feature = "winit")]

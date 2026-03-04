@@ -15,6 +15,7 @@ categories.workspace = true
 waterui-core.workspace = true
 waterui.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
 waterui-canvas.workspace = true
