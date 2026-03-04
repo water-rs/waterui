@@ -5,7 +5,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::mpsc::{self, Receiver, Sender, TryRecvError, TrySendError},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, Sender, TryRecvError, TrySendError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -916,6 +919,7 @@ struct VideoRenderer {
     source_asset: SourceAssetState,
     source_error_reported: bool,
     download_retry_at: Option<Instant>,
+    surface_prefers_hdr_cache: OnceLock<Option<bool>>,
 }
 
 struct PendingAudioOpen {
@@ -1001,6 +1005,7 @@ impl VideoRenderer {
             source_asset: SourceAssetState::Unresolved,
             source_error_reported: false,
             download_retry_at: None,
+            surface_prefers_hdr_cache: OnceLock::new(),
         }
     }
 
@@ -2288,11 +2293,18 @@ impl VideoRenderer {
 }
 
 impl GpuView for VideoRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    fn preferred_surface_hdr(&self) -> Option<bool> {
+        *self.surface_prefers_hdr_cache.get_or_init(|| {
+            let preference = preferred_surface_hdr_for_source(&self.source);
+            tracing::info!(
+                "[VideoFallback] initial surface hdr preference source={} preference={preference:?}",
+                self.source.as_str()
+            );
+            preference
+        })
+    }
+
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
     }
@@ -2590,6 +2602,24 @@ fn cached_video_path(url: &Url) -> PathBuf {
     cache_dir.join(format!("{hash:016x}.{extension}"))
 }
 
+fn preferred_surface_hdr_for_source(source: &Url) -> Option<bool> {
+    let probe_path = if is_remote_url(source) {
+        let cached = cached_video_path(source);
+        if !cached.exists() {
+            return None;
+        }
+        cached
+    } else {
+        let local = local_source_path(source);
+        if !local.exists() {
+            return None;
+        }
+        local
+    };
+
+    Some(probe_video_color_profile(&probe_path, None).hdr)
+}
+
 fn start_video_download(url: String, destination: PathBuf) -> Receiver<DownloadUpdate> {
     let (sender, receiver) = mpsc::channel();
 
@@ -2760,8 +2790,10 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShaderTargetMode, shader_target_mode};
+    use super::{ShaderTargetMode, preferred_surface_hdr_for_source, shader_target_mode};
+    use std::{fs, path::PathBuf, time::SystemTime};
     use waterui_graphics::wgpu;
+    use waterui_url::Url;
 
     #[test]
     fn hdr_source_maps_to_sdr_on_srgb_surface() {
@@ -2779,5 +2811,46 @@ mod tests {
     fn sdr_source_stays_sdr_even_on_float_surface() {
         let mode = shader_target_mode(wgpu::TextureFormat::Rgba16Float, false);
         assert_eq!(mode, ShaderTargetMode::LinearSdr);
+    }
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock must be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("waterui_video_{name}_{nanos}.mp4"))
+    }
+
+    fn write_nclx_file(path: &PathBuf, transfer: u16) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0, 0, 0, 4, b'f', b't', b'y', b'p']);
+        bytes.extend_from_slice(&19_u32.to_be_bytes());
+        bytes.extend_from_slice(b"colr");
+        bytes.extend_from_slice(b"nclx");
+        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.extend_from_slice(&transfer.to_be_bytes());
+        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.push(0);
+        fs::write(path, bytes).expect("test nclx file write must succeed");
+    }
+
+    #[test]
+    fn preferred_surface_uses_sdr_for_sdr_source() {
+        let path = unique_temp_file("sdr_pref");
+        write_nclx_file(&path, 1);
+        let url = Url::from_file_path(&path);
+        let preference = preferred_surface_hdr_for_source(&url);
+        assert_eq!(preference, Some(false));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preferred_surface_uses_hdr_for_hdr_source() {
+        let path = unique_temp_file("hdr_pref");
+        write_nclx_file(&path, 16);
+        let url = Url::from_file_path(&path);
+        let preference = preferred_surface_hdr_for_source(&url);
+        assert_eq!(preference, Some(true));
+        let _ = fs::remove_file(path);
     }
 }

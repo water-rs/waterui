@@ -10,11 +10,7 @@ struct SolidClearRenderer {
 }
 
 impl GpuView for SolidClearRenderer {
-    async fn setup(
-        &mut self,
-        _ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {}
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
         let mut encoder = frame

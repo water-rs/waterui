@@ -195,11 +195,7 @@ impl WaveformRenderer {
 }
 
 impl GpuView for WaveformRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let device = &ctx.device;
 
         // 1. Create Shader
@@ -315,7 +311,6 @@ impl GpuView for WaveformRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.samples_buffer = Some(samples_buffer);
         self.bind_group = Some(bind_group);
-
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
