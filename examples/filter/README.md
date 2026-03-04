@@ -79,5 +79,5 @@ background_view.blur(blur_amount)
 
 ## Platform Notes
 
-- **iOS/macOS**: Filters use Core Image (CIFilter) for GPU-accelerated effects
+- **iOS/macOS**: Filters run through WaterUI's Rust `wgpu` filter pipeline
 - **Android**: Uses RenderEffect (API 31+) and ColorMatrix for visual effects
