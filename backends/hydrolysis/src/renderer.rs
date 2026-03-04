@@ -197,6 +197,7 @@ pub struct HydrolysisRenderer {
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     active_pointer_drag_target: Option<PointerAction>,
+    active_pointer_drag_signature: Option<(usize, usize)>,
     gesture_engine: GestureEngine,
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
@@ -207,8 +208,8 @@ pub struct HydrolysisRenderer {
     hit_test_order: usize,
     focused_text_input: Cell<Option<usize>>,
     ime_preedit: Option<Str>,
-    text_caret_visible: bool,
-    text_caret_next_toggle_at: Option<Instant>,
+    text_caret_fade_started_at: Option<Instant>,
+    text_caret_next_frame_at: Option<Instant>,
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
@@ -879,8 +880,9 @@ const INPUT_FIELD_MIN_WIDTH: f64 = 72.0;
 const INPUT_FIELD_MIN_HEIGHT: f64 = 30.0;
 const INPUT_FIELD_HORIZONTAL_INSET: f64 = 8.0;
 const INPUT_FIELD_VERTICAL_INSET: f64 = 6.0;
-const INPUT_CARET_BLINK_ON_DURATION: Duration = Duration::from_millis(530);
-const INPUT_CARET_BLINK_OFF_DURATION: Duration = Duration::from_millis(530);
+const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
+const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
 
 const PICKER_MIN_WIDTH: f64 = 72.0;
 const PICKER_MIN_HEIGHT: f64 = 30.0;
@@ -3031,6 +3033,7 @@ impl HydrolysisRenderer {
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             active_pointer_drag_target: None,
+            active_pointer_drag_signature: None,
             gesture_engine: GestureEngine::default(),
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
@@ -3041,8 +3044,8 @@ impl HydrolysisRenderer {
             hit_test_order: 0,
             focused_text_input: Cell::new(None),
             ime_preedit: None,
-            text_caret_visible: false,
-            text_caret_next_toggle_at: None,
+            text_caret_fade_started_at: None,
+            text_caret_next_frame_at: None,
             lifecycle_disappear_previous: BTreeMap::new(),
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
@@ -3152,43 +3155,53 @@ impl HydrolysisRenderer {
             .register::<IgnorableMetadata<T>>(Self::render_passthrough_ignorable_metadata::<T>);
     }
 
-    fn reset_text_caret_blink(&mut self, now: Instant) {
-        self.text_caret_visible = true;
-        self.text_caret_next_toggle_at = Some(
-            now.checked_add(INPUT_CARET_BLINK_ON_DURATION)
-                .expect("hydrolysis text caret blink timestamp overflow"),
+    fn reset_text_caret_animation(&mut self, now: Instant) {
+        self.text_caret_fade_started_at = Some(now);
+        self.text_caret_next_frame_at = Some(
+            now.checked_add(INPUT_CARET_FADE_FRAME_INTERVAL)
+                .expect("hydrolysis text caret frame timestamp overflow"),
         );
     }
 
-    fn clear_text_caret_blink(&mut self) {
-        self.text_caret_visible = false;
-        self.text_caret_next_toggle_at = None;
+    fn clear_text_caret_animation(&mut self) {
+        self.text_caret_fade_started_at = None;
+        self.text_caret_next_frame_at = None;
     }
 
-    fn advance_text_caret_blink(&mut self, now: Instant) -> bool {
+    fn advance_text_caret_animation(&mut self, now: Instant) -> bool {
         if self.focused_text_input.get().is_none() {
             return false;
         }
-        let mut changed = false;
-        let mut next = self.text_caret_next_toggle_at.unwrap_or_else(|| {
-            self.reset_text_caret_blink(now);
-            self.text_caret_next_toggle_at
-                .expect("hydrolysis text caret blink state missing next toggle timestamp")
+        let mut next = self.text_caret_next_frame_at.unwrap_or_else(|| {
+            self.reset_text_caret_animation(now);
+            self.text_caret_next_frame_at
+                .expect("hydrolysis text caret animation state missing next frame timestamp")
         });
-        while now >= next {
-            self.text_caret_visible = !self.text_caret_visible;
-            let duration = if self.text_caret_visible {
-                INPUT_CARET_BLINK_ON_DURATION
-            } else {
-                INPUT_CARET_BLINK_OFF_DURATION
-            };
-            next = next
-                .checked_add(duration)
-                .expect("hydrolysis text caret blink timestamp overflow");
-            changed = true;
+        if now < next {
+            return false;
         }
-        self.text_caret_next_toggle_at = Some(next);
-        changed
+        while now >= next {
+            next = next
+                .checked_add(INPUT_CARET_FADE_FRAME_INTERVAL)
+                .expect("hydrolysis text caret frame timestamp overflow");
+        }
+        self.text_caret_next_frame_at = Some(next);
+        true
+    }
+
+    fn text_caret_opacity(&self, now: Instant) -> f32 {
+        if self.focused_text_input.get().is_none() {
+            return 0.0;
+        }
+        let started = self.text_caret_fade_started_at.unwrap_or(now);
+        let elapsed = now.saturating_duration_since(started);
+        let cycle_secs = INPUT_CARET_FADE_CYCLE_DURATION.as_secs_f32();
+        if cycle_secs <= 0.0 {
+            panic!("hydrolysis text caret fade cycle duration must be > 0");
+        }
+        let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
+        let wave = ((core::f32::consts::TAU * phase).cos() + 1.0) * 0.5;
+        INPUT_CARET_MIN_OPACITY + (1.0 - INPUT_CARET_MIN_OPACITY) * wave
     }
 
     fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
@@ -3199,9 +3212,9 @@ impl HydrolysisRenderer {
         self.focused_text_input.set(focused);
         self.ime_preedit = None;
         if focused.is_some() {
-            self.reset_text_caret_blink(Instant::now());
+            self.reset_text_caret_animation(Instant::now());
         } else {
-            self.clear_text_caret_blink();
+            self.clear_text_caret_animation();
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -5599,7 +5612,7 @@ impl HydrolysisRenderer {
         draw_input_field(scene, ctx.transform, field_rect);
 
         let prompt_signal = text_field.prompt.content();
-        let (prompt, value, preedit, show_caret) = {
+        let (prompt, value, preedit, caret_opacity) = {
             let renderer = unsafe { ctx.renderer() };
             let is_focused =
                 renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
@@ -5608,11 +5621,16 @@ impl HydrolysisRenderer {
             } else {
                 Str::new()
             };
+            let caret_opacity = if is_focused {
+                renderer.text_caret_opacity(Instant::now())
+            } else {
+                0.0
+            };
             (
                 renderer.read_signal(&prompt_signal).to_plain(),
                 renderer.read_signal(&text_field.value).to_plain(),
                 preedit,
-                is_focused && renderer.text_caret_visible,
+                caret_opacity,
             )
         };
         let committed_with_preedit = value.clone() + preedit.as_str();
@@ -5665,12 +5683,12 @@ impl HydrolysisRenderer {
         let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
         let cursor_area =
             text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit, caret_height);
-        if show_caret {
+        if caret_opacity > 0.0 {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                vello::peniko::Color::new([0.12, 0.14, 0.18, 1.0]),
+                vello::peniko::Color::new([0.12, 0.14, 0.18, caret_opacity]),
                 None,
                 &cursor_area,
             );
@@ -5749,7 +5767,7 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let (masked, show_caret) = {
+        let (masked, caret_opacity) = {
             let renderer = unsafe { ctx.renderer() };
             let is_focused =
                 renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
@@ -5767,7 +5785,12 @@ impl HydrolysisRenderer {
                 .chars()
                 .count()
                 + preedit_count;
-            ("*".repeat(count), is_focused && renderer.text_caret_visible)
+            let caret_opacity = if is_focused {
+                renderer.text_caret_opacity(Instant::now())
+            } else {
+                0.0
+            };
+            ("*".repeat(count), caret_opacity)
         };
         let text_bounds = inset_rect(
             field_rect,
@@ -5794,12 +5817,12 @@ impl HydrolysisRenderer {
         let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
         let cursor_area =
             text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1), caret_height);
-        if show_caret {
+        if caret_opacity > 0.0 {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                vello::peniko::Color::new([0.12, 0.14, 0.18, 1.0]),
+                vello::peniko::Color::new([0.12, 0.14, 0.18, caret_opacity]),
                 None,
                 &cursor_area,
             );
@@ -7417,7 +7440,7 @@ impl HydrolysisRenderer {
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
             })
-            || self.advance_text_caret_blink(now)
+            || self.advance_text_caret_animation(now)
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {
@@ -7567,6 +7590,7 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
+        self.active_pointer_drag_signature = None;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -7638,6 +7662,7 @@ impl HydrolysisRenderer {
             let changed = (target.action.borrow_mut())(point, env);
             if target.captures_drag {
                 self.active_pointer_drag_target = Some(Rc::clone(&target.action));
+                self.active_pointer_drag_signature = Some((target.depth, target.order));
             }
             if !changed && !target.captures_drag {
                 continue;
@@ -7677,6 +7702,7 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut changed = self.handle_pointer_move(x, y, env);
         self.active_pointer_drag_target = None;
+        self.active_pointer_drag_signature = None;
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
         tracing::trace!(
@@ -7754,6 +7780,7 @@ impl HydrolysisRenderer {
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
+        self.active_pointer_drag_signature = None;
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(Instant::now(), env);
@@ -7808,7 +7835,7 @@ impl HydrolysisRenderer {
         let caret_deadline = self
             .focused_text_input
             .get()
-            .and(self.text_caret_next_toggle_at);
+            .and(self.text_caret_next_frame_at);
         match (gesture_deadline, caret_deadline) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (Some(left), None) => Some(left),
@@ -7837,8 +7864,17 @@ impl HydrolysisRenderer {
         if alive {
             return;
         }
+        if let Some((depth, order)) = self.active_pointer_drag_signature {
+            if let Some(target) = self.pointer_targets.iter().find(|target| {
+                target.captures_drag && target.depth == depth && target.order == order
+            }) {
+                self.active_pointer_drag_target = Some(Rc::clone(&target.action));
+                return;
+            }
+        }
         let Some(point) = pointer else {
             self.active_pointer_drag_target = None;
+            self.active_pointer_drag_signature = None;
             return;
         };
         let mut indices: Vec<usize> = self
@@ -7855,9 +7891,14 @@ impl HydrolysisRenderer {
                 &Self::target_hit_priority(left_target.depth, left_target.order, *left),
             )
         });
-        self.active_pointer_drag_target = indices
-            .first()
-            .map(|index| Rc::clone(&self.pointer_targets[*index].action));
+        if let Some(index) = indices.first().copied() {
+            let target = &self.pointer_targets[index];
+            self.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            self.active_pointer_drag_signature = Some((target.depth, target.order));
+        } else {
+            self.active_pointer_drag_target = None;
+            self.active_pointer_drag_signature = None;
+        }
     }
 
     fn dispatch_text_input_command(&mut self, command: TextInputCommand) -> bool {
@@ -7888,7 +7929,7 @@ impl HydrolysisRenderer {
             .dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
             || preedit_cleared;
         if changed {
-            self.reset_text_caret_blink(Instant::now());
+            self.reset_text_caret_animation(Instant::now());
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -7918,7 +7959,7 @@ impl HydrolysisRenderer {
             return false;
         }
         self.ime_preedit = next;
-        self.reset_text_caret_blink(Instant::now());
+        self.reset_text_caret_animation(Instant::now());
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             focused = ?self.focused_text_input.get(),
@@ -7973,7 +8014,7 @@ impl HydrolysisRenderer {
             KeyCode::Named(_) | KeyCode::Unidentified => false,
         };
         if changed {
-            self.reset_text_caret_blink(Instant::now());
+            self.reset_text_caret_animation(Instant::now());
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -8077,6 +8118,7 @@ impl HydrolysisRenderer {
             .any(|target| Rc::ptr_eq(&target.action, active));
         if !alive {
             self.active_pointer_drag_target = None;
+            self.active_pointer_drag_signature = None;
         }
     }
 
@@ -9497,8 +9539,10 @@ fn text_cursor_area_from_layout(
     let top = text_bounds.y0;
     let bottom = text_bounds.y1.max(top + 1.0);
     if layout.is_empty() {
-        let line_height = fallback_line_height.clamp(1.0, bottom - top);
-        return vello::kurbo::Rect::new(left, top, left + 1.0, (top + line_height).min(bottom));
+        let available_height = bottom - top;
+        let line_height = fallback_line_height.clamp(1.0, available_height);
+        let y0 = top + ((available_height - line_height) * 0.5).max(0.0);
+        return vello::kurbo::Rect::new(left, y0, left + 1.0, (y0 + line_height).min(bottom));
     }
 
     let mut caret_x = left;
@@ -9510,8 +9554,10 @@ fn text_cursor_area_from_layout(
         }
         let metrics = line.metrics();
         caret_x = left + f64::from(metrics.offset + metrics.advance);
-        caret_top = top + f64::from(metrics.min_coord);
-        caret_bottom = top + f64::from(metrics.max_coord);
+        let line_top = f64::from(metrics.baseline - metrics.ascent);
+        let line_bottom = f64::from(metrics.baseline + metrics.descent);
+        caret_top = top + line_top;
+        caret_bottom = top + line_bottom.max(line_top + 1.0);
     }
     let caret_x = caret_x.clamp(left, right - 1.0);
     let caret_top = caret_top.clamp(top, bottom - 1.0);
