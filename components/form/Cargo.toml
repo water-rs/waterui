@@ -12,7 +12,7 @@ categories = ["gui"]
 
 
 [dependencies]
-time = "0.3.44"
+time = "0.3.47"
 waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
@@ -23,7 +23,7 @@ waterui-graphics.workspace = true
 waterkit-dialog = { workspace = true, optional = true }
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
-regex = "1.12.2"
+regex = "1.12.3"
 
 [features]
 default = ["std"]
