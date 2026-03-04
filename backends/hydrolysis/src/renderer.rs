@@ -3226,7 +3226,7 @@ impl HydrolysisRenderer {
     }
 
     fn target_hit_priority(depth: usize, order: usize, index: usize) -> (usize, usize, usize) {
-        (depth, order, index)
+        (order, depth, index)
     }
 
     fn topmost_text_input_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
