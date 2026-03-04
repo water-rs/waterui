@@ -97,7 +97,8 @@ fn install_locale_value(env: &mut WuiEnv, locale: Locale) {
     env.0.insert(locale.clone());
     regional::set_locale_tag(locale.canonical_tag())
         .expect("locale inserted into environment must be valid");
-    env.0.insert(regional::current_settings().with_locale(locale));
+    env.0
+        .insert(regional::current_settings().with_locale(locale));
 }
 
 fn current_locale(env: &WuiEnv) -> Locale {

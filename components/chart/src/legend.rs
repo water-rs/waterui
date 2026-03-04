@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use waterui_core::Str;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
@@ -11,7 +12,6 @@ use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignme
 use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{Rectangle, ShapeExt};
 use waterui_text::text;
-use waterui_core::Str;
 
 /// A single item in the legend.
 #[derive(Debug, Clone)]
