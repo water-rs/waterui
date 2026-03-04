@@ -23,10 +23,10 @@ use waterui_core::{
 use waterui_graphics::color::Color;
 use waterui_graphics::filter_view::{
     Blur as GraphicsBlur, Brightness as GraphicsBrightness, Contrast as GraphicsContrast,
-    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered,
-    Grayscale as GraphicsGrayscale, GpuFilter, HueRotation as GraphicsHueRotation,
-    Invert as GraphicsInvert, Saturation as GraphicsSaturation, Sepia as GraphicsSepia,
-    Sharpen as GraphicsSharpen, Vignette as GraphicsVignette,
+    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered, GpuFilter,
+    Grayscale as GraphicsGrayscale, HueRotation as GraphicsHueRotation, Invert as GraphicsInvert,
+    Saturation as GraphicsSaturation, Sepia as GraphicsSepia, Sharpen as GraphicsSharpen,
+    Vignette as GraphicsVignette,
 };
 
 use waterui_layout::{
@@ -101,10 +101,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies a brightness filter.
-    fn brightness<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> GraphicsFiltered<Self, GraphicsBrightness> {
+    fn brightness<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsBrightness> {
         GraphicsFilterViewExt::brightness(self, amount)
     }
 
@@ -114,10 +111,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies a saturation filter.
-    fn saturation<T: IntoSignalF32>(
-        self,
-        amount: T,
-    ) -> GraphicsFiltered<Self, GraphicsSaturation> {
+    fn saturation<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsSaturation> {
         GraphicsFilterViewExt::saturation(self, amount)
     }
 

@@ -774,6 +774,45 @@ async fn detect_new_pid(
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn resolve_macos_bundle_executable_path(artifact_path: &Path) -> Result<PathBuf, FailToRun> {
+    let plist_path = artifact_path.join("Contents").join("Info.plist");
+    let executable_name = smol::unblock({
+        let plist_path = plist_path.clone();
+        move || -> eyre::Result<String> {
+            let plist = plist::Value::from_file(&plist_path).map_err(|error| {
+                eyre::eyre!(
+                    "Failed to read bundle Info.plist at '{}': {error}",
+                    plist_path.display()
+                )
+            })?;
+            let dictionary = plist.into_dictionary().ok_or_else(|| {
+                eyre::eyre!(
+                    "Bundle Info.plist at '{}' must contain a dictionary root",
+                    plist_path.display()
+                )
+            })?;
+            let executable = dictionary
+                .get("CFBundleExecutable")
+                .and_then(plist::Value::as_string)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "Bundle Info.plist at '{}' is missing CFBundleExecutable",
+                        plist_path.display()
+                    )
+                })?;
+            Ok(executable.to_string())
+        }
+    })
+    .await
+    .map_err(FailToRun::Launch)?;
+
+    Ok(artifact_path
+        .join("Contents")
+        .join("MacOS")
+        .join(executable_name))
+}
+
 /// Run a macOS .app bundle using the `open` command.
 ///
 /// On macOS, this includes crash detection via .ips files and panic log fetching.
@@ -791,7 +830,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
         .and_then(|n| n.to_str())
         .ok_or(FailToRun::InvalidArtifact)?
         .to_string();
-    let executable_path = artifact_path.join("Contents").join("MacOS").join(&app_name);
+    let executable_path = resolve_macos_bundle_executable_path(&artifact_path).await?;
 
     let existing_pids = list_matching_pids(&executable_path).await?;
     terminate_pids(&existing_pids).await?;

@@ -200,11 +200,7 @@ impl VelloSvgRenderer {
 pub(crate) const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
 
 impl GpuView for VelloSvgRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         self.renderer = Some(
             vello::Renderer::new(
                 ctx.device,
@@ -310,7 +306,6 @@ impl GpuView for VelloSvgRenderer {
                 cache: ctx.pipeline_cache,
             },
         ));
-
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

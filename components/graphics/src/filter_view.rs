@@ -972,7 +972,9 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         for i in 0..param_count {
             let target = self.target_params[i];
             self.animation_state.current_values[i] = target;
-            self.animation_state.tracks[i].track.set_target(target, None);
+            self.animation_state.tracks[i]
+                .track
+                .set_target(target, None);
             self.animation_state.tracks[i].animated_target = None;
         }
         self.target_params_dirty = false;
@@ -2743,8 +2745,7 @@ pub type HueRotation = FilterAdapter<filtrate_core::filters::HueRotation<Compute
 pub type Invert = FilterAdapter<filtrate_core::filters::Invert>;
 pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
 pub type Sharpen = FilterAdapter<filtrate_core::filters::Sharpen<Computed<f32>>>;
-pub type Vignette =
-    FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
+pub type Vignette = FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
@@ -2788,10 +2789,7 @@ pub trait FilterViewExt: View + Sized {
     /// let radius = binding(10.0);
     /// my_view.blur(radius.animated())
     /// ```
-    fn blur<T: IntoSignalF32>(
-        self,
-        radius: T,
-    ) -> Filtered<Self, Blur> {
+    fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate_core::filters::Blur(

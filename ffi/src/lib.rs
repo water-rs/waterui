@@ -157,9 +157,8 @@ pub unsafe fn expect_non_null_mut<'a, T>(
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_filtered_blur_id() -> WuiTypeId {
-    WuiTypeId::of::<waterui_graphics::filter_view::FilteredView<
-        waterui_graphics::filter_view::Blur,
-    >>()
+    WuiTypeId::of::<waterui_graphics::filter_view::FilteredView<waterui_graphics::filter_view::Blur>>(
+    )
 }
 
 /// JNI: type ID for `FilteredView<Blur>`.
@@ -169,9 +168,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_filteredBlurId<'l
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
 ) -> crate::jni::jobject {
-    let type_id = WuiTypeId::of::<waterui_graphics::filter_view::FilteredView<
-        waterui_graphics::filter_view::Blur,
-    >>();
+    let type_id = WuiTypeId::of::<
+        waterui_graphics::filter_view::FilteredView<waterui_graphics::filter_view::Blur>,
+    >();
     crate::jni::type_id_to_java(&mut env, type_id).into_raw()
 }
 

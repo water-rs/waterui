@@ -144,11 +144,7 @@ impl ParticleRenderer {
 }
 
 impl GpuView for ParticleRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let device = ctx.device;
 
         // 1. Create Buffers using encase size calculation
@@ -352,7 +348,6 @@ impl GpuView for ParticleRenderer {
 
         self.start_time = std::time::Instant::now();
         self.last_frame_time = std::time::Instant::now();
-
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

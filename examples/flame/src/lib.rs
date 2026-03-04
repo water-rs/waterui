@@ -303,11 +303,7 @@ impl FlameRenderer {
 }
 
 impl GpuView for FlameRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 
@@ -592,7 +588,6 @@ impl GpuView for FlameRenderer {
         self.blur_pipeline = Some(blur_pipeline);
         self.final_pipeline = Some(final_pipeline);
         self.final_format = Some(ctx.surface_format);
-
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -824,7 +819,10 @@ impl GpuView for FlameRenderer {
 
 impl SubView for FlameRenderer {
     fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        Size::new(proposal.width.unwrap_or(0.0), proposal.height.unwrap_or(0.0))
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
