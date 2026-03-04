@@ -36,11 +36,7 @@ impl<V> GpuView for HydrolysisGpuView<V>
 where
     V: View + Clone + 'static,
 {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        env: &mut Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
         self.renderer = Some(HydrolysisRenderer::new(ctx.device));
         self.env = Some(env.extending(SceneViewMergeToParent));
     }

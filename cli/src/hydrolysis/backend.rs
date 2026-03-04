@@ -63,8 +63,10 @@ impl HydrolysisBackend {
             return Ok(true);
         }
 
-        let manifest = CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path)
-            .map_err(|error| eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display()))?;
+        let manifest =
+            CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path).map_err(|error| {
+                eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display())
+            })?;
         Ok(!manifest.dependencies.contains_key("hydrolysis")
             || !manifest.dependencies.contains_key("waterui"))
     }

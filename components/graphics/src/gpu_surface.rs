@@ -40,18 +40,32 @@ pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::Textu
 /// - `Some(false)`: prefer SDR even if HDR is supported.
 /// - `None`: follow `WATERUI_GPU_PREFER_HDR` behavior.
 #[must_use]
+pub fn surface_hdr_preference_from_env() -> Option<bool> {
+    std::env::var("WATERUI_GPU_PREFER_HDR")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"))
+}
+
+/// Resolves final HDR preference from optional override and environment policy.
+///
+/// Resolution order:
+/// - Explicit override from surface/renderer.
+/// - `WATERUI_GPU_PREFER_HDR` when present.
+/// - Default `true` (prefer HDR).
+#[must_use]
+pub fn resolve_surface_hdr_preference(prefer_hdr_override: Option<bool>) -> bool {
+    prefer_hdr_override
+        .or_else(surface_hdr_preference_from_env)
+        .unwrap_or(true)
+}
+
+#[must_use]
 pub fn preferred_surface_format_with_preference(
     caps: &wgpu::SurfaceCapabilities,
     prefer_hdr_override: Option<bool>,
 ) -> wgpu::TextureFormat {
     let hdr = wgpu::TextureFormat::Rgba16Float;
-    // Default to HDR across all platforms. Users can explicitly opt out with:
-    // WATERUI_GPU_PREFER_HDR=0|false|FALSE
-    let prefer_hdr = prefer_hdr_override.unwrap_or_else(|| {
-        std::env::var("WATERUI_GPU_PREFER_HDR")
-            .ok()
-            .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "FALSE"))
-    });
+    let prefer_hdr = resolve_surface_hdr_preference(prefer_hdr_override);
 
     // HDR (linear, extended range) preferred when supported by the surface.
     if prefer_hdr && caps.formats.contains(&hdr) {
@@ -428,6 +442,17 @@ pub trait GpuView: SubView + 'static {
     ///
     /// Call `frame.request_redraw()` to schedule another frame (for animations).
     fn render(&mut self, frame: &mut GpuFrame);
+
+    /// Optional per-view surface dynamic range preference.
+    ///
+    /// - `Some(true)`: prefer HDR surface formats.
+    /// - `Some(false)`: prefer SDR surface formats.
+    /// - `None`: follow global `WATERUI_GPU_PREFER_HDR` behavior.
+    ///
+    /// This is evaluated by native backends during surface initialization.
+    fn preferred_surface_hdr(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Implements `SubView` for a `GpuView` type using its layout defaults/overrides.
@@ -672,6 +697,16 @@ impl OffscreenRenderOutputHdr {
         encode_sdr_tonemapped_png(self.width, self.height, self.rgba16f)
     }
 
+    /// Converts to SDR `RGBA8` bytes using automatic tone mapping.
+    pub fn to_sdr_rgba8(&self) -> Result<Vec<u8>, OffscreenRenderError> {
+        decode_sdr_tonemapped_rgba8(self.width, self.height, &self.rgba16f)
+    }
+
+    /// Converts to SDR `RGBA8` bytes using automatic tone mapping.
+    pub fn into_sdr_rgba8(self) -> Result<Vec<u8>, OffscreenRenderError> {
+        decode_sdr_tonemapped_rgba8(self.width, self.height, &self.rgba16f)
+    }
+
     /// Saves the rendered image as PNG with automatic dynamic-range handling.
     pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
@@ -759,6 +794,7 @@ trait GpuViewImpl: 'static {
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
     fn require_main_thread(&self) -> bool;
+    fn preferred_surface_hdr(&self) -> Option<bool>;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -788,6 +824,10 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn require_main_thread(&self) -> bool {
         SubView::require_main_thread(self)
+    }
+
+    fn preferred_surface_hdr(&self) -> Option<bool> {
+        GpuView::preferred_surface_hdr(self)
     }
 }
 
@@ -912,8 +952,9 @@ impl GpuSurface {
     ///
     /// `None` means follow global environment preference.
     #[must_use]
-    pub const fn get_surface_prefers_hdr(&self) -> Option<bool> {
+    pub fn get_surface_prefers_hdr(&self) -> Option<bool> {
         self.surface_prefers_hdr
+            .or_else(|| self.renderer.preferred_surface_hdr())
     }
 
     /// Renders this surface once into an offscreen texture and reads back RGBA8 pixels.
@@ -1367,20 +1408,26 @@ fn encode_sdr_tonemapped_png(
     rgba16f: Vec<u8>,
 ) -> Result<Vec<u8>, OffscreenRenderError> {
     let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
-    let mut frame_max = Vec::with_capacity((width as usize) * (height as usize));
-    for px in rgba16f.chunks_exact(8) {
-        let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
-        let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
-        let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);
-        frame_max.push(r.max(g).max(b));
-    }
-    frame_max.sort_unstable_by(|a, b| a.total_cmp(b));
-    let white_point = {
-        let idx = (((frame_max.len() - 1) as f32) * 0.995).round() as usize;
-        frame_max[idx].max(1.0)
-    };
+    let white_point = compute_tonemap_white_point(&rgba16f);
     let png16 = rgba16f_to_sdr_srgb16_bytes(&rgba16f, white_point, expected);
     encode_png16(width, height, &png16, None)
+}
+
+fn decode_sdr_tonemapped_rgba8(
+    width: u32,
+    height: u32,
+    rgba16f: &[u8],
+) -> Result<Vec<u8>, OffscreenRenderError> {
+    let _ = validate_rgba16f_buffer(width, height, rgba16f)?;
+    if rgba16f.is_empty() || width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+    let white_point = compute_tonemap_white_point(rgba16f);
+    Ok(rgba16f_to_sdr_srgb8_bytes(
+        rgba16f,
+        white_point,
+        (width as usize) * (height as usize) * 4,
+    ))
 }
 
 fn encode_sdr_png_linear(
@@ -1506,6 +1553,44 @@ fn rgba16f_to_sdr_srgb16_bytes(rgba16f: &[u8], white_point: f32, capacity: usize
     png16
 }
 
+fn rgba16f_to_sdr_srgb8_bytes(rgba16f: &[u8], white_point: f32, capacity: usize) -> Vec<u8> {
+    let white_point = white_point.max(1.0);
+    let mut rgba8 = Vec::with_capacity(capacity);
+    for px in rgba16f.chunks_exact(8) {
+        let r = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0) / white_point).min(1.0),
+        );
+        let g = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0) / white_point).min(1.0),
+        );
+        let b = linear_to_srgb(
+            (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0) / white_point).min(1.0),
+        );
+        let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
+        rgba8.push((r * 255.0).round() as u8);
+        rgba8.push((g * 255.0).round() as u8);
+        rgba8.push((b * 255.0).round() as u8);
+        rgba8.push((a * 255.0).round() as u8);
+    }
+    rgba8
+}
+
+fn compute_tonemap_white_point(rgba16f: &[u8]) -> f32 {
+    let mut frame_max = Vec::with_capacity(rgba16f.len() / 8);
+    for px in rgba16f.chunks_exact(8) {
+        let r = f16_to_f32(u16::from_le_bytes([px[0], px[1]])).max(0.0);
+        let g = f16_to_f32(u16::from_le_bytes([px[2], px[3]])).max(0.0);
+        let b = f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0);
+        frame_max.push(r.max(g).max(b));
+    }
+    if frame_max.is_empty() {
+        return 1.0;
+    }
+    frame_max.sort_unstable_by(|a, b| a.total_cmp(b));
+    let idx = (((frame_max.len() - 1) as f32) * 0.995).round() as usize;
+    frame_max[idx].max(1.0)
+}
+
 fn analyze_hdr_headroom(rgba16f: &[u8]) -> (f32, f32) {
     let mut max_rgb = 0.0f32;
     let mut total = 0usize;
@@ -1579,4 +1664,48 @@ fn f16_to_f32(bits: u16) -> f32 {
         (sign << 31) | (exp32 << 23) | (frac << 13)
     };
     f32::from_bits(f32_bits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba16f_pixel_le(r: u16, g: u16, b: u16, a: u16) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(8);
+        bytes.extend_from_slice(&r.to_le_bytes());
+        bytes.extend_from_slice(&g.to_le_bytes());
+        bytes.extend_from_slice(&b.to_le_bytes());
+        bytes.extend_from_slice(&a.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn hdr_output_to_sdr_rgba8_preserves_sdr_values() {
+        // half-float: 0.5, 0.5, 0.5, 1.0
+        let output = OffscreenRenderOutputHdr {
+            width: 1,
+            height: 1,
+            rgba16f: rgba16f_pixel_le(0x3800, 0x3800, 0x3800, 0x3c00),
+        };
+
+        let rgba8 = output
+            .to_sdr_rgba8()
+            .expect("sdr conversion should succeed");
+        assert_eq!(rgba8, vec![188, 188, 188, 255]);
+    }
+
+    #[test]
+    fn hdr_output_to_sdr_rgba8_tonemaps_hdr_values() {
+        // half-float: 2.0, 2.0, 2.0, 1.0
+        let output = OffscreenRenderOutputHdr {
+            width: 1,
+            height: 1,
+            rgba16f: rgba16f_pixel_le(0x4000, 0x4000, 0x4000, 0x3c00),
+        };
+
+        let rgba8 = output
+            .to_sdr_rgba8()
+            .expect("hdr tone mapping should succeed");
+        assert_eq!(rgba8, vec![255, 255, 255, 255]);
+    }
 }

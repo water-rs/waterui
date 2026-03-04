@@ -775,11 +775,7 @@ impl StaticMeshRenderer {
 }
 
 impl GpuView for StaticMeshRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         self.resources = Some(create_mesh_resources(ctx, "Static Mesh Gradient"));
     }
 
@@ -880,11 +876,7 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         if self.watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
             let redraw_handle = ctx.redraw_handle.clone();
