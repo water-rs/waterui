@@ -535,14 +535,14 @@ fn bind_param_watcher<S>(
 }
 
 macro_rules! impl_filter_graph_one_param {
-    ($ty:ident, color, $shader:expr) => {
+    ($ty:ident, color) => {
         impl<S> FilterGraph for filtrate_core::filters::$ty<S>
         where
             S: Signal<Output = f32> + 'static,
             S::Guard: 'static,
         {
             fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, $shader, 1);
+                push_color_stage(out, self.fragments(), 1);
             }
 
             fn bind_animation_watchers(
@@ -555,14 +555,14 @@ macro_rules! impl_filter_graph_one_param {
             }
         }
     };
-    ($ty:ident, spatial, $shader:expr) => {
+    ($ty:ident, spatial) => {
         impl<S> FilterGraph for filtrate_core::filters::$ty<S>
         where
             S: Signal<Output = f32> + 'static,
             S::Guard: 'static,
         {
             fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, $shader, 1);
+                push_spatial_stage(out, self.fragments(), 1);
             }
 
             fn bind_animation_watchers(
@@ -577,41 +577,13 @@ macro_rules! impl_filter_graph_one_param {
     };
 }
 
-impl_filter_graph_one_param!(
-    Brightness,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl")
-);
-impl_filter_graph_one_param!(
-    Contrast,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/contrast.wgsl")
-);
-impl_filter_graph_one_param!(
-    Saturation,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/saturation.wgsl")
-);
-impl_filter_graph_one_param!(
-    Grayscale,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/grayscale.wgsl")
-);
-impl_filter_graph_one_param!(
-    HueRotation,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/hue_rotation.wgsl")
-);
-impl_filter_graph_one_param!(
-    Sepia,
-    color,
-    include_str!("../../../utils/filtrate-core/src/shaders/fragments/sepia.wgsl")
-);
-impl_filter_graph_one_param!(
-    Sharpen,
-    spatial,
-    include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl")
-);
+impl_filter_graph_one_param!(Brightness, color);
+impl_filter_graph_one_param!(Contrast, color);
+impl_filter_graph_one_param!(Saturation, color);
+impl_filter_graph_one_param!(Grayscale, color);
+impl_filter_graph_one_param!(HueRotation, color);
+impl_filter_graph_one_param!(Sepia, color);
+impl_filter_graph_one_param!(Sharpen, spatial);
 
 impl<S> FilterGraph for filtrate_core::filters::Blur<S>
 where
@@ -660,11 +632,7 @@ where
 
 impl FilterGraph for filtrate_core::filters::Invert {
     fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        push_color_stage(
-            out,
-            include_str!("../../../utils/filtrate-core/src/shaders/fragments/invert.wgsl"),
-            0,
-        );
+        push_color_stage(out, self.fragments(), 0);
     }
 }
 
@@ -676,11 +644,7 @@ where
     S::Guard: 'static,
 {
     fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        push_color_stage(
-            out,
-            include_str!("../../../utils/filtrate-core/src/shaders/fragments/vignette.wgsl"),
-            2,
-        );
+        push_color_stage(out, self.fragments(), 2);
     }
 
     fn bind_animation_watchers(
@@ -720,24 +684,6 @@ where
     }
 }
 
-fn validate_stage(stage: AtomicStage) -> Result<(), &'static str> {
-    match stage.kind {
-        AtomicStageKind::ColorFragment(src) => {
-            if src.contains("@compute") || src.contains("@fragment") {
-                return Err(
-                    "color-only stage must provide a fragment snippet, not a full shader program",
-                );
-            }
-        }
-        AtomicStageKind::SpatialShader(src) => {
-            if !src.contains("@compute") {
-                return Err("spatial stage must provide a full compute shader");
-            }
-        }
-    }
-    Ok(())
-}
-
 fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str> {
     if stages.is_empty() {
         return Err("filter graph produced no stages");
@@ -747,8 +693,6 @@ fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str>
     let mut param_offset = 0usize;
 
     for stage in stages {
-        validate_stage(*stage)?;
-
         match stage.kind {
             AtomicStageKind::ColorFragment(fragment) => {
                 if let Some(last) = passes.last_mut() {
@@ -2113,31 +2057,6 @@ mod tests {
     }
 
     #[test]
-    fn reject_invalid_color_stage_program() {
-        let stages = [AtomicStage {
-            kind: AtomicStageKind::ColorFragment("@fragment fn fs_main() {}"),
-            param_count: 0,
-        }];
-
-        let err = fuse_stages(&stages).expect_err("full shader in color stage should fail");
-        assert_eq!(
-            err,
-            "color-only stage must provide a fragment snippet, not a full shader program"
-        );
-    }
-
-    #[test]
-    fn reject_invalid_spatial_stage_snippet() {
-        let stages = [AtomicStage {
-            kind: AtomicStageKind::SpatialShader("color = vec4<f32>(1.0);"),
-            param_count: 1,
-        }];
-
-        let err = fuse_stages(&stages).expect_err("spatial stage without @compute should fail");
-        assert_eq!(err, "spatial stage must provide a full compute shader");
-    }
-
-    #[test]
     fn fuse_adjacent_color_stages() {
         let filter = Chain {
             first: filtrate_core::filters::Brightness(0.2f32),
@@ -2293,8 +2212,9 @@ mod tests {
             "@group(0) @binding(2) var out_tex: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;";
         let shader = specialize_spatial_shader(src, wgpu::TextureFormat::Rgba16Float)
             .expect("specialization should succeed");
-        assert!(shader.contains("texture_storage_2d<rgba16float, write>"));
-        assert!(!shader.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
+        let shader_text = shader.as_str();
+        assert!(shader_text.contains("texture_storage_2d<rgba16float, write>"));
+        assert!(!shader_text.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
     }
 
     #[test]
