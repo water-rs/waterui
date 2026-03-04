@@ -317,7 +317,13 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             let content = runtime.window.build_content();
             runtime
                 .renderer
-                .dispatch_with_transform(content, env, bounds, root_transform);
+                .dispatch_with_transform(
+                    content,
+                    env,
+                    bounds,
+                    root_transform,
+                    vello::kurbo::Affine::IDENTITY,
+                );
             runtime.renderer.finish_rebuild_frame();
             runtime.needs_rebuild = false;
             if let Some((x, y)) = runtime.pointer_position {
