@@ -350,6 +350,53 @@ pub struct WuiGpuSurfaceRenderResult {
     pub needs_redraw: bool,
 }
 
+/// Renderer-driven HDR preference exported to native backends before init.
+///
+/// `has_preference = false` means the surface should follow backend/global policy.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WuiGpuSurfaceHdrPreference {
+    /// Whether the renderer provided an explicit HDR/SDR preference.
+    pub has_preference: bool,
+    /// Explicit preferred dynamic range when `has_preference` is true.
+    pub prefers_hdr: bool,
+    /// Final dynamic range preference resolved by Rust (`GpuSurface` + env policy).
+    pub resolved_prefers_hdr: bool,
+}
+
+/// Returns the renderer-driven HDR preference for a `WuiGpuSurface`.
+///
+/// This must be called before `waterui_gpu_surface_init` consumes the surface.
+///
+/// # Safety
+///
+/// - `surface` must be a valid pointer obtained from `waterui_force_as_gpu_surface`
+/// - `surface` must not have been consumed by `waterui_gpu_surface_init`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_hdr_preference(
+    surface: *const WuiGpuSurface,
+) -> WuiGpuSurfaceHdrPreference {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unsafe {
+            crate::expect_non_null(surface, "waterui_gpu_surface_hdr_preference", "surface");
+        }
+        let wui_surface = unsafe { &*surface };
+        let gpu_surface = unsafe { &*(wui_surface.surface as *const GpuSurface) };
+        let explicit = gpu_surface.get_surface_prefers_hdr();
+        let resolved = waterui_graphics::gpu_surface::resolve_surface_hdr_preference(explicit);
+        WuiGpuSurfaceHdrPreference {
+            has_preference: explicit.is_some(),
+            prefers_hdr: explicit.unwrap_or(false),
+            resolved_prefers_hdr: resolved,
+        }
+    }));
+
+    match result {
+        Ok(value) => value,
+        Err(_) => abort_on_panic("waterui_gpu_surface_hdr_preference"),
+    }
+}
+
 /// Initialize a GpuSurface with a native layer.
 ///
 /// This function creates wgpu resources (Instance, Adapter, Device, Queue, Surface)
@@ -1326,5 +1373,73 @@ fn try_configure_surface(
 
     if let Some(err) = validation_err.or(internal_err).or(oom_err) {
         panic!("gpu_surface::try_configure_surface failed: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IntoFFI;
+    use waterui_core::Environment;
+    use waterui_graphics::{GpuView, impl_gpu_subview};
+
+    struct DummyGpuRenderer;
+
+    impl_gpu_subview!(DummyGpuRenderer);
+
+    impl GpuView for DummyGpuRenderer {
+        async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
+
+        fn render(&mut self, _frame: &mut GpuFrame) {}
+    }
+
+    struct SurfaceGuard {
+        inner: WuiGpuSurface,
+    }
+
+    impl SurfaceGuard {
+        fn new(surface: GpuSurface) -> Self {
+            Self {
+                inner: surface.into_ffi(),
+            }
+        }
+    }
+
+    impl Drop for SurfaceGuard {
+        fn drop(&mut self) {
+            if self.inner.surface.is_null() {
+                return;
+            }
+            unsafe {
+                drop(Box::from_raw(self.inner.surface as *mut GpuSurface));
+            }
+            self.inner.surface = core::ptr::null_mut();
+        }
+    }
+
+    #[test]
+    fn hdr_preference_defaults_to_none() {
+        let guard = SurfaceGuard::new(GpuSurface::new(DummyGpuRenderer));
+        let pref = unsafe { waterui_gpu_surface_hdr_preference(&guard.inner) };
+        assert!(!pref.has_preference);
+        assert!(!pref.prefers_hdr);
+    }
+
+    #[test]
+    fn hdr_preference_reports_explicit_hdr() {
+        let guard = SurfaceGuard::new(GpuSurface::new(DummyGpuRenderer).prefer_hdr_surface());
+        let pref = unsafe { waterui_gpu_surface_hdr_preference(&guard.inner) };
+        assert!(pref.has_preference);
+        assert!(pref.prefers_hdr);
+        assert!(pref.resolved_prefers_hdr);
+    }
+
+    #[test]
+    fn hdr_preference_reports_explicit_sdr() {
+        let guard = SurfaceGuard::new(GpuSurface::new(DummyGpuRenderer).prefer_sdr_surface());
+        let pref = unsafe { waterui_gpu_surface_hdr_preference(&guard.inner) };
+        assert!(pref.has_preference);
+        assert!(!pref.prefers_hdr);
+        assert!(!pref.resolved_prefers_hdr);
     }
 }

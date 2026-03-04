@@ -6,12 +6,9 @@ use icu_datetime::{
     options::length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
     time_zone::TimeZoneFormatterOptions,
 };
-use icu_timezone::{CustomTimeZone, GmtOffset, MetazoneCalculator, TimeZoneIdMapper, ZoneVariant};
 use icu_provider::DataLocale;
-use jiff::{
-    civil::DateTime as JiffDateTime,
-    tz::Dst,
-};
+use icu_timezone::{CustomTimeZone, GmtOffset, MetazoneCalculator, TimeZoneIdMapper, ZoneVariant};
+use jiff::{civil::DateTime as JiffDateTime, tz::Dst};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::locale::{Locale, locales};
@@ -154,14 +151,12 @@ fn build_regional_time_zone(
     let offset = GmtOffset::try_from_offset_seconds(zoned.offset().seconds()).ok()?;
 
     let mut zone = CustomTimeZone::new_with_offset(offset);
-    zone.zone_variant = Some(match zoned
-        .time_zone()
-        .to_offset_info(zoned.timestamp())
-        .dst()
-    {
-        Dst::Yes => ZoneVariant::daylight(),
-        Dst::No => ZoneVariant::standard(),
-    });
+    zone.zone_variant = Some(
+        match zoned.time_zone().to_offset_info(zoned.timestamp()).dst() {
+            Dst::Yes => ZoneVariant::daylight(),
+            Dst::No => ZoneVariant::standard(),
+        },
+    );
 
     let mapper = TimeZoneIdMapper::new();
     if let Some(time_zone_id) = mapper.as_borrowed().iana_to_bcp47(context.timezone()) {

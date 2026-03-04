@@ -910,11 +910,7 @@ impl MorphShapeRenderer {
 }
 
 impl GpuView for MorphShapeRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
             ctx.device,
             MORPH_SHADER_LABEL,
@@ -1003,7 +999,6 @@ impl GpuView for MorphShapeRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
-
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

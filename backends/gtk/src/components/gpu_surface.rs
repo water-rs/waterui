@@ -22,7 +22,7 @@ use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
-    preferred_msaa_samples,
+    preferred_msaa_samples, resolve_surface_hdr_preference, surface_hdr_preference_from_env,
 };
 
 use crate::component::GtkComponent;
@@ -396,7 +396,7 @@ fn init_wgpu_if_needed(
     let mut loader = make_gl_loader(gl_ctx);
     let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
     let format = query_framebuffer_format(&glow);
-    let (prefers_hdr, msaa_max_samples) = {
+    let (prefers_hdr_explicit, msaa_max_samples) = {
         let st = state.borrow();
         (
             st.gpu_surface
@@ -405,23 +405,26 @@ fn init_wgpu_if_needed(
             st.msaa_max_samples,
         )
     };
-
-    if let Some(prefers_hdr) = prefers_hdr {
-        let format_is_hdr = matches!(
+    let format_is_hdr = matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    );
+    let prefers_hdr_resolved = resolve_surface_hdr_preference(prefers_hdr_explicit);
+    let requested_preference = prefers_hdr_explicit.or_else(surface_hdr_preference_from_env);
+    if let Some(requested_hdr) = requested_preference {
+        assert!(
+            requested_hdr == format_is_hdr,
+            "GpuSurface(GL): requested {} surface but GtkGLArea default framebuffer is {:?} ({}).",
+            if requested_hdr { "HDR" } else { "SDR" },
             format,
-            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+            if format_is_hdr { "HDR" } else { "SDR" }
         );
-        match (prefers_hdr, format_is_hdr) {
-            (true, false) => tracing::warn!(
-                "[gtk-gpu] GpuSurface requested HDR surface but GtkGLArea default {:?} is SDR; preference ignored",
-                format
-            ),
-            (false, true) => tracing::warn!(
-                "[gtk-gpu] GpuSurface requested SDR surface but GtkGLArea default {:?} is HDR; preference ignored",
-                format
-            ),
-            _ => {}
-        }
+    }
+    if gpu_debug_enabled() {
+        eprintln!(
+            "[gtk-gpu] framebuffer format={format:?} ({}) resolved_prefers_hdr={prefers_hdr_resolved}",
+            if format_is_hdr { "HDR" } else { "SDR" }
+        );
     }
 
     let exposed = unsafe {

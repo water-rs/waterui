@@ -60,16 +60,16 @@ pub use image::{CanvasImage, ImageError};
 
 pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use alloc::borrow::Cow;
 use core::any::Any;
 use core::cell::Cell;
 
-use nami::signal::IntoSignal;
 use nami::Signal;
-use waterui_core::layout::{Point, Rect, Size, StretchAxis};
+use nami::signal::IntoSignal;
 use waterui_core::IntoSignalF32;
+use waterui_core::layout::{Point, Rect, Size, StretchAxis};
 
 // Internal imports for rendering (not exposed to users)
 use kurbo::{self, Shape as _};
@@ -296,11 +296,7 @@ impl DrawingContext<'_> {
     /// Pushes a layer with alpha (opacity), clipping content to the given rectangle.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_alpha_rect(
-        &mut self,
-        alpha: impl IntoSignalF32,
-        rect: impl IntoSignal<Rect>,
-    ) {
+    pub fn push_alpha_rect(&mut self, alpha: impl IntoSignalF32, rect: impl IntoSignal<Rect>) {
         let alpha = self.resolve_f32(alpha);
         let rect = self.resolve_signal(rect);
         let kurbo_rect = rect_to_kurbo(rect);
@@ -1107,8 +1103,12 @@ impl DrawingContext<'_> {
         );
         builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
         builder.push_default(parley::StyleProperty::FontSize(font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(font.weight)));
-        builder.push_default(parley::StyleProperty::FontStyle(parley_font_style(font.style)));
+        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+            font.weight,
+        )));
+        builder.push_default(parley::StyleProperty::FontStyle(parley_font_style(
+            font.style,
+        )));
         if !family.is_empty() {
             builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
                 parley::FontFamily::Named(Cow::Owned(family)),

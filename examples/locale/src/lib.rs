@@ -20,7 +20,8 @@ use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui_locale::format::date::{
-    DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date, format_datetime_with_regional_context,
+    DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
+    format_datetime_with_regional_context,
 };
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::{Locale, LocalizedDisplay, locales};
