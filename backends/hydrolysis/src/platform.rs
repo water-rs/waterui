@@ -584,7 +584,7 @@ mod winit_impl {
                             "hydrolysis winit backend received invalid scale factor {scale_factor}"
                         );
                     }
-                    let ratio = *scale_factor / self.pointer_scale_factor;
+                    let ratio = self.pointer_scale_factor / *scale_factor;
                     self.pointer_position = scale_pointer_position(self.pointer_position, ratio);
                     self.pointer_scale_factor = *scale_factor;
                     let size = self.window.inner_size();
@@ -595,7 +595,8 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer_position = map_cursor_position(position);
+                    self.pointer_position =
+                        map_cursor_position(position, self.pointer_scale_factor);
                     tracing::trace!(
                         target: "waterui::hydrolysis::input_raw",
                         event = "cursor_moved",
@@ -724,8 +725,12 @@ mod winit_impl {
         }
     }
 
-    fn map_cursor_position(position: &PhysicalPosition<f64>) -> (f32, f32) {
-        (position.x as f32, position.y as f32)
+    fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
+        }
+        let logical = position.to_logical::<f64>(scale_factor);
+        (logical.x as f32, logical.y as f32)
     }
 
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
@@ -903,10 +908,10 @@ mod winit_impl {
         use super::{map_cursor_position, map_scroll_delta, scale_pointer_position};
 
         #[test]
-        fn cursor_position_uses_physical_coordinates() {
-            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25));
-            assert_eq!(x, 384.5);
-            assert_eq!(y, 216.25);
+        fn cursor_position_is_converted_to_logical_space() {
+            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
+            assert_eq!(x, 192.25);
+            assert_eq!(y, 108.125);
         }
 
         #[test]
@@ -931,7 +936,7 @@ mod winit_impl {
 
         #[test]
         fn pointer_position_scales_with_scale_factor_ratio() {
-            assert_eq!(scale_pointer_position((120.0, 80.0), 1.5), (180.0, 120.0));
+            assert_eq!(scale_pointer_position((120.0, 80.0), 0.5), (60.0, 40.0));
         }
     }
 
