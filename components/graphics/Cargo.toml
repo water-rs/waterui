@@ -23,7 +23,7 @@ wgpu.workspace = true
 vello.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
-bytemuck = "1.14"
+bytemuck = "1.25"
 encase.workspace = true
 glam = "0.29"
 tracing.workspace = true
@@ -33,7 +33,7 @@ parking_lot = "0.12"
 pollster = "0.4"
 inventory = "0.3"
 dirs = "5.0"
-rayon = "1.8"
+rayon = "1.11"
 
 [build-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }

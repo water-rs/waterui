@@ -14,11 +14,11 @@ categories = ["gui", "graphics"]
 waterui-core.workspace = true
 waterui-graphics.workspace = true
 wgpu.workspace = true
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true
 glam = "0.29"
 tracing.workspace = true
-fastrand = "2.0"
+fastrand = "2.3"
 
 [lints]
 workspace = true
