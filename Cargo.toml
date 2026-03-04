@@ -69,14 +69,14 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-executor-core = { version = "0.7.0", features = ["std"]}
+executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
 # Local vendored dependency overrides via git submodule.
 nami = { version = "0.10.1", path = "utils/nami" }
 nami-core = { version = "0.3.2", path = "utils/nami/core" }
-tracing = "0.1.41"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
@@ -140,7 +140,7 @@ time = "0.3"
 tiny-skia = "0.11"
 zenwave = { version = "0.3.0", default-features = false, features = ["hyper-backend", "ws"] }
 skyzen = { version = "0.1.0", default-features = false }
-pastey = "0.2.0"
+pastey = "0.2.1"
 tracing-panic = "0.1.2"
 robius-open = { version = "0.1", default-features = false }
 gtk4 = "0.9"
@@ -149,7 +149,7 @@ glib = "0.20"
 cairo-rs = { version = "0.20", features = ["v1_18"] }
 pollster = "0.4"
 jiff = "0.2"
-async-channel = "2.3"
+async-channel = "2.5"
 rodio = { version = "0.19", features = ["symphonia-isomp4", "symphonia-aac"] }
 cpal = "0.15"
 swift-bridge = "0.1"
@@ -185,7 +185,7 @@ cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
-uuid = { version = "1.18.1", features = ["v4"] }
+uuid = { version = "1.21.0", features = ["v4"] }
 waterui-graphics.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
@@ -199,7 +199,7 @@ async-fs = "2.2.0"
 robius-open.workspace = true
 pastey.workspace = true
 tree-sitter = { version = "0.25" }
-tree-sitter-md = { version = "0.5.2" }
+tree-sitter-md = { version = "0.5.3" }
 tree-sitter-rust = { version = "0.23" }
 tree-sitter-javascript = { version = "0.23" }
 tree-sitter-typescript = { version = "0.23" }

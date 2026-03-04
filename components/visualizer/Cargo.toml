@@ -18,7 +18,7 @@ waterui-core.workspace = true
 waterui-graphics.workspace = true
 waterkit-audio.workspace = true
 wgpu.workspace = true
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true
 glam = "0.29"
 pollster.workspace = true
