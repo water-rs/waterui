@@ -20,7 +20,7 @@ waterui-layout.workspace = true
 waterui-shape.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 tracing.workspace = true
 
 [dev-dependencies]
