@@ -328,7 +328,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 .sync_active_interactions_after_layout(runtime.pointer_position);
             runtime.needs_rebuild = false;
             if let Some((x, y)) = runtime.pointer_position {
-                if runtime.renderer.handle_pointer_move(x, y, env) {
+                if runtime.renderer.sync_pointer_hover_state(x, y, env) {
                     runtime.needs_rebuild = true;
                 }
             }
