@@ -3519,9 +3519,11 @@ impl HydrolysisRenderer {
             );
         }
         for target in &subtree.gesture_targets {
+            let depth = self.replay_target_depth(subtree.depth_base, target.depth);
             self.register_gesture_target_recognizer(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 target.clone(),
+                depth,
             );
         }
         for target in &subtree.cursor_targets {
@@ -8007,19 +8009,22 @@ impl HydrolysisRenderer {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_engine.register_target(bounds, gesture, action);
+        let order = self.next_hit_test_order();
+        self.gesture_engine
+            .register_target(bounds, gesture, action, self.render_depth, order);
     }
 
     fn register_gesture_target_recognizer(
         &mut self,
         bounds: vello::kurbo::Rect,
         target: GestureTarget,
+        depth: usize,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
         self.gesture_engine
-            .register_existing_target(target.with_bounds(bounds));
+            .register_existing_target(target.with_bounds_and_depth(bounds, depth));
     }
 
     fn ensure_active_pointer_drag_target_is_live(&mut self) {
