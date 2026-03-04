@@ -368,11 +368,7 @@ impl CameraFilterRenderer {
 }
 
 impl GpuView for CameraFilterRenderer {
-    async fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui::Environment,
-    ) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
     }
@@ -453,7 +449,10 @@ impl GpuView for CameraFilterRenderer {
 
 impl SubView for CameraFilterRenderer {
     fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        Size::new(proposal.width.unwrap_or(0.0), proposal.height.unwrap_or(0.0))
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
