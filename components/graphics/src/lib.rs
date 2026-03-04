@@ -65,7 +65,7 @@ pub use view_effect::{
 
 pub use filter_view::{
     AppliedFilter, Blur, Brightness, Contrast, FilterAdapter, FilterContext, FilterInput,
-    FilterOutput, FilterViewExt, Filtered, FilteredView, Grayscale, GpuFilter, HdrPolicy,
+    FilterOutput, FilterViewExt, Filtered, FilteredView, GpuFilter, Grayscale, HdrPolicy,
     HueRotation, Invert, Saturation, Sepia, Sharpen, Vignette,
 };
 

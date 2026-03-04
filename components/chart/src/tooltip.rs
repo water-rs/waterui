@@ -4,13 +4,13 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use waterui_core::Str;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::text;
-use waterui_core::Str;
 
 /// Content to display in a tooltip.
 #[derive(Debug, Clone, Default)]
@@ -170,7 +170,9 @@ impl View for Tooltip {
 
         // Add title if present
         if let Some(title) = &self.content.title {
-            views.push(AnyView::new(text((*title).clone()).color(text_color.clone())));
+            views.push(AnyView::new(
+                text((*title).clone()).color(text_color.clone()),
+            ));
         }
 
         // Add values with optional color indicators

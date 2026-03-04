@@ -3,9 +3,9 @@
 use core::str::FromStr;
 use std::fmt;
 
+use waterkit_regional::SystemSettingsContext;
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
-use waterkit_regional::SystemSettingsContext;
 
 use crate::locale::{Locale, locales};
 

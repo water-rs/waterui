@@ -38,5 +38,8 @@ zenwave = { workspace = true, features = ["rustls"] }
 [features]
 default = []
 
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true

@@ -305,7 +305,10 @@ pub async fn run(args: Args) -> Result<()> {
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
             let needs_reinit = project.gtk4_backend().is_none()
-                || !project.backend_path::<Gtk4Backend>().join("Cargo.toml").exists();
+                || !project
+                    .backend_path::<Gtk4Backend>()
+                    .join("Cargo.toml")
+                    .exists();
             if needs_reinit {
                 let spinner = shell::spinner("Initializing GTK4 backend...");
                 reinit_backend::<Gtk4Backend>(&project).await?;

@@ -2590,6 +2590,26 @@ typedef struct WuiGpuSurface {
 } WuiGpuSurface;
 
 /**
+ * Renderer-driven HDR preference exported to native backends before init.
+ *
+ * `has_preference = false` means the surface should follow backend/global policy.
+ */
+typedef struct WuiGpuSurfaceHdrPreference {
+  /**
+   * Whether the renderer provided an explicit HDR/SDR preference.
+   */
+  bool has_preference;
+  /**
+   * Explicit preferred dynamic range when `has_preference` is true.
+   */
+  bool prefers_hdr;
+  /**
+   * Final dynamic range preference resolved by Rust (`GpuSurface` + env policy).
+   */
+  bool resolved_prefers_hdr;
+} WuiGpuSurfaceHdrPreference;
+
+/**
  * Result returned by a GpuSurface render invocation.
  */
 typedef struct WuiGpuSurfaceRenderResult {
@@ -4733,6 +4753,18 @@ struct WuiTypeId waterui_progress_id(void);
 struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_gpu_surface_id(void);
+
+/**
+ * Returns the renderer-driven HDR preference for a `WuiGpuSurface`.
+ *
+ * This must be called before `waterui_gpu_surface_init` consumes the surface.
+ *
+ * # Safety
+ *
+ * - `surface` must be a valid pointer obtained from `waterui_force_as_gpu_surface`
+ * - `surface` must not have been consumed by `waterui_gpu_surface_init`
+ */
+struct WuiGpuSurfaceHdrPreference waterui_gpu_surface_hdr_preference(const struct WuiGpuSurface *surface);
 
 /**
  * Initialize a GpuSurface with a native layer.
