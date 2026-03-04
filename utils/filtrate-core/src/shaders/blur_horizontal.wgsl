@@ -11,6 +11,13 @@ struct Uniforms {
 @group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
+const WORKGROUP_X: u32 = 8u;
+const WORKGROUP_Y: u32 = 8u;
+const SEGMENT_WIDTH: i32 = i32(WORKGROUP_X * 2u + 1u);
+const TILE_WIDTH: u32 = WORKGROUP_X * 3u;
+
+var<workgroup> tile_rows: array<array<vec4<f32>, TILE_WIDTH>, WORKGROUP_Y>;
+
 fn param(index: u32) -> f32 {
     let vec_idx = index / 4u;
     let component = index % 4u;
@@ -23,14 +30,87 @@ fn param(index: u32) -> f32 {
     }
 }
 
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+) {
     let dims = vec2<u32>(uniforms.output_dimensions);
     if global_id.x >= dims.x || global_id.y >= dims.y {
         return;
     }
 
-    let input_dims_i = vec2<i32>(vec2<u32>(uniforms.input_dimensions));
+    let input_dims_u = vec2<u32>(uniforms.input_dimensions);
+    let input_dims_i = vec2<i32>(input_dims_u);
+    let output_coord = vec2<i32>(global_id.xy);
+
+    let radius = max(i32(round(param(0u))), 0);
+    if radius == 0 {
+        let mapped = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) * uniforms.input_dimensions
+            / uniforms.output_dimensions;
+        let center = clamp(
+            vec2<i32>(mapped),
+            vec2<i32>(0),
+            input_dims_i - vec2<i32>(1),
+        );
+        textureStore(output_texture, output_coord, textureLoad(input_texture, center, 0));
+        return;
+    }
+
+    if input_dims_u == dims {
+        let output_x = i32(global_id.x);
+        let output_y = i32(global_id.y);
+        let group_origin_x = output_x - i32(local_id.x);
+
+        var sum = vec4<f32>(0.0);
+        var count = 0.0;
+        var segment_start = -radius;
+
+        loop {
+            if segment_start > radius {
+                break;
+            }
+
+            let segment_end = min(segment_start + SEGMENT_WIDTH - 1, radius);
+            let segment_len = segment_end - segment_start + 1;
+            let shared_width = i32(WORKGROUP_X) + segment_len - 1;
+
+            var load_x = i32(local_id.x);
+            loop {
+                if load_x >= shared_width {
+                    break;
+                }
+                let sample_x = clamp(
+                    group_origin_x + segment_start + load_x,
+                    0,
+                    input_dims_i.x - 1,
+                );
+                tile_rows[local_id.y][u32(load_x)] =
+                    textureLoad(input_texture, vec2<i32>(sample_x, output_y), 0);
+                load_x += i32(WORKGROUP_X);
+            }
+
+            workgroupBarrier();
+
+            let base = i32(local_id.x);
+            var offset = 0;
+            loop {
+                if offset >= segment_len {
+                    break;
+                }
+                sum += tile_rows[local_id.y][u32(base + offset)];
+                offset += 1;
+            }
+            count += f32(segment_len);
+
+            workgroupBarrier();
+            segment_start = segment_end + 1;
+        }
+
+        textureStore(output_texture, output_coord, sum / count);
+        return;
+    }
+
     let mapped = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) * uniforms.input_dimensions
         / uniforms.output_dimensions;
     let center = clamp(
@@ -38,12 +118,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         vec2<i32>(0),
         input_dims_i - vec2<i32>(1),
     );
-
-    let radius = max(i32(round(param(0u))), 0);
-    if radius == 0 {
-        textureStore(output_texture, vec2<i32>(global_id.xy), textureLoad(input_texture, center, 0));
-        return;
-    }
 
     var sum = vec4<f32>(0.0);
     var count = 0.0;
@@ -57,5 +131,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         count += 1.0;
     }
 
-    textureStore(output_texture, vec2<i32>(global_id.xy), sum / count);
+    textureStore(output_texture, output_coord, sum / count);
 }
