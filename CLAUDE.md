@@ -68,6 +68,7 @@ cd backends/apple && swift build
 # Run demo app (after creating a project)
 water run --platform ios
 water run --platform android
+water run --platform linux --backend hydrolysis
 
 # Create a playground for quick experimentation
 water create --playground --name my-playground
@@ -76,6 +77,8 @@ water create --playground --name my-playground
 water preview my_view --platform macos --path ./app --output preview.png
 ```
 
+## Playground mode
+Playground mode allows CLI to delegate the detail of backend integration to the user, for instance, you cannot touch Xcode project directly in playground mode. Playground mode is recommended by default. All waterui project in this repo is in playground mode.
 ## Preview System
 
 The `#[preview]` macro enables instant view rendering without running the full app:
