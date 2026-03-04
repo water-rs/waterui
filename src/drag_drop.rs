@@ -26,12 +26,12 @@
 use core::fmt;
 use nami::Computed;
 use nami::signal::IntoComputed;
-use waterui_str::Str;
 use waterui_core::{
     Environment,
     handler::{BoxedAction, boxed_action},
     metadata::{Metadata, MetadataKey},
 };
+use waterui_str::Str;
 
 use crate::reactive::Binding;
 

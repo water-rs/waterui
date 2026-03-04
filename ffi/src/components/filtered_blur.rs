@@ -79,9 +79,7 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsFil
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_filteredBlurExpand<
-    'local,
->(
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_filteredBlurExpand<'local>(
     _env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     content_ptr: crate::jni::jlong,

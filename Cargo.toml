@@ -75,6 +75,7 @@ futures = "0.3"
 nami = { version = "0.10.1", path = "utils/nami" }
 nami-core = { version = "0.3.2", path = "utils/nami/core" }
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.17"
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }

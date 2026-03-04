@@ -809,11 +809,15 @@ mod winit_impl {
             if !scale_factor.is_finite() || scale_factor <= 0.0 {
                 panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
             }
-            let cursor_origin = LogicalPosition::new(state.x, state.y).to_physical::<f64>(scale_factor);
+            let cursor_origin =
+                LogicalPosition::new(state.x, state.y).to_physical::<f64>(scale_factor);
             let cursor_size = LogicalSize::new(state.width.max(1.0), state.height.max(1.0))
                 .to_physical::<f64>(scale_factor);
             self.window.set_ime_cursor_area(
-                PhysicalPosition::new(cursor_origin.x.round() as i32, cursor_origin.y.round() as i32),
+                PhysicalPosition::new(
+                    cursor_origin.x.round() as i32,
+                    cursor_origin.y.round() as i32,
+                ),
                 PhysicalSize::new(
                     cursor_size.width.ceil() as u32,
                     cursor_size.height.ceil() as u32,
