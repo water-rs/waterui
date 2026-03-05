@@ -73,11 +73,12 @@ pub use filter_view::{
 pub use multi_input_filter::{
     BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
     DepthAwareBlur, DepthAwareBlurFilter, DisplacementWarp, DisplacementWarpFilter, FilterImage,
-    GuidedSmooth, GuidedSmoothFilter, MaskedBlur, MaskedBlurFilter, MultiInputFilter,
-    TemporalDenoise, TemporalDenoiseFilter, TransitionToImage, TransitionToImageFilter,
-    background_replace_filter, blend_with_image_filter, depth_aware_blur_filter,
-    displacement_warp_filter, guided_smooth_filter, masked_blur_filter, temporal_denoise_filter,
-    transition_to_image_filter,
+    GuidedSmooth, GuidedSmoothFilter, LutColorGrade, LutColorGradeFilter, LutImage, MaskedBlur,
+    MaskedBlurFilter, MultiInputFilter, TemporalDenoise, TemporalDenoiseFilter, ToneCurve,
+    ToneCurveFilter, TransitionToImage, TransitionToImageFilter, background_replace_filter,
+    blend_with_image_filter, depth_aware_blur_filter, displacement_warp_filter,
+    guided_smooth_filter, lut_color_grade_filter, masked_blur_filter, temporal_denoise_filter,
+    tone_curve_filter, transition_to_image_filter,
 };
 
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};

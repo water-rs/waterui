@@ -2459,6 +2459,34 @@ mod tests {
         data
     }
 
+    fn create_test_lut_strip_rgba(size: u32) -> Vec<u8> {
+        assert!(size >= 2, "test lut size must be >= 2");
+        let width = size * size;
+        let height = size;
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        let denom = (size - 1) as f32;
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    let x = b * size + r;
+                    let y = g;
+                    let idx = ((y * width + x) * 4) as usize;
+                    let rf = r as f32 / denom;
+                    let gf = g as f32 / denom;
+                    let bf = b as f32 / denom;
+                    let out_r = (rf.powf(0.8)).clamp(0.0, 1.0);
+                    let out_g = (gf * 0.9).clamp(0.0, 1.0);
+                    let out_b = (bf * 1.1).clamp(0.0, 1.0);
+                    data[idx] = (out_r * 255.0) as u8;
+                    data[idx + 1] = (out_g * 255.0) as u8;
+                    data[idx + 2] = (out_b * 255.0) as u8;
+                    data[idx + 3] = 255;
+                }
+            }
+        }
+        data
+    }
+
     fn run_filter_and_readback<G: GpuFilter>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3377,6 +3405,8 @@ mod tests {
             height,
             create_horizontal_gradient_rgba(width, height),
         );
+        let lut =
+            crate::multi_input_filter::LutImage::from_rgba8(16, create_test_lut_strip_rgba(16));
 
         let blend = run_filter_and_readback(
             device,
@@ -3482,6 +3512,28 @@ mod tests {
             ),
         )
         .expect("background replace output");
+        let lut_grade = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::lut_color_grade_filter(lut.clone(), 1.0),
+        )
+        .expect("lut output");
+        let tone_curve = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::tone_curve_filter(0.15, 0.08, -0.06, 1.1, 1.0),
+        )
+        .expect("tone curve output");
 
         let changed_pixels = |output: &[u8]| -> usize {
             output
@@ -3522,6 +3574,14 @@ mod tests {
         assert!(
             changed_pixels(&replace_bg) > 0,
             "background replace output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&lut_grade) > 0,
+            "lut output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&tone_curve) > 0,
+            "tone curve output should differ from baseline"
         );
     }
 
@@ -3936,6 +3996,35 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             crate::multi_input_filter::background_replace_filter(matte, background, edge_softness),
+        )
+    }
+
+    /// Apply a 3D LUT color transform encoded as a 2D strip (`size*size x size`).
+    fn lut_color_grade(
+        self,
+        lut: crate::multi_input_filter::LutImage,
+        intensity: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::LutColorGradeFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::lut_color_grade_filter(lut, intensity),
+        )
+    }
+
+    /// Apply a simple master tone curve.
+    fn tone_curve(
+        self,
+        shadows: f32,
+        midtones: f32,
+        highlights: f32,
+        gamma: f32,
+        amount: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::ToneCurveFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::tone_curve_filter(
+                shadows, midtones, highlights, gamma, amount,
+            ),
         )
     }
 }
