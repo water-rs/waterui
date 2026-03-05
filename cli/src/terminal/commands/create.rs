@@ -337,7 +337,7 @@ fn prompt_backends() -> Result<Vec<Backend>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Backend, next_run_command, parse_backends};
+    use super::{Backend, PackageType, next_run_command, parse_backends};
 
     #[test]
     fn parse_backends_rejects_unknown_values() {
@@ -362,11 +362,11 @@ mod tests {
     #[test]
     fn next_run_command_prefers_apple_then_android_then_gtk4() {
         assert_eq!(
-            next_run_command(&[Backend::Apple, Backend::Gtk4]),
+            next_run_command(PackageType::App, &[Backend::Apple, Backend::Gtk4]),
             Some("water run --platform ios")
         );
         assert_eq!(
-            next_run_command(&[Backend::Android, Backend::Gtk4]),
+            next_run_command(PackageType::App, &[Backend::Android, Backend::Gtk4]),
             Some("water run --platform android")
         );
     }
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn next_run_command_gtk4_is_valid_on_macos() {
         assert_eq!(
-            next_run_command(&[Backend::Gtk4]),
+            next_run_command(PackageType::App, &[Backend::Gtk4]),
             Some("water run --platform macos --backend gtk4")
         );
     }
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn next_run_command_gtk4_is_valid_on_linux() {
         assert_eq!(
-            next_run_command(&[Backend::Gtk4]),
+            next_run_command(PackageType::App, &[Backend::Gtk4]),
             Some("water run --platform linux")
         );
     }
