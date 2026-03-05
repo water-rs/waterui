@@ -2413,6 +2413,52 @@ mod tests {
         data
     }
 
+    fn create_solid_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for chunk in data.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&rgba);
+        }
+        data
+    }
+
+    fn create_horizontal_gradient_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let t = (x as f32 / (width.saturating_sub(1)).max(1) as f32 * 255.0) as u8;
+                data[idx] = t;
+                data[idx + 1] = t;
+                data[idx + 2] = t;
+                data[idx + 3] = 255;
+            }
+        }
+        data
+    }
+
+    fn create_center_peak_displacement_rg(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        let cx = width as f32 * 0.5;
+        let cy = height as f32 * 0.5;
+        let inv_radius = 1.0 / (width.min(height).max(1) as f32 * 0.5);
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let r = (dx * dx + dy * dy).sqrt() * inv_radius;
+                let strength = (1.0 - r).clamp(0.0, 1.0);
+                let disp_x = (0.5 + dx.signum() * 0.5 * strength).clamp(0.0, 1.0);
+                let disp_y = (0.5 + dy.signum() * 0.5 * strength).clamp(0.0, 1.0);
+                data[idx] = (disp_x * 255.0) as u8;
+                data[idx + 1] = (disp_y * 255.0) as u8;
+                data[idx + 2] = 128;
+                data[idx + 3] = 255;
+            }
+        }
+        data
+    }
+
     fn run_filter_and_readback<G: GpuFilter>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3236,6 +3282,250 @@ mod tests {
     }
 
     #[test]
+    fn gpu_multi_input_filters_execute_all_capabilities() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 32;
+        let height = 32;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("multi-input filter test input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let overlay = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [220, 40, 40, 255]),
+        );
+        let mask = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let transition_target = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [20, 220, 240, 255]),
+        );
+        let displacement_map = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_center_peak_displacement_rg(width, height),
+        );
+        let guide = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let depth = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let history = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [10, 220, 20, 255]),
+        );
+        let motion = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [128, 128, 0, 255]),
+        );
+        let background = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [15, 25, 200, 255]),
+        );
+        let matte = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+
+        let blend = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::blend_with_image_filter(
+                overlay.clone(),
+                0.6,
+                crate::multi_input_filter::BlendMode::Overlay,
+            ),
+        )
+        .expect("blend filter output");
+        let masked_blur = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::masked_blur_filter(mask.clone(), 3.0, 1.0),
+        )
+        .expect("masked blur output");
+        let transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::transition_to_image_filter(
+                transition_target.clone(),
+                0.5,
+                0.08,
+            ),
+        )
+        .expect("transition output");
+        let displacement = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::displacement_warp_filter(displacement_map.clone(), 3.0, 3.0),
+        )
+        .expect("displacement output");
+        let guided = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::guided_smooth_filter(guide.clone(), 2.0, 0.08, 1.0),
+        )
+        .expect("guided smooth output");
+        let depth_blur = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::depth_aware_blur_filter(depth.clone(), 0.4, 2.0, 5.0),
+        )
+        .expect("depth blur output");
+        let temporal = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::temporal_denoise_filter(
+                history.clone(),
+                motion.clone(),
+                0.8,
+            ),
+        )
+        .expect("temporal output");
+        let replace_bg = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::background_replace_filter(
+                matte.clone(),
+                background.clone(),
+                0.12,
+            ),
+        )
+        .expect("background replace output");
+
+        let changed_pixels = |output: &[u8]| -> usize {
+            output
+                .chunks_exact(4)
+                .zip(input_rgba.chunks_exact(4))
+                .filter(|(lhs, rhs)| lhs != rhs)
+                .count()
+        };
+
+        assert!(
+            changed_pixels(&blend) > 0,
+            "blend output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&masked_blur) > 0,
+            "masked blur output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&transition) > 0,
+            "transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&displacement) > 0,
+            "displacement output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&guided) > 0,
+            "guided smooth output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&depth_blur) > 0,
+            "depth blur output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&temporal) > 0,
+            "temporal output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&replace_bg) > 0,
+            "background replace output should differ from baseline"
+        );
+    }
+
+    #[test]
     fn gpu_export_filter_gallery_images() {
         let Some(gpu) = create_test_device() else {
             eprintln!("Skipping GPU gallery test: no compatible adapter/device");
@@ -3535,6 +3825,117 @@ pub trait FilterViewExt: View + Sized {
                 radius.into_signal_f32().computed(),
                 softness.into_signal_f32().computed(),
             )),
+        )
+    }
+
+    /// Blend the current content with an auxiliary image.
+    fn blend_with_image(
+        self,
+        image: crate::multi_input_filter::FilterImage,
+        amount: f32,
+        mode: crate::multi_input_filter::BlendMode,
+    ) -> Filtered<Self, crate::multi_input_filter::BlendWithImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::blend_with_image_filter(image, amount, mode),
+        )
+    }
+
+    /// Apply masked blur using an auxiliary mask image.
+    fn masked_blur(
+        self,
+        mask: crate::multi_input_filter::FilterImage,
+        radius: f32,
+        strength: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::MaskedBlurFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::masked_blur_filter(mask, radius, strength),
+        )
+    }
+
+    /// Transition to another image.
+    fn transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::TransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::transition_to_image_filter(target, progress, softness),
+        )
+    }
+
+    /// Warp with an auxiliary displacement map.
+    fn displacement_warp(
+        self,
+        map: crate::multi_input_filter::FilterImage,
+        scale_x: f32,
+        scale_y: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::DisplacementWarpFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::displacement_warp_filter(map, scale_x, scale_y),
+        )
+    }
+
+    /// Apply guide-image-aware smoothing.
+    fn guided_smooth(
+        self,
+        guide: crate::multi_input_filter::FilterImage,
+        radius: f32,
+        range_sigma: f32,
+        amount: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::GuidedSmoothFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::guided_smooth_filter(guide, radius, range_sigma, amount),
+        )
+    }
+
+    /// Apply depth-aware blur using a depth map.
+    fn depth_aware_blur(
+        self,
+        depth: crate::multi_input_filter::FilterImage,
+        focus_depth: f32,
+        aperture: f32,
+        max_radius: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::DepthAwareBlurFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::depth_aware_blur_filter(
+                depth,
+                focus_depth,
+                aperture,
+                max_radius,
+            ),
+        )
+    }
+
+    /// Temporal denoise/stabilize using history and motion maps.
+    fn temporal_denoise(
+        self,
+        history: crate::multi_input_filter::FilterImage,
+        motion: crate::multi_input_filter::FilterImage,
+        history_weight: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::TemporalDenoiseFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::temporal_denoise_filter(history, motion, history_weight),
+        )
+    }
+
+    /// Replace background using matte and background images.
+    fn replace_background(
+        self,
+        matte: crate::multi_input_filter::FilterImage,
+        background: crate::multi_input_filter::FilterImage,
+        edge_softness: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::BackgroundReplaceFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::background_replace_filter(matte, background, edge_softness),
         )
     }
 }
