@@ -43,6 +43,8 @@ pub mod view_effect;
 
 /// Filter-based view effects using the Filter trait system.
 pub mod filter_view;
+/// Multi-input filters (blend/mask/transition/displacement/depth/temporal).
+pub mod multi_input_filter;
 
 // Re-export key types for user convenience.
 pub use gpu_surface::{
@@ -67,6 +69,15 @@ pub use filter_view::{
     AppliedFilter, Blur, Brightness, Contrast, FilterAdapter, FilterContext, FilterInput,
     FilterOutput, FilterViewExt, Filtered, FilteredView, GpuFilter, Grayscale, HdrPolicy,
     HueRotation, Invert, Saturation, Sepia, Sharpen, Vignette,
+};
+pub use multi_input_filter::{
+    BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
+    DepthAwareBlur, DepthAwareBlurFilter, DisplacementWarp, DisplacementWarpFilter, FilterImage,
+    GuidedSmooth, GuidedSmoothFilter, MaskedBlur, MaskedBlurFilter, MultiInputFilter,
+    TemporalDenoise, TemporalDenoiseFilter, TransitionToImage, TransitionToImageFilter,
+    background_replace_filter, blend_with_image_filter, depth_aware_blur_filter,
+    displacement_warp_filter, guided_smooth_filter, masked_blur_filter, temporal_denoise_filter,
+    transition_to_image_filter,
 };
 
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
