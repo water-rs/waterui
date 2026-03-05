@@ -171,13 +171,15 @@ fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
                 styled.is_plain(),
                 "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
             );
-            *plain_binding.get_mut() = styled.to_plain();
+            plain_binding.set(styled.to_plain());
         },
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
+
     use nami::Binding;
     use waterui_core::Str;
     use waterui_text::styled::StyledStr;
@@ -215,5 +217,17 @@ mod tests {
         let plain = Binding::container(Str::from("a"));
         let mapped = super::map_plain_binding(&plain);
         mapped.set(StyledStr::plain("b").italic(true));
+    }
+
+    #[test]
+    fn plain_mapping_updates_nested_mapped_source() {
+        let source = Binding::container(String::from("a"));
+        let plain = Binding::mapping(&source, Str::from, |binding, value: Str| {
+            binding.set(value.into());
+        });
+        let mapped = super::map_plain_binding(&plain);
+        mapped.set(StyledStr::plain("updated"));
+
+        assert_eq!(source.get(), "updated");
     }
 }
