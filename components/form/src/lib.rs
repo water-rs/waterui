@@ -8,6 +8,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+use alloc::string::String;
 use waterui_graphics::color::Color;
 
 /// Picker form component module.
@@ -112,34 +113,42 @@ pub trait FormBuilder: Sized {
     }
 }
 
-// TextField has prompt, so handle it specially
+fn with_optional_prompt(
+    mut field: waterui_controls::TextField,
+    placeholder: Str,
+) -> waterui_controls::TextField {
+    if !placeholder.is_empty() {
+        field = field.prompt(placeholder);
+    }
+    field
+}
+
+fn map_string_binding(binding: &Binding<String>) -> Binding<Str> {
+    Binding::mapping(binding, Str::from, |binding, str_val: Str| {
+        binding.set(str_val.into());
+    })
+}
+
 impl FormBuilder for Str {
     type View = waterui_controls::TextField;
+
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        let mut field = waterui_controls::TextField::new(binding).label(label);
-        if !placeholder.is_empty() {
-            field = field.prompt(placeholder);
-        }
-        field
+        with_optional_prompt(
+            waterui_controls::TextField::new(binding).label(label),
+            placeholder,
+        )
     }
 }
 
-// String also uses TextField with prompt
-impl FormBuilder for alloc::string::String {
+impl FormBuilder for String {
     type View = waterui_controls::TextField;
 
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        use alloc::string::ToString;
-        use nami::Binding as NamiBinding;
-        // Map String to Str binding
-        let str_binding = NamiBinding::mapping(binding, Str::from, |binding, str_val: Str| {
-            *binding.get_mut() = str_val.to_string();
-        });
-        let mut field = waterui_controls::TextField::new(&str_binding).label(label);
-        if !placeholder.is_empty() {
-            field = field.prompt(placeholder);
-        }
-        field
+        let str_binding = map_string_binding(binding);
+        with_optional_prompt(
+            waterui_controls::TextField::new(&str_binding).label(label),
+            placeholder,
+        )
     }
 }
 
@@ -266,4 +275,24 @@ pub use secure::{SecureField, secure};
 #[must_use]
 pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
     T::view(binding, AnyView::default(), Str::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+
+    use nami::Binding;
+    use waterui_core::Str;
+
+    use super::map_string_binding;
+
+    #[test]
+    fn map_string_binding_round_trip() {
+        let source = Binding::container(String::from("hello"));
+        let mapped = map_string_binding(&source);
+        assert_eq!(mapped.get().as_str(), "hello");
+
+        mapped.set(Str::from(String::from("updated")));
+        assert_eq!(source.get(), "updated");
+    }
 }

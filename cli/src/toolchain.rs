@@ -6,6 +6,7 @@ use color_eyre::eyre;
 
 pub mod cmake;
 pub mod doctor;
+pub mod linux;
 pub mod meson;
 pub mod sccache;
 /// A toolchain that cannot be fixed automatically.
