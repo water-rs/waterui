@@ -1126,43 +1126,113 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.last_render_used_direct_output
     }
 
-    fn ensure_scratch_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    #[cfg(test)]
+    fn allocated_scratch_slots(&self) -> [bool; 2] {
+        [
+            self.scratch_views[0].is_some(),
+            self.scratch_views[1].is_some(),
+        ]
+    }
+
+    fn required_scratch_slots_for_frame(
+        &self,
+        direct_output_pass_index: Option<usize>,
+    ) -> [bool; 2] {
+        let mut required = [false; 2];
+
+        for (pass_index, pass) in self.passes.iter().enumerate() {
+            match pass.binding_plan {
+                PassBindingPlan::Color { source, target } => {
+                    if let PassTextureSource::Scratch(slot) = source {
+                        required[slot] = true;
+                    }
+                    if let ColorTarget::Scratch(slot) = target {
+                        required[slot] = true;
+                    }
+                }
+                PassBindingPlan::Spatial {
+                    source,
+                    target_scratch,
+                } => {
+                    if let PassTextureSource::Scratch(slot) = source {
+                        required[slot] = true;
+                    }
+                    if direct_output_pass_index != Some(pass_index) {
+                        required[target_scratch] = true;
+                    }
+                }
+            }
+        }
+
+        if direct_output_pass_index.is_none()
+            && let Some(blit_slot) = self.blit_source_scratch_slot
+        {
+            required[blit_slot] = true;
+        }
+
+        required
+    }
+
+    fn ensure_scratch_textures(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        required_slots: [bool; 2],
+    ) {
         if !self.requires_scratch {
             return;
         }
-        if self.scratch_size == (width, height)
-            && self.scratch_views[0].is_some()
-            && self.scratch_views[1].is_some()
-        {
-            return;
-        }
 
-        for pass in &mut self.passes {
-            pass.cached_bind_group = None;
-        }
-        self.blit_bind_group = None;
+        let size_changed = self.scratch_size != (width, height);
+        let mut bindings_invalidated = false;
 
         for slot in 0..2 {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("filter scratch texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.scratch_format,
-                usage: scratch_texture_usage(),
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.scratch_textures[slot] = Some(texture);
-            self.scratch_views[slot] = Some(view);
+            if !required_slots[slot] {
+                if self.scratch_textures[slot].is_some() || self.scratch_views[slot].is_some() {
+                    self.scratch_textures[slot] = None;
+                    self.scratch_views[slot] = None;
+                    bindings_invalidated = true;
+                }
+                continue;
+            }
+
+            let missing =
+                self.scratch_textures[slot].is_none() || self.scratch_views[slot].is_none();
+            if size_changed || missing {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("filter scratch texture"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.scratch_format,
+                    usage: scratch_texture_usage(),
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.scratch_textures[slot] = Some(texture);
+                self.scratch_views[slot] = Some(view);
+                bindings_invalidated = true;
+            }
         }
 
-        self.scratch_size = (width, height);
+        if bindings_invalidated {
+            for pass in &mut self.passes {
+                pass.cached_bind_group = None;
+            }
+            self.blit_bind_group = None;
+        }
+
+        self.scratch_size = if required_slots.iter().any(|required| *required) {
+            (width, height)
+        } else {
+            (0, 0)
+        };
     }
 
     fn take_validation_error(device: &wgpu::Device) -> Option<wgpu::Error> {
@@ -1440,29 +1510,6 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             return false;
         }
 
-        if self.requires_scratch {
-            self.ensure_scratch_textures(input.device, output.width, output.height);
-            if self.scratch_views[0].is_none() || self.scratch_views[1].is_none() {
-                return false;
-            }
-        }
-
-        let needs_redraw = self.update_interpolated_params();
-        let current_values = &self.animation_state.current_values;
-        if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
-            return false;
-        }
-
-        let Some(sampler) = &self.sampler else {
-            return false;
-        };
-
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter pass encoder"),
-            });
-
         let direct_output_runtime = self
             .final_spatial_output
             .as_ref()
@@ -1480,6 +1527,41 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                 } else {
                     None
                 }
+            });
+
+        if self.requires_scratch {
+            let direct_output_pass_index = direct_output_runtime
+                .as_ref()
+                .map(|(pass_index, _, _)| *pass_index);
+            let required_scratch_slots =
+                self.required_scratch_slots_for_frame(direct_output_pass_index);
+            self.ensure_scratch_textures(
+                input.device,
+                output.width,
+                output.height,
+                required_scratch_slots,
+            );
+            for (slot, required) in required_scratch_slots.into_iter().enumerate() {
+                if required && self.scratch_views[slot].is_none() {
+                    return false;
+                }
+            }
+        }
+
+        let needs_redraw = self.update_interpolated_params();
+        let current_values = &self.animation_state.current_values;
+        if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
+            return false;
+        }
+
+        let Some(sampler) = &self.sampler else {
+            return false;
+        };
+
+        let mut encoder = input
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("filter pass encoder"),
             });
         let mut used_direct_spatial_output = false;
         let mut source_width = input.width;
@@ -3031,6 +3113,19 @@ mod tests {
             adapter.last_render_used_direct_output(),
             expected_direct_output
         );
+        if expected_direct_output {
+            assert_eq!(
+                adapter.allocated_scratch_slots(),
+                [true, false],
+                "direct output path should avoid allocating the final scratch slot"
+            );
+        } else {
+            assert_eq!(
+                adapter.allocated_scratch_slots(),
+                [true, true],
+                "fallback path should preserve both blur scratch slots"
+            );
+        }
     }
 
     #[test]
@@ -3133,6 +3228,11 @@ mod tests {
 
         let _ = GpuFilter::render(&mut adapter, &input, &output);
         assert!(!adapter.last_render_used_direct_output());
+        assert_eq!(
+            adapter.allocated_scratch_slots(),
+            [true, true],
+            "non-storage output must keep both blur scratch slots for fallback blit"
+        );
     }
 
     #[test]
