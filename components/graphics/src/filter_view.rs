@@ -380,6 +380,7 @@ impl<F: GpuFilter> View for FilteredView<F> {
 // ============================================================================
 
 const MAX_FILTER_PARAMS: usize = 64;
+const FILTER_UNIFORM_WORDS: usize = 4 + MAX_FILTER_PARAMS;
 const SPATIAL_OUTPUT_FORMAT_TOKEN: &str = "OUTPUT_STORAGE_FORMAT";
 
 /// Policy for HDR behavior in filter pipelines.
@@ -476,10 +477,57 @@ enum CompiledPassKind {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassTextureSource {
+    Input,
+    Scratch(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorTarget {
+    Output,
+    Scratch(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassBindingPlan {
+    Color {
+        source: PassTextureSource,
+        target: ColorTarget,
+    },
+    Spatial {
+        source: PassTextureSource,
+        target_scratch: usize,
+    },
+}
+
 struct CompiledPass {
     kind: CompiledPassKind,
     param_offset: usize,
     param_count: usize,
+    binding_plan: PassBindingPlan,
+    uniform_buffer: wgpu::Buffer,
+    last_uniform_data: Option<[f32; FILTER_UNIFORM_WORDS]>,
+    cached_bind_group_key: Option<BindGroupCacheKey>,
+    cached_bind_group: Option<wgpu::BindGroup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindGroupCacheKey {
+    Static,
+    Input {
+        input_texture: usize,
+    },
+    InputOutput {
+        input_texture: usize,
+        output_texture: usize,
+    },
+}
+
+struct FinalSpatialOutputPipeline {
+    pass_index: usize,
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
 }
 
 /// Filter graph introspection for smart pass planning and animation hook installation.
@@ -735,6 +783,82 @@ fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str>
     Ok(passes)
 }
 
+fn create_pass_uniform_buffer(device: &wgpu::Device, label: &'static str) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (FILTER_UNIFORM_WORDS * core::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn upload_uniform_if_changed(
+    queue: &wgpu::Queue,
+    uniform_buffer: &wgpu::Buffer,
+    last_uniform_data: &mut Option<[f32; FILTER_UNIFORM_WORDS]>,
+    uniform_data: [f32; FILTER_UNIFORM_WORDS],
+) {
+    let needs_upload = *last_uniform_data != Some(uniform_data);
+    if needs_upload {
+        queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniform_data[..]));
+        *last_uniform_data = Some(uniform_data);
+    }
+}
+
+fn plan_runtime_bindings(
+    planned: &[PlannedPass],
+) -> Result<(Vec<PassBindingPlan>, Option<usize>), &'static str> {
+    if planned.is_empty() {
+        return Err("filter planner produced no passes");
+    }
+
+    let mut plans = Vec::with_capacity(planned.len());
+    let mut source = PassTextureSource::Input;
+    let mut next_scratch = 0usize;
+
+    for (idx, pass) in planned.iter().enumerate() {
+        let is_last = idx + 1 == planned.len();
+        match &pass.kind {
+            PlannedPassKind::Color { .. } => {
+                let pass_source = source;
+                let target = if is_last {
+                    ColorTarget::Output
+                } else {
+                    let slot = next_scratch;
+                    next_scratch ^= 1;
+                    source = PassTextureSource::Scratch(slot);
+                    ColorTarget::Scratch(slot)
+                };
+                plans.push(PassBindingPlan::Color {
+                    source: pass_source,
+                    target,
+                });
+            }
+            PlannedPassKind::Spatial { .. } => {
+                let target_scratch = next_scratch;
+                plans.push(PassBindingPlan::Spatial {
+                    source,
+                    target_scratch,
+                });
+                source = PassTextureSource::Scratch(target_scratch);
+                next_scratch ^= 1;
+            }
+        }
+    }
+
+    let blit_source_scratch = match planned.last().map(|pass| &pass.kind) {
+        Some(PlannedPassKind::Spatial { .. }) => match source {
+            PassTextureSource::Scratch(slot) => Some(slot),
+            PassTextureSource::Input => {
+                return Err("spatial pipeline planner produced invalid blit source");
+            }
+        },
+        Some(PlannedPassKind::Color { .. }) | None => None,
+    };
+
+    Ok((plans, blit_source_scratch))
+}
+
 const PARAM_EPSILON: f32 = 0.000_01;
 
 #[derive(Debug)]
@@ -815,6 +939,11 @@ pub struct FilterAdapter<F: Filter> {
     // Final blit when last stage is spatial.
     blit_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    blit_bind_group: Option<wgpu::BindGroup>,
+    blit_source_scratch_slot: Option<usize>,
+    final_spatial_output: Option<FinalSpatialOutputPipeline>,
+    #[cfg(test)]
+    last_render_used_direct_output: bool,
 }
 
 impl<F: Filter> core::fmt::Debug for FilterAdapter<F> {
@@ -869,6 +998,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             scratch_size: (0, 0),
             blit_pipeline: None,
             blit_bind_group_layout: None,
+            blit_bind_group: None,
+            blit_source_scratch_slot: None,
+            final_spatial_output: None,
+            #[cfg(test)]
+            last_render_used_direct_output: false,
         }
     }
 
@@ -1000,6 +1134,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.setup_error.is_some()
     }
 
+    #[cfg(test)]
+    fn last_render_used_direct_output(&self) -> bool {
+        self.last_render_used_direct_output
+    }
+
     fn ensure_scratch_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if !self.requires_scratch {
             return;
@@ -1010,6 +1149,12 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         {
             return;
         }
+
+        for pass in &mut self.passes {
+            pass.cached_bind_group = None;
+            pass.cached_bind_group_key = None;
+        }
+        self.blit_bind_group = None;
 
         for slot in 0..2 {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1045,6 +1190,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         scratch_format: wgpu::TextureFormat,
     ) -> Result<(), &'static str> {
         self.passes.clear();
+        self.blit_bind_group = None;
+        self.final_spatial_output = None;
+        let (binding_plans, blit_source_scratch_slot) = plan_runtime_bindings(planned)?;
+        self.blit_source_scratch_slot = blit_source_scratch_slot;
 
         if self.requires_scratch {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1068,14 +1217,21 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             }
         }
 
-        for (idx, pass) in planned.iter().enumerate() {
-            let is_last = idx + 1 == planned.len();
+        for (pass, binding_plan) in planned.iter().zip(binding_plans.into_iter()) {
             match &pass.kind {
                 PlannedPassKind::Color { fragments } => {
-                    let target_format = if is_last {
-                        ctx.output_format
-                    } else {
-                        scratch_format
+                    let target_format = match binding_plan {
+                        PassBindingPlan::Color {
+                            target: ColorTarget::Output,
+                            ..
+                        } => ctx.output_format,
+                        PassBindingPlan::Color {
+                            target: ColorTarget::Scratch(_),
+                            ..
+                        } => scratch_format,
+                        PassBindingPlan::Spatial { .. } => {
+                            return Err("runtime planner produced invalid color binding plan");
+                        }
                     };
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
@@ -1090,9 +1246,20 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                         },
                         param_offset: pass.param_offset,
                         param_count: pass.param_count,
+                        binding_plan,
+                        uniform_buffer: create_pass_uniform_buffer(
+                            ctx.device,
+                            "filter color uniform buffer",
+                        ),
+                        last_uniform_data: None,
+                        cached_bind_group_key: None,
+                        cached_bind_group: None,
                     });
                 }
                 PlannedPassKind::Spatial { shader } => {
+                    if !matches!(binding_plan, PassBindingPlan::Spatial { .. }) {
+                        return Err("runtime planner produced invalid spatial binding plan");
+                    }
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
                         self.create_spatial_pipeline(ctx, shader, scratch_format)?;
@@ -1109,6 +1276,14 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                         },
                         param_offset: pass.param_offset,
                         param_count: pass.param_count,
+                        binding_plan,
+                        uniform_buffer: create_pass_uniform_buffer(
+                            ctx.device,
+                            "filter spatial uniform buffer",
+                        ),
+                        last_uniform_data: None,
+                        cached_bind_group_key: None,
+                        cached_bind_group: None,
                     });
                 }
             }
@@ -1118,10 +1293,45 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             return Err("filter setup produced no executable passes");
         }
 
-        if matches!(
-            self.passes.last().map(|p| &p.kind),
-            Some(CompiledPassKind::Spatial { .. })
-        ) {
+        if let Some((pass_index, shader)) =
+            planned
+                .iter()
+                .enumerate()
+                .find_map(|(idx, pass)| match pass.kind {
+                    PlannedPassKind::Spatial { shader } if idx + 1 == planned.len() => {
+                        Some((idx, shader))
+                    }
+                    _ => None,
+                })
+        {
+            if storage_format_to_wgsl(ctx.output_format).is_ok() {
+                ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                match self.create_spatial_pipeline(ctx, shader, ctx.output_format) {
+                    Ok((pipeline, bind_group_layout)) => {
+                        if Self::take_validation_error(ctx.device).is_none() {
+                            self.final_spatial_output = Some(FinalSpatialOutputPipeline {
+                                pass_index,
+                                pipeline,
+                                bind_group_layout,
+                            });
+                        } else {
+                            tracing::debug!(
+                                "[Filter] final spatial direct-output path unavailable for output format {:?}",
+                                ctx.output_format
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "[Filter] final spatial direct-output shader specialization unsupported for {:?}",
+                            ctx.output_format
+                        );
+                    }
+                }
+            }
+        }
+
+        if self.blit_source_scratch_slot.is_some() {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let (blit_pipeline, blit_bind_group_layout) = self.create_blit_pipeline(ctx);
             if Self::take_validation_error(ctx.device).is_some() {
@@ -1132,6 +1342,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         } else {
             self.blit_pipeline = None;
             self.blit_bind_group_layout = None;
+            self.blit_bind_group = None;
         }
 
         Ok(())
@@ -1212,6 +1423,9 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     self.passes.clear();
                     self.blit_pipeline = None;
                     self.blit_bind_group_layout = None;
+                    self.blit_bind_group = None;
+                    self.blit_source_scratch_slot = None;
+                    self.final_spatial_output = None;
                 }
             }
         }
@@ -1234,6 +1448,10 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
     }
 
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+        #[cfg(test)]
+        {
+            self.last_render_used_direct_output = false;
+        }
         if self.has_setup_error() || self.passes.is_empty() {
             return false;
         }
@@ -1261,60 +1479,104 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                 label: Some("filter pass encoder"),
             });
 
-        let mut source_view: &wgpu::TextureView = &input.view;
+        let direct_output_runtime = self
+            .final_spatial_output
+            .as_ref()
+            .and_then(|direct_output| {
+                if output
+                    .texture
+                    .usage()
+                    .contains(wgpu::TextureUsages::STORAGE_BINDING)
+                {
+                    Some((
+                        direct_output.pass_index,
+                        direct_output.pipeline.clone(),
+                        direct_output.bind_group_layout.clone(),
+                    ))
+                } else {
+                    None
+                }
+            });
+        let output_texture_key = (output.texture as *const wgpu::Texture) as usize;
+
+        let mut used_direct_spatial_output = false;
         let mut source_width = input.width;
         let mut source_height = input.height;
-        let mut scratch_index = 0usize;
-
-        for (idx, pass) in self.passes.iter().enumerate() {
-            let is_last = idx + 1 == self.passes.len();
+        for (pass_index, pass) in self.passes.iter_mut().enumerate() {
             let param_start = pass.param_offset;
             let param_end = param_start + pass.param_count;
             let params = &current_values[param_start..param_end];
 
-            match &pass.kind {
-                CompiledPassKind::Color {
-                    pipeline,
-                    bind_group_layout,
-                } => {
-                    let uniform_data =
-                        build_color_uniform_data(source_width, source_height, params);
-                    let uniform_buffer =
-                        input
-                            .device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("filter color uniform"),
-                                contents: bytemuck::cast_slice(&uniform_data[..]),
-                                usage: wgpu::BufferUsages::UNIFORM,
-                            });
-
-                    let target_view: &wgpu::TextureView = if is_last {
-                        &output.view
-                    } else {
-                        let Some(view) = self.scratch_views[scratch_index].as_ref() else {
-                            return false;
-                        };
-                        view
+            match (&pass.kind, pass.binding_plan) {
+                (
+                    CompiledPassKind::Color {
+                        pipeline,
+                        bind_group_layout,
+                    },
+                    PassBindingPlan::Color { source, target },
+                ) => {
+                    let source_view: &wgpu::TextureView = match source {
+                        PassTextureSource::Input => &input.view,
+                        PassTextureSource::Scratch(slot) => {
+                            let Some(view) = self.scratch_views[slot].as_ref() else {
+                                return false;
+                            };
+                            view
+                        }
+                    };
+                    let target_view: &wgpu::TextureView = match target {
+                        ColorTarget::Output => &output.view,
+                        ColorTarget::Scratch(slot) => {
+                            let Some(view) = self.scratch_views[slot].as_ref() else {
+                                return false;
+                            };
+                            view
+                        }
                     };
 
-                    let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("filter color bind group"),
-                        layout: bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(source_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: uniform_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
+                    let uniform_data =
+                        build_color_uniform_data(source_width, source_height, params);
+                    upload_uniform_if_changed(
+                        input.queue,
+                        &pass.uniform_buffer,
+                        &mut pass.last_uniform_data,
+                        uniform_data,
+                    );
+
+                    let desired_key = if matches!(source, PassTextureSource::Input) {
+                        BindGroupCacheKey::Input {
+                            input_texture: (input.texture as *const wgpu::Texture) as usize,
+                        }
+                    } else {
+                        BindGroupCacheKey::Static
+                    };
+                    if pass.cached_bind_group.is_none()
+                        || pass.cached_bind_group_key != Some(desired_key)
+                    {
+                        pass.cached_bind_group =
+                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter color bind group"),
+                                layout: bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(source_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(sampler),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: pass.uniform_buffer.as_entire_binding(),
+                                    },
+                                ],
+                            }));
+                        pass.cached_bind_group_key = Some(desired_key);
+                    }
+                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                        return false;
+                    };
 
                     {
                         let mut render_pass =
@@ -1334,23 +1596,60 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                 occlusion_query_set: None,
                             });
                         render_pass.set_pipeline(pipeline);
-                        render_pass.set_bind_group(0, &bind_group, &[]);
+                        render_pass.set_bind_group(0, bind_group, &[]);
                         render_pass.draw(0..6, 0..1);
                     }
 
-                    if !is_last {
-                        source_view = target_view;
+                    if matches!(target, ColorTarget::Scratch(_)) {
                         source_width = output.width;
                         source_height = output.height;
-                        scratch_index ^= 1;
                     }
                 }
-                CompiledPassKind::Spatial {
-                    pipeline,
-                    bind_group_layout,
-                } => {
-                    let Some(target_view) = self.scratch_views[scratch_index].as_ref() else {
-                        return false;
+                (
+                    CompiledPassKind::Spatial {
+                        pipeline,
+                        bind_group_layout,
+                    },
+                    PassBindingPlan::Spatial {
+                        source,
+                        target_scratch,
+                    },
+                ) => {
+                    let source_view: &wgpu::TextureView = match source {
+                        PassTextureSource::Input => &input.view,
+                        PassTextureSource::Scratch(slot) => {
+                            let Some(view) = self.scratch_views[slot].as_ref() else {
+                                return false;
+                            };
+                            view
+                        }
+                    };
+                    let mut writes_output_directly = false;
+                    let (target_view, dispatch_pipeline, dispatch_bind_group_layout): (
+                        &wgpu::TextureView,
+                        &wgpu::ComputePipeline,
+                        &wgpu::BindGroupLayout,
+                    ) = if let Some((
+                        direct_pass_index,
+                        direct_pipeline,
+                        direct_bind_group_layout,
+                    )) = &direct_output_runtime
+                    {
+                        if *direct_pass_index == pass_index {
+                            writes_output_directly = true;
+                            (&output.view, direct_pipeline, direct_bind_group_layout)
+                        } else {
+                            let Some(target_view) = self.scratch_views[target_scratch].as_ref()
+                            else {
+                                return false;
+                            };
+                            (target_view, pipeline, bind_group_layout)
+                        }
+                    } else {
+                        let Some(target_view) = self.scratch_views[target_scratch].as_ref() else {
+                            return false;
+                        };
+                        (target_view, pipeline, bind_group_layout)
                     };
                     let target_width = output.width;
                     let target_height = output.height;
@@ -1362,33 +1661,52 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         source_height,
                         params,
                     );
-                    let uniform_buffer =
-                        input
-                            .device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("filter spatial uniform"),
-                                contents: bytemuck::cast_slice(&uniform_data[..]),
-                                usage: wgpu::BufferUsages::UNIFORM,
-                            });
+                    upload_uniform_if_changed(
+                        input.queue,
+                        &pass.uniform_buffer,
+                        &mut pass.last_uniform_data,
+                        uniform_data,
+                    );
 
-                    let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("filter spatial bind group"),
-                        layout: bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(source_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(target_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: uniform_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
+                    let desired_key = if writes_output_directly {
+                        BindGroupCacheKey::InputOutput {
+                            input_texture: (input.texture as *const wgpu::Texture) as usize,
+                            output_texture: output_texture_key,
+                        }
+                    } else if matches!(source, PassTextureSource::Input) {
+                        BindGroupCacheKey::Input {
+                            input_texture: (input.texture as *const wgpu::Texture) as usize,
+                        }
+                    } else {
+                        BindGroupCacheKey::Static
+                    };
+                    if pass.cached_bind_group.is_none()
+                        || pass.cached_bind_group_key != Some(desired_key)
+                    {
+                        pass.cached_bind_group =
+                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter spatial bind group"),
+                                layout: dispatch_bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(source_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(target_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: pass.uniform_buffer.as_entire_binding(),
+                                    },
+                                ],
+                            }));
+                        pass.cached_bind_group_key = Some(desired_key);
+                    }
+                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                        return false;
+                    };
 
                     {
                         let mut compute_pass =
@@ -1396,71 +1714,86 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                 label: Some("filter spatial pass"),
                                 timestamp_writes: None,
                             });
-                        compute_pass.set_pipeline(pipeline);
-                        compute_pass.set_bind_group(0, &bind_group, &[]);
+                        compute_pass.set_pipeline(dispatch_pipeline);
+                        compute_pass.set_bind_group(0, bind_group, &[]);
                         let workgroups_x = target_width.div_ceil(8);
                         let workgroups_y = target_height.div_ceil(8);
                         compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
                     }
 
-                    source_view = target_view;
+                    if writes_output_directly {
+                        used_direct_spatial_output = true;
+                    }
+
                     source_width = target_width;
                     source_height = target_height;
-                    scratch_index ^= 1;
                 }
+                _ => return false,
             }
         }
 
-        if matches!(
-            self.passes.last().map(|p| &p.kind),
-            Some(CompiledPassKind::Spatial { .. })
-        ) {
-            let Some(blit_pipeline) = &self.blit_pipeline else {
-                return false;
-            };
-            let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
-                return false;
-            };
+        if !used_direct_spatial_output {
+            if let Some(blit_source_slot) = self.blit_source_scratch_slot {
+                let Some(blit_pipeline) = &self.blit_pipeline else {
+                    return false;
+                };
+                let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
+                    return false;
+                };
+                let Some(blit_source_view) = self.scratch_views[blit_source_slot].as_ref() else {
+                    return false;
+                };
 
-            let blit_bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("filter final blit bind group"),
-                layout: blit_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(source_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-            });
+                if self.blit_bind_group.is_none() {
+                    self.blit_bind_group =
+                        Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("filter final blit bind group"),
+                            layout: blit_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(blit_source_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(sampler),
+                                },
+                            ],
+                        }));
+                }
+                let Some(blit_bind_group) = self.blit_bind_group.as_ref() else {
+                    return false;
+                };
 
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("filter final blit pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &output.view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                render_pass.set_pipeline(blit_pipeline);
-                render_pass.set_bind_group(0, &blit_bind_group, &[]);
-                render_pass.draw(0..6, 0..1);
+                {
+                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("filter final blit pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &output.view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    render_pass.set_pipeline(blit_pipeline);
+                    render_pass.set_bind_group(0, blit_bind_group, &[]);
+                    render_pass.draw(0..6, 0..1);
+                }
             }
         }
 
         input.queue.submit([encoder.finish()]);
         self.target_params_dirty = false;
+        #[cfg(test)]
+        {
+            self.last_render_used_direct_output = used_direct_spatial_output;
+        }
         needs_redraw
     }
 
@@ -1729,8 +2062,8 @@ fn build_color_uniform_data(
     width: u32,
     height: u32,
     params: &[f32],
-) -> [f32; 4 + MAX_FILTER_PARAMS] {
-    let mut data = [0.0f32; 4 + MAX_FILTER_PARAMS];
+) -> [f32; FILTER_UNIFORM_WORDS] {
+    let mut data = [0.0f32; FILTER_UNIFORM_WORDS];
     data[0] = width as f32;
     data[1] = height as f32;
     for (idx, value) in params.iter().enumerate().take(MAX_FILTER_PARAMS) {
@@ -1745,8 +2078,8 @@ fn build_spatial_uniform_data(
     input_width: u32,
     input_height: u32,
     params: &[f32],
-) -> [f32; 4 + MAX_FILTER_PARAMS] {
-    let mut data = [0.0f32; 4 + MAX_FILTER_PARAMS];
+) -> [f32; FILTER_UNIFORM_WORDS] {
+    let mut data = [0.0f32; FILTER_UNIFORM_WORDS];
     data[0] = output_width as f32;
     data[1] = output_height as f32;
     data[2] = input_width as f32;
@@ -1756,9 +2089,6 @@ fn build_spatial_uniform_data(
     }
     data
 }
-
-// Need wgpu::util for BufferInitDescriptor
-use wgpu::util::DeviceExt;
 
 #[cfg(test)]
 mod tests {
@@ -2123,6 +2453,81 @@ mod tests {
         assert_eq!(passes[2].param_count, 1);
         assert_eq!(passes[3].param_offset, 4);
         assert_eq!(passes[3].param_count, 1);
+    }
+
+    #[test]
+    fn runtime_binding_plan_tracks_scratch_ping_pong_and_blit_source() {
+        let filter = Chain {
+            first: filtrate_core::filters::Blur(2.0f32),
+            second: Chain {
+                first: filtrate_core::filters::Brightness(0.2f32),
+                second: filtrate_core::filters::Sharpen(0.8f32),
+            },
+        };
+
+        let mut stages = Vec::new();
+        filter.collect_stages(&mut stages);
+        let passes = fuse_stages(&stages).expect("fuse should succeed");
+
+        let (plans, blit_source) =
+            plan_runtime_bindings(&passes).expect("runtime binding planning should succeed");
+
+        assert_eq!(plans.len(), 4);
+        assert_eq!(
+            plans[0],
+            PassBindingPlan::Spatial {
+                source: PassTextureSource::Input,
+                target_scratch: 0
+            }
+        );
+        assert_eq!(
+            plans[1],
+            PassBindingPlan::Spatial {
+                source: PassTextureSource::Scratch(0),
+                target_scratch: 1
+            }
+        );
+        assert_eq!(
+            plans[2],
+            PassBindingPlan::Color {
+                source: PassTextureSource::Scratch(1),
+                target: ColorTarget::Scratch(0)
+            }
+        );
+        assert_eq!(
+            plans[3],
+            PassBindingPlan::Spatial {
+                source: PassTextureSource::Scratch(0),
+                target_scratch: 1
+            }
+        );
+        assert_eq!(blit_source, Some(1));
+    }
+
+    #[test]
+    fn runtime_binding_plan_for_fused_color_chain_uses_direct_output() {
+        let filter = Chain {
+            first: filtrate_core::filters::Brightness(0.1f32),
+            second: Chain {
+                first: filtrate_core::filters::Contrast(1.2f32),
+                second: filtrate_core::filters::Invert,
+            },
+        };
+
+        let mut stages = Vec::new();
+        filter.collect_stages(&mut stages);
+        let passes = fuse_stages(&stages).expect("fuse should succeed");
+        let (plans, blit_source) =
+            plan_runtime_bindings(&passes).expect("runtime binding planning should succeed");
+
+        assert_eq!(
+            plans,
+            vec![PassBindingPlan::Color {
+                source: PassTextureSource::Input,
+                target: ColorTarget::Output
+            }]
+        );
+        assert_eq!(blit_source, None);
     }
 
     type HugeParams = (
@@ -2503,6 +2908,216 @@ mod tests {
             pixel.iter().any(|&c| c > 0),
             "spatial output should not be all zeros, got {pixel:?}"
         );
+    }
+
+    #[test]
+    fn gpu_spatial_filter_uses_direct_output_when_storage_binding_is_available() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let width = 8;
+        let height = 8;
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter direct output input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let input_data = vec![255u8; (width * height * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter direct output texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let ctx = FilterContext {
+            device,
+            queue,
+            input_format: format,
+            output_format: format,
+            pipeline_cache: None,
+        };
+        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        if adapter.has_setup_error() {
+            eprintln!(
+                "Skipping GPU test: setup failed ({:?})",
+                adapter.setup_error
+            );
+            return;
+        }
+        let expected_direct_output = adapter.final_spatial_output.is_some();
+
+        let input = FilterInput {
+            device: &device,
+            queue: &queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+        let output = FilterOutput {
+            device: &device,
+            queue: &queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+
+        let _ = GpuFilter::render(&mut adapter, &input, &output);
+        assert_eq!(
+            adapter.last_render_used_direct_output(),
+            expected_direct_output
+        );
+    }
+
+    #[test]
+    fn gpu_spatial_filter_falls_back_when_output_lacks_storage_binding_usage() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let width = 8;
+        let height = 8;
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter fallback output input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let input_data = vec![255u8; (width * height * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filter fallback output texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let ctx = FilterContext {
+            device,
+            queue,
+            input_format: format,
+            output_format: format,
+            pipeline_cache: None,
+        };
+        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        if adapter.has_setup_error() {
+            eprintln!(
+                "Skipping GPU test: setup failed ({:?})",
+                adapter.setup_error
+            );
+            return;
+        }
+
+        let input = FilterInput {
+            device: &device,
+            queue: &queue,
+            texture: &input_texture,
+            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+        let output = FilterOutput {
+            device: &device,
+            queue: &queue,
+            texture: &output_texture,
+            view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format,
+            width,
+            height,
+        };
+
+        let _ = GpuFilter::render(&mut adapter, &input, &output);
+        assert!(!adapter.last_render_used_direct_output());
     }
 
     #[test]
