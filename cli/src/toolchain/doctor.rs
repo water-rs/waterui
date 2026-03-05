@@ -9,7 +9,9 @@ use crate::{
     android::toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
-    toolchain::{Installation, Toolchain, ToolchainError, sccache::Sccache},
+    toolchain::{
+        Installation, Toolchain, ToolchainError, linux::LinuxSystemToolchain, sccache::Sccache,
+    },
 };
 
 /// Status of a toolchain check.
@@ -182,6 +184,31 @@ pub async fn doctor() -> Vec<DoctorItem> {
         Err(ToolchainError::Unfixable(e)) => {
             items.push(DoctorItem::missing("GTK4", e.to_string()));
         }
+    }
+
+    // Check Linux system package toolchain
+    if cfg!(target_os = "linux") {
+        match LinuxSystemToolchain.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Linux system packages")),
+            Err(ToolchainError::Fixable(installation)) => {
+                let msg = format!(
+                    "Missing packages for {}: {}. Install command: {}",
+                    installation.package_manager_name(),
+                    installation.missing_packages().join(", "),
+                    installation.install_command_hint(),
+                );
+                items.push(DoctorItem::fixable(
+                    "Linux system packages",
+                    msg,
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(e)) => {
+                items.push(DoctorItem::missing("Linux system packages", e.to_string()));
+            }
+        }
+    } else {
+        items.push(DoctorItem::skipped("Linux system packages"));
     }
 
     // Check sccache (optional but recommended for faster builds)
