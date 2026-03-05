@@ -787,6 +787,19 @@ mod winit_runner {
                             runtime.needs_rebuild = true;
                         }
                     }
+                    InputEvent::TextInput { text } => {
+                        let changed = runtime.renderer.handle_text_input(text.as_str());
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input",
+                            event = "text_input",
+                            text = text.as_str(),
+                            changed,
+                            "runner dispatched input event"
+                        );
+                        if changed {
+                            runtime.needs_rebuild = true;
+                        }
+                    }
                     InputEvent::Key {
                         key,
                         state: KeyState::Pressed,

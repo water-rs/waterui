@@ -384,6 +384,8 @@ enum LazyStackAxisConfig {
 
 #[cfg(feature = "accessibility")]
 const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
@@ -881,7 +883,7 @@ const INPUT_FIELD_MIN_HEIGHT: f64 = 30.0;
 const INPUT_FIELD_HORIZONTAL_INSET: f64 = 8.0;
 const INPUT_FIELD_VERTICAL_INSET: f64 = 6.0;
 const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
-const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(530);
 const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
 
 const PICKER_MIN_WIDTH: f64 = 72.0;
@@ -3074,7 +3076,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility_actions: BTreeMap::new(),
             #[cfg(feature = "accessibility")]
-            accessibility_next_node_id: 1,
+            accessibility_next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
             #[cfg(feature = "accessibility")]
             accessibility_root_bounds: vello::kurbo::Rect::ZERO,
             #[cfg(feature = "accessibility")]
@@ -3466,7 +3468,7 @@ impl HydrolysisRenderer {
 
             let previous_accessibility_next_node_id = renderer.accessibility_next_node_id;
             let previous_accessibility_suppression_depth = renderer.accessibility_suppression_depth;
-            renderer.accessibility_next_node_id = 1;
+            renderer.accessibility_next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
             renderer.accessibility_suppression_depth = 0;
             renderer.dispatch_with_render_depth(content, env, ctx);
             renderer.accessibility_suppression_depth = previous_accessibility_suppression_depth;
@@ -7218,6 +7220,7 @@ impl HydrolysisRenderer {
             self.accessibility_nodes.clear();
             self.accessibility_root_children.clear();
             self.accessibility_actions.clear();
+            self.accessibility_next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
             self.accessibility_suppression_depth = 0;
         }
     }
