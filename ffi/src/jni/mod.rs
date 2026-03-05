@@ -126,12 +126,11 @@ pub unsafe fn init(vm: *mut jni::sys::JavaVM) -> jint {
     // Cache commonly used classes
     let classes = init_classes(&mut env);
 
-    if JAVA_VM.set(vm).is_err() {
-        panic!("JavaVM already initialized");
-    }
-    if JAVA_CLASSES.set(classes).is_err() {
-        panic!("JavaClasses already initialized");
-    }
+    assert!(!(JAVA_VM.set(vm).is_err()), "JavaVM already initialized");
+    assert!(
+        !(JAVA_CLASSES.set(classes).is_err()),
+        "JavaClasses already initialized"
+    );
 
     tracing::debug!("WaterUI JNI module initialized");
 
