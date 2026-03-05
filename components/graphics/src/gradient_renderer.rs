@@ -345,9 +345,10 @@ impl GradientConfig {
     }
 
     fn into_resolved_gradient(self) -> ResolvedGradient {
-        if self.gradient_type == GradientType::Mesh {
-            panic!("mesh gradients must use MeshGradient/GPU path, not ResolvedGradient");
-        }
+        assert!(
+            !(self.gradient_type == GradientType::Mesh),
+            "mesh gradients must use MeshGradient/GPU path, not ResolvedGradient"
+        );
 
         let mut stops = self
             .stops
@@ -633,12 +634,14 @@ fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuRes
             cache: ctx.pipeline_cache,
         });
 
-    if let Some(error) = crate::pop_error_scope_now(
+    let pipeline_error = crate::pop_error_scope_now(
         ctx.device,
         "gradient_renderer::create_mesh_pipeline::validation_error_scope",
-    ) {
-        panic!("mesh gradient pipeline creation failed: {error}");
-    }
+    );
+    assert!(
+        pipeline_error.is_none(),
+        "mesh gradient pipeline creation failed: {pipeline_error:?}"
+    );
 
     MeshGpuResources {
         pipeline,
