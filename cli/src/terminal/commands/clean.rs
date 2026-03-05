@@ -28,7 +28,7 @@ pub enum TargetBackend {
     Apple,
     /// Android backend.
     Android,
-    /// GTK4 backend (Linux/macOS/Windows).
+    /// GTK4 backend (Linux).
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
     Hydrolysis,
