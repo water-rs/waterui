@@ -1,77 +1,44 @@
 //! GTK4 toolchain checking.
 
-use color_eyre::eyre;
 use smol::process::Command;
 
-use crate::toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain};
+use crate::toolchain::{
+    Toolchain, ToolchainError, UnfixableToolchain,
+    linux::{LinuxSystemPackagesInstallation, LinuxSystemToolchain},
+};
 
 /// GTK4 toolchain checker.
 ///
-/// Verifies that GTK4 development libraries are installed on the system.
+/// Verifies that GTK4 development libraries are installed on Linux.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Gtk4Toolchain;
 
-/// Installation plan for GTK4 dependencies.
-#[derive(Debug)]
-pub enum Gtk4Installation {
-    /// Install pkg-config via Homebrew (macOS).
-    PkgConfig,
-    /// Install GTK4 via Homebrew (macOS).
-    Gtk4,
-    /// Install both pkg-config and GTK4.
-    Both,
-}
-
-impl Installation for Gtk4Installation {
-    type Error = eyre::Report;
-
-    async fn install(&self) -> Result<(), Self::Error> {
-        match self {
-            Self::PkgConfig => {
-                crate::utils::run_command("brew", ["install", "pkg-config"]).await?;
-            }
-            Self::Gtk4 => {
-                crate::utils::run_command("brew", ["install", "gtk4"]).await?;
-            }
-            Self::Both => {
-                crate::utils::run_command("brew", ["install", "pkg-config", "gtk4"]).await?;
-            }
-        }
-        Ok(())
-    }
-}
-
 impl Toolchain for Gtk4Toolchain {
-    type Installation = Gtk4Installation;
+    type Installation = LinuxSystemPackagesInstallation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        let pkg_config_ok = check_pkg_config_exists().await;
-        let gtk4_ok = if pkg_config_ok {
-            check_gtk4_exists().await
-        } else {
-            false
-        };
+        if !cfg!(target_os = "linux") {
+            return Err(ToolchainError::Unfixable(UnfixableToolchain::new(
+                "GTK4 backend is only supported on Linux",
+                "Run GTK4 targets on Linux with `--platform linux --backend gtk4`.",
+            )));
+        }
 
-        match (pkg_config_ok, gtk4_ok) {
-            (true, true) => Ok(()),
-            (false, _) if cfg!(target_os = "macos") => {
-                // On macOS, we can install both via brew
-                // Check if gtk4 would be available after pkg-config is installed
-                Err(ToolchainError::Fixable(Gtk4Installation::Both))
-            }
-            (true, false) if cfg!(target_os = "macos") => {
-                // pkg-config available, just missing GTK4
-                Err(ToolchainError::Fixable(Gtk4Installation::Gtk4))
-            }
-            (false, _) => Err(ToolchainError::Unfixable(UnfixableToolchain::new(
-                "pkg-config not found",
-                install_pkg_config_suggestion(),
-            ))),
-            (true, false) => Err(ToolchainError::Unfixable(UnfixableToolchain::new(
+        if check_pkg_config_exists().await && check_gtk4_exists().await {
+            return Ok(());
+        }
+
+        let linux_toolchain = LinuxSystemToolchain;
+        return match linux_toolchain.check().await {
+            Ok(()) => Err(ToolchainError::Unfixable(UnfixableToolchain::new(
                 "GTK4 development libraries not found",
                 install_gtk4_suggestion(),
             ))),
-        }
+            Err(ToolchainError::Fixable(installation)) => {
+                Err(ToolchainError::Fixable(installation))
+            }
+            Err(ToolchainError::Unfixable(e)) => Err(ToolchainError::Unfixable(e)),
+        };
     }
 }
 
@@ -93,35 +60,19 @@ async fn check_gtk4_exists() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Get platform-specific suggestion for installing pkg-config.
-fn install_pkg_config_suggestion() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Install pkg-config with Homebrew: brew install pkg-config"
-    } else if cfg!(target_os = "linux") {
-        "Install pkg-config with your package manager:\n\
-         - Ubuntu/Debian: sudo apt install pkg-config\n\
-         - Fedora: sudo dnf install pkgconfig\n\
-         - Arch: sudo pacman -S pkgconf"
-    } else if cfg!(target_os = "windows") {
-        "Install pkg-config via MSYS2 or vcpkg"
-    } else {
-        "Install pkg-config for your platform"
-    }
-}
-
 /// Get platform-specific suggestion for installing GTK4.
 fn install_gtk4_suggestion() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Install GTK4 with Homebrew: brew install gtk4"
-    } else if cfg!(target_os = "linux") {
-        "Install GTK4 development libraries with your package manager:\n\
-         - Ubuntu/Debian: sudo apt install libgtk-4-dev\n\
-         - Fedora: sudo dnf install gtk4-devel\n\
-         - Arch: sudo pacman -S gtk4"
-    } else if cfg!(target_os = "windows") {
-        "Install GTK4 via MSYS2:\n\
-         pacman -S mingw-w64-x86_64-gtk4"
-    } else {
-        "Install GTK4 development libraries for your platform"
+    "GTK4 was not discoverable via pkg-config. Ensure GTK4 development packages are installed for your distribution and `pkg-config --exists gtk4` succeeds."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_gtk4_suggestion;
+
+    #[test]
+    fn gtk4_suggestion_mentions_pkg_config_probe() {
+        let gtk4 = install_gtk4_suggestion();
+        assert!(gtk4.contains("pkg-config"));
+        assert!(gtk4.contains("gtk4"));
     }
 }
