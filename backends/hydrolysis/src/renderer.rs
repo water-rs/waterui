@@ -17,6 +17,7 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
+    TextPosition as AccessibilityTextPosition, TextSelection as AccessibilityTextSelection,
     Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
@@ -3094,6 +3095,66 @@ impl HydroNativeView for Native<TextFieldConfig> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env)
     }
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "accessibility")]
+        {
+            let text_field = view.as_inner();
+            let renderer = unsafe { ctx.renderer() };
+            let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
+            let prompt_signal = text_field.prompt.content();
+            let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
+            let default_label = renderer
+                .accessibility_label_from_view(&text_field.label, env)
+                .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            if !prompt.is_empty() {
+                node.set_placeholder(prompt);
+            }
+            let value = renderer
+                .read_signal(&text_field.value)
+                .to_plain()
+                .to_string();
+            if !value.is_empty() {
+                node.set_value(value.clone());
+            }
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            if let Some(text_run_node_id) = register_accessibility_text_run_node(
+                renderer,
+                &value,
+                bounds,
+                env,
+            ) {
+                node.set_children(vec![text_run_node_id]);
+                node.set_text_selection(collapsed_accessibility_text_selection(
+                    text_run_node_id,
+                    value.chars().count(),
+                ));
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::TextField {
+                    value: text_field.value.clone(),
+                    line_limit,
+                }),
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<SecureFieldConfig> {
@@ -3107,6 +3168,52 @@ impl HydroNativeView for Native<SecureFieldConfig> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env)
+    }
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "accessibility")]
+        {
+            let secure_field = view.as_inner();
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
+            );
+            let default_label = renderer.accessibility_label_from_view(&secure_field.label, env);
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            let secure_len = renderer
+                .read_signal(&secure_field.value)
+                .expose()
+                .chars()
+                .count();
+            let masked_value = "*".repeat(secure_len);
+            node.set_value(masked_value.clone());
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            if let Some(text_run_node_id) = register_accessibility_text_run_node(
+                renderer,
+                &masked_value,
+                bounds,
+                env,
+            ) {
+                node.set_children(vec![text_run_node_id]);
+                node.set_text_selection(collapsed_accessibility_text_selection(
+                    text_run_node_id,
+                    masked_value.chars().count(),
+                ));
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::SecureField {
+                    value: secure_field.value.clone(),
+                }),
+            );
+        }
     }
 }
 
@@ -9811,6 +9918,47 @@ fn remap_accessibility_node_references(
     }
     if let Some(node_id) = node.popup_for() {
         node.set_popup_for(remap_accessibility_node_id(node_id, id_map));
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn register_accessibility_text_run_node(
+    renderer: &mut HydrolysisRenderer,
+    value: &str,
+    bounds: vello::kurbo::Rect,
+    env: &Environment,
+) -> Option<AccessibilityNodeId> {
+    let mut text_run = AccessibilityNode::new(AccessibilityNodeRole::TextRun);
+    text_run.set_value(value.to_owned());
+    text_run.set_character_lengths(accessibility_character_lengths(value));
+    renderer.register_accessibility_child_node(text_run, bounds, env, None)
+}
+
+#[cfg(feature = "accessibility")]
+fn accessibility_character_lengths(value: &str) -> Vec<u8> {
+    value
+        .chars()
+        .map(|ch| {
+            u8::try_from(ch.len_utf8())
+                .expect("hydrolysis accessibility text run utf8 length must fit into u8")
+        })
+        .collect()
+}
+
+#[cfg(feature = "accessibility")]
+fn collapsed_accessibility_text_selection(
+    node_id: AccessibilityNodeId,
+    character_index: usize,
+) -> AccessibilityTextSelection {
+    AccessibilityTextSelection {
+        anchor: AccessibilityTextPosition {
+            node: node_id,
+            character_index,
+        },
+        focus: AccessibilityTextPosition {
+            node: node_id,
+            character_index,
+        },
     }
 }
 
