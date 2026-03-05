@@ -6,12 +6,19 @@ use std::pin::Pin;
 use color_eyre::eyre;
 
 use crate::{
-    android::toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
-    apple::toolchain::{AppleSdk, Xcode},
+    android::{
+        device::AndroidDevice,
+        platform::AndroidPlatform,
+        toolchain::{AndroidNdk, AndroidPlatformTools, AndroidSdk, Java, Kotlin},
+    },
+    apple::{
+        device::AppleSimulator,
+        toolchain::{AppleSdk, Xcode},
+    },
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{
-        Installation, Toolchain, ToolchainError, UnfixableToolchain, linux::LinuxSystemToolchain,
-        rust::RustToolchain, sccache::Sccache,
+        Installation, Toolchain, ToolchainError, UnfixableToolchain, cmake::Cmake,
+        linux::LinuxSystemToolchain, rust::RustToolchain, sccache::Sccache,
     },
 };
 
@@ -96,6 +103,15 @@ impl DoctorItem {
         }
     }
 
+    fn skipped_with_message(name: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Skipped,
+            message: Some(message.into()),
+            install_fn: None,
+        }
+    }
+
     /// Returns `true` if the issue can be fixed automatically.
     #[must_use]
     pub const fn is_fixable(&self) -> bool {
@@ -134,6 +150,19 @@ pub async fn doctor() -> Vec<DoctorItem> {
             Err(e) => items.push(DoctorItem::missing("iOS Simulator SDK", e.to_string())),
         }
 
+        // Check iOS simulator runtime/device availability for `water run --platform ios`.
+        match AppleSimulator::scan_ios().await {
+            Ok(simulators) if simulators.is_empty() => items.push(DoctorItem::missing(
+                "iOS Simulators",
+                "No iOS simulators available. Install a simulator runtime in Xcode Settings > Platforms.",
+            )),
+            Ok(_) => items.push(DoctorItem::ok("iOS Simulators")),
+            Err(error) => items.push(DoctorItem::missing(
+                "iOS Simulators",
+                format!("Failed to list iOS simulators: {error}"),
+            )),
+        }
+
         // Check macOS SDK
         match AppleSdk::Macos.check().await {
             Ok(()) => items.push(DoctorItem::ok("macOS SDK")),
@@ -143,6 +172,7 @@ pub async fn doctor() -> Vec<DoctorItem> {
         items.push(DoctorItem::skipped("Xcode"));
         items.push(DoctorItem::skipped("iOS SDK"));
         items.push(DoctorItem::skipped("iOS Simulator SDK"));
+        items.push(DoctorItem::skipped("iOS Simulators"));
         items.push(DoctorItem::skipped("macOS SDK"));
     }
 
@@ -173,7 +203,7 @@ pub async fn doctor() -> Vec<DoctorItem> {
         Err(ToolchainError::Fixable(installation)) => {
             items.push(DoctorItem::fixable(
                 "Android SDK",
-                "Android SDK is missing but has an automatic install plan.",
+                "Android SDK is missing (automatic install is supported on this host)",
                 installation,
             ));
         }
@@ -185,46 +215,126 @@ pub async fn doctor() -> Vec<DoctorItem> {
         }
     }
 
-    // Check Android NDK
-    match AndroidNdk.check().await {
-        Ok(()) => items.push(DoctorItem::ok("Android NDK")),
+    let sdk_ready_for_component_checks =
+        AndroidSdk::detect_path().is_some() || AndroidSdk::sdkmanager_path().await.is_some();
+
+    if sdk_ready_for_component_checks {
+        // Check Android Platform-Tools (`adb`) for run flows.
+        match AndroidPlatformTools.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android Platform-Tools (adb)")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android Platform-Tools (adb)",
+                    "Required for `water run --platform android`",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android Platform-Tools (adb)",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+
+        // Check Android NDK for build/package flows.
+        match AndroidNdk.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android NDK")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android NDK",
+                    "Required for Android build/package workflows",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android NDK",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+    } else {
+        items.push(DoctorItem::missing(
+            "Android Platform-Tools (adb)",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+        items.push(DoctorItem::missing(
+            "Android NDK",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+    }
+
+    // Check Android run target availability for `water run --platform android`.
+    if AndroidSdk::adb_path().is_some() {
+        match AndroidDevice::scan().await {
+            Ok(devices) if !devices.is_empty() => {
+                items.push(DoctorItem::ok("Android Run Targets"));
+            }
+            Ok(_) => match AndroidPlatform::list_avds().await {
+                Ok(avds) if !avds.is_empty() => {
+                    items.push(DoctorItem::ok("Android Run Targets"));
+                }
+                Ok(_) => items.push(DoctorItem::missing(
+                    "Android Run Targets",
+                    "No connected Android devices and no emulator AVDs were found. Connect a device or create an AVD.",
+                )),
+                Err(error) => items.push(DoctorItem::missing(
+                    "Android Run Targets",
+                    format!(
+                        "No connected Android devices and failed to list AVDs: {error}. Install Android emulator components or connect a device."
+                    ),
+                )),
+            },
+            Err(error) => items.push(DoctorItem::missing(
+                "Android Run Targets",
+                format!("Failed to query Android devices via adb: {error}"),
+            )),
+        }
+    } else {
+        items.push(DoctorItem::missing(
+            "Android Run Targets",
+            "Blocked: Android Platform-Tools (`adb`) is not ready yet.",
+        ));
+    }
+
+    // Check CMake used by native Rust dependencies during Android builds.
+    match Cmake::default().check().await {
+        Ok(()) => items.push(DoctorItem::ok("Host CMake")),
         Err(ToolchainError::Fixable(installation)) => {
             items.push(DoctorItem::fixable(
-                "Android NDK",
-                "Android NDK is missing but has an automatic install plan.",
+                "Host CMake",
+                "Required for native Rust dependencies in Android builds",
                 installation,
             ));
         }
         Err(ToolchainError::Unfixable(error)) => {
-            items.push(DoctorItem::missing(
-                "Android NDK",
-                unfixable_message(&error),
-            ));
+            items.push(DoctorItem::missing("Host CMake", unfixable_message(&error)));
         }
     }
 
-    // Check Java
-    match Java::detect_path().await {
-        Some(_) => items.push(DoctorItem::ok("Java")),
-        None => items.push(DoctorItem::missing(
-            "Java",
-            "Install JDK or set JAVA_HOME. Android Studio includes a bundled JDK.",
-        )),
+    // Check Java runtime for Android Gradle builds.
+    match Java.check().await {
+        Ok(()) => items.push(DoctorItem::ok("Java")),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Java",
+                "Required for Android Gradle builds",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("Java", unfixable_message(&error)));
+        }
     }
 
-    // Check Kotlin
+    // Kotlin compiler is optional for standard Android builds.
     match Kotlin.check().await {
         Ok(()) => items.push(DoctorItem::ok("Kotlin")),
-        Err(ToolchainError::Fixable(installation)) => {
-            items.push(DoctorItem::fixable(
-                "Kotlin",
-                "Kotlin compiler is missing but has an automatic install plan.",
-                installation,
-            ));
-        }
-        Err(ToolchainError::Unfixable(error)) => {
-            items.push(DoctorItem::missing("Kotlin", unfixable_message(&error)));
-        }
+        Err(_) => items.push(DoctorItem::skipped_with_message(
+            "Kotlin",
+            "Optional: external `kotlinc` is not required for standard Android builds.",
+        )),
     }
 
     // Check Linux system package toolchain
@@ -246,10 +356,10 @@ pub async fn doctor() -> Vec<DoctorItem> {
                     installation,
                 ));
             }
-            Err(ToolchainError::Unfixable(e)) => {
+            Err(ToolchainError::Unfixable(error)) => {
                 items.push(DoctorItem::missing(
                     "Linux system packages",
-                    unfixable_message(&e),
+                    unfixable_message(&error),
                 ));
             }
         }
@@ -258,32 +368,29 @@ pub async fn doctor() -> Vec<DoctorItem> {
     }
 
     // Check GTK4 toolchain
-    match Gtk4Toolchain.check().await {
-        Ok(()) => items.push(DoctorItem::ok("GTK4")),
-        Err(ToolchainError::Fixable(installation)) => {
-            let msg = match &installation {
-                crate::gtk4::toolchain::Gtk4Installation::PkgConfig => {
-                    "pkg-config not found (can be installed via Homebrew)"
-                }
-                crate::gtk4::toolchain::Gtk4Installation::Gtk4 => {
-                    "GTK4 not found (can be installed via Homebrew)"
-                }
-                crate::gtk4::toolchain::Gtk4Installation::Both => {
-                    "pkg-config and GTK4 not found (can be installed via Homebrew)"
-                }
-            };
-            items.push(DoctorItem::fixable("GTK4", msg, installation));
-        }
-        Err(ToolchainError::Unfixable(error)) => {
-            if cfg!(target_os = "linux") && linux_packages_fixable {
-                items.push(DoctorItem::missing(
+    if cfg!(target_os = "linux") {
+        match Gtk4Toolchain.check().await {
+            Ok(()) => items.push(DoctorItem::ok("GTK4")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
                     "GTK4",
-                    "GTK4 probe failed because required Linux packages are missing. Run `water doctor --fix` to install Linux system packages, then re-run `water doctor`.",
+                    "GTK4 dependencies are missing",
+                    installation,
                 ));
-            } else {
-                items.push(DoctorItem::missing("GTK4", unfixable_message(&error)));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                if linux_packages_fixable {
+                    items.push(DoctorItem::missing(
+                        "GTK4",
+                        "GTK4 probe failed because required Linux packages are missing. Run `water doctor --fix` to install Linux system packages, then re-run `water doctor`.",
+                    ));
+                } else {
+                    items.push(DoctorItem::missing("GTK4", unfixable_message(&error)));
+                }
             }
         }
+    } else {
+        items.push(DoctorItem::skipped("GTK4"));
     }
 
     // Check sccache (optional but recommended for faster builds)
@@ -296,8 +403,8 @@ pub async fn doctor() -> Vec<DoctorItem> {
                 installation,
             ));
         }
-        Err(ToolchainError::Unfixable(e)) => {
-            items.push(DoctorItem::missing("sccache", unfixable_message(&e)));
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("sccache", unfixable_message(&error)));
         }
     }
 

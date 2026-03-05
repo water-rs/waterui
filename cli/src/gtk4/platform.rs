@@ -10,8 +10,6 @@ use color_eyre::eyre::{self, bail};
 use smol::fs;
 use tracing::info;
 
-#[cfg(target_os = "macos")]
-use crate::macos_bundle::package_binary_as_app;
 use crate::{
     assets,
     build::BuildOptions,
@@ -22,12 +20,10 @@ use crate::{
     utils::{command, run_command_os},
 };
 
-#[cfg(target_os = "macos")]
-const GTK4_INIT_HINT: &str = "water run --platform macos --backend gtk4";
 #[cfg(target_os = "linux")]
-const GTK4_INIT_HINT: &str = "water run --platform linux";
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const GTK4_INIT_HINT: &str = "initialize GTK4 backend on macOS or Linux";
+const GTK4_INIT_HINT: &str = "water run --platform linux --backend gtk4";
+#[cfg(not(target_os = "linux"))]
+const GTK4_INIT_HINT: &str = "initialize GTK4 backend on Linux";
 
 // ============================================================================
 // Build Utilities
@@ -35,6 +31,8 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on macOS or Linux";
 
 /// Build GTK4 binary for the host platform.
 pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+    ensure_linux_host()?;
+
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
     let backend_target_dir = project.backend_target_dir("gtk4");
@@ -89,6 +87,8 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
 /// Clean Cargo build artifacts for GTK4.
 pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
+    ensure_linux_host()?;
+
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
     let backend_target_dir = project.backend_target_dir("gtk4");
@@ -116,6 +116,8 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 
 /// Package a GTK4 app (locate the built binary).
 pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
+    ensure_linux_host()?;
+
     // For GTK4, "packaging" just means locating the built binary
     let profile = if options.is_debug() {
         "debug"
@@ -133,22 +135,13 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // The binary name is the GTK4 crate name (project-gtk4)
     let binary_name = project.gtk_backend_crate_name();
 
-    // Handle platform-specific binary extension
-    let binary_path = if cfg!(windows) {
-        target_dir.join(format!("{binary_name}.exe"))
-    } else {
-        target_dir.join(&binary_name)
-    };
+    let binary_path = target_dir.join(&binary_name);
 
     let final_binary_path = if binary_path.exists() {
         binary_path
     } else {
         let alt_binary_name = binary_name.replace('-', "_");
-        let alt_binary_path = if cfg!(windows) {
-            target_dir.join(format!("{alt_binary_name}.exe"))
-        } else {
-            target_dir.join(&alt_binary_name)
-        };
+        let alt_binary_path = target_dir.join(&alt_binary_name);
 
         if alt_binary_path.exists() {
             alt_binary_path
@@ -160,40 +153,10 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
         }
     };
 
-    #[cfg(target_os = "macos")]
-    {
-        let app_name = project
-            .manifest()
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == ' ')
-            .collect::<String>();
-        let app_name = if app_name.is_empty() {
-            "WaterUIGtk4".to_string()
-        } else {
-            app_name
-        };
-        let dist_dir = backend_path.join("dist");
-        fs::create_dir_all(&dist_dir).await?;
-        let app_path = package_binary_as_app(
-            &final_binary_path,
-            project.bundle_identifier(),
-            &app_name,
-            Some(&backend_path.join("resources")),
-            &dist_dir,
-        )
-        .await?;
-        return Ok(Artifact::new(project.bundle_identifier(), app_path));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(Artifact::new(
-            project.bundle_identifier(),
-            final_binary_path,
-        ))
-    }
+    Ok(Artifact::new(
+        project.bundle_identifier(),
+        final_binary_path,
+    ))
 }
 
 // ============================================================================
@@ -202,10 +165,15 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
 
 /// Check if a platform is supported by the GTK4 backend.
 pub const fn is_gtk4_platform(platform: TargetPlatform) -> bool {
-    matches!(
-        platform,
-        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::MacOS
-    )
+    matches!(platform, TargetPlatform::Linux)
+}
+
+fn ensure_linux_host() -> eyre::Result<()> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        bail!("GTK4 backend is only supported on Linux hosts")
+    }
 }
 
 // ============================================================================
