@@ -163,6 +163,7 @@ impl LinuxPackageManager {
                 "libgbm-dev",
                 "libxcb1-dev",
                 "libclang-dev",
+                "libfontconfig-dev",
             ],
             Self::Dnf => &[
                 "pkgconf-pkg-config",
@@ -173,6 +174,7 @@ impl LinuxPackageManager {
                 "mesa-libgbm-devel",
                 "libxcb-devel",
                 "clang-devel",
+                "fontconfig-devel",
             ],
             Self::Pacman => &[
                 "pkgconf",
@@ -183,6 +185,7 @@ impl LinuxPackageManager {
                 "mesa",
                 "libxcb",
                 "clang",
+                "fontconfig",
             ],
             Self::Zypper => &[
                 "pkg-config",
@@ -193,6 +196,7 @@ impl LinuxPackageManager {
                 "Mesa-libgbm-devel",
                 "libxcb-devel",
                 "clang-devel",
+                "fontconfig-devel",
             ],
             Self::Apk => &[
                 "pkgconf",
@@ -203,6 +207,7 @@ impl LinuxPackageManager {
                 "mesa-dev",
                 "libxcb-dev",
                 "clang-dev",
+                "fontconfig-dev",
             ],
         }
     }
@@ -334,6 +339,7 @@ mod tests {
         assert!(required.contains(&"libxcb-devel"));
         assert!(required.contains(&"alsa-lib-devel"));
         assert!(required.contains(&"clang-devel"));
+        assert!(required.contains(&"fontconfig-devel"));
     }
 
     #[test]
