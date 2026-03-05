@@ -195,9 +195,8 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
         // Initialize shared context if needed
         if !waterui_graphics::shared_context::is_initialized() {
             tracing::debug!("[AppliedFilter] Shared context not initialized, initializing now...");
-            if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
-                panic!("waterui_applied_filter_init: shared GPU context init failed: {e}");
-            }
+            waterui_graphics::shared_context::init_shared_context()
+                .expect("waterui_applied_filter_init: shared GPU context init failed");
         }
         let ctx = shared_context();
         let guard = ctx.read();
@@ -217,9 +216,10 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
 
         // Configure output surface
         let surface_caps = output_surface.get_capabilities(adapter);
-        if surface_caps.formats.is_empty() {
-            panic!("waterui_applied_filter_init: adapter cannot present to output surface");
-        }
+        assert!(
+            !(surface_caps.formats.is_empty()),
+            "waterui_applied_filter_init: adapter cannot present to output surface"
+        );
 
         let preferred = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
         let format = if surface_caps.formats.contains(&preferred) {
@@ -936,7 +936,9 @@ fn try_configure_surface(
         abort_on_panic("applied_filter::try_configure_surface");
     }
 
-    if let Some(err) = validation_err.or(internal_err).or(oom_err) {
-        panic!("applied_filter::try_configure_surface failed: {err}");
-    }
+    let configure_err = validation_err.or(internal_err).or(oom_err);
+    assert!(
+        configure_err.is_none(),
+        "applied_filter::try_configure_surface failed: {configure_err:?}"
+    );
 }
