@@ -76,9 +76,7 @@ fn parse_positive_u64_env(name: &str, default: u64) -> u64 {
             let parsed = raw.trim().parse::<u64>().unwrap_or_else(|error| {
                 panic!("hydrolysis runner: invalid {name} `{raw}`: {error}")
             });
-            if parsed == 0 {
-                panic!("hydrolysis runner: {name} must be > 0");
-            }
+            assert!(!(parsed == 0), "hydrolysis runner: {name} must be > 0");
             parsed
         }
         Err(std::env::VarError::NotPresent) => default,
@@ -296,9 +294,10 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
 }
 
 fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
-    if !scale_factor.is_finite() || scale_factor <= 0.0 {
-        panic!("hydrolysis runner: invalid scale factor {scale_factor}");
-    }
+    assert!(
+        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        "hydrolysis runner: invalid scale factor {scale_factor}"
+    );
     vello::kurbo::Rect::new(
         0.0,
         0.0,
@@ -420,6 +419,9 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
+    }
+    if runtime.renderer.take_redraw_request() {
+        runtime.platform.request_redraw();
     }
 }
 
@@ -588,9 +590,10 @@ mod winit_runner {
         }
 
         fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
-            if !scale_factor.is_finite() || scale_factor <= 0.0 {
-                panic!("hydrolysis runner: invalid scale factor {scale_factor}");
-            }
+            assert!(
+                !(!scale_factor.is_finite() || scale_factor <= 0.0),
+                "hydrolysis runner: invalid scale factor {scale_factor}"
+            );
             (f64::from(value) / scale_factor) as f32
         }
 
@@ -944,6 +947,9 @@ mod winit_runner {
                 runtime
                     .platform
                     .sync_text_input_state(runtime.renderer.focused_text_input_state());
+                if runtime.renderer.poll_gpu_surface_redraw_handles() {
+                    runtime.platform.request_redraw();
+                }
                 if runtime.renderer.handle_gesture_tick(now, &self.env) {
                     runtime.needs_rebuild = true;
                 }

@@ -663,11 +663,10 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 
     // Confirm format hasn't changed (it shouldn't). If it does, crash early.
     let observed_format = query_framebuffer_format(&glow);
-    if observed_format != format {
-        panic!(
-            "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
-        );
-    }
+    assert!(
+        !(observed_format != format),
+        "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
+    );
 
     let attachment = current_color_attachment(&glow);
 
@@ -901,9 +900,11 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
                 eprintln!("[gtk-gpu] GLArea realize");
             }
             area.make_current();
-            if let Some(err) = area.error() {
-                panic!("GpuSurface(GL): GtkGLArea realize failed: {err}");
-            }
+            let err = area.error();
+            assert!(
+                err.is_none(),
+                "GpuSurface(GL): GtkGLArea realize failed: {err:?}"
+            );
         }
     });
 
@@ -923,9 +924,11 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
         move |area| {
             // Drop wgpu objects while the GtkGLArea context is still current.
             area.make_current();
-            if let Some(err) = area.error() {
-                panic!("GpuSurface(GL): GtkGLArea unrealize error: {err}");
-            }
+            let err = area.error();
+            assert!(
+                err.is_none(),
+                "GpuSurface(GL): GtkGLArea unrealize error: {err:?}"
+            );
 
             let mut st = state.borrow_mut();
             st.wgpu_queue = None;
@@ -948,9 +951,11 @@ fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget
                 eprintln!("[gtk-gpu] GLArea render callback");
             }
             area.make_current();
-            if let Some(err) = area.error() {
-                panic!("GpuSurface(GL): GtkGLArea render error: {err}");
-            }
+            let err = area.error();
+            assert!(
+                err.is_none(),
+                "GpuSurface(GL): GtkGLArea render error: {err:?}"
+            );
 
             init_wgpu_if_needed(area, &state, gl_ctx);
 
