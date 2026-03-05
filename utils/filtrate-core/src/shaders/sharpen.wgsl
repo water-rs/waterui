@@ -35,9 +35,7 @@ fn main(
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     let dims = vec2<u32>(uniforms.output_dimensions);
-    if global_id.x >= dims.x || global_id.y >= dims.y {
-        return;
-    }
+    let active = global_id.x < dims.x && global_id.y < dims.y;
 
     let input_dims_u = vec2<u32>(uniforms.input_dimensions);
     let input_dims_i = vec2<i32>(input_dims_u);
@@ -85,7 +83,13 @@ fn main(
 
         let laplacian = center * 4.0 - top - bottom - left - right;
         let result = center + laplacian * amount;
-        textureStore(output_texture, coord, vec4<f32>(result.rgb, center.a));
+        if active {
+            textureStore(output_texture, coord, vec4<f32>(result.rgb, center.a));
+        }
+        return;
+    }
+
+    if !active {
         return;
     }
 
