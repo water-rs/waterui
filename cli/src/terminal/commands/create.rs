@@ -70,8 +70,8 @@ impl Backend {
         match self {
             Self::Apple => "Apple (iOS/macOS)",
             Self::Android => "Android",
-            Self::Gtk4 => "GTK4 (Linux/macOS/Windows)",
-            Self::Hydrolysis => "Hydrolysis (Linux/macOS)",
+            Self::Gtk4 => "GTK4 (Linux)",
+            Self::Hydrolysis => "Hydrolysis (Linux/macOS/Windows)",
         }
     }
 
@@ -143,7 +143,10 @@ pub async fn run(args: Args) -> Result<()> {
     };
 
     if package_type == PackageType::App && backends.is_empty() {
-        bail!("At least one backend is required. Choose from: apple, android, gtk4.");
+        bail!("At least one backend is required. Choose from: apple, android, gtk4, hydrolysis.");
+    }
+    if package_type == PackageType::App {
+        validate_backends_on_host(&backends)?;
     }
 
     // Compute project path
@@ -298,13 +301,10 @@ fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&
     }
 
     if backends.iter().any(|b| matches!(b, Backend::Gtk4)) {
-        #[cfg(target_os = "macos")]
-        return Some("water run --platform macos --backend gtk4");
-
         #[cfg(target_os = "linux")]
         return Some("water run --platform linux");
 
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(not(target_os = "linux"))]
         return None;
     }
 
@@ -315,7 +315,10 @@ fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&
         #[cfg(target_os = "linux")]
         return Some("water run --platform linux --backend hydrolysis");
 
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(target_os = "windows")]
+        return Some("water run --platform windows --backend hydrolysis");
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         return None;
     }
 
@@ -324,7 +327,7 @@ fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&
 
 fn prompt_backends() -> Result<Vec<Backend>> {
     let items: Vec<&str> = Backend::ALL.iter().map(|b| b.label()).collect();
-    let defaults = vec![true, true, false]; // Apple and Android selected by default
+    let defaults = vec![true, true, false, false]; // Apple and Android selected by default
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Select backends")
@@ -335,9 +338,35 @@ fn prompt_backends() -> Result<Vec<Backend>> {
     Ok(selections.into_iter().map(|i| Backend::ALL[i]).collect())
 }
 
+fn validate_backends_on_host(backends: &[Backend]) -> Result<()> {
+    let wants_gtk4 = backends
+        .iter()
+        .any(|backend| matches!(backend, Backend::Gtk4));
+    if wants_gtk4 && !cfg!(target_os = "linux") {
+        bail!("GTK4 backend is only supported on Linux hosts");
+    }
+
+    let wants_hydrolysis = backends
+        .iter()
+        .any(|backend| matches!(backend, Backend::Hydrolysis));
+    if wants_hydrolysis
+        && !cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        ))
+    {
+        bail!("Hydrolysis backend is only supported on macOS, Linux, or Windows hosts");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Backend, PackageType, next_run_command, parse_backends};
+    use super::{
+        Backend, PackageType, next_run_command, parse_backends, validate_backends_on_host,
+    };
 
     #[test]
     fn parse_backends_rejects_unknown_values() {
@@ -359,6 +388,12 @@ mod tests {
         assert_eq!(parsed.len(), 3);
     }
 
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn gtk4_backend_is_rejected_on_non_linux_hosts() {
+        assert!(validate_backends_on_host(&[Backend::Gtk4]).is_err());
+    }
+
     #[test]
     fn next_run_command_prefers_apple_then_android_then_gtk4() {
         assert_eq!(
@@ -371,21 +406,21 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn next_run_command_gtk4_is_valid_on_macos() {
-        assert_eq!(
-            next_run_command(PackageType::App, &[Backend::Gtk4]),
-            Some("water run --platform macos --backend gtk4")
-        );
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn next_run_command_gtk4_is_valid_on_linux() {
         assert_eq!(
             next_run_command(PackageType::App, &[Backend::Gtk4]),
             Some("water run --platform linux")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn next_run_command_hydrolysis_is_valid_on_windows() {
+        assert_eq!(
+            next_run_command(PackageType::App, &[Backend::Hydrolysis]),
+            Some("water run --platform windows --backend hydrolysis")
         );
     }
 }

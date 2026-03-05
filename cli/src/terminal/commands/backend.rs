@@ -74,6 +74,7 @@ pub async fn run(args: Args) -> Result<()> {
 
 async fn add_backend(project: &mut Project, backend: BackendName) -> Result<()> {
     header!("Adding backend: {}", backend_name(backend));
+    validate_backend_add_on_host(backend)?;
 
     match backend {
         BackendName::Apple => {
@@ -124,6 +125,28 @@ async fn add_backend(project: &mut Project, backend: BackendName) -> Result<()> 
             }
             success!("Added hydrolysis backend");
         }
+    }
+
+    Ok(())
+}
+
+fn validate_backend_add_on_host(backend: BackendName) -> Result<()> {
+    match backend {
+        BackendName::Gtk4 => {
+            if !cfg!(target_os = "linux") {
+                bail!("GTK4 backend is only supported on Linux hosts");
+            }
+        }
+        BackendName::Hydrolysis => {
+            if !cfg!(any(
+                target_os = "macos",
+                target_os = "linux",
+                target_os = "windows"
+            )) {
+                bail!("Hydrolysis backend is only supported on macOS, Linux, or Windows hosts");
+            }
+        }
+        BackendName::Apple | BackendName::Android => {}
     }
 
     Ok(())
