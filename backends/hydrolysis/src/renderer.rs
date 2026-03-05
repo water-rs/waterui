@@ -1,5 +1,7 @@
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -62,10 +64,11 @@ use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Re
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
-    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
-    OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop, SceneView,
+    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuContext, GpuFrame, GpuSurface,
+    GradientType, PointerState, RedrawHandle, ResolvedGradient, ResolvedGradientStop, SceneView,
     VelloScene2D,
 };
 use waterui_icon::SystemIcon;
@@ -88,6 +91,8 @@ use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
 use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
+
+const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!("shaders/gpu_surface_compositor.wgsl");
 
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
@@ -122,9 +127,10 @@ impl HydroState {
     }
 
     fn frame_resource_ptrs(&self) -> (*const wgpu::Device, *const wgpu::Queue) {
-        if self.frame_device.is_null() || self.frame_queue.is_null() {
-            panic!("hydrolysis frame resources are unavailable during AppliedFilter dispatch");
-        }
+        assert!(
+            !self.frame_device.is_null() && !self.frame_queue.is_null(),
+            "hydrolysis frame resources are unavailable during AppliedFilter dispatch"
+        );
         (self.frame_device, self.frame_queue)
     }
 }
@@ -193,7 +199,12 @@ pub struct HydrolysisRenderer {
     dispatcher: ViewDispatcher<HydroState, RenderContext, ()>,
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
-    surface_blit: Option<SurfaceBlitState>,
+    vello_layer_surface: Option<VelloLayerSurfaceState>,
+    gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
+    gpu_surface_slots: Vec<EmbeddedGpuSurfaceRuntime>,
+    gpu_surface_cursor: usize,
+    render_layers: Vec<RenderLayer>,
+    active_scene_layers: Vec<ActiveSceneLayer>,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     active_pointer_drag_target: Option<PointerAction>,
@@ -213,6 +224,7 @@ pub struct HydrolysisRenderer {
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
+    redraw_requested: Rc<Cell<bool>>,
     rebuild_requested: Rc<Cell<bool>>,
     dynamic_nodes: BTreeMap<usize, DynamicNode>,
     animation_controller: AnimationController,
@@ -455,12 +467,88 @@ struct DynamicAccessibilitySubtree {
     actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
 }
 
-struct SurfaceBlitState {
-    target_format: wgpu::TextureFormat,
+struct VelloLayerSurfaceState {
     size: (u32, u32),
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
-    blitter: wgpu::util::TextureBlitter,
+}
+
+struct GpuSurfaceCompositorState {
+    target_format: wgpu::TextureFormat,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    _white_mask_texture: wgpu::Texture,
+    white_mask_view: wgpu::TextureView,
+}
+
+struct EmbeddedGpuSurfaceRuntime {
+    surface: GpuSurface,
+    env: Environment,
+    setup_complete: bool,
+    output_format: wgpu::TextureFormat,
+    output_size: (u32, u32),
+    output_texture: Option<wgpu::Texture>,
+    output_view: Option<wgpu::TextureView>,
+    redraw_handle: RedrawHandle,
+}
+
+#[derive(Clone)]
+enum LayerShape {
+    Rect(vello::kurbo::Rect),
+    Path(vello::kurbo::BezPath),
+}
+
+#[derive(Clone)]
+struct ActiveSceneLayer {
+    alpha: f32,
+    transform: vello::kurbo::Affine,
+    shape: LayerShape,
+}
+
+impl ActiveSceneLayer {
+    fn push_to_scene(&self, scene: &mut vello::Scene) {
+        match &self.shape {
+            LayerShape::Rect(rect) => {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    self.alpha,
+                    self.transform,
+                    rect,
+                );
+            }
+            LayerShape::Path(path) => {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    self.alpha,
+                    self.transform,
+                    path,
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GpuSurfaceLayer {
+    slot_index: usize,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    active_layers: Vec<ActiveSceneLayer>,
+}
+
+enum RenderLayer {
+    Vello(vello::Scene),
+    GpuSurface(GpuSurfaceLayer),
+}
+
+struct PreparedGpuSurfaceLayer {
+    view: wgpu::TextureView,
+    uniform_bytes: [u8; 64],
+    needs_redraw: bool,
 }
 
 type NavigationEntries = Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>;
@@ -544,6 +632,392 @@ impl NavigationTransitionState {
     }
 }
 
+impl GpuSurfaceCompositorState {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, target_format: wgpu::TextureFormat) -> Self {
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_uniform"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            core::num::NonZeroU64::new(64)
+                                .expect("static compositor uniform size must be non-zero"),
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pipeline_layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(GPU_SURFACE_COMPOSITOR_SHADER)),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let white_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_white_mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            white_mask_texture.as_image_copy(),
+            &[255, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let white_mask_view =
+            white_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            target_format,
+            uniform_buffer,
+            sampler,
+            bind_group_layout,
+            pipeline,
+            _white_mask_texture: white_mask_texture,
+            white_mask_view,
+        }
+    }
+
+    fn ensure_target_format(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) {
+        if self.target_format == target_format {
+            return;
+        }
+        *self = Self::new(device, queue, target_format);
+    }
+}
+
+impl EmbeddedGpuSurfaceRuntime {
+    fn new(surface: GpuSurface, env: &Environment) -> Self {
+        Self {
+            surface,
+            env: env.clone(),
+            setup_complete: false,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_size: (1, 1),
+            output_texture: None,
+            output_view: None,
+            redraw_handle: RedrawHandle::new(),
+        }
+    }
+
+    fn replace_surface(&mut self, surface: GpuSurface, env: &Environment) {
+        self.surface = surface;
+        self.env = env.clone();
+        self.setup_complete = false;
+        self.output_format = wgpu::TextureFormat::Rgba8Unorm;
+        self.output_size = (1, 1);
+        self.output_texture = None;
+        self.output_view = None;
+        self.redraw_handle = RedrawHandle::new();
+    }
+
+    fn take_external_redraw_request(&self) -> bool {
+        self.redraw_handle.take_dirty()
+    }
+
+    fn prepare_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+        target_width: u32,
+        target_height: u32,
+        transform: vello::kurbo::Affine,
+        bounds: vello::kurbo::Rect,
+    ) -> PreparedGpuSurfaceLayer {
+        let top_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y0);
+        let top_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y0);
+        let bottom_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y1);
+        let bottom_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y1);
+
+        let layer_width =
+            edge_length_in_pixels(top_left, top_right, target_width, target_height).max(1);
+        let layer_height =
+            edge_length_in_pixels(top_left, bottom_left, target_width, target_height).max(1);
+        let output_format =
+            select_embedded_surface_format(target_format, self.surface.get_surface_prefers_hdr());
+        self.ensure_setup(device, queue, output_format);
+        self.ensure_output_target(device, layer_width, layer_height, output_format);
+
+        let texture = self
+            .output_texture
+            .as_ref()
+            .expect("hydrolysis embedded GpuSurface missing output texture");
+        let view = self
+            .output_view
+            .as_ref()
+            .expect("hydrolysis embedded GpuSurface missing output view")
+            .clone();
+        let mut frame = GpuFrame::new(
+            device,
+            queue,
+            texture,
+            view.clone(),
+            output_format,
+            layer_width,
+            layer_height,
+            PointerState::default(),
+            GestureState::new(),
+        );
+        self.surface.render(&mut frame);
+        let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
+        let corners = [
+            point_to_clip(top_left, target_width, target_height),
+            point_to_clip(top_right, target_width, target_height),
+            point_to_clip(bottom_right, target_width, target_height),
+            point_to_clip(bottom_left, target_width, target_height),
+        ];
+
+        PreparedGpuSurfaceLayer {
+            view,
+            uniform_bytes: encode_compositor_uniform(corners),
+            needs_redraw,
+        }
+    }
+
+    fn ensure_setup(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) {
+        if self.setup_complete {
+            return;
+        }
+
+        let ctx = GpuContext {
+            adapter: None,
+            device,
+            queue,
+            surface_format,
+            msaa_samples: self.surface.get_msaa_max_samples().get(),
+            pipeline_cache: None,
+            redraw_handle: self.redraw_handle.clone(),
+        };
+        ready_now_or_panic(
+            self.surface.setup(&ctx, &mut self.env),
+            "hydrolysis embedded GpuSurface setup",
+        );
+        self.setup_complete = true;
+    }
+
+    fn ensure_output_target(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) {
+        let needs_recreate = self.output_texture.is_none()
+            || self.output_size != (width, height)
+            || self.output_format != format;
+        if !needs_recreate {
+            return;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_embedded_gpu_surface_target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.output_format = format;
+        self.output_size = (width, height);
+        self.output_texture = Some(texture);
+        self.output_view = Some(view);
+    }
+}
+
+fn select_embedded_surface_format(
+    target_format: wgpu::TextureFormat,
+    prefers_hdr_override: Option<bool>,
+) -> wgpu::TextureFormat {
+    let target_hdr = matches!(
+        target_format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    );
+    let prefers_hdr =
+        waterui_graphics::gpu_surface::resolve_surface_hdr_preference(prefers_hdr_override);
+    if target_hdr && prefers_hdr {
+        return wgpu::TextureFormat::Rgba16Float;
+    }
+    wgpu::TextureFormat::Rgba8Unorm
+}
+
+fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2] {
+    assert!(
+        width != 0 && height != 0,
+        "hydrolysis compositor target size must be non-zero"
+    );
+
+    let clip_x = ((point.x as f32) / (width as f32)) * 2.0 - 1.0;
+    let clip_y = 1.0 - ((point.y as f32) / (height as f32)) * 2.0;
+    [clip_x, clip_y]
+}
+
+fn edge_length_in_pixels(
+    start: vello::kurbo::Point,
+    end: vello::kurbo::Point,
+    target_width: u32,
+    target_height: u32,
+) -> u32 {
+    assert!(
+        target_width != 0 && target_height != 0,
+        "hydrolysis compositor target size must be non-zero"
+    );
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    ((dx * dx + dy * dy).sqrt().round().max(1.0)) as u32
+}
+
+fn encode_compositor_uniform(corners: [[f32; 2]; 4]) -> [u8; 64] {
+    let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let mut bytes = [0u8; 64];
+    for (index, corner) in corners.iter().enumerate() {
+        let base = index * 16;
+        write_f32(&mut bytes, base, corner[0]);
+        write_f32(&mut bytes, base + 4, corner[1]);
+        write_f32(&mut bytes, base + 8, uvs[index][0]);
+        write_f32(&mut bytes, base + 12, uvs[index][1]);
+    }
+    bytes
+}
+
+fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+}
+
+fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
+where
+    F: core::future::Future,
+{
+    let mut future = future;
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("{scope}: future returned Pending in synchronous path"),
+    }
+}
+
 impl CustomNavigationController for HydroNavigationController {
     fn push_builder(&mut self, content: AnyViewBuilder<NavigationView>) {
         self.entries.borrow_mut().push(content);
@@ -601,9 +1075,10 @@ impl HoverController {
     }
 
     fn rewind_to(&mut self, cursor: usize) {
-        if cursor > self.cursor {
-            panic!("hover controller rewind cursor exceeds current cursor");
-        }
+        assert!(
+            !(cursor > self.cursor),
+            "hover controller rewind cursor exceeds current cursor"
+        );
         self.cursor = cursor;
         self.slots.truncate(cursor);
     }
@@ -1144,9 +1619,10 @@ fn measure_navigation_view_intrinsic(
 }
 
 fn measure_tabs_intrinsic(tabs: &Tabs, state: &mut HydroState, env: &Environment) -> LayoutSize {
-    if tabs.tabs.is_empty() {
-        panic!("hydrolysis Tabs requires at least one tab");
-    }
+    assert!(
+        !(tabs.tabs.is_empty()),
+        "hydrolysis Tabs requires at least one tab"
+    );
 
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
@@ -1579,9 +2055,10 @@ fn measure_picker_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let items = picker.items.get();
-    if items.is_empty() {
-        panic!("hydrolysis picker requires at least one item");
-    }
+    assert!(
+        !(items.is_empty()),
+        "hydrolysis picker requires at least one item"
+    );
     let item_count = items.len();
 
     match picker.style {
@@ -1983,9 +2460,10 @@ impl HydroNativeView for Native<Tabs> {
         #[cfg(feature = "accessibility")]
         {
             let tabs = view.as_inner();
-            if tabs.tabs.is_empty() {
-                panic!("hydrolysis Tabs requires at least one tab");
-            }
+            assert!(
+                !(tabs.tabs.is_empty()),
+                "hydrolysis Tabs requires at least one tab"
+            );
             let renderer = unsafe { ctx.renderer() };
             let selected_id = renderer.read_signal(&tabs.selection);
             let selected_index = tabs
@@ -2281,17 +2759,16 @@ impl HydroNativeView for Native<StepperConfig> {
             }
             let start = *stepper.range.start();
             let end = *stepper.range.end();
-            if start > end {
-                panic!("hydrolysis stepper requires an ordered range");
-            }
+            assert!(
+                !(start > end),
+                "hydrolysis stepper requires an ordered range"
+            );
             let current = stepper.value.get().clamp(start, end);
             node.set_numeric_value(f64::from(current));
             node.set_min_numeric_value(f64::from(start));
             node.set_max_numeric_value(f64::from(end));
             let step = stepper.step.get();
-            if step <= 0 {
-                panic!("hydrolysis stepper requires positive step");
-            }
+            assert!(!(step <= 0), "hydrolysis stepper requires positive step");
             node.set_numeric_value_step(f64::from(step));
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Increment);
@@ -2711,9 +3188,10 @@ impl HydroNativeView for Native<SliderConfig> {
             }
             let start = *slider.range.start();
             let end = *slider.range.end();
-            if start >= end {
-                panic!("hydrolysis slider requires range start < end");
-            }
+            assert!(
+                !(start >= end),
+                "hydrolysis slider requires range start < end"
+            );
             let current = renderer.read_signal(&slider.value).clamp(start, end);
             node.set_numeric_value(current);
             node.set_min_numeric_value(start);
@@ -2753,9 +3231,10 @@ impl HydroNativeView for Native<PickerConfig> {
             let picker = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
             let items = renderer.read_signal(&picker.items);
-            if items.is_empty() {
-                panic!("hydrolysis picker requires at least one item");
-            }
+            assert!(
+                !(items.is_empty()),
+                "hydrolysis picker requires at least one item"
+            );
             match picker.style {
                 PickerStyle::Automatic | PickerStyle::Menu => {
                     let selected = renderer.read_signal(&picker.selection);
@@ -3029,7 +3508,12 @@ impl HydrolysisRenderer {
             dispatcher,
             vello_renderer,
             scene: vello::Scene::new(),
-            surface_blit: None,
+            vello_layer_surface: None,
+            gpu_surface_compositor: None,
+            gpu_surface_slots: Vec::new(),
+            gpu_surface_cursor: 0,
+            render_layers: Vec::new(),
+            active_scene_layers: Vec::new(),
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             active_pointer_drag_target: None,
@@ -3049,6 +3533,7 @@ impl HydrolysisRenderer {
             lifecycle_disappear_previous: BTreeMap::new(),
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
+            redraw_requested: Rc::new(Cell::new(false)),
             rebuild_requested: Rc::new(Cell::new(false)),
             dynamic_nodes: BTreeMap::new(),
             animation_controller: AnimationController::default(),
@@ -3196,9 +3681,10 @@ impl HydrolysisRenderer {
         let started = self.text_caret_fade_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let cycle_secs = INPUT_CARET_FADE_CYCLE_DURATION.as_secs_f32();
-        if cycle_secs <= 0.0 {
-            panic!("hydrolysis text caret fade cycle duration must be > 0");
-        }
+        assert!(
+            !(cycle_secs <= 0.0),
+            "hydrolysis text caret fade cycle duration must be > 0"
+        );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = ((core::f32::consts::TAU * phase).cos() + 1.0) * 0.5;
         INPUT_CARET_MIN_OPACITY + (1.0 - INPUT_CARET_MIN_OPACITY) * wave
@@ -3873,14 +4359,13 @@ impl HydrolysisRenderer {
             let size = subview.size_that_fits(proposal);
             let child_rect = match axis_config {
                 LazyStackAxisConfig::Vertical { alignment, .. } => {
-                    if matches!(
-                        subview.stretch_axis(),
-                        StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-                    ) {
-                        panic!(
-                            "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
-                        );
-                    }
+                    assert!(
+                        !(matches!(
+                            subview.stretch_axis(),
+                            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+                        )),
+                        "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
+                    );
                     let child_width = if matches!(
                         subview.stretch_axis(),
                         StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
@@ -3901,14 +4386,13 @@ impl HydrolysisRenderer {
                     vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
                 }
                 LazyStackAxisConfig::Horizontal { alignment, .. } => {
-                    if matches!(
-                        subview.stretch_axis(),
-                        StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-                    ) {
-                        panic!(
-                            "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
-                        );
-                    }
+                    assert!(
+                        !(matches!(
+                            subview.stretch_axis(),
+                            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
+                        )),
+                        "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
+                    );
                     let child_width = f64::from(size.width);
                     let child_height = if matches!(
                         subview.stretch_axis(),
@@ -3994,14 +4478,8 @@ impl HydrolysisRenderer {
             metrics.offset_y + viewport.height(),
         );
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
         {
             let renderer = unsafe { ctx.renderer() };
@@ -4016,8 +4494,8 @@ impl HydrolysisRenderer {
                 .expect("lazy viewport stack underflow in render_scroll_view");
         }
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         {
@@ -4288,9 +4766,10 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let tabs = tabs.into_inner();
-        if tabs.tabs.is_empty() {
-            panic!("hydrolysis Tabs requires at least one tab");
-        }
+        assert!(
+            !(tabs.tabs.is_empty()),
+            "hydrolysis Tabs requires at least one tab"
+        );
 
         let tab_count = tabs.tabs.len();
         let position = tabs.position;
@@ -4412,14 +4891,8 @@ impl HydrolysisRenderer {
         };
         let metrics = handle.metrics();
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
 
         let window = resolve_visible_index_window(
@@ -4612,8 +5085,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         let renderer = unsafe { ctx.renderer() };
@@ -4704,14 +5177,8 @@ impl HydrolysisRenderer {
         };
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
 
         let origin_x = viewport.x0 - scroll_metrics.offset_x;
@@ -4788,8 +5255,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         let renderer = unsafe { ctx.renderer() };
@@ -5239,9 +5706,10 @@ impl HydrolysisRenderer {
         let range_start = *slider.range.start();
         let range_end = *slider.range.end();
         let span = range_end - range_start;
-        if span <= 0.0 {
-            panic!("hydrolysis slider requires range start < end");
-        }
+        assert!(
+            !(span <= 0.0),
+            "hydrolysis slider requires range start < end"
+        );
 
         let track_left = if min_label_width > 0.0 {
             min_label_x1 + SLIDER_HORIZONTAL_SPACING
@@ -5321,9 +5789,10 @@ impl HydrolysisRenderer {
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
-        if usable_track <= 0.0 {
-            panic!("hydrolysis slider resolved a non-positive track width");
-        }
+        assert!(
+            !(usable_track <= 0.0),
+            "hydrolysis slider resolved a non-positive track width"
+        );
         let inverse_transform = ctx.hit_transform.inverse();
         let value_epsilon = slider_value_epsilon(span, usable_track);
         tracing::trace!(
@@ -5409,9 +5878,10 @@ impl HydrolysisRenderer {
 
         let range_start = *stepper.range.start();
         let range_end = *stepper.range.end();
-        if range_start > range_end {
-            panic!("hydrolysis stepper requires an ordered range");
-        }
+        assert!(
+            !(range_start > range_end),
+            "hydrolysis stepper requires an ordered range"
+        );
 
         let value_binding_minus = stepper.value.clone();
         let value_binding_plus = stepper.value;
@@ -5431,9 +5901,7 @@ impl HydrolysisRenderer {
             transformed_rect(ctx.hit_transform, minus_bounds),
             move |_point, _env| {
                 let step = step_signal_minus.get();
-                if step <= 0 {
-                    panic!("hydrolysis stepper requires positive step");
-                }
+                assert!(!(step <= 0), "hydrolysis stepper requires positive step");
                 let current = value_binding_minus.get();
                 let next = current.saturating_sub(step).clamp(range_start, range_end);
                 value_binding_minus.set(next);
@@ -5444,9 +5912,7 @@ impl HydrolysisRenderer {
             transformed_rect(ctx.hit_transform, plus_bounds),
             move |_point, _env| {
                 let step = step_signal_plus.get();
-                if step <= 0 {
-                    panic!("hydrolysis stepper requires positive step");
-                }
+                assert!(!(step <= 0), "hydrolysis stepper requires positive step");
                 let current = value_binding_plus.get();
                 let next = current.saturating_add(step).clamp(range_start, range_end);
                 value_binding_plus.set(next);
@@ -5884,9 +6350,10 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&picker.items)
         };
-        if items.is_empty() {
-            panic!("hydrolysis picker requires at least one item");
-        }
+        assert!(
+            !(items.is_empty()),
+            "hydrolysis picker requires at least one item"
+        );
         match picker.style {
             PickerStyle::Automatic | PickerStyle::Menu => {
                 Self::render_menu_picker(state, ctx, picker.selection, items, env);
@@ -6245,34 +6712,9 @@ impl HydrolysisRenderer {
         surface: Native<GpuSurface>,
         env: &Environment,
     ) {
-        let width = (ctx.bounds.width().max(1.0).round()) as u32;
-        let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let size = OffscreenSize::try_from_pixels(width, height)
-            .expect("hydrolysis GpuSurface requires non-zero offscreen size");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
-        let mut local_env = env.clone();
-        let output = surface
-            .into_inner()
-            .render_offscreen(config, &mut local_env)
-            .expect("hydrolysis failed to render GpuSurface offscreen");
-
-        let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(output.rgba8),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: output.width,
-            height: output.height,
-        };
-        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output.width),
-                ctx.bounds.height() / f64::from(output.height),
-            );
-        let scene = unsafe { ctx.scene() };
-        scene.draw_image(
-            &vello::peniko::ImageBrush::new(image),
-            ctx.transform * image_transform,
-        );
+        let renderer = unsafe { ctx.renderer() };
+        let slot_index = renderer.bind_gpu_surface_slot(surface.into_inner(), env);
+        renderer.push_gpu_surface_layer(slot_index, ctx.transform, ctx.bounds);
     }
 
     fn render_scene_view(
@@ -6320,9 +6762,10 @@ impl HydrolysisRenderer {
         let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
         let output_size = effect.output_size();
         let (output_width, output_height) = output_size.compute(input_width, input_height);
-        if output_width == 0 || output_height == 0 {
-            panic!("hydrolysis ViewEffect requires non-zero output dimensions");
-        }
+        assert!(
+            !(output_width == 0 || output_height == 0),
+            "hydrolysis ViewEffect requires non-zero output dimensions"
+        );
 
         let subtree = Self::render_subtree_scene(ctx, env, effect.take_content());
 
@@ -6506,14 +6949,8 @@ impl HydrolysisRenderer {
             renderer.resolve_animated_scalar(&metadata.value.value)
         };
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                alpha,
-                ctx.transform,
-                &ctx.bounds,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
         }
 
         {
@@ -6525,8 +6962,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
     }
 
@@ -6710,16 +7147,15 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
-        let scene = unsafe { ctx.scene() };
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            ctx.transform,
-            &clip_path,
-        );
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_path(1.0, ctx.transform, clip_path);
+        }
         Self::dispatch_any(ctx, env, content);
-        scene.pop_layer();
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
+        }
     }
 
     fn render_border_metadata(
@@ -7189,6 +7625,8 @@ impl HydrolysisRenderer {
         self.text_input_targets.clear();
         self.scroll_targets.clear();
         self.scene.reset();
+        self.render_layers.clear();
+        self.active_scene_layers.clear();
         #[cfg(feature = "accessibility")]
         {
             self.pending_accessibility_tree_update = None;
@@ -7211,6 +7649,9 @@ impl HydrolysisRenderer {
         self.pending_scroll_handles.clear();
         self.pending_navigation_entries.clear();
         self.navigation_cursor = 0;
+        self.gpu_surface_cursor = 0;
+        self.render_layers.clear();
+        self.active_scene_layers.clear();
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
         #[cfg(feature = "accessibility")]
@@ -7223,6 +7664,12 @@ impl HydrolysisRenderer {
     }
 
     pub fn finish_rebuild_frame(&mut self) {
+        assert!(
+            self.active_scene_layers.is_empty(),
+            "hydrolysis renderer: scene layer stack must be empty at end of rebuild (len={})",
+            self.active_scene_layers.len()
+        );
+        self.flush_vello_scene_layer();
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
 
         let previous_hooks = core::mem::take(&mut self.lifecycle_disappear_previous);
@@ -7247,6 +7694,7 @@ impl HydrolysisRenderer {
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
         self.navigation_slots.truncate(self.navigation_cursor);
+        self.gpu_surface_slots.truncate(self.gpu_surface_cursor);
         self.picker_menu_slots.truncate(self.picker_menu_cursor);
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
         self.dynamic_nodes
@@ -7279,6 +7727,133 @@ impl HydrolysisRenderer {
 
     pub fn clear_frame_resources(&mut self) {
         self.dispatcher.state_mut().clear_frame_resources();
+    }
+
+    fn bind_gpu_surface_slot(&mut self, surface: GpuSurface, env: &Environment) -> usize {
+        let index = self.gpu_surface_cursor;
+        self.gpu_surface_cursor = self
+            .gpu_surface_cursor
+            .checked_add(1)
+            .expect("hydrolysis gpu surface slot cursor overflow");
+
+        if index == self.gpu_surface_slots.len() {
+            self.gpu_surface_slots
+                .push(EmbeddedGpuSurfaceRuntime::new(surface, env));
+        } else {
+            self.gpu_surface_slots[index].replace_surface(surface, env);
+        }
+
+        index
+    }
+
+    fn push_layer_rect(
+        &mut self,
+        alpha: f32,
+        transform: vello::kurbo::Affine,
+        rect: vello::kurbo::Rect,
+    ) {
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect,
+        );
+        self.active_scene_layers.push(ActiveSceneLayer {
+            alpha,
+            transform,
+            shape: LayerShape::Rect(rect),
+        });
+    }
+
+    fn push_layer_path(
+        &mut self,
+        alpha: f32,
+        transform: vello::kurbo::Affine,
+        path: vello::kurbo::BezPath,
+    ) {
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &path,
+        );
+        self.active_scene_layers.push(ActiveSceneLayer {
+            alpha,
+            transform,
+            shape: LayerShape::Path(path),
+        });
+    }
+
+    fn pop_layer(&mut self) {
+        self.scene.pop_layer();
+        self.active_scene_layers
+            .pop()
+            .expect("hydrolysis renderer: pop_layer underflow");
+    }
+
+    fn flush_vello_scene_layer(&mut self) {
+        assert!(
+            (self.scene.encoding().n_open_clips as usize) == self.active_scene_layers.len(),
+            "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
+            self.scene.encoding().n_open_clips,
+            self.active_scene_layers.len()
+        );
+
+        for _ in 0..self.active_scene_layers.len() {
+            self.scene.pop_layer();
+        }
+
+        if self.scene.encoding().is_empty() {
+            for layer in &self.active_scene_layers {
+                layer.push_to_scene(&mut self.scene);
+            }
+            return;
+        }
+        let scene = core::mem::take(&mut self.scene);
+        self.render_layers.push(RenderLayer::Vello(scene));
+
+        for layer in &self.active_scene_layers {
+            layer.push_to_scene(&mut self.scene);
+        }
+    }
+
+    fn push_gpu_surface_layer(
+        &mut self,
+        slot_index: usize,
+        transform: vello::kurbo::Affine,
+        bounds: vello::kurbo::Rect,
+    ) {
+        self.flush_vello_scene_layer();
+        self.render_layers
+            .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
+                slot_index,
+                transform,
+                bounds,
+                active_layers: self.active_scene_layers.clone(),
+            }));
+    }
+
+    pub fn poll_gpu_surface_redraw_handles(&mut self) -> bool {
+        let mut requested = false;
+        for runtime in &self.gpu_surface_slots {
+            if runtime.take_external_redraw_request() {
+                requested = true;
+            }
+        }
+        if requested {
+            self.redraw_requested.set(true);
+        }
+        requested
+    }
+
+    pub fn request_redraw(&self) {
+        self.redraw_requested.set(true);
+    }
+
+    pub fn take_redraw_request(&self) -> bool {
+        self.redraw_requested.replace(false)
     }
 
     pub fn request_rebuild(&self) {
@@ -7495,25 +8070,35 @@ impl HydrolysisRenderer {
             .expect("hydrolysis renderer: failed to render scene");
     }
 
-    fn ensure_surface_blit_state(
+    fn ensure_gpu_surface_compositor_state(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
     ) {
+        if self.gpu_surface_compositor.is_none() {
+            self.gpu_surface_compositor =
+                Some(GpuSurfaceCompositorState::new(device, queue, target_format));
+            return;
+        }
+        self.gpu_surface_compositor
+            .as_mut()
+            .expect("hydrolysis renderer: missing gpu surface compositor state")
+            .ensure_target_format(device, queue, target_format);
+    }
+
+    fn ensure_vello_layer_surface(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let size = (width, height);
         let needs_recreate = self
-            .surface_blit
+            .vello_layer_surface
             .as_ref()
-            .is_none_or(|state| state.target_format != target_format || state.size != size);
-
+            .is_none_or(|state| state.size != size);
         if !needs_recreate {
             return;
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_surface_blit_input"),
+            label: Some("hydrolysis_vello_layer_surface"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -7523,19 +8108,182 @@ impl HydrolysisRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let blitter = wgpu::util::TextureBlitter::new(device, target_format);
-
-        self.surface_blit = Some(SurfaceBlitState {
-            target_format,
+        self.vello_layer_surface = Some(VelloLayerSurfaceState {
             size,
             _texture: texture,
             view,
-            blitter,
         });
+    }
+
+    fn render_vello_layer_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &vello::Scene,
+        width: u32,
+        height: u32,
+    ) -> wgpu::TextureView {
+        self.ensure_vello_layer_surface(device, width, height);
+        let view = self
+            .vello_layer_surface
+            .as_ref()
+            .expect("hydrolysis renderer: missing vello layer surface state")
+            .view
+            .clone();
+        let params = vello::RenderParams {
+            base_color: vello::peniko::Color::TRANSPARENT,
+            width,
+            height,
+            antialiasing_method: vello::AaConfig::Area,
+        };
+        self.vello_renderer
+            .render_to_texture(device, queue, scene, &view, &params)
+            .expect("hydrolysis renderer: failed to render vello layer scene");
+        view
+    }
+
+    fn render_active_layers_mask_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        active_layers: &[ActiveSceneLayer],
+    ) -> wgpu::TextureView {
+        assert!(
+            !active_layers.is_empty(),
+            "hydrolysis renderer: active layer mask requires at least one layer"
+        );
+        let mut mask_scene = vello::Scene::new();
+        for layer in active_layers {
+            layer.push_to_scene(&mut mask_scene);
+        }
+        mask_scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            vello::peniko::Color::WHITE,
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        for _ in 0..active_layers.len() {
+            mask_scene.pop_layer();
+        }
+        self.render_vello_layer_to_texture(device, queue, &mask_scene, width, height)
+    }
+
+    fn default_compositor_mask_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) -> wgpu::TextureView {
+        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
+        self.gpu_surface_compositor
+            .as_ref()
+            .expect("hydrolysis renderer: missing gpu surface compositor state")
+            .white_mask_view
+            .clone()
+    }
+
+    fn clear_target_surface(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        base_color: vello::peniko::Color,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis_surface_clear_encoder"),
+        });
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hydrolysis_surface_clear_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color_to_wgpu(base_color)),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        drop(_pass);
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    fn composite_texture_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        layer_view: &wgpu::TextureView,
+        mask_view: &wgpu::TextureView,
+        uniform_bytes: &[u8; 64],
+        load_op: wgpu::LoadOp<wgpu::Color>,
+    ) {
+        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
+        let compositor = self
+            .gpu_surface_compositor
+            .as_ref()
+            .expect("hydrolysis renderer: missing gpu surface compositor state");
+
+        queue.write_buffer(&compositor.uniform_buffer, 0, uniform_bytes);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
+            layout: &compositor.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: compositor.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&compositor.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(layer_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_encoder"),
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: load_op,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&compositor.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
+        drop(pass);
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
     pub fn render_scene_to_surface(
@@ -7548,40 +8296,99 @@ impl HydrolysisRenderer {
         height: u32,
         base_color: vello::peniko::Color,
     ) {
-        if target_format == wgpu::TextureFormat::Rgba8Unorm {
-            self.render_scene_to_texture(device, queue, target, width, height, base_color);
+        assert!(
+            matches!(
+                target_format.remove_srgb_suffix(),
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+            ) || matches!(
+                target_format,
+                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+            ),
+            "hydrolysis renderer: unsupported surface format {target_format:?}"
+        );
+
+        self.flush_vello_scene_layer();
+        let fullscreen_uniform =
+            encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]]);
+        let render_layers = core::mem::take(&mut self.render_layers);
+        if render_layers.is_empty() {
+            self.clear_target_surface(device, queue, target, base_color);
             return;
         }
+        let mut needs_redraw = false;
+        let mut is_first_layer = true;
 
-        if !matches!(
-            target_format.remove_srgb_suffix(),
-            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-        ) {
-            panic!(
-                "hydrolysis renderer: unsupported surface format for Vello path: {target_format:?}"
-            );
+        for layer in &render_layers {
+            let load_op = if is_first_layer {
+                wgpu::LoadOp::Clear(color_to_wgpu(base_color))
+            } else {
+                wgpu::LoadOp::Load
+            };
+            is_first_layer = false;
+            match layer {
+                RenderLayer::Vello(scene) => {
+                    let view =
+                        self.render_vello_layer_to_texture(device, queue, scene, width, height);
+                    let mask_view = self.default_compositor_mask_view(device, queue, target_format);
+                    self.composite_texture_layer(
+                        device,
+                        queue,
+                        target,
+                        target_format,
+                        &view,
+                        &mask_view,
+                        &fullscreen_uniform,
+                        load_op,
+                    );
+                }
+                RenderLayer::GpuSurface(layer) => {
+                    let prepared = self
+                        .gpu_surface_slots
+                        .get_mut(layer.slot_index)
+                        .unwrap_or_else(|| {
+                            panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
+                        })
+                        .prepare_layer(
+                            device,
+                            queue,
+                            target_format,
+                            width,
+                            height,
+                            layer.transform,
+                            layer.bounds,
+                        );
+                    if prepared.needs_redraw {
+                        needs_redraw = true;
+                    }
+                    let mask_view = if layer.active_layers.is_empty() {
+                        self.default_compositor_mask_view(device, queue, target_format)
+                    } else {
+                        self.render_active_layers_mask_to_texture(
+                            device,
+                            queue,
+                            width,
+                            height,
+                            &layer.active_layers,
+                        )
+                    };
+                    self.composite_texture_layer(
+                        device,
+                        queue,
+                        target,
+                        target_format,
+                        &prepared.view,
+                        &mask_view,
+                        &prepared.uniform_bytes,
+                        load_op,
+                    );
+                }
+            }
         }
+        self.render_layers = render_layers;
 
-        self.ensure_surface_blit_state(device, target_format, width, height);
-        let source_view = {
-            let state = self
-                .surface_blit
-                .as_ref()
-                .expect("hydrolysis renderer: missing surface blit state");
-            state.view.clone()
-        };
-
-        self.render_scene_to_texture(device, queue, &source_view, width, height, base_color);
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("hydrolysis_surface_blit_encoder"),
-        });
-        self.surface_blit
-            .as_ref()
-            .expect("hydrolysis renderer: missing surface blit state")
-            .blitter
-            .copy(device, &mut encoder, &source_view, target);
-        queue.submit(std::iter::once(encoder.finish()));
+        if needs_redraw {
+            self.request_redraw();
+        }
     }
 
     pub fn handle_pointer_down(
@@ -8331,12 +9138,11 @@ impl HydrolysisRenderer {
         env: &Environment,
         remaining: usize,
     ) -> Option<String> {
-        if remaining == 0 {
-            panic!(
-                "hydrolysis accessibility label extraction exceeded recursion budget for {}",
-                view.name()
-            );
-        }
+        assert!(
+            !(remaining == 0),
+            "hydrolysis accessibility label extraction exceeded recursion budget for {}",
+            view.name()
+        );
         if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
             return self.accessibility_label_from_view_with_budget(
                 &metadata.content,
@@ -8416,6 +9222,15 @@ impl HydrolysisRenderer {
             tree_id: AccessibilityTreeId::ROOT,
             focus: self.accessibility_focus,
         });
+    }
+}
+
+fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
+    wgpu::Color {
+        r: f64::from(color.components[0]),
+        g: f64::from(color.components[1]),
+        b: f64::from(color.components[2]),
+        a: f64::from(color.components[3]),
     }
 }
 
@@ -8696,9 +9511,10 @@ fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
-    if span <= 0.0 {
-        panic!("hydrolysis accessibility slider requires range start < end");
-    }
+    assert!(
+        !(span <= 0.0),
+        "hydrolysis accessibility slider requires range start < end"
+    );
     span / 100.0
 }
 
@@ -8714,9 +9530,10 @@ fn handle_accessibility_slider_action(
     if matches!(action, AccessibilityAction::Focus) {
         return true;
     }
-    if step <= 0.0 {
-        panic!("hydrolysis accessibility slider requires positive step");
-    }
+    assert!(
+        !(step <= 0.0),
+        "hydrolysis accessibility slider requires positive step"
+    );
     let previous = value.get().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => (previous + step).min(end),
@@ -8752,9 +9569,10 @@ fn handle_accessibility_stepper_action(
         return true;
     }
     let step_value = step.get();
-    if step_value <= 0 {
-        panic!("hydrolysis accessibility stepper requires positive step");
-    }
+    assert!(
+        !(step_value <= 0),
+        "hydrolysis accessibility stepper requires positive step"
+    );
     let previous = value.get().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => previous.saturating_add(step_value).min(end),
@@ -8802,12 +9620,11 @@ fn handle_accessibility_text_field_action(
                 panic!("hydrolysis accessibility text field SetValue requires Value data");
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
-            if exceeds_line_limit(normalized.as_str(), line_limit) {
-                panic!(
-                    "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
-                    line_limit
-                );
-            }
+            assert!(
+                !(exceeds_line_limit(normalized.as_str(), line_limit)),
+                "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
+                line_limit
+            );
             value.set(StyledStr::plain(normalized));
             true
         }
@@ -8819,12 +9636,11 @@ fn handle_accessibility_text_field_action(
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             let mut plain = value.get().to_plain().to_string();
-            if !apply_text_insert(&mut plain, normalized.as_str(), line_limit) {
-                panic!(
-                    "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
-                    line_limit
-                );
-            }
+            assert!(
+                !(!apply_text_insert(&mut plain, normalized.as_str(), line_limit)),
+                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
+                line_limit
+            );
             value.set(StyledStr::plain(plain));
             true
         }
@@ -8864,11 +9680,10 @@ fn handle_accessibility_secure_field_action(
                 );
             };
             let mut plain = value.get().expose().to_owned();
-            if !apply_text_insert(&mut plain, text.as_ref(), Some(1)) {
-                panic!(
-                    "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
-                );
-            }
+            assert!(
+                !(!apply_text_insert(&mut plain, text.as_ref(), Some(1))),
+                "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
+            );
             let mut next = FormSecure::default();
             next.set(plain);
             value.set(next);
@@ -8889,9 +9704,10 @@ fn handle_accessibility_picker_cycle_action(
 ) -> bool {
     match action {
         AccessibilityAction::Click => {
-            if ids.is_empty() {
-                panic!("hydrolysis accessibility picker cycle requires non-empty options");
-            }
+            assert!(
+                !(ids.is_empty()),
+                "hydrolysis accessibility picker cycle requires non-empty options"
+            );
             let current = selection.get();
             let index = ids.iter().position(|id| *id == current).unwrap_or_else(|| {
                 panic!("hydrolysis accessibility picker selection is not present in options")
@@ -9023,12 +9839,11 @@ fn normalize_layout_view_with_budget(
     env: &Environment,
     remaining: usize,
 ) -> AnyView {
-    if remaining == 0 {
-        panic!(
-            "hydrolysis layout normalization exceeded recursion budget for {}",
-            view.name()
-        );
-    }
+    assert!(
+        !(remaining == 0),
+        "hydrolysis layout normalization exceeded recursion budget for {}",
+        view.name()
+    );
     let next_remaining = remaining - 1;
     let mut view = view;
 
@@ -9335,18 +10150,20 @@ fn path_commands_to_path(
                 has_current = true;
             }
             PathCommand::LineTo { x, y } => {
-                if !has_current {
-                    panic!("PathCommand::LineTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::LineTo requires an active current point"
+                );
                 path.line_to(vello::kurbo::Point::new(
                     f64::from(*x) * width,
                     f64::from(*y) * height,
                 ));
             }
             PathCommand::QuadTo { cx, cy, x, y } => {
-                if !has_current {
-                    panic!("PathCommand::QuadTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::QuadTo requires an active current point"
+                );
                 path.quad_to(
                     vello::kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
                     vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
@@ -9360,9 +10177,10 @@ fn path_commands_to_path(
                 x,
                 y,
             } => {
-                if !has_current {
-                    panic!("PathCommand::CubicTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::CubicTo requires an active current point"
+                );
                 path.curve_to(
                     vello::kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
                     vello::kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),

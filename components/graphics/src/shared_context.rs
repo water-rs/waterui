@@ -298,10 +298,8 @@ pub fn init_shared_context() -> Result<(), SharedContextError> {
 /// Panics if initializing the shared context fails.
 #[must_use]
 pub fn shared_context() -> Arc<RwLock<SharedGpuContext>> {
-    if SHARED_CONTEXT.get().is_none()
-        && let Err(error) = init_shared_context()
-    {
-        panic!("shared context initialization failed: {error}");
+    if SHARED_CONTEXT.get().is_none() {
+        init_shared_context().expect("shared context initialization failed");
     }
     SHARED_CONTEXT
         .get()
