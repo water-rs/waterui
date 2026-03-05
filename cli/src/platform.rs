@@ -39,7 +39,7 @@ pub enum TargetPlatform {
     Android,
     /// Linux (GTK4)
     Linux,
-    /// Windows (GTK4)
+    /// Windows (Hydrolysis)
     Windows,
 }
 
@@ -52,6 +52,8 @@ pub enum TargetBackend {
     Android,
     /// GTK4 backend (pure Rust binary)
     Gtk4,
+    /// Hydrolysis backend (self-drawn renderer)
+    Hydrolysis,
 }
 
 impl TargetPlatform {
@@ -145,7 +147,7 @@ impl TargetPlatform {
     #[must_use]
     pub const fn available_backends(&self) -> &[TargetBackend] {
         match self {
-            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Gtk4],
+            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
             Self::IOS
             | Self::IOSSimulator
             | Self::TvOS
@@ -155,7 +157,8 @@ impl TargetPlatform {
             | Self::VisionOS
             | Self::VisionOSSimulator => &[TargetBackend::Apple],
             Self::Android => &[TargetBackend::Android],
-            Self::Linux | Self::Windows => &[TargetBackend::Gtk4],
+            Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
+            Self::Windows => &[TargetBackend::Hydrolysis],
         }
     }
 
@@ -173,7 +176,8 @@ impl TargetPlatform {
             | Self::VisionOS
             | Self::VisionOSSimulator => TargetBackend::Apple,
             Self::Android => TargetBackend::Android,
-            Self::Linux | Self::Windows => TargetBackend::Gtk4,
+            Self::Linux => TargetBackend::Gtk4,
+            Self::Windows => TargetBackend::Hydrolysis,
         }
     }
 
