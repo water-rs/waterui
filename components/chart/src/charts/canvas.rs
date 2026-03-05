@@ -58,13 +58,13 @@ fn alpha(color: [f32; 4]) -> f32 {
 
 #[inline]
 fn normalize_bounds(mut bounds: DataBounds) -> DataBounds {
-    if !bounds.min_x.is_finite()
-        || !bounds.max_x.is_finite()
-        || !bounds.min_y.is_finite()
-        || !bounds.max_y.is_finite()
-    {
-        panic!("chart data contains non-finite bounds");
-    }
+    assert!(
+        !(!bounds.min_x.is_finite()
+            || !bounds.max_x.is_finite()
+            || !bounds.min_y.is_finite()
+            || !bounds.max_y.is_finite()),
+        "chart data contains non-finite bounds"
+    );
     if bounds.max_x <= bounds.min_x {
         bounds.max_x = bounds.min_x + 1.0;
     }

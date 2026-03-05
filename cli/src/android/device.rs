@@ -497,11 +497,10 @@ async fn monitor_android_process(
                 },
             );
 
-            if pid_log.trim().is_empty() {
-                panic!(
-                    "PID-filtered logcat returned empty output for {bundle_id} (pid={pid}); --pid support is required"
-                );
-            }
+            assert!(
+                !(pid_log.trim().is_empty()),
+                "PID-filtered logcat returned empty output for {bundle_id} (pid={pid}); --pid support is required"
+            );
 
             if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
                 let crash_log = pid_log;

@@ -748,9 +748,10 @@ impl UiTest {
             revision: 1,
         };
         let rebuilt = app.pump_once();
-        if !rebuilt {
-            panic!("waterui-testing initial mount did not produce a frame");
-        }
+        assert!(
+            !(!rebuilt),
+            "waterui-testing initial mount did not produce a frame"
+        );
         app
     }
 }
@@ -792,21 +793,19 @@ impl MountedApp {
     /// Convenience existence assertion.
     pub fn assert_exists(&mut self, selector: Selector) {
         let count = self.matching_ids(&selector).len();
-        if count == 0 {
-            panic!(
-                "waterui-testing assertion failed: selector expected to exist but matched 0 nodes"
-            );
-        }
+        assert!(
+            !(count == 0),
+            "waterui-testing assertion failed: selector expected to exist but matched 0 nodes"
+        );
     }
 
     /// Convenience non-existence assertion.
     pub fn assert_not_exists(&mut self, selector: Selector) {
         let count = self.matching_ids(&selector).len();
-        if count != 0 {
-            panic!(
-                "waterui-testing assertion failed: selector expected to be absent but matched {count} nodes"
-            );
-        }
+        assert!(
+            !(count != 0),
+            "waterui-testing assertion failed: selector expected to be absent but matched {count} nodes"
+        );
     }
 
     /// Creates an existence expectation.
@@ -844,9 +843,10 @@ impl MountedApp {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
         const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
 
-        if expectations.is_empty() {
-            panic!("waterui-testing wait_for requires at least one expectation");
-        }
+        assert!(
+            !(expectations.is_empty()),
+            "waterui-testing wait_for requires at least one expectation"
+        );
 
         let has_inverted = expectations.iter().any(|e| e.inverted);
         let mut fulfilled = vec![false; expectations.len()];
@@ -1025,8 +1025,11 @@ impl MountedApp {
                 .revision
                 .checked_add(1)
                 .expect("waterui-testing tree revision overflow");
-        } else if self.tree.nodes().is_empty() {
-            panic!("waterui-testing did not receive an accessibility tree update after mount");
+        } else {
+            assert!(
+                !self.tree.nodes().is_empty(),
+                "waterui-testing did not receive an accessibility tree update after mount"
+            );
         }
         outcome.rebuilt
     }
@@ -1098,12 +1101,11 @@ impl<'a> Query<'a> {
         if all.is_empty() {
             return None;
         }
-        if all.len() > 1 {
-            panic!(
-                "waterui-testing selector resolved {} nodes, expected at most 1",
-                all.len()
-            );
-        }
+        assert!(
+            !(all.len() > 1),
+            "waterui-testing selector resolved {} nodes, expected at most 1",
+            all.len()
+        );
         Some(all[0].clone())
     }
 
