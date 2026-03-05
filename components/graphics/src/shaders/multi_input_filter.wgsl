@@ -185,6 +185,46 @@ fn depth_aware_blur_sample(uv: vec2<f32>, radius: i32, center_depth: f32) -> vec
     return sum / max(total_weight, 0.0001);
 }
 
+fn sample_lut_strip(color: vec3<f32>, lut_size: u32) -> vec3<f32> {
+    let clamped = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    let size_f = f32(lut_size);
+    let slice = clamped.b * (size_f - 1.0);
+    let slice0 = floor(slice);
+    let slice1 = min(slice0 + 1.0, size_f - 1.0);
+    let lerp_z = slice - slice0;
+
+    let uv0 = vec2<f32>(
+        (clamped.r * (size_f - 1.0) + slice0 * size_f + 0.5) / (size_f * size_f),
+        (clamped.g * (size_f - 1.0) + 0.5) / size_f,
+    );
+    let uv1 = vec2<f32>(
+        (clamped.r * (size_f - 1.0) + slice1 * size_f + 0.5) / (size_f * size_f),
+        (clamped.g * (size_f - 1.0) + 0.5) / size_f,
+    );
+
+    let c0 = sample_aux0(uv0).rgb;
+    let c1 = sample_aux0(uv1).rgb;
+    return mix(c0, c1, lerp_z);
+}
+
+fn apply_tone_curve_channel(
+    x: f32,
+    shadows: f32,
+    midtones: f32,
+    highlights: f32,
+    gamma: f32,
+) -> f32 {
+    let g = pow(clamp(x, 0.0, 1.0), 1.0 / max(gamma, 0.001));
+    let shadow_weight = (1.0 - g) * (1.0 - g);
+    let highlight_weight = g * g;
+    let mid_weight = 1.0 - abs(g * 2.0 - 1.0);
+    let curved = g
+        + shadows * shadow_weight
+        + midtones * mid_weight
+        + highlights * highlight_weight;
+    return clamp(curved, 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -250,6 +290,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let fg_alpha = smoothstep(0.5 - edge_softness, 0.5 + edge_softness, matte);
             let background = sample_aux1(uv);
             return mix(background, base, fg_alpha);
+        }
+        case 8u: {
+            let lut_size = max(u32(round(param(0u))), 2u);
+            let intensity = clamp(param(1u), 0.0, 1.0);
+            let graded = sample_lut_strip(base.rgb, lut_size);
+            return vec4<f32>(mix(base.rgb, graded, intensity), base.a);
+        }
+        case 9u: {
+            let shadows = param(0u);
+            let midtones = param(1u);
+            let highlights = param(2u);
+            let gamma = param(3u);
+            let amount = clamp(param(4u), 0.0, 1.0);
+            let curved = vec3<f32>(
+                apply_tone_curve_channel(base.r, shadows, midtones, highlights, gamma),
+                apply_tone_curve_channel(base.g, shadows, midtones, highlights, gamma),
+                apply_tone_curve_channel(base.b, shadows, midtones, highlights, gamma),
+            );
+            return vec4<f32>(mix(base.rgb, curved, amount), base.a);
         }
         default: {
             return base;

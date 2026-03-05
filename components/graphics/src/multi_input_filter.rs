@@ -80,6 +80,56 @@ impl FilterImage {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct LutImage {
+    image: FilterImage,
+    size: u32,
+}
+
+impl LutImage {
+    #[must_use]
+    pub fn new(image: FilterImage, size: u32) -> Self {
+        assert!(
+            size >= 2,
+            "LutImage::new: lut size must be >= 2, got {size}"
+        );
+        let expected_width = size * size;
+        assert_eq!(
+            image.width(),
+            expected_width,
+            "LutImage::new: expected width {expected_width} for size {size}, got {}",
+            image.width()
+        );
+        assert_eq!(
+            image.height(),
+            size,
+            "LutImage::new: expected height {size} for size {size}, got {}",
+            image.height()
+        );
+        Self { image, size }
+    }
+
+    #[must_use]
+    pub fn from_rgba8(size: u32, rgba8: Vec<u8>) -> Self {
+        let image = FilterImage::from_rgba8(size * size, size, rgba8);
+        Self::new(image, size)
+    }
+
+    pub fn from_encoded(size: u32, encoded: &[u8]) -> Result<Self, image::ImageError> {
+        let image = FilterImage::from_encoded(encoded)?;
+        Ok(Self::new(image, size))
+    }
+
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    fn image(&self) -> &FilterImage {
+        &self.image
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
     Normal,
@@ -709,6 +759,55 @@ impl MultiInputOperation for BackgroundReplace {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LutColorGrade {
+    pub lut: LutImage,
+    pub intensity: f32,
+}
+
+impl MultiInputOperation for LutColorGrade {
+    const MODE_ID: u32 = 8;
+    const AUX_IMAGE_COUNT: usize = 1;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        match index {
+            0 => self.lut.image(),
+            _ => panic!("LutColorGrade: invalid aux index {index}"),
+        }
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.lut.size() as f32;
+        params[1] = self.intensity;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToneCurve {
+    pub shadows: f32,
+    pub midtones: f32,
+    pub highlights: f32,
+    pub gamma: f32,
+    pub amount: f32,
+}
+
+impl MultiInputOperation for ToneCurve {
+    const MODE_ID: u32 = 9;
+    const AUX_IMAGE_COUNT: usize = 0;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        panic!("ToneCurve: no auxiliary image available, requested index {index}")
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.shadows;
+        params[1] = self.midtones;
+        params[2] = self.highlights;
+        params[3] = self.gamma;
+        params[4] = self.amount;
+    }
+}
+
 pub type BlendWithImageFilter = MultiInputFilter<BlendWithImage>;
 pub type MaskedBlurFilter = MultiInputFilter<MaskedBlur>;
 pub type TransitionToImageFilter = MultiInputFilter<TransitionToImage>;
@@ -717,6 +816,8 @@ pub type GuidedSmoothFilter = MultiInputFilter<GuidedSmooth>;
 pub type DepthAwareBlurFilter = MultiInputFilter<DepthAwareBlur>;
 pub type TemporalDenoiseFilter = MultiInputFilter<TemporalDenoise>;
 pub type BackgroundReplaceFilter = MultiInputFilter<BackgroundReplace>;
+pub type LutColorGradeFilter = MultiInputFilter<LutColorGrade>;
+pub type ToneCurveFilter = MultiInputFilter<ToneCurve>;
 
 #[must_use]
 pub fn blend_with_image_filter(
@@ -822,6 +923,28 @@ pub fn background_replace_filter(
     })
 }
 
+#[must_use]
+pub fn lut_color_grade_filter(lut: LutImage, intensity: f32) -> LutColorGradeFilter {
+    MultiInputFilter::new(LutColorGrade { lut, intensity })
+}
+
+#[must_use]
+pub fn tone_curve_filter(
+    shadows: f32,
+    midtones: f32,
+    highlights: f32,
+    gamma: f32,
+    amount: f32,
+) -> ToneCurveFilter {
+    MultiInputFilter::new(ToneCurve {
+        shadows,
+        midtones,
+        highlights,
+        gamma,
+        amount,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +961,12 @@ mod tests {
         assert_eq!(BlendMode::Multiply.token(), 1.0);
         assert_eq!(BlendMode::Screen.token(), 2.0);
         assert_eq!(BlendMode::Overlay.token(), 3.0);
+    }
+
+    #[test]
+    fn lut_image_rejects_invalid_dimensions() {
+        let bad_image = FilterImage::from_rgba8(16, 15, vec![0; 16 * 15 * 4]);
+        let result = std::panic::catch_unwind(|| LutImage::new(bad_image, 4));
+        assert!(result.is_err());
     }
 }
