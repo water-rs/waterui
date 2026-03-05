@@ -185,26 +185,46 @@ fn depth_aware_blur_sample(uv: vec2<f32>, radius: i32, center_depth: f32) -> vec
     return sum / max(total_weight, 0.0001);
 }
 
+fn lut_texel(r: u32, g: u32, b: u32, lut_size: u32) -> vec3<f32> {
+    let dims = textureDimensions(aux_texture_0, 0);
+    let x = min(b * lut_size + r, dims.x - 1u);
+    let y = min(g, dims.y - 1u);
+    return textureLoad(aux_texture_0, vec2<i32>(i32(x), i32(y)), 0).rgb;
+}
+
 fn sample_lut_strip(color: vec3<f32>, lut_size: u32) -> vec3<f32> {
     let clamped = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     let size_f = f32(lut_size);
-    let slice = clamped.b * (size_f - 1.0);
-    let slice0 = floor(slice);
-    let slice1 = min(slice0 + 1.0, size_f - 1.0);
-    let lerp_z = slice - slice0;
+    let grid = clamped * (size_f - 1.0);
 
-    let uv0 = vec2<f32>(
-        (clamped.r * (size_f - 1.0) + slice0 * size_f + 0.5) / (size_f * size_f),
-        (clamped.g * (size_f - 1.0) + 0.5) / size_f,
-    );
-    let uv1 = vec2<f32>(
-        (clamped.r * (size_f - 1.0) + slice1 * size_f + 0.5) / (size_f * size_f),
-        (clamped.g * (size_f - 1.0) + 0.5) / size_f,
-    );
+    let r0 = u32(floor(grid.r));
+    let g0 = u32(floor(grid.g));
+    let b0 = u32(floor(grid.b));
 
-    let c0 = sample_aux0(uv0).rgb;
-    let c1 = sample_aux0(uv1).rgb;
-    return mix(c0, c1, lerp_z);
+    let r1 = min(r0 + 1u, lut_size - 1u);
+    let g1 = min(g0 + 1u, lut_size - 1u);
+    let b1 = min(b0 + 1u, lut_size - 1u);
+
+    let fr = grid.r - f32(r0);
+    let fg = grid.g - f32(g0);
+    let fb = grid.b - f32(b0);
+
+    let c000 = lut_texel(r0, g0, b0, lut_size);
+    let c100 = lut_texel(r1, g0, b0, lut_size);
+    let c010 = lut_texel(r0, g1, b0, lut_size);
+    let c110 = lut_texel(r1, g1, b0, lut_size);
+    let c001 = lut_texel(r0, g0, b1, lut_size);
+    let c101 = lut_texel(r1, g0, b1, lut_size);
+    let c011 = lut_texel(r0, g1, b1, lut_size);
+    let c111 = lut_texel(r1, g1, b1, lut_size);
+
+    let c00 = mix(c000, c100, fr);
+    let c10 = mix(c010, c110, fr);
+    let c01 = mix(c001, c101, fr);
+    let c11 = mix(c011, c111, fr);
+    let c0 = mix(c00, c10, fg);
+    let c1 = mix(c01, c11, fg);
+    return mix(c0, c1, fb);
 }
 
 fn apply_tone_curve_channel(
