@@ -10,7 +10,8 @@ use crate::{
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{
-        Installation, Toolchain, ToolchainError, linux::LinuxSystemToolchain, sccache::Sccache,
+        Installation, Toolchain, ToolchainError, UnfixableToolchain, linux::LinuxSystemToolchain,
+        rust::RustToolchain, sccache::Sccache,
     },
 };
 
@@ -102,6 +103,14 @@ impl DoctorItem {
     }
 }
 
+fn unfixable_message(error: &UnfixableToolchain) -> String {
+    format!(
+        "Cannot auto-fix: {}. Next step: {}",
+        error.message(),
+        error.suggestion()
+    )
+}
+
 /// Run diagnostics on all toolchains and return a report.
 pub async fn doctor() -> Vec<DoctorItem> {
     let mut items = Vec::new();
@@ -137,16 +146,61 @@ pub async fn doctor() -> Vec<DoctorItem> {
         items.push(DoctorItem::skipped("macOS SDK"));
     }
 
+    // Check Rust toolchain
+    match RustToolchain.check().await {
+        Ok(()) => items.push(DoctorItem::ok("Rust toolchain")),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Rust toolchain",
+                format!(
+                    "Rust toolchain is missing, outdated, or incomplete. Planned automatic fixes: {}",
+                    installation.summary()
+                ),
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing(
+                "Rust toolchain",
+                unfixable_message(&error),
+            ));
+        }
+    }
+
     // Check Android SDK
     match AndroidSdk.check().await {
         Ok(()) => items.push(DoctorItem::ok("Android SDK")),
-        Err(e) => items.push(DoctorItem::missing("Android SDK", e.to_string())),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Android SDK",
+                "Android SDK is missing but has an automatic install plan.",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing(
+                "Android SDK",
+                unfixable_message(&error),
+            ));
+        }
     }
 
     // Check Android NDK
     match AndroidNdk.check().await {
         Ok(()) => items.push(DoctorItem::ok("Android NDK")),
-        Err(e) => items.push(DoctorItem::missing("Android NDK", e.to_string())),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Android NDK",
+                "Android NDK is missing but has an automatic install plan.",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing(
+                "Android NDK",
+                unfixable_message(&error),
+            ));
+        }
     }
 
     // Check Java
@@ -161,7 +215,46 @@ pub async fn doctor() -> Vec<DoctorItem> {
     // Check Kotlin
     match Kotlin.check().await {
         Ok(()) => items.push(DoctorItem::ok("Kotlin")),
-        Err(e) => items.push(DoctorItem::missing("Kotlin", e.to_string())),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Kotlin",
+                "Kotlin compiler is missing but has an automatic install plan.",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("Kotlin", unfixable_message(&error)));
+        }
+    }
+
+    // Check Linux system package toolchain
+    let mut linux_packages_fixable = false;
+    if cfg!(target_os = "linux") {
+        match LinuxSystemToolchain.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Linux system packages")),
+            Err(ToolchainError::Fixable(installation)) => {
+                linux_packages_fixable = true;
+                let msg = format!(
+                    "Missing packages for {}: {}. Install command: {}",
+                    installation.package_manager_name(),
+                    installation.missing_packages().join(", "),
+                    installation.install_command_hint(),
+                );
+                items.push(DoctorItem::fixable(
+                    "Linux system packages",
+                    msg,
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(e)) => {
+                items.push(DoctorItem::missing(
+                    "Linux system packages",
+                    unfixable_message(&e),
+                ));
+            }
+        }
+    } else {
+        items.push(DoctorItem::skipped("Linux system packages"));
     }
 
     // Check GTK4 toolchain
@@ -181,34 +274,16 @@ pub async fn doctor() -> Vec<DoctorItem> {
             };
             items.push(DoctorItem::fixable("GTK4", msg, installation));
         }
-        Err(ToolchainError::Unfixable(e)) => {
-            items.push(DoctorItem::missing("GTK4", e.to_string()));
-        }
-    }
-
-    // Check Linux system package toolchain
-    if cfg!(target_os = "linux") {
-        match LinuxSystemToolchain.check().await {
-            Ok(()) => items.push(DoctorItem::ok("Linux system packages")),
-            Err(ToolchainError::Fixable(installation)) => {
-                let msg = format!(
-                    "Missing packages for {}: {}. Install command: {}",
-                    installation.package_manager_name(),
-                    installation.missing_packages().join(", "),
-                    installation.install_command_hint(),
-                );
-                items.push(DoctorItem::fixable(
-                    "Linux system packages",
-                    msg,
-                    installation,
+        Err(ToolchainError::Unfixable(error)) => {
+            if cfg!(target_os = "linux") && linux_packages_fixable {
+                items.push(DoctorItem::missing(
+                    "GTK4",
+                    "GTK4 probe failed because required Linux packages are missing. Run `water doctor --fix` to install Linux system packages, then re-run `water doctor`.",
                 ));
-            }
-            Err(ToolchainError::Unfixable(e)) => {
-                items.push(DoctorItem::missing("Linux system packages", e.to_string()));
+            } else {
+                items.push(DoctorItem::missing("GTK4", unfixable_message(&error)));
             }
         }
-    } else {
-        items.push(DoctorItem::skipped("Linux system packages"));
     }
 
     // Check sccache (optional but recommended for faster builds)
@@ -222,7 +297,7 @@ pub async fn doctor() -> Vec<DoctorItem> {
             ));
         }
         Err(ToolchainError::Unfixable(e)) => {
-            items.push(DoctorItem::missing("sccache", e.to_string()));
+            items.push(DoctorItem::missing("sccache", unfixable_message(&e)));
         }
     }
 
