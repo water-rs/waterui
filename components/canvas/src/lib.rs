@@ -262,9 +262,10 @@ impl DrawingContext<'_> {
         let signal = value.into_signal_f32();
         self.track_signal(&signal);
         let resolved = signal.get();
-        if !resolved.is_finite() {
-            panic!("Canvas f32 signal resolved to a non-finite value");
-        }
+        assert!(
+            !(!resolved.is_finite()),
+            "Canvas f32 signal resolved to a non-finite value"
+        );
         resolved
     }
 

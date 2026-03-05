@@ -447,9 +447,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         // This ensures we have a valid Instance, Adapter, Device, and Queue
         if !waterui_graphics::shared_context::is_initialized() {
             tracing::debug!("[GpuSurface] Shared context not initialized, initializing now...");
-            if let Err(e) = waterui_graphics::shared_context::init_shared_context() {
-                panic!("waterui_gpu_surface_init: shared GPU context init failed: {e}");
-            }
+            waterui_graphics::shared_context::init_shared_context()
+                .expect("waterui_gpu_surface_init: shared GPU context init failed");
         }
         let ctx = shared_context();
         let guard = ctx.read();
@@ -473,9 +472,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         let surface_caps = wgpu_surface.get_capabilities(adapter);
 
         // Validation: Ensure adapter can present to this surface
-        if surface_caps.formats.is_empty() {
-            panic!("waterui_gpu_surface_init: adapter cannot present to this surface");
-        }
+        assert!(
+            !(surface_caps.formats.is_empty()),
+            "waterui_gpu_surface_init: adapter cannot present to this surface"
+        );
 
         let preferred = waterui_graphics::gpu_surface::preferred_surface_format_with_preference(
             &surface_caps,
@@ -1371,9 +1371,11 @@ fn try_configure_surface(
         abort_on_panic("gpu_surface::try_configure_surface");
     }
 
-    if let Some(err) = validation_err.or(internal_err).or(oom_err) {
-        panic!("gpu_surface::try_configure_surface failed: {err}");
-    }
+    let configure_err = validation_err.or(internal_err).or(oom_err);
+    assert!(
+        configure_err.is_none(),
+        "gpu_surface::try_configure_surface failed: {configure_err:?}"
+    );
 }
 
 #[cfg(test)]
