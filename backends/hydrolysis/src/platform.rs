@@ -99,6 +99,9 @@ pub enum InputEvent {
         delta: f32,
         phase: TouchPhase,
     },
+    TextInput {
+        text: String,
+    },
     Key {
         key: KeyCode,
         state: KeyState,
@@ -376,8 +379,8 @@ mod winit_impl {
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::{
-            ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase,
-            WindowEvent,
+            ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta,
+            TouchPhase as WinitTouchPhase, WindowEvent,
         },
         keyboard::{Key, ModifiersState},
         window::{
@@ -666,6 +669,17 @@ mod winit_impl {
                     self.modifiers = modifiers.state().into();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    if event.state == ElementState::Pressed {
+                        if let Some(text) = keyboard_text_payload(event) {
+                            tracing::trace!(
+                                target: "waterui::hydrolysis::input_raw",
+                                event = "keyboard_text",
+                                text = text.as_str(),
+                                "winit raw input event"
+                            );
+                            self.pending_events.push(InputEvent::TextInput { text });
+                        }
+                    }
                     tracing::trace!(
                         target: "waterui::hydrolysis::input_raw",
                         event = "keyboard_input",
@@ -675,7 +689,7 @@ mod winit_impl {
                         "winit raw input event"
                     );
                     self.pending_events.push(InputEvent::Key {
-                        key: map_key(&event.logical_key),
+                        key: map_key_event(event),
                         state: match event.state {
                             ElementState::Pressed => KeyState::Pressed,
                             ElementState::Released => KeyState::Released,
@@ -874,6 +888,22 @@ mod winit_impl {
             Key::Named(value) => KeyCode::Named(format!("{value:?}")),
             _ => KeyCode::Unidentified,
         }
+    }
+
+    fn map_key_event(event: &KeyEvent) -> KeyCode {
+        if keyboard_text_payload(event).is_some() && matches!(event.logical_key, Key::Character(_))
+        {
+            return KeyCode::Unidentified;
+        }
+        map_key(&event.logical_key)
+    }
+
+    fn keyboard_text_payload(event: &KeyEvent) -> Option<String> {
+        let text = event.text.as_ref()?;
+        if text.is_empty() || text.chars().all(char::is_control) {
+            return None;
+        }
+        Some(text.to_string())
     }
 
     fn map_cursor_style(style: CursorStyle) -> CursorIcon {
