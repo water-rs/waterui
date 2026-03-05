@@ -331,6 +331,53 @@ fn unsupported_manager_hint() -> String {
     )
 }
 
+/// Returns `true` when a supported Linux package manager is available.
+pub async fn has_supported_package_manager() -> bool {
+    LinuxPackageManager::detect().await.is_some()
+}
+
+/// Install named packages with the detected Linux package manager.
+///
+/// # Errors
+/// Returns an error when no supported package manager is available, or when
+/// installation fails.
+pub async fn install_named_packages(packages: &[&'static str]) -> eyre::Result<()> {
+    let Some(manager) = LinuxPackageManager::detect().await else {
+        return Err(eyre::eyre!(
+            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
+        ));
+    };
+
+    let packages: Vec<String> = packages
+        .iter()
+        .map(|package| (*package).to_string())
+        .collect();
+    install_missing_packages(manager, &packages).await
+}
+
+/// Install a JDK package using the detected Linux package manager.
+///
+/// # Errors
+/// Returns an error when no supported package manager is available, or when
+/// installation fails.
+pub async fn install_java_jdk() -> eyre::Result<()> {
+    let Some(manager) = LinuxPackageManager::detect().await else {
+        return Err(eyre::eyre!(
+            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
+        ));
+    };
+
+    let packages: Vec<String> = match manager {
+        LinuxPackageManager::Apt => vec![String::from("openjdk-21-jdk")],
+        LinuxPackageManager::Dnf => vec![String::from("java-21-openjdk-devel")],
+        LinuxPackageManager::Pacman => vec![String::from("jdk-openjdk")],
+        LinuxPackageManager::Zypper => vec![String::from("java-21-openjdk-devel")],
+        LinuxPackageManager::Apk => vec![String::from("openjdk21-jdk")],
+    };
+
+    install_missing_packages(manager, &packages).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::LinuxPackageManager;

@@ -1,26 +1,321 @@
-use std::{env, path::PathBuf};
-
-use crate::{
-    toolchain::{Installation, Toolchain, cmake::Cmake},
-    utils::which,
+use std::{
+    cmp::Ordering,
+    env,
+    ffi::OsString,
+    path::{Path, PathBuf},
 };
 
-/// Complete Android toolchain including SDK, NDK, Kotlin, and `CMake`.
-pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Kotlin, Cmake);
+use color_eyre::eyre;
+
+use crate::{
+    brew::Brew,
+    toolchain::{
+        Installation, Toolchain, ToolchainError,
+        cmake::Cmake,
+        linux::{has_supported_package_manager, install_java_jdk},
+        winget::{WingetInstallError, ensure_package_installed},
+    },
+    utils::{run_command_os, run_command_output_os, which},
+};
+
+/// Complete Android toolchain including SDK, NDK, platform-tools, Java, and CMake.
+pub type AndroidToolchain = (AndroidSdk, AndroidNdk, AndroidPlatformTools, Java, Cmake);
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
 pub struct AndroidSdk;
 
+/// Android Platform-Tools (`adb`) toolchain component.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidPlatformTools;
+
+/// An Android NDK toolchain component.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidNdk;
+
+/// Java toolchain component for Android development.
+#[derive(Debug, Clone, Default)]
+pub struct Java;
+
+/// Kotlin toolchain component for Android development.
+#[derive(Debug, Clone, Default)]
+pub struct Kotlin;
+
+/// Host-specific Android Studio installation guidance.
+#[must_use]
+pub const fn android_studio_install_suggestion() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Install Android Studio with winget: `winget install --id Google.AndroidStudio --exact`."
+    } else if cfg!(target_os = "macos") {
+        "Install Android Studio with Homebrew: `brew install --cask android-studio`, or download it from https://developer.android.com/studio."
+    } else if cfg!(target_os = "linux") {
+        "Install Android Studio from https://developer.android.com/studio."
+    } else {
+        "Install Android Studio from https://developer.android.com/studio."
+    }
+}
+
+/// Android command-line tools guidance for headless/server environments.
+#[must_use]
+pub const fn android_cmdline_tools_suggestion() -> &'static str {
+    "Install Android SDK command-line tools and ensure `sdkmanager` is available in PATH."
+}
+
+/// Host-specific Android SDK default path guidance.
+#[must_use]
+pub const fn android_sdk_path_suggestion() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Expected default SDK path is `%LOCALAPPDATA%\\Android\\Sdk`. Set `ANDROID_SDK_ROOT` to that path if needed."
+    } else if cfg!(target_os = "macos") {
+        "Expected default SDK path is `$HOME/Library/Android/sdk`. Set `ANDROID_SDK_ROOT` to that path if needed."
+    } else if cfg!(target_os = "linux") {
+        "Expected default SDK path is `$HOME/Android/Sdk`. Set `ANDROID_SDK_ROOT` to that path if needed."
+    } else {
+        "Set `ANDROID_SDK_ROOT` to your Android SDK path."
+    }
+}
+
+/// Guidance for installing Android Platform-Tools (`adb`) without assuming Android Studio.
+#[must_use]
+pub const fn android_platform_tools_suggestion() -> &'static str {
+    "Install Android Platform-Tools with `sdkmanager --install \"platform-tools\"` (or Android Studio SDK Manager), then ensure `ANDROID_SDK_ROOT` points to that SDK."
+}
+
+/// Guidance for installing Android NDK without assuming Android Studio.
+#[must_use]
+pub const fn android_ndk_install_suggestion() -> &'static str {
+    "Install Android NDK with `sdkmanager --install \"ndk;<version>\"` (or Android Studio SDK Manager), then set `ANDROID_NDK_ROOT` if using a custom location."
+}
+
+/// Host-specific Java installation guidance for Android Gradle builds.
+#[must_use]
+pub const fn java_install_suggestion() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Install JDK with winget: `winget install --id Microsoft.OpenJDK.21 --exact`, or use Android Studio's bundled JBR."
+    } else if cfg!(target_os = "macos") {
+        "Install JDK with Homebrew: `brew install --cask temurin`, or use Android Studio's bundled JBR."
+    } else if cfg!(target_os = "linux") {
+        "Install JDK with your package manager (for example `openjdk-21-jdk`, `java-21-openjdk-devel`, or `jdk-openjdk`), or use Android Studio's bundled JBR."
+    } else {
+        "Install a JDK and set `JAVA_HOME`, or use Android Studio's bundled JBR."
+    }
+}
+
+/// Host-specific Kotlin compiler guidance.
+#[must_use]
+pub const fn kotlin_install_suggestion() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Install Android Studio (includes Kotlin), or install Kotlin manually and set `KOTLIN_HOME`."
+    } else if cfg!(target_os = "macos") {
+        "Install Android Studio (includes Kotlin), or install Kotlin manually and ensure `kotlinc` is in PATH."
+    } else if cfg!(target_os = "linux") {
+        "Install Android Studio (includes Kotlin), or install Kotlin manually and ensure `kotlinc` is in PATH."
+    } else {
+        "Install Kotlin compiler (`kotlinc`) and set `KOTLIN_HOME` if needed."
+    }
+}
+
+fn sdkmanager_search_names() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &["sdkmanager.bat", "sdkmanager.exe", "sdkmanager"]
+    } else {
+        &["sdkmanager"]
+    }
+}
+
+fn sdkmanager_candidates_under_sdk_root(sdk_root: &Path) -> Vec<PathBuf> {
+    if cfg!(target_os = "windows") {
+        vec![
+            sdk_root.join("cmdline-tools/latest/bin/sdkmanager.bat"),
+            sdk_root.join("cmdline-tools/bin/sdkmanager.bat"),
+            sdk_root.join("tools/bin/sdkmanager.bat"),
+        ]
+    } else {
+        vec![
+            sdk_root.join("cmdline-tools/latest/bin/sdkmanager"),
+            sdk_root.join("cmdline-tools/bin/sdkmanager"),
+            sdk_root.join("tools/bin/sdkmanager"),
+        ]
+    }
+}
+
+fn looks_like_android_sdk_root(path: &Path) -> bool {
+    path.join("cmdline-tools").exists()
+        || path.join("platform-tools").exists()
+        || path.join("platforms").exists()
+        || path.join("ndk").exists()
+}
+
+fn derive_sdk_root_from_sdkmanager_path(path: &Path) -> Option<PathBuf> {
+    let bin_dir = path.parent()?;
+    if !bin_dir
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("bin")
+    {
+        return None;
+    }
+
+    let parent = bin_dir.parent()?;
+    if parent
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("tools")
+        || parent
+            .file_name()?
+            .to_string_lossy()
+            .eq_ignore_ascii_case("cmdline-tools")
+    {
+        return Some(parent.parent()?.to_path_buf());
+    }
+
+    let maybe_cmdline_tools = parent.parent()?;
+    if maybe_cmdline_tools
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("cmdline-tools")
+    {
+        return Some(maybe_cmdline_tools.parent()?.to_path_buf());
+    }
+
+    None
+}
+
+fn find_sdkmanager_on_path_env() -> Option<PathBuf> {
+    let path_env = env::var_os("PATH")?;
+    for path_dir in env::split_paths(&path_env) {
+        for candidate_name in sdkmanager_search_names() {
+            let candidate = path_dir.join(candidate_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn parse_sdkmanager_package_id(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (first_column, _) = trimmed.split_once('|')?;
+    let package_id = first_column.trim();
+    if package_id.is_empty() || package_id == "Path" || package_id.starts_with('-') {
+        return None;
+    }
+    Some(package_id)
+}
+
+fn parse_numeric_prefix(segment: &str) -> u64 {
+    let digits: String = segment
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().unwrap_or(0)
+}
+
+fn compare_version_segments(left: &[u64], right: &[u64]) -> Ordering {
+    let max_len = left.len().max(right.len());
+    for idx in 0..max_len {
+        let l = left.get(idx).copied().unwrap_or(0);
+        let r = right.get(idx).copied().unwrap_or(0);
+        match l.cmp(&r) {
+            Ordering::Equal => continue,
+            ordering => return ordering,
+        }
+    }
+    Ordering::Equal
+}
+
+fn compare_sdk_package_ids(left: &str, right: &str) -> Ordering {
+    let left_version = left
+        .split_once(';')
+        .map_or("", |(_, version)| version)
+        .split('.')
+        .map(parse_numeric_prefix)
+        .collect::<Vec<_>>();
+    let right_version = right
+        .split_once(';')
+        .map_or("", |(_, version)| version)
+        .split('.')
+        .map(parse_numeric_prefix)
+        .collect::<Vec<_>>();
+
+    match compare_version_segments(&left_version, &right_version) {
+        Ordering::Equal => left.cmp(right),
+        ordering => ordering,
+    }
+}
+
+async fn resolve_sdkmanager_and_root() -> eyre::Result<(PathBuf, PathBuf)> {
+    let sdkmanager_path = AndroidSdk::sdkmanager_path()
+        .await
+        .ok_or_else(|| eyre::eyre!("Android SDK command-line tools (`sdkmanager`) not found"))?;
+    let sdk_root = AndroidSdk::detect_path()
+        .or_else(|| derive_sdk_root_from_sdkmanager_path(&sdkmanager_path))
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Android SDK root could not be determined from environment or sdkmanager path"
+            )
+        })?;
+    Ok((sdkmanager_path, sdk_root))
+}
+
+async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
+    let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
+
+    let args = vec![
+        OsString::from("--sdk_root"),
+        sdk_root.into_os_string(),
+        OsString::from("--install"),
+        OsString::from(package_id),
+    ];
+    run_command_os(&sdkmanager_path, args).await?;
+    Ok(())
+}
+
+async fn latest_ndk_package_id() -> eyre::Result<String> {
+    let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
+    let args = vec![
+        OsString::from("--sdk_root"),
+        sdk_root.into_os_string(),
+        OsString::from("--list"),
+    ];
+    let output = run_command_output_os(&sdkmanager_path, args).await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre::eyre!(
+            "Failed to list Android SDK packages via sdkmanager. stdout: {} stderr: {}",
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut ndk_packages = stdout
+        .lines()
+        .filter_map(parse_sdkmanager_package_id)
+        .filter(|package| package.starts_with("ndk;"))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    ndk_packages.sort_by(|left, right| compare_sdk_package_ids(left, right));
+    ndk_packages.dedup();
+
+    ndk_packages.pop().ok_or_else(|| {
+        eyre::eyre!("No installable Android NDK package found via `sdkmanager --list`")
+    })
+}
+
 impl AndroidSdk {
     /// Detect the path to the Android SDK installation.
     #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
-        // Environment variables (prefer the modern variable first).
         for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
             if let Ok(raw) = env::var(key) {
                 let sdk_path = PathBuf::from(raw);
-                if sdk_path.exists() {
+                if sdk_path.exists() && looks_like_android_sdk_root(&sdk_path) {
                     return Some(sdk_path);
                 }
             }
@@ -28,14 +323,14 @@ impl AndroidSdk {
 
         if cfg!(target_os = "macos") {
             let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Library/Android/sdk");
-            if home_sdk.exists() {
+            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
                 return Some(home_sdk);
             }
         }
 
         if cfg!(target_os = "linux") {
             let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Android/Sdk");
-            if home_sdk.exists() {
+            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
                 return Some(home_sdk);
             }
         }
@@ -43,13 +338,40 @@ impl AndroidSdk {
         if cfg!(target_os = "windows") {
             if let Ok(localappdata) = env::var("LOCALAPPDATA") {
                 let sdk_path = PathBuf::from(localappdata).join("Android/Sdk");
-                if sdk_path.exists() {
+                if sdk_path.exists() && looks_like_android_sdk_root(&sdk_path) {
                     return Some(sdk_path);
                 }
             }
         }
 
+        if let Some(sdkmanager_path) = find_sdkmanager_on_path_env()
+            && let Some(sdk_root) = derive_sdk_root_from_sdkmanager_path(&sdkmanager_path)
+            && sdk_root.exists()
+            && looks_like_android_sdk_root(&sdk_root)
+        {
+            return Some(sdk_root);
+        }
+
         None
+    }
+
+    /// Detect sdkmanager executable path.
+    pub async fn sdkmanager_path() -> Option<PathBuf> {
+        if let Some(sdk_root) = Self::detect_path() {
+            for candidate in sdkmanager_candidates_under_sdk_root(&sdk_root) {
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        for name in sdkmanager_search_names() {
+            if let Ok(path) = which(name).await {
+                return Some(path);
+            }
+        }
+
+        find_sdkmanager_on_path_env()
     }
 
     /// Get the path to the `adb` executable.
@@ -89,13 +411,173 @@ impl AndroidSdk {
 #[derive(Debug, Clone, Default)]
 pub struct AndroidSdkInstallation;
 
-/// An Android NDK toolchain component.
-#[derive(Debug, Clone, Default)]
-pub struct AndroidNdk;
+/// Errors that can occur when installing the Android SDK.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidSdk {
+    #[error("Homebrew not found. Install Homebrew first, then retry `water doctor --fix`.")]
+    BrewNotFound,
+    #[error(
+        "winget is required for automatic Android Studio installation on Windows. Install App Installer and retry."
+    )]
+    WingetNotFound,
+    #[error("Failed to install Android Studio via winget: {0}")]
+    WingetInstallFailed(String),
+    #[error("Failed to install Android SDK prerequisites: {0}")]
+    InstallFailed(eyre::Report),
+    #[error(
+        "Android Studio was installed, but Android SDK was not provisioned yet. Open Android Studio once to complete setup, or install command-line tools and set `ANDROID_SDK_ROOT`."
+    )]
+    PostInstallSetupRequired,
+    #[error(
+        "Automatic Android SDK installation is only supported on macOS and Windows. On Linux, install Android SDK command-line tools manually."
+    )]
+    UnsupportedPlatform,
+}
 
-/// Java toolchain component for Android development.
+impl Toolchain for AndroidSdk {
+    type Installation = AndroidSdkInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if Self::detect_path().is_some() {
+            Ok(())
+        } else if cfg!(target_os = "windows") {
+            if which("winget").await.is_ok() {
+                Err(ToolchainError::fixable(AndroidSdkInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Android SDK not found and winget is unavailable",
+                    format!(
+                        "Install Microsoft App Installer to provide winget, then retry `water doctor --fix`. {} {}",
+                        android_cmdline_tools_suggestion(),
+                        android_sdk_path_suggestion()
+                    ),
+                ))
+            }
+        } else if cfg!(target_os = "macos") {
+            if which("brew").await.is_ok() {
+                Err(ToolchainError::fixable(AndroidSdkInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Android SDK not found and Homebrew is unavailable",
+                    format!(
+                        "Install Homebrew to enable automatic fixes, or install Android SDK manually. {} {}",
+                        android_cmdline_tools_suggestion(),
+                        android_sdk_path_suggestion()
+                    ),
+                ))
+            }
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android SDK not found",
+                format!(
+                    "{} {}",
+                    android_cmdline_tools_suggestion(),
+                    android_sdk_path_suggestion()
+                ),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidSdkInstallation {
+    type Error = FailToInstallAndroidSdk;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if cfg!(target_os = "windows") {
+            ensure_package_installed("Google.AndroidStudio")
+                .await
+                .map_err(map_winget_error_for_android_sdk)?;
+        } else if cfg!(target_os = "macos") {
+            let brew = Brew::default();
+            brew.check()
+                .await
+                .map_err(|_| FailToInstallAndroidSdk::BrewNotFound)?;
+            brew.install_cask("android-studio")
+                .await
+                .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+        } else {
+            return Err(FailToInstallAndroidSdk::UnsupportedPlatform);
+        }
+
+        if AndroidSdk::detect_path().is_some() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidSdk::PostInstallSetupRequired)
+        }
+    }
+}
+
+fn map_winget_error_for_android_sdk(error: WingetInstallError) -> FailToInstallAndroidSdk {
+    match error {
+        WingetInstallError::WingetNotFound => FailToInstallAndroidSdk::WingetNotFound,
+        WingetInstallError::CommandFailed(err) => {
+            FailToInstallAndroidSdk::WingetInstallFailed(err.to_string())
+        }
+        WingetInstallError::NotInstalled { package_id } => {
+            FailToInstallAndroidSdk::WingetInstallFailed(format!(
+                "Package `{package_id}` is still missing after winget install; verify winget sources and retry."
+            ))
+        }
+    }
+}
+
+/// Installation procedure for Android Platform-Tools.
 #[derive(Debug, Clone, Default)]
-pub struct Java;
+pub struct AndroidPlatformToolsInstallation;
+
+/// Errors that can occur when installing Android Platform-Tools.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidPlatformTools {
+    #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
+    SdkManagerNotFound,
+    #[error("Failed to install Android Platform-Tools via sdkmanager: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Android Platform-Tools (`adb`) is still missing after installation.")]
+    StillMissing,
+}
+
+impl Toolchain for AndroidPlatformTools {
+    type Installation = AndroidPlatformToolsInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if AndroidSdk::adb_path().is_some() {
+            return Ok(());
+        }
+
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidPlatformToolsInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android Platform-Tools (`adb`) not found",
+                format!(
+                    "{} {}",
+                    android_platform_tools_suggestion(),
+                    android_cmdline_tools_suggestion()
+                ),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidPlatformToolsInstallation {
+    type Error = FailToInstallAndroidPlatformTools;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if AndroidSdk::sdkmanager_path().await.is_none() {
+            return Err(FailToInstallAndroidPlatformTools::SdkManagerNotFound);
+        }
+
+        install_android_sdk_package("platform-tools")
+            .await
+            .map_err(FailToInstallAndroidPlatformTools::InstallFailed)?;
+
+        if AndroidSdk::adb_path().is_some() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidPlatformTools::StillMissing)
+        }
+    }
+}
 
 impl Java {
     /// Detect the path to the Java installation for Android development.
@@ -104,11 +586,7 @@ impl Java {
     /// 1. Android Studio's bundled JBR (guaranteed compatible with AGP)
     /// 2. JAVA_HOME environment variable (may be incompatible)
     /// 3. Java from PATH (fallback)
-    ///
-    /// We prioritize Android Studio's JBR because system Java (e.g., Homebrew's
-    /// JDK 25) may be incompatible with the Android Gradle Plugin.
     pub async fn detect_path() -> Option<PathBuf> {
-        // Check Android Studio's bundled JBR first (guaranteed compatible)
         if cfg!(target_os = "macos") {
             const ANDROID_STUDIO_JBRS: &[&str] = &[
                 "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
@@ -122,7 +600,6 @@ impl Java {
             }
         }
 
-        // Check Android Studio on Linux
         if cfg!(target_os = "linux") {
             if let Ok(home) = env::var("HOME") {
                 let paths = [
@@ -140,7 +617,6 @@ impl Java {
             }
         }
 
-        // Check Android Studio on Windows
         if cfg!(target_os = "windows") {
             if let Ok(program_files) = env::var("ProgramFiles") {
                 let java_path =
@@ -151,7 +627,6 @@ impl Java {
             }
         }
 
-        // Fall back to JAVA_HOME (may be incompatible with AGP)
         if let Ok(home) = env::var("JAVA_HOME") {
             let java_path = PathBuf::from(home).join("bin/java");
             if java_path.exists() {
@@ -159,26 +634,135 @@ impl Java {
             }
         }
 
-        // Check PATH as last resort
         which("java").await.ok()
     }
 
     /// Get the JAVA_HOME directory (parent of bin/).
     pub async fn detect_home() -> Option<PathBuf> {
         let java_path = Self::detect_path().await?;
-        // java_path is .../bin/java, we want ...
         java_path.parent()?.parent().map(PathBuf::from)
     }
 }
 
-/// Kotlin toolchain component for Android development.
+/// Java installation handler.
 #[derive(Debug, Clone, Default)]
-pub struct Kotlin;
+pub struct JavaInstallation;
+
+/// Errors that can occur when installing Java.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallJava {
+    #[error("Homebrew not found. Install Homebrew first, then retry `water doctor --fix`.")]
+    BrewNotFound,
+    #[error(
+        "winget is required for automatic Java installation on Windows. Install App Installer and retry."
+    )]
+    WingetNotFound,
+    #[error("Failed to install Java via winget: {0}")]
+    WingetInstallFailed(String),
+    #[error(
+        "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk). Install Java manually."
+    )]
+    UnsupportedPackageManager,
+    #[error("Failed to install Java: {0}")]
+    InstallFailed(eyre::Report),
+    #[error(
+        "Automatic Java installation is not supported on this host. Install a JDK manually and set `JAVA_HOME`."
+    )]
+    UnsupportedPlatform,
+}
+
+impl Toolchain for Java {
+    type Installation = JavaInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if Self::detect_path().await.is_some() {
+            Ok(())
+        } else if cfg!(target_os = "windows") {
+            if which("winget").await.is_ok() {
+                Err(ToolchainError::fixable(JavaInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Java runtime not found and winget is unavailable",
+                    "Install Microsoft App Installer to provide winget, or install a JDK manually and set `JAVA_HOME`.",
+                ))
+            }
+        } else if cfg!(target_os = "macos") {
+            if which("brew").await.is_ok() {
+                Err(ToolchainError::fixable(JavaInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Java runtime not found and Homebrew is unavailable",
+                    "Install Homebrew to enable automatic fixes, or install a JDK manually and set `JAVA_HOME`.",
+                ))
+            }
+        } else if cfg!(target_os = "linux") {
+            if has_supported_package_manager().await {
+                Err(ToolchainError::fixable(JavaInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Java runtime not found and no supported package manager was detected",
+                    "Install a JDK manually and set `JAVA_HOME`, then retry.",
+                ))
+            }
+        } else {
+            Err(ToolchainError::unfixable(
+                "Java runtime not found",
+                "Install a JDK manually and set `JAVA_HOME`, then retry.",
+            ))
+        }
+    }
+}
+
+impl Installation for JavaInstallation {
+    type Error = FailToInstallJava;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if cfg!(target_os = "windows") {
+            ensure_package_installed("Microsoft.OpenJDK.21")
+                .await
+                .map_err(map_winget_error_for_java)
+        } else if cfg!(target_os = "macos") {
+            let brew = Brew::default();
+            brew.check()
+                .await
+                .map_err(|_| FailToInstallJava::BrewNotFound)?;
+            brew.install_cask("temurin")
+                .await
+                .map_err(FailToInstallJava::InstallFailed)
+        } else if cfg!(target_os = "linux") {
+            install_java_jdk().await.map_err(map_linux_error_for_java)
+        } else {
+            Err(FailToInstallJava::UnsupportedPlatform)
+        }
+    }
+}
+
+fn map_linux_error_for_java(error: eyre::Report) -> FailToInstallJava {
+    let message = error.to_string();
+    if message.contains("No supported Linux package manager found") {
+        FailToInstallJava::UnsupportedPackageManager
+    } else {
+        FailToInstallJava::InstallFailed(error)
+    }
+}
+
+fn map_winget_error_for_java(error: WingetInstallError) -> FailToInstallJava {
+    match error {
+        WingetInstallError::WingetNotFound => FailToInstallJava::WingetNotFound,
+        WingetInstallError::CommandFailed(err) => {
+            FailToInstallJava::WingetInstallFailed(err.to_string())
+        }
+        WingetInstallError::NotInstalled { package_id } => {
+            FailToInstallJava::WingetInstallFailed(format!(
+                "Package `{package_id}` is still missing after winget install; verify winget sources and retry."
+            ))
+        }
+    }
+}
 
 impl Kotlin {
     /// Detect the path to the kotlinc compiler.
     pub async fn detect_path() -> Option<PathBuf> {
-        // Check KOTLIN_HOME first
         if let Ok(home) = env::var("KOTLIN_HOME") {
             let kotlinc_path = PathBuf::from(&home).join("bin/kotlinc");
             if kotlinc_path.exists() {
@@ -186,12 +770,10 @@ impl Kotlin {
             }
         }
 
-        // Check PATH first (prefers system-installed Kotlin from Homebrew, etc.)
         if let Ok(path) = which("kotlinc").await {
             return Some(path);
         }
 
-        // Fall back to Android Studio's bundled Kotlin on macOS
         if cfg!(target_os = "macos") {
             const ANDROID_STUDIO_KOTLINS: &[&str] = &[
                 "/Applications/Android Studio.app/Contents/plugins/Kotlin/kotlinc/bin/kotlinc",
@@ -205,7 +787,6 @@ impl Kotlin {
             }
         }
 
-        // Fall back to Android Studio on Linux
         if cfg!(target_os = "linux") {
             if let Ok(home) = env::var("HOME") {
                 let paths = [
@@ -223,7 +804,6 @@ impl Kotlin {
             }
         }
 
-        // Fall back to Android Studio on Windows
         if cfg!(target_os = "windows") {
             if let Ok(program_files) = env::var("ProgramFiles") {
                 let kotlinc_path = PathBuf::from(&program_files)
@@ -240,7 +820,6 @@ impl Kotlin {
     /// Get the KOTLIN_HOME directory (parent of bin/).
     pub async fn detect_home() -> Option<PathBuf> {
         let kotlinc_path = Self::detect_path().await?;
-        // kotlinc_path is .../bin/kotlinc, we want ...
         kotlinc_path.parent()?.parent().map(PathBuf::from)
     }
 }
@@ -256,19 +835,14 @@ pub enum FailToInstallKotlin {}
 impl Toolchain for Kotlin {
     type Installation = KotlinInstallation;
 
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        use crate::toolchain::ToolchainError;
-
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
         let kotlinc_path = Self::detect_path().await.ok_or_else(|| {
             ToolchainError::unfixable(
                 "Kotlin compiler (kotlinc) not found",
-                "Install Android Studio from https://developer.android.com/studio \
-                 (includes Kotlin), or install Kotlin separately via 'brew install kotlin' \
-                 or set KOTLIN_HOME environment variable.",
+                kotlin_install_suggestion(),
             )
         })?;
 
-        // Check if kotlinc is executable (common issue on macOS with quarantined apps)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -282,10 +856,8 @@ impl Toolchain for Kotlin {
                 if permissions.mode() & 0o111 == 0 {
                     return Err(ToolchainError::unfixable(
                         "Kotlin compiler (kotlinc) is not executable",
-                        &format!(
-                            "The kotlinc script at '{}' doesn't have execute permission. \
-                             Fix it with: sudo chmod +x '{}'\n\
-                             Alternatively, install Kotlin via Homebrew: brew install kotlin",
+                        format!(
+                            "The kotlinc script at '{}' does not have execute permission. Fix it with: sudo chmod +x '{}'",
                             kotlinc_path.display(),
                             kotlinc_path.display()
                         ),
@@ -302,8 +874,6 @@ impl Installation for KotlinInstallation {
     type Error = FailToInstallKotlin;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        // Kotlin installation is typically bundled with Android Studio
-        // or installed via package managers. This is intentionally a no-op.
         Ok(())
     }
 }
@@ -312,7 +882,6 @@ impl AndroidNdk {
     /// Detect the Android NDK path from environment variables or standard locations.
     #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
-        // Check ANDROID_NDK_ROOT environment variable
         if let Ok(ndk_root) = env::var("ANDROID_NDK_ROOT") {
             let ndk_path = PathBuf::from(ndk_root);
             if ndk_path.exists() {
@@ -320,7 +889,6 @@ impl AndroidNdk {
             }
         }
 
-        // Check ANDROID_NDK_HOME environment variable
         if let Ok(ndk_home) = env::var("ANDROID_NDK_HOME") {
             let ndk_path = PathBuf::from(ndk_home);
             if ndk_path.exists() {
@@ -328,19 +896,15 @@ impl AndroidNdk {
             }
         }
 
-        // Check in the Android SDK path
         let sdk_path = AndroidSdk::detect_path()?;
-
         let ndk_dir = sdk_path.join("ndk");
         if ndk_dir.exists() {
-            // Find the latest NDK version
             if let Ok(entries) = std::fs::read_dir(&ndk_dir) {
                 let mut versions: Vec<PathBuf> = entries
                     .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_dir())
                     .collect();
-
                 versions.sort();
                 if let Some(latest) = versions.last() {
                     return Some(latest.clone());
@@ -352,76 +916,55 @@ impl AndroidNdk {
     }
 }
 
-/// Errors that can occur when installing the Android SDK.
-#[derive(Debug, thiserror::Error)]
-pub enum FailToInstallAndroidSdk {}
-
-impl Toolchain for AndroidSdk {
-    type Installation = AndroidSdkInstallation;
-
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        use crate::toolchain::ToolchainError;
-
-        if Self::detect_path().is_none() {
-            return Err(ToolchainError::unfixable(
-                "Android SDK not found",
-                "Install Android Studio from https://developer.android.com/studio \
-                 or set ANDROID_HOME environment variable to your SDK path.",
-            ));
-        }
-
-        // Check for adb executable
-        if Self::adb_path().is_none() {
-            return Err(ToolchainError::unfixable(
-                "Android SDK platform-tools not found",
-                "Open Android Studio -> SDK Manager -> SDK Tools -> check 'Android SDK Platform-Tools'",
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-impl Installation for AndroidSdkInstallation {
-    type Error = FailToInstallAndroidSdk;
-
-    async fn install(&self) -> Result<(), Self::Error> {
-        // Android SDK installation is complex and platform-specific
-        // We guide the user to install it manually via Android Studio
-        // This is intentionally a no-op as the check returns unfixable errors
-        Ok(())
-    }
-}
-
 /// Android NDK installation handler.
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct AndroidNdkInstallation;
+
+/// Errors that can occur when installing the Android NDK.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidNdk {
+    #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
+    SdkManagerNotFound,
+    #[error("Failed to install Android NDK via sdkmanager: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Android NDK is still missing after installation.")]
+    StillMissing,
+    #[error("Android NDK is installed but incomplete (`toolchains/llvm/prebuilt` is missing).")]
+    Incomplete,
+}
 
 impl Toolchain for AndroidNdk {
     type Installation = AndroidNdkInstallation;
 
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        use crate::toolchain::ToolchainError;
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if let Some(ndk_path) = Self::detect_path() {
+            let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
+            if llvm_dir.exists() {
+                return Ok(());
+            }
 
-        let ndk_path = Self::detect_path().ok_or_else(|| {
-            ToolchainError::unfixable(
-                "Android NDK not found",
-                "Open Android Studio -> SDK Manager -> SDK Tools -> check 'NDK (Side by side)' \
-                 or set ANDROID_NDK_ROOT environment variable.",
-            )
-        })?;
+            if AndroidSdk::sdkmanager_path().await.is_some() {
+                return Err(ToolchainError::fixable(AndroidNdkInstallation));
+            }
 
-        // Check for LLVM toolchain (required for building)
-        let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
-        if !llvm_dir.exists() {
             return Err(ToolchainError::unfixable(
-                "Android NDK LLVM toolchain not found",
-                "The NDK installation appears to be incomplete. \
-                 Try reinstalling the NDK via Android Studio SDK Manager.",
+                "Android NDK is installed but incomplete",
+                android_ndk_install_suggestion(),
             ));
         }
 
-        Ok(())
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidNdkInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android NDK not found",
+                format!(
+                    "{} {}",
+                    android_ndk_install_suggestion(),
+                    android_cmdline_tools_suggestion()
+                ),
+            ))
+        }
     }
 }
 
@@ -429,12 +972,23 @@ impl Installation for AndroidNdkInstallation {
     type Error = FailToInstallAndroidNdk;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        // NDK installation is handled via Android Studio SDK Manager
-        // This is intentionally a no-op as the check returns unfixable errors
-        Ok(())
+        if AndroidSdk::sdkmanager_path().await.is_none() {
+            return Err(FailToInstallAndroidNdk::SdkManagerNotFound);
+        }
+
+        let ndk_package = latest_ndk_package_id()
+            .await
+            .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+        install_android_sdk_package(&ndk_package)
+            .await
+            .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+
+        let ndk_path = AndroidNdk::detect_path().ok_or(FailToInstallAndroidNdk::StillMissing)?;
+        let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
+        if llvm_dir.exists() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidNdk::Incomplete)
+        }
     }
 }
-
-/// Errors that can occur when installing the Android NDK.
-#[derive(Debug, thiserror::Error)]
-pub enum FailToInstallAndroidNdk {}
