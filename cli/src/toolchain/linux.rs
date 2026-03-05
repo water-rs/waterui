@@ -156,6 +156,7 @@ impl LinuxPackageManager {
         match self {
             Self::Apt => &[
                 "pkg-config",
+                "libgtk-4-dev",
                 "libwayland-dev",
                 "wayland-protocols",
                 "libasound2-dev",
@@ -167,6 +168,7 @@ impl LinuxPackageManager {
             ],
             Self::Dnf => &[
                 "pkgconf-pkg-config",
+                "gtk4-devel",
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-lib-devel",
@@ -178,6 +180,7 @@ impl LinuxPackageManager {
             ],
             Self::Pacman => &[
                 "pkgconf",
+                "gtk4",
                 "wayland",
                 "wayland-protocols",
                 "alsa-lib",
@@ -189,6 +192,7 @@ impl LinuxPackageManager {
             ],
             Self::Zypper => &[
                 "pkg-config",
+                "gtk4-devel",
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-devel",
@@ -200,6 +204,7 @@ impl LinuxPackageManager {
             ],
             Self::Apk => &[
                 "pkgconf",
+                "gtk4.0-dev",
                 "wayland-dev",
                 "wayland-protocols",
                 "alsa-lib-dev",
@@ -333,6 +338,7 @@ mod tests {
     #[test]
     fn dnf_packages_include_validated_core_deps() {
         let required = LinuxPackageManager::Dnf.required_packages();
+        assert!(required.contains(&"gtk4-devel"));
         assert!(required.contains(&"wayland-devel"));
         assert!(required.contains(&"libva-devel"));
         assert!(required.contains(&"mesa-libgbm-devel"));
@@ -347,6 +353,12 @@ mod tests {
         let hint = LinuxPackageManager::Apt
             .install_hint(&[String::from("libwayland-dev"), String::from("libva-dev")]);
         assert_eq!(hint, "sudo apt-get install -y libwayland-dev libva-dev");
+    }
+
+    #[test]
+    fn apt_required_packages_include_gtk4_dev() {
+        let required = LinuxPackageManager::Apt.required_packages();
+        assert!(required.contains(&"libgtk-4-dev"));
     }
 
     #[test]

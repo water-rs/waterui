@@ -8,6 +8,7 @@ pub mod cmake;
 pub mod doctor;
 pub mod linux;
 pub mod meson;
+pub mod rust;
 pub mod sccache;
 /// A toolchain that cannot be fixed automatically.
 #[derive(Debug, Clone, thiserror::Error)]
