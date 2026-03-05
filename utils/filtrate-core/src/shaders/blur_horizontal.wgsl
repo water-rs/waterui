@@ -36,9 +36,7 @@ fn main(
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     let dims = vec2<u32>(uniforms.output_dimensions);
-    if global_id.x >= dims.x || global_id.y >= dims.y {
-        return;
-    }
+    let active = global_id.x < dims.x && global_id.y < dims.y;
 
     let input_dims_u = vec2<u32>(uniforms.input_dimensions);
     let input_dims_i = vec2<i32>(input_dims_u);
@@ -46,14 +44,16 @@ fn main(
 
     let radius = max(i32(round(param(0u))), 0);
     if radius == 0 {
-        let mapped = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) * uniforms.input_dimensions
-            / uniforms.output_dimensions;
-        let center = clamp(
-            vec2<i32>(mapped),
-            vec2<i32>(0),
-            input_dims_i - vec2<i32>(1),
-        );
-        textureStore(output_texture, output_coord, textureLoad(input_texture, center, 0));
+        if active {
+            let mapped = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) * uniforms.input_dimensions
+                / uniforms.output_dimensions;
+            let center = clamp(
+                vec2<i32>(mapped),
+                vec2<i32>(0),
+                input_dims_i - vec2<i32>(1),
+            );
+            textureStore(output_texture, output_coord, textureLoad(input_texture, center, 0));
+        }
         return;
     }
 
@@ -107,7 +107,13 @@ fn main(
             segment_start = segment_end + 1;
         }
 
-        textureStore(output_texture, output_coord, sum / count);
+        if active {
+            textureStore(output_texture, output_coord, sum / count);
+        }
+        return;
+    }
+
+    if !active {
         return;
     }
 
