@@ -2,6 +2,7 @@
 
 use clap::Args as ClapArgs;
 use color_eyre::eyre::Result;
+use dialoguer::{Confirm, theme::ColorfulTheme};
 
 use crate::shell;
 use crate::{error, header, line, note, success, warn};
@@ -58,7 +59,11 @@ pub async fn run(args: Args) -> Result<()> {
                 }
             }
             CheckStatus::Skipped => {
-                line!("  ○ {} (skipped)", item.name);
+                if let Some(msg) = &item.message {
+                    line!("  - {} (skipped: {})", item.name, msg);
+                } else {
+                    line!("  - {} (skipped)", item.name);
+                }
             }
         }
     }
@@ -75,6 +80,21 @@ pub async fn run(args: Args) -> Result<()> {
             for item in fixable_items {
                 let name = item.name;
                 if let Some(install_fn) = item.install_fn {
+                    let should_install = if shell::is_interactive() {
+                        Confirm::with_theme(&ColorfulTheme::default())
+                            .with_prompt(format!("Install {name}?"))
+                            .default(true)
+                            .interact()
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    };
+
+                    if !should_install {
+                        note!("Skipped installation for {name}");
+                        continue;
+                    }
+
                     let spinner = shell::spinner(format!("Installing {name}..."));
                     let result = install_fn().await;
                     if let Some(pb) = spinner {
