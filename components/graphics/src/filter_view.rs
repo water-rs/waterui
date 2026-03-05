@@ -508,20 +508,7 @@ struct CompiledPass {
     binding_plan: PassBindingPlan,
     uniform_buffer: wgpu::Buffer,
     last_uniform_data: Option<[f32; FILTER_UNIFORM_WORDS]>,
-    cached_bind_group_key: Option<BindGroupCacheKey>,
     cached_bind_group: Option<wgpu::BindGroup>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BindGroupCacheKey {
-    Static,
-    Input {
-        input_texture: usize,
-    },
-    InputOutput {
-        input_texture: usize,
-        output_texture: usize,
-    },
 }
 
 struct FinalSpatialOutputPipeline {
@@ -1152,7 +1139,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
 
         for pass in &mut self.passes {
             pass.cached_bind_group = None;
-            pass.cached_bind_group_key = None;
         }
         self.blit_bind_group = None;
 
@@ -1252,7 +1238,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                             "filter color uniform buffer",
                         ),
                         last_uniform_data: None,
-                        cached_bind_group_key: None,
                         cached_bind_group: None,
                     });
                 }
@@ -1282,7 +1267,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                             "filter spatial uniform buffer",
                         ),
                         last_uniform_data: None,
-                        cached_bind_group_key: None,
                         cached_bind_group: None,
                     });
                 }
@@ -1497,8 +1481,6 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     None
                 }
             });
-        let output_texture_key = (output.texture as *const wgpu::Texture) as usize;
-
         let mut used_direct_spatial_output = false;
         let mut source_width = input.width;
         let mut source_height = input.height;
@@ -1543,19 +1525,11 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         uniform_data,
                     );
 
-                    let desired_key = if matches!(source, PassTextureSource::Input) {
-                        BindGroupCacheKey::Input {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                        }
-                    } else {
-                        BindGroupCacheKey::Static
-                    };
-                    if pass.cached_bind_group.is_none()
-                        || pass.cached_bind_group_key != Some(desired_key)
-                    {
-                        pass.cached_bind_group =
-                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter color bind group"),
+                    let transient_bind_group;
+                    let bind_group = if matches!(source, PassTextureSource::Input) {
+                        transient_bind_group =
+                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter color dynamic bind group"),
                                 layout: bind_group_layout,
                                 entries: &[
                                     wgpu::BindGroupEntry {
@@ -1571,11 +1545,36 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                         resource: pass.uniform_buffer.as_entire_binding(),
                                     },
                                 ],
-                            }));
-                        pass.cached_bind_group_key = Some(desired_key);
-                    }
-                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                        return false;
+                            });
+                        &transient_bind_group
+                    } else {
+                        if pass.cached_bind_group.is_none() {
+                            pass.cached_bind_group =
+                                Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter color static bind group"),
+                                    layout: bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                source_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(sampler),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: pass.uniform_buffer.as_entire_binding(),
+                                        },
+                                    ],
+                                }));
+                        }
+                        let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                            return false;
+                        };
+                        bind_group
                     };
 
                     {
@@ -1668,24 +1667,13 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         uniform_data,
                     );
 
-                    let desired_key = if writes_output_directly {
-                        BindGroupCacheKey::InputOutput {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                            output_texture: output_texture_key,
-                        }
-                    } else if matches!(source, PassTextureSource::Input) {
-                        BindGroupCacheKey::Input {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                        }
-                    } else {
-                        BindGroupCacheKey::Static
-                    };
-                    if pass.cached_bind_group.is_none()
-                        || pass.cached_bind_group_key != Some(desired_key)
+                    let transient_bind_group;
+                    let bind_group = if writes_output_directly
+                        || matches!(source, PassTextureSource::Input)
                     {
-                        pass.cached_bind_group =
-                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter spatial bind group"),
+                        transient_bind_group =
+                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter spatial dynamic bind group"),
                                 layout: dispatch_bind_group_layout,
                                 entries: &[
                                     wgpu::BindGroupEntry {
@@ -1701,11 +1689,38 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                         resource: pass.uniform_buffer.as_entire_binding(),
                                     },
                                 ],
-                            }));
-                        pass.cached_bind_group_key = Some(desired_key);
-                    }
-                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                        return false;
+                            });
+                        &transient_bind_group
+                    } else {
+                        if pass.cached_bind_group.is_none() {
+                            pass.cached_bind_group =
+                                Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter spatial static bind group"),
+                                    layout: dispatch_bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                source_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                target_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: pass.uniform_buffer.as_entire_binding(),
+                                        },
+                                    ],
+                                }));
+                        }
+                        let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                            return false;
+                        };
+                        bind_group
                     };
 
                     {
