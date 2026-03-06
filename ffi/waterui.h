@@ -215,6 +215,8 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_Error = 2,
   WuiVideoEventType_Buffering = 3,
   WuiVideoEventType_BufferingEnded = 4,
+  WuiVideoEventType_BufferLevel = 5,
+  WuiVideoEventType_PlaybackMetrics = 6,
 } WuiVideoEventType;
 
 typedef enum WuiProgressStyle {
@@ -2410,6 +2412,9 @@ typedef struct Binding_Volume WuiBinding_Volume;
 typedef struct WuiVideoEvent {
   enum WuiVideoEventType event_type;
   struct WuiStr error_message;
+  uint32_t buffered_ms;
+  float av_drift_ms;
+  uint64_t dropped_video_frames;
 } WuiVideoEvent;
 
 /**
@@ -3107,11 +3112,6 @@ typedef struct WuiAppliedFilter {
 } WuiAppliedFilter;
 
 /**
- * Callback type for async completion notifications.
- */
-typedef void (*WuiCallback)(void *user_data);
-
-/**
  * Result of a filter render operation.
  */
 typedef struct WuiAppliedFilterRenderResult {
@@ -3125,6 +3125,20 @@ typedef struct WuiAppliedFilterRenderResult {
    */
   bool needs_redraw;
 } WuiAppliedFilterRenderResult;
+
+/**
+ * Resolved output size returned to native before render scheduling.
+ */
+typedef struct WuiAppliedFilterOutputSize {
+  /**
+   * Output width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Output height in pixels.
+   */
+  uint32_t height;
+} WuiAppliedFilterOutputSize;
 
 /**
  * FFI representation of `FilteredView<Blur>`.
@@ -5240,26 +5254,18 @@ struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilte
                                                           uint32_t input_height);
 
 /**
- * Setup the filter synchronously, call callback when ready.
- *
- * This function runs setup on the synchronous FFI path and calls the callback
- * when setup completes.
+ * Await filter setup to completion on the synchronous FFI path.
  *
  * # Arguments
  *
  * * `state` - Pointer to initialized state from `waterui_applied_filter_init`
- * * `callback` - Function to call when setup is complete
- * * `user_data` - Opaque pointer passed to callback
+ * Returns `true` when setup completes successfully.
  *
  * # Safety
  *
  * - `state` must be a valid pointer from `waterui_applied_filter_init`
- * - `callback` must be a valid function pointer
- * - `user_data` must remain valid until callback is invoked
  */
-void waterui_applied_filter_setup(struct WuiAppliedFilterState *state,
-                                  WuiCallback callback,
-                                  void *user_data);
+bool waterui_applied_filter_setup(struct WuiAppliedFilterState *state);
 
 /**
  * Render the filter.
@@ -5282,7 +5288,7 @@ void waterui_applied_filter_setup(struct WuiAppliedFilterState *state,
  * # Safety
  *
  * - `state` must be a valid pointer from `waterui_applied_filter_init`
- * - `waterui_applied_filter_setup` must have completed (callback was called)
+ * - `waterui_applied_filter_setup` must have returned `true`
  */
 struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppliedFilterState *state,
                                                                   uint32_t width,
@@ -5300,6 +5306,19 @@ struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppl
  * - Caller must ensure no concurrent `waterui_applied_filter_render` is running
  */
 bool waterui_applied_filter_sync_targets(struct WuiAppliedFilterState *state);
+
+/**
+ * Resolve the current output size from snapped filter state.
+ *
+ * Call this after `waterui_applied_filter_sync_targets` and before scheduling render work.
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_applied_filter_init`
+ */
+struct WuiAppliedFilterOutputSize waterui_applied_filter_resolve_output_size(struct WuiAppliedFilterState *state,
+                                                                             uint32_t input_width,
+                                                                             uint32_t input_height);
 
 /**
  * Poll whether the filter requires a new frame.
