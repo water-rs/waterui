@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility"] }
+waterui-canvas.workspace = true
 waterui-core.workspace = true
 waterui.workspace = true
 wgpu.workspace = true

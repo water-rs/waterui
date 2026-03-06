@@ -248,7 +248,7 @@ All processing operations run on background threads via `blocking::unblock` to p
 ### Android
 
 - `Photo`: Uses Coil image loading library
-- `Video`: Uses ExoPlayer with SurfaceView
-- `VideoPlayer`: Uses ExoPlayer with PlayerView (full controls)
+- `Video`: Uses WaterUI Rust video pipeline (`GpuSurface` + `waterkit-codec`)
+- `VideoPlayer`: Uses WaterUI Rust player controls and rendering pipeline
 - `LivePhoto`: Maps to Motion Photos via MediaStore
 - `MediaPicker`: Uses `ActivityResultContracts.PickVisualMedia` with ContentResolver
