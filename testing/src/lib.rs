@@ -11,7 +11,7 @@ use accesskit::{
     TreeId as AccessibilityTreeId, TreeUpdate as AccessibilityTreeUpdate,
 };
 use hydrolysis::{
-    HydrolysisRenderer, HydrolysisViewRenderer, OffscreenWindow, PlatformWindow, SurfaceProvider,
+    HydrolysisRenderer, HydrolysisViewRenderer, OffscreenWindow, PlatformWindow,
 };
 use waterui::component::table::TableConfig;
 use waterui::graphics::SceneViewMergeToParent;
@@ -75,7 +75,8 @@ impl TestHost {
         renderer.set_frame_resources(surface.device(), surface.queue());
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
-        renderer.dispatch(view, &self.env, bounds);
+        let env = self.env.clone().extending(SceneViewMergeToParent);
+        renderer.dispatch(view, &env, bounds);
         renderer.finish_rebuild_frame();
 
         let frame = surface
@@ -85,6 +86,7 @@ impl TestHost {
             surface.device(),
             surface.queue(),
             frame.view(),
+            surface.format(),
             self.width.max(1),
             self.height.max(1),
             vello::peniko::Color::TRANSPARENT,
@@ -1233,6 +1235,7 @@ impl A11yDriver for HydrolysisA11yDriver {
             surface.device(),
             surface.queue(),
             frame.view(),
+            surface.format(),
             width,
             height,
             vello::peniko::Color::TRANSPARENT,
@@ -1268,6 +1271,13 @@ fn install_native_component_hooks(env: &mut Environment) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use vello::kurbo::Shape;
+    use waterui::graphics::{Scene2D, SceneContent, SceneView};
+    use waterui::graphics::color::Srgb;
+    use waterui_canvas::Canvas;
+    use waterui_core::layout::{Point, Rect, Size};
 
     #[derive(Debug)]
     struct NoopDriver;
@@ -1344,6 +1354,109 @@ mod tests {
         assert_eq!(snapshot.width, 64);
         assert_eq!(snapshot.height, 48);
         assert_eq!(snapshot.rgba8.len(), 64 * 48 * 4);
+    }
+
+    #[test]
+    fn smoke_canvas_snapshot_contains_visible_pixels() {
+        let host = TestHost::new(Environment::new(), 96, 72);
+        let snapshot = host.render(Canvas::new(|ctx| {
+            ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
+            ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+        }));
+        let colored_pixels = snapshot
+            .rgba8
+            .chunks_exact(4)
+            .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
+            .count();
+        let opaque_pixels = snapshot.rgba8.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(
+            opaque_pixels > 0,
+            "expected canvas render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
+        );
+    }
+
+    struct TestSceneContent(Rc<Cell<bool>>);
+
+    impl SceneContent for TestSceneContent {
+        fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+            self.0.set(true);
+            let rect = vello::kurbo::Rect::from_origin_size(
+                vello::kurbo::Point::new(8.0, 8.0),
+                vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
+            )
+            .to_path(0.1);
+            let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                &brush,
+                &rect,
+            );
+            false
+        }
+    }
+
+    #[test]
+    fn scene_view_body_merges_to_native_when_marker_is_present() {
+        let env = Environment::new().extending(SceneViewMergeToParent);
+        let body = SceneView::new(TestSceneContent(Rc::new(Cell::new(false)))).body(&env);
+        let any = AnyView::new(body);
+        assert!(
+            any.is::<Native<SceneView>>(),
+            "expected SceneView body to resolve to Native<SceneView> when merge marker is present"
+        );
+    }
+
+    #[test]
+    fn smoke_scene_view_snapshot_contains_visible_pixels() {
+        let build_called = Rc::new(Cell::new(false));
+        let mut platform = OffscreenWindow::new(96, 72, wgpu::TextureFormat::Rgba8Unorm);
+        let mut renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 96.0, 72.0);
+        let env = Environment::new().extending(SceneViewMergeToParent);
+
+        let surface = platform.surface();
+        renderer.set_frame_resources(surface.device(), surface.queue());
+        renderer.reset_scene();
+        renderer.begin_rebuild_frame();
+        renderer.dispatch(SceneView::new(TestSceneContent(Rc::clone(&build_called))), &env, bounds);
+        renderer.finish_rebuild_frame();
+        assert!(build_called.get(), "expected scene view build_scene to run");
+
+        let frame = surface
+            .acquire()
+            .expect("waterui-testing failed to acquire offscreen frame");
+        renderer.render_scene_to_texture(
+            surface.device(),
+            surface.queue(),
+            frame.view(),
+            surface.format(),
+            96,
+            72,
+            vello::peniko::Color::TRANSPARENT,
+        );
+        let rgba8 = readback_texture_rgba8(surface.device(), surface.queue(), frame.texture(), 96, 72);
+        renderer.clear_frame_resources();
+        surface.present(frame);
+
+        let snapshot = Snapshot {
+            width: 96,
+            height: 72,
+            rgba8,
+        };
+        let colored_pixels = snapshot
+            .rgba8
+            .chunks_exact(4)
+            .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
+            .count();
+        let opaque_pixels = snapshot.rgba8.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(
+            opaque_pixels > 0,
+            "expected scene view render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
+        );
     }
 
     #[test]
