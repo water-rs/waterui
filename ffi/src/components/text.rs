@@ -4,6 +4,7 @@ use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
 use alloc::vec::Vec;
 use waterui::Str;
+use waterui::layout::HorizontalAlignment;
 use waterui::view::ConfigurableView;
 pub use waterui_text::font::ResolvedFont;
 use waterui_text::font::{Body, Font, FontWeight};
@@ -175,10 +176,52 @@ impl IntoRust for WuiStyledStr {
 
 ffi_computed!(StyledStr, WuiStyledStr);
 
+/// FFI-safe horizontal paragraph alignment.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub enum WuiHorizontalAlignment {
+    Leading = 0,
+    Center = 1,
+    Trailing = 2,
+}
+
+impl IntoFFI for HorizontalAlignment {
+    type FFI = WuiHorizontalAlignment;
+
+    fn into_ffi(self) -> Self::FFI {
+        if self == HorizontalAlignment::Leading {
+            WuiHorizontalAlignment::Leading
+        } else if self == HorizontalAlignment::Trailing {
+            WuiHorizontalAlignment::Trailing
+        } else {
+            WuiHorizontalAlignment::Center
+        }
+    }
+}
+
+impl IntoRust for WuiHorizontalAlignment {
+    type Rust = HorizontalAlignment;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            WuiHorizontalAlignment::Leading => HorizontalAlignment::Leading,
+            WuiHorizontalAlignment::Center => HorizontalAlignment::Center,
+            WuiHorizontalAlignment::Trailing => HorizontalAlignment::Trailing,
+        }
+    }
+}
+
+ffi_computed!(
+    HorizontalAlignment,
+    WuiHorizontalAlignment,
+    horizontal_alignment
+);
+
 into_ffi! {
     TextConfig,
     pub struct WuiText {
         content: *mut WuiComputed<StyledStr>,
+        paragraph_alignment: *mut WuiComputed<HorizontalAlignment>,
     }
 }
 

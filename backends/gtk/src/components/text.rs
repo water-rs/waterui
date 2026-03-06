@@ -4,6 +4,7 @@ use gtk4::prelude::*;
 use gtk4::{Label, Widget};
 use nami::Signal;
 use std::fmt::Write;
+use waterui_core::layout::HorizontalAlignment;
 use waterui_core::resolve::Resolvable;
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
@@ -12,7 +13,7 @@ use waterui_text::styled::{Style, StyledStr};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::{resolved_color_to_hex, store_watcher_guard};
+use crate::util::{resolved_color_to_hex, store_watcher_guards};
 
 impl GtkComponent for Native<TextConfig> {
     /// Renders a `WaterUI` Text component as a GTK4 Label.
@@ -20,7 +21,12 @@ impl GtkComponent for Native<TextConfig> {
         let config = self.into_inner();
 
         let label = Label::new(None);
-        apply_styled_content(&label, config.content.get(), env);
+        apply_styled_content(
+            &label,
+            config.content.get(),
+            config.paragraph_alignment.get(),
+            env,
+        );
 
         // Match native behavior: read-only text should not be selection-active by default.
         label.set_selectable(false);
@@ -32,27 +38,59 @@ impl GtkComponent for Native<TextConfig> {
         let guard = config.content.watch({
             let label = label.clone();
             let env = env.clone();
+            let paragraph_alignment = config.paragraph_alignment.clone();
             move |ctx| {
                 let content = ctx.into_value();
                 let label = label.clone();
                 let env = env.clone();
+                let alignment = paragraph_alignment.get();
                 // Schedule update on GTK main thread
                 glib::idle_add_local_once(move || {
-                    apply_styled_content(&label, content, &env);
+                    apply_styled_content(&label, content, alignment, &env);
+                });
+            }
+        });
+
+        let alignment_guard = config.paragraph_alignment.watch({
+            let label = label.clone();
+            move |ctx| {
+                let alignment = ctx.into_value();
+                let label = label.clone();
+                glib::idle_add_local_once(move || {
+                    apply_paragraph_alignment(&label, alignment);
                 });
             }
         });
 
         // Store the watcher guard to keep it alive
-        store_watcher_guard(&label, guard);
+        store_watcher_guards(&label, vec![guard, alignment_guard]);
 
         label.upcast()
     }
 }
 
-fn apply_styled_content(label: &Label, content: StyledStr, env: &Environment) {
+fn apply_styled_content(
+    label: &Label,
+    content: StyledStr,
+    alignment: HorizontalAlignment,
+    env: &Environment,
+) {
     let markup = styled_to_markup(content, env);
     label.set_markup(&markup);
+    apply_paragraph_alignment(label, alignment);
+}
+
+fn apply_paragraph_alignment(label: &Label, alignment: HorizontalAlignment) {
+    if alignment == HorizontalAlignment::Leading {
+        label.set_justify(gtk4::Justification::Left);
+        label.set_xalign(0.0);
+    } else if alignment == HorizontalAlignment::Trailing {
+        label.set_justify(gtk4::Justification::Right);
+        label.set_xalign(1.0);
+    } else {
+        label.set_justify(gtk4::Justification::Center);
+        label.set_xalign(0.5);
+    }
 }
 
 fn styled_to_markup(content: StyledStr, env: &Environment) -> String {

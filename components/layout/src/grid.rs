@@ -64,7 +64,7 @@ impl GridLayout {
 
         if constrained_width.is_none() {
             for (index, child) in children.iter().enumerate() {
-                let intrinsic_size = child.size_that_fits(ProposalSize::new(None, None));
+                let intrinsic_size = child.measure(ProposalSize::new(None, None)).size;
                 if intrinsic_size.width.is_finite() {
                     let column_index = index % num_columns;
                     column_widths[column_index] =
@@ -80,7 +80,7 @@ impl GridLayout {
                 let column_index = index % num_columns;
                 let child_proposal = ProposalSize::new(Some(column_widths[column_index]), None);
                 ChildMeasurement {
-                    dimensions: child.dimensions(child_proposal),
+                    dimensions: child.measure(child_proposal),
                 }
             })
             .collect();
@@ -186,11 +186,14 @@ impl Layout for GridLayout {
                 } else if horizontal == HorizontalAlignment::Center {
                     cell_frame.width() * 0.5
                 } else {
-                    adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width)
+                    adjusted_dimensions
+                        .horizontal(horizontal)
+                        .clamp(0.0, child_size.width)
                 };
-                let child_x = cell_frame.x()
-                    + target_x
-                    - adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width);
+                let child_x = cell_frame.x() + target_x
+                    - adjusted_dimensions
+                        .horizontal(horizontal)
+                        .clamp(0.0, child_size.width);
 
                 let vertical = self.alignment.vertical();
                 let target_y = if vertical == VerticalAlignment::Top {
@@ -200,11 +203,14 @@ impl Layout for GridLayout {
                 } else if vertical == VerticalAlignment::Center {
                     cell_frame.height() * 0.5
                 } else {
-                    adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height)
+                    adjusted_dimensions
+                        .vertical(vertical)
+                        .clamp(0.0, child_size.height)
                 };
-                let child_y = cell_frame.y()
-                    + target_y
-                    - adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height);
+                let child_y = cell_frame.y() + target_y
+                    - adjusted_dimensions
+                        .vertical(vertical)
+                        .clamp(0.0, child_size.height);
 
                 placements.push(Rect::new(Point::new(child_x, child_y), child_size));
 
@@ -382,8 +388,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
