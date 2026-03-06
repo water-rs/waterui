@@ -20,7 +20,10 @@ use core::fmt;
 use alloc::vec::Vec;
 use waterui_core::View;
 
-use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
+use crate::{
+    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
+    VerticalAlignment, container::FixedContainer,
+};
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
 ///
@@ -67,6 +70,28 @@ impl Layout for BackgroundLayout {
         ));
 
         placements
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .get(1)
+            .and_then(|child| child.explicit_horizontal(alignment))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .get(1)
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 }
 
