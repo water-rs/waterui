@@ -56,7 +56,9 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
-    Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
+    HorizontalAlignment, HorizontalAlignmentGuide, Layout, PlacedSubview, ProposalSize,
+    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
+    VerticalAlignmentGuide, ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
@@ -78,7 +80,7 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_layout::stack::{
-    Axis as StackAxis, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment,
+    Axis as StackAxis, HStackLayout, VStackLayout,
 };
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
@@ -98,7 +100,7 @@ const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!("shaders/gpu_surface_co
 pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
-    dynamic_intrinsic_cache: BTreeMap<usize, LayoutSize>,
+    dynamic_intrinsic_cache: BTreeMap<usize, ViewDimensions>,
     frame_device: *const wgpu::Device,
     frame_queue: *const wgpu::Queue,
 }
@@ -264,9 +266,11 @@ pub struct HydrolysisRenderer {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct HydroSubview {
+struct HydroSubview<'a> {
+    view: &'a AnyView,
+    state: *mut HydroState,
+    env: &'a Environment,
     stretch_axis: StretchAxis,
-    intrinsic: LayoutSize,
 }
 
 #[derive(Clone)]
@@ -1168,34 +1172,43 @@ impl LazyTableSlot {
     }
 }
 
-impl HydroSubview {
-    fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
+impl<'a> HydroSubview<'a> {
+    fn from_view(view: &'a AnyView, state: &mut HydroState, env: &'a Environment) -> Self {
         Self {
+            view,
+            state: state as *mut _,
+            env,
             stretch_axis: effective_stretch_axis(view),
-            intrinsic: measure_view_intrinsic(view, state, env),
         }
     }
 }
 
-impl SubView for HydroSubview {
+impl SubView for HydroSubview<'_> {
+    fn dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        let state = unsafe { &mut *self.state };
+        let mut dimensions = measure_view_dimensions_with_proposal(self.view, proposal, state, self.env);
+
+        if self.stretch_axis.stretches_horizontal() {
+            if let Some(width) = proposal.width {
+                dimensions.size.width = width;
+            }
+        } else if let Some(width) = proposal.width {
+            dimensions.size.width = dimensions.size.width.min(width);
+        }
+
+        if self.stretch_axis.stretches_vertical() {
+            if let Some(height) = proposal.height {
+                dimensions.size.height = height;
+            }
+        } else if let Some(height) = proposal.height {
+            dimensions.size.height = dimensions.size.height.min(height);
+        }
+
+        dimensions
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize) -> LayoutSize {
-        let width = if self.stretch_axis.stretches_horizontal() {
-            proposal.width.unwrap_or(self.intrinsic.width)
-        } else {
-            proposal.width.map_or(self.intrinsic.width, |value| {
-                self.intrinsic.width.min(value)
-            })
-        };
-
-        let height = if self.stretch_axis.stretches_vertical() {
-            proposal.height.unwrap_or(self.intrinsic.height)
-        } else {
-            proposal.height.map_or(self.intrinsic.height, |value| {
-                self.intrinsic.height.min(value)
-            })
-        };
-
-        LayoutSize::new(width, height)
+        self.dimensions(proposal).size
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -1224,6 +1237,14 @@ impl core::fmt::Debug for HydrolysisRenderer {
 trait HydroNativeView: View + Sized + 'static {
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment);
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize;
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        _proposal: ProposalSize,
+    ) -> ViewDimensions {
+        ViewDimensions::new(Self::intrinsic(state, view, env))
+    }
     fn accessibility(
         _state: &mut HydroState,
         _ctx: RenderContext,
@@ -1276,13 +1297,14 @@ fn register_native_view<V: HydroNativeView>(
     });
 }
 
-fn intrinsic_for_native<V: HydroNativeView>(
+fn dimensions_for_native<V: HydroNativeView>(
     view: &AnyView,
+    proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-) -> Option<LayoutSize> {
+) -> Option<ViewDimensions> {
     view.downcast_ref::<V>()
-        .map(|native| V::intrinsic(state, native, env))
+        .map(|native| V::dimensions(state, native, env, proposal))
 }
 
 const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
@@ -1597,7 +1619,167 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
 }
 
 fn measure_view_intrinsic(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
-    estimate_intrinsic_size(view, state, env)
+    measure_view_dimensions(view, state, env).size
+}
+
+fn measure_view_dimensions(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    measure_view_dimensions_with_proposal(view, ProposalSize::UNSPECIFIED, state, env)
+}
+
+fn measure_view_dimensions_with_proposal(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return measure_view_dimensions_with_proposal(&metadata.content, proposal, state, &metadata.value);
+    }
+
+    if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<HorizontalAlignmentGuide>>() {
+        let mut dimensions =
+            measure_view_dimensions_with_proposal(&metadata.content, proposal, state, env);
+        let value = metadata.value.resolve(&dimensions);
+        dimensions.set_horizontal(metadata.value.alignment(), value);
+        return dimensions;
+    }
+
+    if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<VerticalAlignmentGuide>>() {
+        let mut dimensions =
+            measure_view_dimensions_with_proposal(&metadata.content, proposal, state, env);
+        let value = metadata.value.resolve(&dimensions);
+        dimensions.set_vertical(metadata.value.alignment(), value);
+        return dimensions;
+    }
+
+    if let Some(content) = passthrough_content(view) {
+        return measure_view_dimensions_with_proposal(content, proposal, state, env);
+    }
+
+    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Canvas>().is_some() {
+        return ViewDimensions::new(LayoutSize::zero());
+    }
+
+    if let Some(text) = view.downcast_ref::<Str>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<&'static str>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(*text),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<String>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<Text>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            text.content().get(),
+            text.paragraph_alignment().get(),
+            env,
+            proposal.width,
+            None,
+        );
+    }
+
+    if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, env) {
+        return dimensions;
+    }
+
+    if view.downcast_ref::<Divider>().is_some() {
+        return ViewDimensions::new(LayoutSize::new(1.0, 1.0));
+    }
+
+    panic!(
+        "hydrolysis dimensions estimation encountered unsupported view type {}",
+        view.name()
+    );
+}
+
+fn measure_layout_dimensions<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let mut subviews = Vec::new();
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, state, env));
+    }
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    let size = layout.size_that_fits(proposal, &refs);
+    let bounds = LayoutRect::from_size(size);
+    let child_rects = layout.place(bounds, &refs);
+    let placed_subviews: Vec<PlacedSubview<'_>> = subviews
+        .iter()
+        .zip(child_rects.iter().copied())
+        .map(|(view, frame)| PlacedSubview::new(view as &dyn SubView, frame))
+        .collect();
+
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal_keys = Vec::new();
+    let mut vertical_keys = Vec::new();
+
+    for child in &placed_subviews {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal_keys.contains(&alignment) {
+                horizontal_keys.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical_keys.contains(&alignment) {
+                vertical_keys.push(alignment);
+            }
+        }
+    }
+
+    for alignment in horizontal_keys {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed_subviews) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical_keys {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed_subviews) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+
+    dimensions
 }
 
 fn measure_navigation_view_intrinsic(
@@ -2133,6 +2315,23 @@ macro_rules! hydro_native_view_types {
     };
 }
 
+fn dimensions_for_known_native_views(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> Option<ViewDimensions> {
+    macro_rules! try_native_dimensions {
+        ($ty:ty) => {
+            if let Some(dimensions) = dimensions_for_native::<$ty>(view, proposal, state, env) {
+                return Some(dimensions);
+            }
+        };
+    }
+    hydro_native_view_types!(try_native_dimensions);
+    None
+}
+
 impl HydroNativeView for Native<()> {
     fn render(_state: &mut HydroState, _ctx: RenderContext, _view: Self, _env: &Environment) {}
 
@@ -2155,7 +2354,31 @@ impl HydroNativeView for Native<TextConfig> {
     }
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        HydrolysisRenderer::measure_text_intrinsic_size(state, view.as_inner().content.get(), env)
+        HydrolysisRenderer::measure_text_dimensions(
+            state,
+            view.as_inner().content.get(),
+            view.as_inner().paragraph_alignment.get(),
+            env,
+            None,
+            None,
+        )
+        .size
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        HydrolysisRenderer::measure_text_dimensions(
+            state,
+            view.as_inner().content.get(),
+            view.as_inner().paragraph_alignment.get(),
+            env,
+            proposal.width,
+            None,
+        )
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
@@ -2191,6 +2414,16 @@ impl HydroNativeView for Native<FixedContainer> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env)
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let (layout, children) = view.as_inner().as_parts();
+        measure_layout_dimensions(layout, children.iter(), proposal, state, env)
     }
 }
 
@@ -2932,20 +3165,49 @@ impl HydroNativeView for Native<Dynamic> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        if let Some(size) = state.dynamic_intrinsic_cache.get(&identity) {
-            return *size;
+        if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity) {
+            return dimensions.size;
         }
         let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| measure_view_intrinsic(content, state, env))
+            content.map(|content| measure_view_dimensions(content, state, env))
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node");
         };
-        let Some(size) = initial else {
+        let Some(dimensions) = initial else {
             panic!("hydrolysis Dynamic intrinsic requires an initial view before layout");
         };
-        state.dynamic_intrinsic_cache.insert(identity, size);
-        size
+        state.dynamic_intrinsic_cache.insert(identity, dimensions.clone());
+        dimensions.size
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let dynamic = view.as_inner();
+        let identity = dynamic.identity();
+        if proposal == ProposalSize::UNSPECIFIED
+            && let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity)
+        {
+            return dimensions.clone();
+        }
+
+        let initial = dynamic.with_unconnected_view(|content| {
+            content.map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
+        });
+        let Some(initial) = initial else {
+            panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node");
+        };
+        let Some(dimensions) = initial else {
+            panic!("hydrolysis Dynamic dimensions requires an initial view before layout");
+        };
+        if proposal == ProposalSize::UNSPECIFIED {
+            state.dynamic_intrinsic_cache.insert(identity, dimensions.clone());
+        }
+        dimensions
     }
 }
 
@@ -4376,12 +4638,12 @@ impl HydrolysisRenderer {
                         f64::from(size.width).min(ctx.bounds.width())
                     };
                     let child_height = f64::from(size.height);
-                    let x = match alignment {
-                        HorizontalAlignment::Leading => ctx.bounds.x0,
-                        HorizontalAlignment::Center => {
-                            ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
-                        }
-                        HorizontalAlignment::Trailing => ctx.bounds.x1 - child_width,
+                    let x = if alignment == HorizontalAlignment::Leading {
+                        ctx.bounds.x0
+                    } else if alignment == HorizontalAlignment::Trailing {
+                        ctx.bounds.x1 - child_width
+                    } else {
+                        ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
                     };
                     vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
                 }
@@ -4403,12 +4665,12 @@ impl HydrolysisRenderer {
                     } else {
                         f64::from(size.height).min(ctx.bounds.height())
                     };
-                    let y = match alignment {
-                        VerticalAlignment::Top => ctx.bounds.y0,
-                        VerticalAlignment::Center => {
-                            ctx.bounds.y0 + (ctx.bounds.height() - child_height) / 2.0
-                        }
-                        VerticalAlignment::Bottom => ctx.bounds.y1 - child_height,
+                    let y = if alignment == VerticalAlignment::Top {
+                        ctx.bounds.y0
+                    } else if alignment == VerticalAlignment::Bottom {
+                        ctx.bounds.y1 - child_height
+                    } else {
+                        ctx.bounds.y0 + (ctx.bounds.height() - child_height) / 2.0
                     };
                     vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
                 }
@@ -5332,7 +5594,13 @@ impl HydrolysisRenderer {
                 }
             }
         }
-        Self::render_styled_text(state, ctx, StyledStr::plain(text), env);
+        Self::render_styled_text(
+            state,
+            ctx,
+            StyledStr::plain(text),
+            HorizontalAlignment::Leading,
+            env,
+        );
     }
 
     fn render_text_config(
@@ -5341,30 +5609,43 @@ impl HydrolysisRenderer {
         text: Native<TextConfig>,
         env: &Environment,
     ) {
+        let text = text.into_inner();
         let styled = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&text.into_inner().content)
+            renderer.read_signal(&text.content)
         };
-        Self::render_styled_text(state, ctx, styled, env);
+        let alignment = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&text.paragraph_alignment)
+        };
+        Self::render_styled_text(state, ctx, styled, alignment, env);
     }
 
     fn render_styled_text(
         state: &mut HydroState,
         ctx: RenderContext,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        Self::render_styled_text_limited(state, ctx, styled, env, None);
+        Self::render_styled_text_limited(state, ctx, styled, alignment, env, None);
     }
 
     fn render_styled_text_limited(
         state: &mut HydroState,
         ctx: RenderContext,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
         max_lines: Option<usize>,
     ) {
-        let layout = Self::build_text_layout(state, styled, env, Some(ctx.bounds.width() as f32));
+        let layout = Self::build_text_layout(
+            state,
+            styled,
+            alignment,
+            env,
+            Some(ctx.bounds.width() as f32),
+        );
         Self::draw_text_layout(ctx, &layout, max_lines);
     }
 
@@ -5415,6 +5696,7 @@ impl HydrolysisRenderer {
     fn build_text_layout(
         state: &mut HydroState,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
     ) -> parley::Layout<[u8; 4]> {
@@ -5460,10 +5742,51 @@ impl HydrolysisRenderer {
         layout.break_all_lines(max_width);
         layout.align(
             max_width,
-            parley::Alignment::Start,
+            parley_alignment(alignment),
             parley::AlignmentOptions::default(),
         );
         layout
+    }
+
+    fn measure_text_dimensions(
+        state: &mut HydroState,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        max_width: Option<f32>,
+        max_lines: Option<usize>,
+    ) -> ViewDimensions {
+        let layout = Self::build_text_layout(state, styled, alignment, env, max_width);
+        if layout.is_empty() {
+            return ViewDimensions::new(LayoutSize::zero());
+        }
+
+        let mut width = 0.0_f32;
+        let mut height = 0.0_f32;
+        let mut first_baseline = None;
+        let mut last_baseline = None;
+
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
+            let metrics = line.metrics();
+            width = width.max(metrics.advance);
+            height += metrics.line_height;
+            if first_baseline.is_none() {
+                first_baseline = Some(metrics.baseline);
+            }
+            last_baseline = Some(metrics.baseline);
+        }
+
+        let mut dimensions = ViewDimensions::new(LayoutSize::new(width, height));
+        if let Some(first_baseline) = first_baseline {
+            dimensions.set_vertical(VerticalAlignment::FirstBaseline, first_baseline);
+        }
+        if let Some(last_baseline) = last_baseline {
+            dimensions.set_vertical(VerticalAlignment::LastBaseline, last_baseline);
+        }
+        dimensions
     }
 
     fn measure_text_intrinsic_size(
@@ -5471,7 +5794,15 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) -> LayoutSize {
-        Self::measure_text_intrinsic_size_with_line_limit(state, styled, env, None)
+        Self::measure_text_dimensions(
+            state,
+            styled,
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            None,
+        )
+        .size
     }
 
     fn measure_text_intrinsic_size_with_line_limit(
@@ -5480,21 +5811,15 @@ impl HydrolysisRenderer {
         env: &Environment,
         max_lines: Option<usize>,
     ) -> LayoutSize {
-        let layout = Self::build_text_layout(state, styled, env, None);
-        if max_lines.is_none() {
-            return LayoutSize::new(layout.full_width(), layout.height());
-        }
-        let mut width = 0.0f32;
-        let mut height = 0.0f32;
-        for (index, line) in layout.lines().enumerate() {
-            if max_lines.is_some_and(|limit| index >= limit) {
-                break;
-            }
-            let metrics = line.metrics();
-            width = width.max(metrics.advance);
-            height += metrics.line_height;
-        }
-        LayoutSize::new(width, height)
+        Self::measure_text_dimensions(
+            state,
+            styled,
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            max_lines,
+        )
+        .size
     }
 
     fn push_text_style(
@@ -6138,6 +6463,7 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             display_styled,
+            HorizontalAlignment::Leading,
             env,
             line_limit,
         );
@@ -6148,6 +6474,7 @@ impl HydrolysisRenderer {
         let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(committed_with_preedit),
+            HorizontalAlignment::Leading,
             env,
             Some(text_bounds.width() as f32),
         );
@@ -6276,12 +6603,14 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             masked_display,
+            HorizontalAlignment::Leading,
             env,
             Some(1),
         );
         let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(masked),
+            HorizontalAlignment::Leading,
             env,
             Some(text_bounds.width() as f32),
         );
@@ -6424,6 +6753,7 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             StyledStr::plain(selected_text),
+            HorizontalAlignment::Leading,
             env,
         );
 
@@ -6501,6 +6831,7 @@ impl HydrolysisRenderer {
                     ),
                 ),
                 StyledStr::plain(option_texts[index].clone()),
+                HorizontalAlignment::Leading,
                 env,
             );
 
@@ -6603,6 +6934,7 @@ impl HydrolysisRenderer {
                     vello::kurbo::Rect::new(0.0, 0.0, label_rect.width(), label_rect.height()),
                 ),
                 label,
+                HorizontalAlignment::Leading,
                 env,
             );
 
@@ -6665,8 +6997,8 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
-            let intrinsic = measure_view_intrinsic(&content, state, env);
-            state.dynamic_intrinsic_cache.insert(identity, intrinsic);
+            let dimensions = measure_view_dimensions(&content, state, env);
+            state.dynamic_intrinsic_cache.insert(identity, dimensions);
             let local_ctx = RenderContext {
                 renderer_ptr: ctx.renderer_ptr,
                 transform: vello::kurbo::Affine::IDENTITY,
@@ -6703,7 +7035,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let styled = StyledStr::plain(icon.into_inner().name);
-        Self::render_styled_text(state, ctx, styled, env);
+        Self::render_styled_text(state, ctx, styled, HorizontalAlignment::Leading, env);
     }
 
     fn render_gpu_surface(
@@ -9803,6 +10135,8 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
+        HorizontalAlignmentGuide,
+        VerticalAlignmentGuide,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityHidden,
@@ -9925,6 +10259,8 @@ fn normalize_layout_view_with_budget(
     );
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
+        HorizontalAlignmentGuide,
+        VerticalAlignmentGuide,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityHidden,
@@ -9984,78 +10320,6 @@ fn estimate_layout_intrinsic<'a>(
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
-}
-
-fn estimate_intrinsic_size(
-    view: &AnyView,
-    state: &mut HydroState,
-    env: &Environment,
-) -> LayoutSize {
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return estimate_intrinsic_size(&metadata.content, state, &metadata.value);
-    }
-
-    if let Some(content) = passthrough_content(view) {
-        return estimate_intrinsic_size(content, state, env);
-    }
-
-    if view.downcast_ref::<()>().is_some() {
-        return LayoutSize::zero();
-    }
-
-    if view.downcast_ref::<Canvas>().is_some() {
-        return LayoutSize::zero();
-    }
-
-    if let Some(text) = view.downcast_ref::<Str>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<&'static str>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(*text),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<String>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Text>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(state, text.content().get(), env);
-    }
-
-    macro_rules! try_native_intrinsic {
-        ($ty:ty) => {
-            if let Some(intrinsic) = intrinsic_for_native::<$ty>(view, state, env) {
-                return intrinsic;
-            }
-        };
-    }
-    hydro_native_view_types!(try_native_intrinsic);
-
-    if view.downcast_ref::<Divider>().is_some() {
-        return LayoutSize::new(1.0, 1.0);
-    }
-
-    panic!(
-        "hydrolysis intrinsic estimation encountered unsupported view type {}",
-        view.name()
-    );
 }
 
 fn resolved_color_to_peniko(color: ResolvedColor) -> vello::peniko::Color {
@@ -10277,6 +10541,16 @@ fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
         TextFontWeight::Black => 900.0,
     };
     parley::FontWeight::new(value)
+}
+
+fn parley_alignment(alignment: HorizontalAlignment) -> parley::Alignment {
+    if alignment == HorizontalAlignment::Leading {
+        parley::Alignment::Start
+    } else if alignment == HorizontalAlignment::Trailing {
+        parley::Alignment::End
+    } else {
+        parley::Alignment::Center
+    }
 }
 
 fn transformed_rect(
