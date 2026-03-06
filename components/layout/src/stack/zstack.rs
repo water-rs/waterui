@@ -5,13 +5,51 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Layout, LazyContainer, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    container::FixedContainer, stack::Alignment,
+    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    ViewDimensions,
+    container::FixedContainer,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
-    size: Size,
+    dimensions: ViewDimensions,
+}
+
+impl ChildMeasurement {
+    const fn size(&self) -> Size {
+        self.dimensions.size
+    }
+}
+
+fn zstack_horizontal_metrics(
+    measurements: &[ChildMeasurement],
+    alignment: HorizontalAlignment,
+) -> (f32, f32) {
+    let mut max_leading = 0.0_f32;
+    let mut max_trailing = 0.0_f32;
+    for measurement in measurements {
+        let size = measurement.size();
+        let guide = measurement.dimensions.horizontal(alignment).clamp(0.0, size.width);
+        max_leading = max_leading.max(guide);
+        max_trailing = max_trailing.max((size.width - guide).max(0.0));
+    }
+    (max_leading, max_trailing)
+}
+
+fn zstack_vertical_metrics(
+    measurements: &[ChildMeasurement],
+    alignment: VerticalAlignment,
+) -> (f32, f32) {
+    let mut max_above = 0.0_f32;
+    let mut max_below = 0.0_f32;
+    for measurement in measurements {
+        let size = measurement.size();
+        let guide = measurement.dimensions.vertical(alignment).clamp(0.0, size.height);
+        max_above = max_above.max(guide);
+        max_below = max_below.max((size.height - guide).max(0.0));
+    }
+    (max_above, max_below)
 }
 
 /// Stacks an arbitrary number of children with a shared alignment.
@@ -42,24 +80,16 @@ impl Layout for ZStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(proposal),
+                dimensions: child.dimensions(proposal),
             })
             .collect();
 
-        // ZStack's size is determined by the largest child
-        let max_width = measurements
-            .iter()
-            .map(|m| m.size.width)
-            .filter(|w| w.is_finite())
-            .max_by(f32::total_cmp)
-            .unwrap_or(0.0);
-
-        let max_height = measurements
-            .iter()
-            .map(|m| m.size.height)
-            .filter(|h| h.is_finite())
-            .max_by(f32::total_cmp)
-            .unwrap_or(0.0);
+        let (max_leading, max_trailing) =
+            zstack_horizontal_metrics(&measurements, self.alignment.horizontal());
+        let (max_above, max_below) =
+            zstack_vertical_metrics(&measurements, self.alignment.vertical());
+        let max_width = max_leading + max_trailing;
+        let max_height = max_above + max_below;
 
         // Respect parent constraints - don't exceed them
         let final_width = proposal
@@ -84,72 +114,100 @@ impl Layout for ZStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(child_proposal),
+                dimensions: child.dimensions(child_proposal),
             })
             .collect();
+
+        let horizontal = self.alignment.horizontal();
+        let vertical = self.alignment.vertical();
+        let target_x = if horizontal == HorizontalAlignment::Leading {
+            0.0
+        } else if horizontal == HorizontalAlignment::Trailing {
+            bounds.width()
+        } else if horizontal == HorizontalAlignment::Center {
+            bounds.width() * 0.5
+        } else {
+            let (max_leading, _) = zstack_horizontal_metrics(&measurements, horizontal);
+            max_leading
+        };
+        let target_y = if vertical == VerticalAlignment::Top {
+            0.0
+        } else if vertical == VerticalAlignment::Bottom {
+            bounds.height()
+        } else if vertical == VerticalAlignment::Center {
+            bounds.height() * 0.5
+        } else {
+            let (max_above, _) = zstack_vertical_metrics(&measurements, vertical);
+            max_above
+        };
 
         // Place each child according to alignment
         let mut rects = Vec::with_capacity(children.len());
 
         for measurement in &measurements {
             // Handle infinite dimensions (axis-expanding views)
-            let child_width = if measurement.size.width.is_infinite() {
+            let child_width = if measurement.dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                measurement.size.width.min(bounds.width())
+                measurement.dimensions.size.width.min(bounds.width())
             };
 
-            let child_height = if measurement.size.height.is_infinite() {
+            let child_height = if measurement.dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                measurement.size.height.min(bounds.height())
+                measurement.dimensions.size.height.min(bounds.height())
             };
 
             let child_size = Size::new(child_width, child_height);
-            let (x, y) = self.calculate_position(&bounds, child_size);
+            let mut adjusted_dimensions = measurement.dimensions.clone();
+            adjusted_dimensions.size = child_size;
+            let x = bounds.x()
+                + target_x
+                - adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width);
+            let y = bounds.y()
+                + target_y
+                - adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height);
 
             rects.push(Rect::new(Point::new(x, y), child_size));
         }
 
         rects
     }
-}
 
-impl ZStackLayout {
-    /// Calculate the position of a child within the `ZStack` bounds based on alignment
-    fn calculate_position(&self, bound: &Rect, child_size: Size) -> (f32, f32) {
-        let available_width = bound.width();
-        let available_height = bound.height();
-
-        match self.alignment {
-            Alignment::TopLeading => (bound.x(), bound.y()),
-            Alignment::Top => (
-                bound.x() + (available_width - child_size.width) / 2.0,
-                bound.y(),
-            ),
-            Alignment::TopTrailing => (bound.max_x() - child_size.width, bound.y()),
-            Alignment::Leading => (
-                bound.x(),
-                bound.y() + (available_height - child_size.height) / 2.0,
-            ),
-            Alignment::Center => (
-                bound.x() + (available_width - child_size.width) / 2.0,
-                bound.y() + (available_height - child_size.height) / 2.0,
-            ),
-            Alignment::Trailing => (
-                bound.max_x() - child_size.width,
-                bound.y() + (available_height - child_size.height) / 2.0,
-            ),
-            Alignment::BottomLeading => (bound.x(), bound.max_y() - child_size.height),
-            Alignment::Bottom => (
-                bound.x() + (available_width - child_size.width) / 2.0,
-                bound.max_y() - child_size.height,
-            ),
-            Alignment::BottomTrailing => (
-                bound.max_x() - child_size.width,
-                bound.max_y() - child_size.height,
-            ),
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == self.alignment.horizontal() {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_horizontal(alignment))
+                .min_by(f32::total_cmp);
         }
+        None
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == VerticalAlignment::LastBaseline {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .max_by(f32::total_cmp);
+        }
+        if alignment == VerticalAlignment::FirstBaseline || alignment == self.alignment.vertical() {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .min_by(f32::total_cmp);
+        }
+        None
     }
 }
 
