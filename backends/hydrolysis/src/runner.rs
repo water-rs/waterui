@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+#[cfg(not(feature = "winit"))]
+use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 #[cfg(feature = "winit")]
 use std::{process::Command, str};
@@ -5,7 +9,7 @@ use std::{process::Command, str};
 use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
-use waterui::window::{Window, WindowBackground};
+use waterui::window::{Window, WindowBackground, WindowManager};
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::view::Hook;
@@ -14,7 +18,9 @@ use crate::env::{parse_bool_env, parse_positive_u64_env};
 #[cfg(not(feature = "winit"))]
 use crate::platform::OffscreenWindow;
 use crate::platform::PlatformWindow;
-use crate::renderer::HydrolysisRenderer;
+use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
+#[cfg(feature = "winit")]
+use crate::renderer::HydrolysisWindowOrigin;
 
 fn init_main_thread_executors() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
@@ -24,6 +30,12 @@ fn init_main_thread_executors() {
 fn install_native_component_hooks(env: &mut Environment) {
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
+    }));
+}
+
+fn install_window_manager(env: &mut Environment, pending_windows: Rc<RefCell<Vec<Window>>>) {
+    env.insert(WindowManager::new(move |window| {
+        pending_windows.borrow_mut().push(window);
     }));
 }
 
@@ -338,6 +350,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 .expect("hydrolysis runner: rebuild iteration counter overflow");
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
+            runtime.renderer.set_window_bounds(bounds);
             let content = runtime.window.build_content();
             runtime.renderer.dispatch_with_transform(
                 content,
@@ -346,6 +359,9 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 root_transform,
                 vello::kurbo::Affine::IDENTITY,
             );
+            runtime
+                .renderer
+                .render_active_text_context_menu_overlay(env, root_transform);
             runtime.renderer.finish_rebuild_frame();
             runtime
                 .renderer
@@ -419,13 +435,17 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 pub fn run(app: App) {
     init_main_thread_executors();
     let (windows, env) = app.into_parts();
-    let mut env = env;
+    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
+    install_window_manager(&mut env, Rc::clone(&pending_window_queue));
+    env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
-    for window in windows {
+    let mut pending_windows = VecDeque::from(windows);
+    while let Some(window) = pending_windows.pop_front() {
         let frame = window.frame.get();
         let width = frame.width().max(1.0) as u32;
         let height = frame.height().max(1.0) as u32;
@@ -437,6 +457,7 @@ pub fn run(app: App) {
         };
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env);
+        pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }
 
@@ -459,9 +480,11 @@ fn initialize_tracing_from_env() {
 
 #[cfg(feature = "winit")]
 mod winit_runner {
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::future::Future;
     use std::mem;
+    use std::rc::Rc;
     use std::sync::{Arc, mpsc};
     use std::time::Instant;
 
@@ -477,19 +500,23 @@ mod winit_runner {
     use waterui::app::App;
     use waterui::window::{Window, WindowState};
     use waterui_core::Environment;
-    use waterui_core::layout::Size;
+    use waterui_core::layout::{Point, Rect, Size};
+    use winit::platform::wayland::EventLoopExtWayland;
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::window::{Window as NativeWindow, WindowId};
 
     use crate::platform::{InputEvent, KeyState, PlatformWindow, WinitWindow};
-    use crate::renderer::HydrolysisRenderer;
+    use crate::renderer::{
+        HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
+    };
     use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, render_window};
 
     #[derive(Debug)]
     enum RunnerEvent {
         PollLocalTasks,
+        MountPendingWindows,
         AccessKit(AccessKitEvent),
     }
 
@@ -538,15 +565,30 @@ mod winit_runner {
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
         let (windows, env) = app.into_parts();
-        let mut env = env;
+        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
+        env.insert(if event_loop.is_wayland() {
+            HydrolysisTextContextMenuMode::Overlay
+        } else {
+            HydrolysisTextContextMenuMode::NativeWindow
+        });
+        env.insert(waterui::window::WindowManager::new({
+            let pending_window_queue = Rc::clone(&pending_window_queue);
+            let event_proxy = event_proxy.clone();
+            move |window| {
+                pending_window_queue.borrow_mut().push(window);
+                let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+            }
+        }));
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
         ));
         let mut runner = WinitRunner {
             env,
             pending_windows: windows,
+            pending_window_queue,
             windows: HashMap::new(),
             accesskit_adapters: HashMap::new(),
             accessibility_enabled: super::probe_accessibility_runtime(),
@@ -564,6 +606,7 @@ mod winit_runner {
     struct WinitRunner {
         env: Environment,
         pending_windows: Vec<Window>,
+        pending_window_queue: Rc<RefCell<Vec<Window>>>,
         windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
         accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
         accessibility_enabled: bool,
@@ -587,6 +630,21 @@ mod winit_runner {
             (f64::from(value) / scale_factor) as f32
         }
 
+        fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
+            let native_window = runtime.platform.native_window();
+            if let Ok(position) = native_window.outer_position() {
+                let logical = position.to_logical::<f64>(native_window.scale_factor());
+                return HydrolysisWindowOrigin {
+                    x: logical.x as f32,
+                    y: logical.y as f32,
+                };
+            }
+            HydrolysisWindowOrigin {
+                x: runtime.window.frame.get().x(),
+                y: runtime.window.frame.get().y(),
+            }
+        }
+
         fn create_runtime_window(
             &mut self,
             event_loop: &ActiveEventLoop,
@@ -597,6 +655,10 @@ mod winit_runner {
                 .with_title(window.title.get().as_str())
                 .with_resizable(window.resizable)
                 .with_visible(false)
+                .with_decorations(!matches!(
+                    window.style,
+                    waterui::window::WindowStyle::Borderless
+                ))
                 .with_inner_size(winit::dpi::LogicalSize::new(
                     frame.width() as f64,
                     frame.height() as f64,
@@ -643,7 +705,8 @@ mod winit_runner {
         }
 
         fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
-            let pending = mem::take(&mut self.pending_windows);
+            let mut pending = mem::take(&mut self.pending_windows);
+            pending.extend(self.pending_window_queue.borrow_mut().drain(..));
             for window in pending {
                 let (runtime, adapter) = self.create_runtime_window(event_loop, window);
                 let id = runtime.platform.id();
@@ -665,6 +728,13 @@ mod winit_runner {
                         runtime.window.state.set(WindowState::Closed);
                         should_close = true;
                     }
+                    InputEvent::Moved { x, y } => {
+                        let frame = runtime.window.frame.get();
+                        runtime
+                            .window
+                            .frame
+                            .set(Rect::new(Point::new(x, y), *frame.size()));
+                    }
                     InputEvent::Resize { width, height } => {
                         let frame = runtime.window.frame.get();
                         let logical_width = Self::physical_to_logical_dimension(
@@ -684,7 +754,10 @@ mod winit_runner {
                     }
                     InputEvent::PointerDown { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
-                        let changed = runtime.renderer.handle_pointer_down(x, y, button, env);
+                        let input_env = env.extending(Self::current_window_origin(runtime));
+                        let changed = runtime
+                            .renderer
+                            .handle_pointer_down(x, y, button, &input_env);
                         tracing::trace!(
                             target: "waterui::hydrolysis::input",
                             event = "pointer_down",
@@ -698,7 +771,8 @@ mod winit_runner {
                     }
                     InputEvent::PointerUp { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
-                        let changed = runtime.renderer.handle_pointer_up(x, y, button, env);
+                        let input_env = env.extending(Self::current_window_origin(runtime));
+                        let changed = runtime.renderer.handle_pointer_up(x, y, button, &input_env);
                         tracing::trace!(
                             target: "waterui::hydrolysis::input",
                             event = "pointer_up",
@@ -712,7 +786,8 @@ mod winit_runner {
                     }
                     InputEvent::PointerMove { x, y } => {
                         runtime.pointer_position = Some((x, y));
-                        let changed = runtime.renderer.handle_pointer_move(x, y, env);
+                        let input_env = env.extending(Self::current_window_origin(runtime));
+                        let changed = runtime.renderer.handle_pointer_move(x, y, &input_env);
                         tracing::trace!(
                             target: "waterui::hydrolysis::input",
                             event = "pointer_move",
@@ -724,7 +799,8 @@ mod winit_runner {
                         schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::PointerCancel => {
-                        let changed = runtime.renderer.handle_pointer_cancel(env);
+                        let input_env = env.extending(Self::current_window_origin(runtime));
+                        let changed = runtime.renderer.handle_pointer_cancel(&input_env);
                         tracing::trace!(
                             target: "waterui::hydrolysis::input",
                             event = "pointer_cancel",
@@ -881,14 +957,20 @@ mod winit_runner {
             event: WindowEvent,
         ) {
             self.drain_local_executor_queue();
-            let Some(runtime) = self.windows.get_mut(&window_id) else {
-                return;
+            let should_close = {
+                let Some(runtime) = self.windows.get_mut(&window_id) else {
+                    return;
+                };
+                if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
+                    adapter.process_event(runtime.platform.native_window(), &event);
+                }
+                runtime.platform.handle_window_event(&event);
+                Self::handle_input_events(runtime, &self.env)
             };
-            if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
-                adapter.process_event(runtime.platform.native_window(), &event);
+
+            if !self.pending_window_queue.borrow().is_empty() || !self.pending_windows.is_empty() {
+                self.mount_pending_windows(event_loop);
             }
-            runtime.platform.handle_window_event(&event);
-            let should_close = Self::handle_input_events(runtime, &self.env);
 
             if should_close {
                 self.windows.remove(&window_id);
@@ -900,6 +982,9 @@ mod winit_runner {
             }
 
             if let WindowEvent::RedrawRequested = event {
+                let Some(runtime) = self.windows.get_mut(&window_id) else {
+                    return;
+                };
                 render_window(runtime, &self.env);
                 if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
                     if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
@@ -962,6 +1047,9 @@ mod winit_runner {
         fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RunnerEvent) {
             match event {
                 RunnerEvent::PollLocalTasks => self.drain_local_executor_queue(),
+                RunnerEvent::MountPendingWindows => {
+                    self.mount_pending_windows(_event_loop);
+                }
                 RunnerEvent::AccessKit(event) => {
                     let Some(runtime) = self.windows.get_mut(&event.window_id) else {
                         return;
