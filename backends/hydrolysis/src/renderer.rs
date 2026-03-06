@@ -56,9 +56,8 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
-    HorizontalAlignment, HorizontalAlignmentGuide, Layout, PlacedSubview, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
-    VerticalAlignmentGuide, ViewDimensions,
+    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect as LayoutRect,
+    Size as LayoutSize, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
@@ -79,9 +78,7 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_layout::stack::{
-    Axis as StackAxis, HStackLayout, VStackLayout,
-};
+use waterui_layout::stack::{Axis as StackAxis, HStackLayout, VStackLayout};
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
@@ -1186,7 +1183,8 @@ impl<'a> HydroSubview<'a> {
 impl SubView for HydroSubview<'_> {
     fn dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
         let state = unsafe { &mut *self.state };
-        let mut dimensions = measure_view_dimensions_with_proposal(self.view, proposal, state, self.env);
+        let mut dimensions =
+            measure_view_dimensions_with_proposal(self.view, proposal, state, self.env);
 
         if self.stretch_axis.stretches_horizontal() {
             if let Some(width) = proposal.width {
@@ -1637,23 +1635,12 @@ fn measure_view_dimensions_with_proposal(
     env: &Environment,
 ) -> ViewDimensions {
     if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return measure_view_dimensions_with_proposal(&metadata.content, proposal, state, &metadata.value);
-    }
-
-    if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<HorizontalAlignmentGuide>>() {
-        let mut dimensions =
-            measure_view_dimensions_with_proposal(&metadata.content, proposal, state, env);
-        let value = metadata.value.resolve(&dimensions);
-        dimensions.set_horizontal(metadata.value.alignment(), value);
-        return dimensions;
-    }
-
-    if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<VerticalAlignmentGuide>>() {
-        let mut dimensions =
-            measure_view_dimensions_with_proposal(&metadata.content, proposal, state, env);
-        let value = metadata.value.resolve(&dimensions);
-        dimensions.set_vertical(metadata.value.alignment(), value);
-        return dimensions;
+        return measure_view_dimensions_with_proposal(
+            &metadata.content,
+            proposal,
+            state,
+            &metadata.value,
+        );
     }
 
     if let Some(content) = passthrough_content(view) {
@@ -1753,6 +1740,17 @@ fn measure_layout_dimensions<'a>(
     let mut dimensions = ViewDimensions::new(size);
     let mut horizontal_keys = Vec::new();
     let mut vertical_keys = Vec::new();
+
+    for alignment in layout.explicit_horizontal_alignments() {
+        if !horizontal_keys.contains(&alignment) {
+            horizontal_keys.push(alignment);
+        }
+    }
+    for alignment in layout.explicit_vertical_alignments() {
+        if !vertical_keys.contains(&alignment) {
+            vertical_keys.push(alignment);
+        }
+    }
 
     for child in &placed_subviews {
         let child_dimensions = child.dimensions();
@@ -3177,7 +3175,9 @@ impl HydroNativeView for Native<Dynamic> {
         let Some(dimensions) = initial else {
             panic!("hydrolysis Dynamic intrinsic requires an initial view before layout");
         };
-        state.dynamic_intrinsic_cache.insert(identity, dimensions.clone());
+        state
+            .dynamic_intrinsic_cache
+            .insert(identity, dimensions.clone());
         dimensions.size
     }
 
@@ -3196,7 +3196,8 @@ impl HydroNativeView for Native<Dynamic> {
         }
 
         let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
+            content
+                .map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node");
@@ -3205,7 +3206,9 @@ impl HydroNativeView for Native<Dynamic> {
             panic!("hydrolysis Dynamic dimensions requires an initial view before layout");
         };
         if proposal == ProposalSize::UNSPECIFIED {
-            state.dynamic_intrinsic_cache.insert(identity, dimensions.clone());
+            state
+                .dynamic_intrinsic_cache
+                .insert(identity, dimensions.clone());
         }
         dimensions
     }
@@ -5794,15 +5797,8 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) -> LayoutSize {
-        Self::measure_text_dimensions(
-            state,
-            styled,
-            HorizontalAlignment::Leading,
-            env,
-            None,
-            None,
-        )
-        .size
+        Self::measure_text_dimensions(state, styled, HorizontalAlignment::Leading, env, None, None)
+            .size
     }
 
     fn measure_text_intrinsic_size_with_line_limit(
@@ -10135,8 +10131,6 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
-        HorizontalAlignmentGuide,
-        VerticalAlignmentGuide,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityHidden,
@@ -10259,8 +10253,6 @@ fn normalize_layout_view_with_budget(
     );
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
-        HorizontalAlignmentGuide,
-        VerticalAlignmentGuide,
         AccessibilityLabel,
         AccessibilityRole,
         AccessibilityHidden,
@@ -10956,4 +10948,39 @@ fn draw_stepper_button(
         None,
         &vello::kurbo::RoundedRect::from_rect(bounds, 6.0),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui::ViewExt as _;
+
+    #[test]
+    fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
+        let env = Environment::default();
+        let child = normalize_layout_view(
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            &env,
+        );
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: 0.0,
+        };
+        let mut state = HydroState::default();
+        let dimensions = measure_layout_dimensions(
+            &layout,
+            [&child],
+            ProposalSize::UNSPECIFIED,
+            &mut state,
+            &env,
+        );
+
+        assert_eq!(
+            dimensions.explicit_horizontal(HorizontalAlignment::Leading),
+            Some(10.0)
+        );
+    }
 }
