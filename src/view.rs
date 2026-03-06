@@ -17,10 +17,7 @@ pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
-    layout::{
-        HorizontalAlignment, HorizontalAlignmentGuide, VerticalAlignment,
-        VerticalAlignmentGuide, ViewDimensions,
-    },
+    layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
 };
@@ -34,7 +31,7 @@ use waterui_graphics::filter_view::{
 };
 
 use waterui_layout::{
-    EdgeSet, IgnoreSafeArea, Overlay,
+    EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -469,21 +466,27 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Overrides a horizontal alignment guide for this view.
-    fn horizontal_alignment_guide(
+    fn horizontal_alignment_guide<F>(
         self,
         alignment: HorizontalAlignment,
-        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
-    ) -> IgnorableMetadata<HorizontalAlignmentGuide> {
-        IgnorableMetadata::new(self, HorizontalAlignmentGuide::new(alignment, compute))
+        compute: F,
+    ) -> HorizontalAlignmentGuide<Self, F>
+    where
+        F: Fn(&ViewDimensions) -> f32 + 'static,
+    {
+        HorizontalAlignmentGuide::new(self, alignment, compute)
     }
 
     /// Overrides a vertical alignment guide for this view.
-    fn vertical_alignment_guide(
+    fn vertical_alignment_guide<F>(
         self,
         alignment: VerticalAlignment,
-        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
-    ) -> IgnorableMetadata<VerticalAlignmentGuide> {
-        IgnorableMetadata::new(self, VerticalAlignmentGuide::new(alignment, compute))
+        compute: F,
+    ) -> VerticalAlignmentGuide<Self, F>
+    where
+        F: Fn(&ViewDimensions) -> f32 + 'static,
+    {
+        VerticalAlignmentGuide::new(self, alignment, compute)
     }
 
     /// Adds padding to this view with custom edge insets.
