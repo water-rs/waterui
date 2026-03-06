@@ -41,6 +41,8 @@ pub enum WuiVideoEventType {
     Error = 2,
     Buffering = 3,
     BufferingEnded = 4,
+    BufferLevel = 5,
+    PlaybackMetrics = 6,
 }
 
 /// FFI representation of a video event.
@@ -48,31 +50,71 @@ pub enum WuiVideoEventType {
 pub struct WuiVideoEvent {
     pub event_type: WuiVideoEventType,
     pub error_message: WuiStr,
+    pub buffered_ms: u32,
+    pub av_drift_ms: f32,
+    pub dropped_video_frames: u64,
+}
+
+impl WuiVideoEvent {
+    fn empty(event_type: WuiVideoEventType) -> Self {
+        Self {
+            event_type,
+            error_message: "".into_ffi(),
+            buffered_ms: 0,
+            av_drift_ms: 0.0,
+            dropped_video_frames: 0,
+        }
+    }
+}
+
+fn into_video_event(ffi_event: WuiVideoEvent) -> VideoEvent {
+    match ffi_event.event_type {
+        WuiVideoEventType::ReadyToPlay => VideoEvent::ReadyToPlay,
+        WuiVideoEventType::Ended => VideoEvent::Ended,
+        WuiVideoEventType::Buffering => VideoEvent::Buffering,
+        WuiVideoEventType::BufferingEnded => VideoEvent::BufferingEnded,
+        WuiVideoEventType::BufferLevel => VideoEvent::BufferLevel {
+            buffered_ms: ffi_event.buffered_ms,
+        },
+        WuiVideoEventType::PlaybackMetrics => VideoEvent::PlaybackMetrics {
+            av_drift_ms: ffi_event.av_drift_ms,
+            dropped_video_frames: ffi_event.dropped_video_frames,
+        },
+        WuiVideoEventType::Error => {
+            let message_str = unsafe { ffi_event.error_message.into_rust() };
+            VideoEvent::Error {
+                message: String::from(message_str),
+            }
+        }
+    }
 }
 
 impl IntoFFI for VideoEvent {
     type FFI = WuiVideoEvent;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            VideoEvent::ReadyToPlay => WuiVideoEvent {
-                event_type: WuiVideoEventType::ReadyToPlay,
-                error_message: "".into_ffi(),
+            VideoEvent::ReadyToPlay => WuiVideoEvent::empty(WuiVideoEventType::ReadyToPlay),
+            VideoEvent::Ended => WuiVideoEvent::empty(WuiVideoEventType::Ended),
+            VideoEvent::Buffering => WuiVideoEvent::empty(WuiVideoEventType::Buffering),
+            VideoEvent::BufferingEnded => WuiVideoEvent::empty(WuiVideoEventType::BufferingEnded),
+            VideoEvent::BufferLevel { buffered_ms } => WuiVideoEvent {
+                event_type: WuiVideoEventType::BufferLevel,
+                buffered_ms,
+                ..WuiVideoEvent::empty(WuiVideoEventType::BufferLevel)
             },
-            VideoEvent::Ended => WuiVideoEvent {
-                event_type: WuiVideoEventType::Ended,
-                error_message: "".into_ffi(),
-            },
-            VideoEvent::Buffering => WuiVideoEvent {
-                event_type: WuiVideoEventType::Buffering,
-                error_message: "".into_ffi(),
-            },
-            VideoEvent::BufferingEnded => WuiVideoEvent {
-                event_type: WuiVideoEventType::BufferingEnded,
-                error_message: "".into_ffi(),
+            VideoEvent::PlaybackMetrics {
+                av_drift_ms,
+                dropped_video_frames,
+            } => WuiVideoEvent {
+                event_type: WuiVideoEventType::PlaybackMetrics,
+                av_drift_ms,
+                dropped_video_frames,
+                ..WuiVideoEvent::empty(WuiVideoEventType::PlaybackMetrics)
             },
             VideoEvent::Error { message } => WuiVideoEvent {
                 event_type: WuiVideoEventType::Error,
                 error_message: waterui::Str::from(message).into_ffi(),
+                ..WuiVideoEvent::empty(WuiVideoEventType::Error)
             },
         }
     }
@@ -103,20 +145,7 @@ impl IntoFFI for VideoConfig {
     fn into_ffi(self) -> Self::FFI {
         // Convert the Rust closure to a WuiFn
         let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            let rust_event = match ffi_event.event_type {
-                WuiVideoEventType::ReadyToPlay => VideoEvent::ReadyToPlay,
-                WuiVideoEventType::Ended => VideoEvent::Ended,
-                WuiVideoEventType::Buffering => VideoEvent::Buffering,
-                WuiVideoEventType::BufferingEnded => VideoEvent::BufferingEnded,
-                WuiVideoEventType::Error => {
-                    let message_str = unsafe { ffi_event.error_message.into_rust() };
-                    VideoEvent::Error {
-                        message: String::from(message_str),
-                    }
-                }
-            };
-
-            (self.on_event)(rust_event);
+            (self.on_event)(into_video_event(ffi_event));
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
@@ -157,20 +186,7 @@ impl IntoFFI for VideoPlayerConfig {
     fn into_ffi(self) -> Self::FFI {
         // Convert the Rust closure to a WuiFn
         let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            let rust_event = match ffi_event.event_type {
-                WuiVideoEventType::ReadyToPlay => VideoEvent::ReadyToPlay,
-                WuiVideoEventType::Ended => VideoEvent::Ended,
-                WuiVideoEventType::Buffering => VideoEvent::Buffering,
-                WuiVideoEventType::BufferingEnded => VideoEvent::BufferingEnded,
-                WuiVideoEventType::Error => {
-                    let message_str = unsafe { ffi_event.error_message.into_rust() };
-                    VideoEvent::Error {
-                        message: String::from(message_str),
-                    }
-                }
-            };
-
-            (self.on_event)(rust_event);
+            (self.on_event)(into_video_event(ffi_event));
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
