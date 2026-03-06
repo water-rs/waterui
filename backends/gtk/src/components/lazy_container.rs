@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
-use nami::{Signal, SignalExt};
-use waterui_core::views::Views;
+use nami::Signal;
+use waterui_core::views::{SharedAnyViews, Views};
 use waterui_core::{Environment, Native};
 use waterui_layout::StretchAxis;
 use waterui_layout::container::LazyContainer;
@@ -19,6 +19,7 @@ use crate::util::store_watcher_guard;
 impl GtkComponent for Native<LazyContainer> {
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let (layout, contents) = self.into_inner().into_inner();
+        let contents = SharedAnyViews::from(contents);
         let env = env.clone();
 
         // Create ListStore with placeholder objects (indices)
