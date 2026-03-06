@@ -22,7 +22,7 @@ use waterui_core::View;
 
 use crate::{
     HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, container::FixedContainer,
+    VerticalAlignment, ViewDimensions, container::FixedContainer,
 };
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
@@ -46,7 +46,8 @@ impl Layout for BackgroundLayout {
         children
             .get(1)
             .expect("BackgroundLayout requires a content child at index 1")
-            .size_that_fits(proposal)
+            .measure(proposal)
+            .size
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
@@ -160,8 +161,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None

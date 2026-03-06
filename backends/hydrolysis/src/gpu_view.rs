@@ -1,6 +1,6 @@
 use waterui::View;
 use waterui_core::Environment;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, SceneViewMergeToParent};
 
 use crate::renderer::HydrolysisRenderer;
@@ -89,11 +89,11 @@ impl<V> SubView for HydrolysisGpuView<V>
 where
     V: View + Clone + 'static,
 {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        Size::new(
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

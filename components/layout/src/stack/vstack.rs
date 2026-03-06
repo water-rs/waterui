@@ -6,9 +6,7 @@ use waterui_core::{AnyView, View, env::with, id::Identifiable, view::TupleViews,
 
 use crate::{
     HorizontalAlignment, Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size,
-    StretchAxis, SubView, ViewDimensions,
-    container::FixedContainer,
-    stack::Axis,
+    StretchAxis, SubView, ViewDimensions, container::FixedContainer, stack::Axis,
 };
 
 /// Layout engine shared by the public [`VStack`] view.
@@ -70,7 +68,9 @@ fn vstack_intrinsic_cross_metrics(
         .filter(|m| include_cross_axis_stretch || !m.stretches_cross_axis())
     {
         let size = measurement.size();
-        let guide = measurement.horizontal_guide(alignment).clamp(0.0, size.width);
+        let guide = measurement
+            .horizontal_guide(alignment)
+            .clamp(0.0, size.width);
         max_leading = max_leading.max(guide);
         max_trailing = max_trailing.max((size.width - guide).max(0.0));
     }
@@ -107,7 +107,7 @@ impl Layout for VStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(child_proposal),
+                dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -142,11 +142,8 @@ impl Layout for VStackLayout {
         // to ensure container can't shrink below any child's minimum.
         // Otherwise, exclude cross-axis stretching children from intrinsic width calculation.
         let is_min_size_query = proposal.width == Some(0.0);
-        let (max_leading, max_trailing) = vstack_intrinsic_cross_metrics(
-            &measurements,
-            self.alignment,
-            is_min_size_query,
-        );
+        let (max_leading, max_trailing) =
+            vstack_intrinsic_cross_metrics(&measurements, self.alignment, is_min_size_query);
         let max_width = max_leading + max_trailing;
 
         // VStack stretches horizontally (cross-axis), so use proposed width when available
@@ -171,7 +168,7 @@ impl Layout for VStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(child_proposal),
+                dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -202,8 +199,8 @@ impl Layout for VStackLayout {
 
         let (intrinsic_leading, _intrinsic_trailing) =
             vstack_intrinsic_cross_metrics(&measurements, self.alignment, false);
-        let guide_line = bounds.x()
-            + vstack_container_guide_offset(bounds, self.alignment, intrinsic_leading);
+        let guide_line =
+            bounds.x() + vstack_container_guide_offset(bounds, self.alignment, intrinsic_leading);
 
         // Place children
         let mut rects = Vec::with_capacity(children.len());
@@ -241,7 +238,9 @@ impl Layout for VStackLayout {
             } else if self.alignment == HorizontalAlignment::Trailing {
                 bounds.x() + bounds.width() - child_width
             } else {
-                let guide = adjusted_dimensions.horizontal(self.alignment).clamp(0.0, child_width);
+                let guide = adjusted_dimensions
+                    .horizontal(self.alignment)
+                    .clamp(0.0, child_width);
                 guide_line - guide
             };
 
@@ -409,8 +408,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis
