@@ -30,7 +30,10 @@ fn zstack_horizontal_metrics(
     let mut max_trailing = 0.0_f32;
     for measurement in measurements {
         let size = measurement.size();
-        let guide = measurement.dimensions.horizontal(alignment).clamp(0.0, size.width);
+        let guide = measurement
+            .dimensions
+            .horizontal(alignment)
+            .clamp(0.0, size.width);
         max_leading = max_leading.max(guide);
         max_trailing = max_trailing.max((size.width - guide).max(0.0));
     }
@@ -45,7 +48,10 @@ fn zstack_vertical_metrics(
     let mut max_below = 0.0_f32;
     for measurement in measurements {
         let size = measurement.size();
-        let guide = measurement.dimensions.vertical(alignment).clamp(0.0, size.height);
+        let guide = measurement
+            .dimensions
+            .vertical(alignment)
+            .clamp(0.0, size.height);
         max_above = max_above.max(guide);
         max_below = max_below.max((size.height - guide).max(0.0));
     }
@@ -80,7 +86,7 @@ impl Layout for ZStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(proposal),
+                dimensions: child.measure(proposal),
             })
             .collect();
 
@@ -114,7 +120,7 @@ impl Layout for ZStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(child_proposal),
+                dimensions: child.measure(child_proposal),
             })
             .collect();
 
@@ -161,12 +167,14 @@ impl Layout for ZStackLayout {
             let child_size = Size::new(child_width, child_height);
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = child_size;
-            let x = bounds.x()
-                + target_x
-                - adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width);
-            let y = bounds.y()
-                + target_y
-                - adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height);
+            let x = bounds.x() + target_x
+                - adjusted_dimensions
+                    .horizontal(horizontal)
+                    .clamp(0.0, child_size.width);
+            let y = bounds.y() + target_y
+                - adjusted_dimensions
+                    .vertical(vertical)
+                    .clamp(0.0, child_size.height);
 
             rects.push(Rect::new(Point::new(x, y), child_size));
         }
@@ -331,8 +339,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None

@@ -11,8 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    ViewDimensions, container::FixedContainer,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
@@ -41,7 +41,6 @@ impl OverlayLayout {
     pub const fn alignment_ref(&self) -> Alignment {
         self.alignment
     }
-
 }
 
 impl Layout for OverlayLayout {
@@ -56,7 +55,7 @@ impl Layout for OverlayLayout {
         // provides no intrinsic size, fall back to the parent's constraints.
         let base_size = children
             .first()
-            .map_or(Size::zero(), |c| c.size_that_fits(proposal));
+            .map_or(Size::zero(), |c| c.measure(proposal).size);
 
         let base_width = if base_size.width.is_finite() && base_size.width > 0.0 {
             base_size.width
@@ -87,7 +86,7 @@ impl Layout for OverlayLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(child_proposal),
+                dimensions: child.measure(child_proposal),
             })
             .collect();
 
@@ -136,7 +135,9 @@ impl Layout for OverlayLayout {
             } else if horizontal == HorizontalAlignment::Center {
                 bounds.width() * 0.5
             } else {
-                adjusted_dimensions.horizontal(horizontal).clamp(0.0, size.width)
+                adjusted_dimensions
+                    .horizontal(horizontal)
+                    .clamp(0.0, size.width)
             };
             let target_y = if vertical == VerticalAlignment::Top {
                 0.0
@@ -145,11 +146,19 @@ impl Layout for OverlayLayout {
             } else if vertical == VerticalAlignment::Center {
                 bounds.height() * 0.5
             } else {
-                adjusted_dimensions.vertical(vertical).clamp(0.0, size.height)
+                adjusted_dimensions
+                    .vertical(vertical)
+                    .clamp(0.0, size.height)
             };
             let origin = Point::new(
-                bounds.x() + target_x - adjusted_dimensions.horizontal(horizontal).clamp(0.0, size.width),
-                bounds.y() + target_y - adjusted_dimensions.vertical(vertical).clamp(0.0, size.height),
+                bounds.x() + target_x
+                    - adjusted_dimensions
+                        .horizontal(horizontal)
+                        .clamp(0.0, size.width),
+                bounds.y() + target_y
+                    - adjusted_dimensions
+                        .vertical(vertical)
+                        .clamp(0.0, size.height),
             );
             placements.push(Rect::new(origin, size));
         }
@@ -244,8 +253,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None

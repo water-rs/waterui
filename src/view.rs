@@ -24,11 +24,15 @@ use waterui_core::{
 use waterui_graphics::color::Color;
 use waterui_graphics::filter_view::{
     Blur as GraphicsBlur, Brightness as GraphicsBrightness, Contrast as GraphicsContrast,
-    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered, GpuFilter,
-    Grayscale as GraphicsGrayscale, HueRotation as GraphicsHueRotation, Invert as GraphicsInvert,
+    Exposure as GraphicsExposure, FilterViewExt as GraphicsFilterViewExt,
+    Filtered as GraphicsFiltered, Gamma as GraphicsGamma, GpuFilter,
+    Grayscale as GraphicsGrayscale, HighlightsShadows as GraphicsHighlightsShadows,
+    HueRotation as GraphicsHueRotation, Invert as GraphicsInvert, MotionBlur as GraphicsMotionBlur,
     Saturation as GraphicsSaturation, Sepia as GraphicsSepia, Sharpen as GraphicsSharpen,
-    Vignette as GraphicsVignette,
+    TemperatureTint as GraphicsTemperatureTint, Vibrance as GraphicsVibrance,
+    Vignette as GraphicsVignette, WhitePoint as GraphicsWhitePoint, ZoomBlur as GraphicsZoomBlur,
 };
+use waterui_graphics::multi_input_filter::TransitionDirection;
 
 use waterui_layout::{
     EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
@@ -106,6 +110,16 @@ pub trait ViewExt: View + Sized {
         GraphicsFilterViewExt::brightness(self, amount)
     }
 
+    /// Applies an exposure filter in photographic stops.
+    fn exposure<T: IntoSignalF32>(self, ev: T) -> GraphicsFiltered<Self, GraphicsExposure> {
+        GraphicsFilterViewExt::exposure(self, ev)
+    }
+
+    /// Applies a gamma adjustment filter.
+    fn gamma<T: IntoSignalF32>(self, gamma: T) -> GraphicsFiltered<Self, GraphicsGamma> {
+        GraphicsFilterViewExt::gamma(self, gamma)
+    }
+
     /// Applies a contrast filter.
     fn contrast<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsContrast> {
         GraphicsFilterViewExt::contrast(self, amount)
@@ -114,6 +128,11 @@ pub trait ViewExt: View + Sized {
     /// Applies a saturation filter.
     fn saturation<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsSaturation> {
         GraphicsFilterViewExt::saturation(self, amount)
+    }
+
+    /// Applies a vibrance filter.
+    fn vibrance<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsVibrance> {
+        GraphicsFilterViewExt::vibrance(self, amount)
     }
 
     /// Applies a grayscale filter.
@@ -147,6 +166,33 @@ pub trait ViewExt: View + Sized {
         GraphicsFilterViewExt::sharpen(self, amount)
     }
 
+    /// Applies a temperature/tint white-balance adjustment.
+    fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        temperature: T,
+        tint: U,
+    ) -> GraphicsFiltered<Self, GraphicsTemperatureTint> {
+        GraphicsFilterViewExt::temperature_tint(self, temperature, tint)
+    }
+
+    /// Recovers highlights while lifting shadows.
+    fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
+        self,
+        highlights: H,
+        shadows: S,
+    ) -> GraphicsFiltered<Self, GraphicsHighlightsShadows> {
+        GraphicsFilterViewExt::highlights_shadows(self, highlights, shadows)
+    }
+
+    /// Applies directional motion blur.
+    fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
+        self,
+        radius: R,
+        angle: A,
+    ) -> GraphicsFiltered<Self, GraphicsMotionBlur> {
+        GraphicsFilterViewExt::motion_blur(self, radius, angle)
+    }
+
     /// Applies a vignette filter.
     fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
         self,
@@ -154,6 +200,84 @@ pub trait ViewExt: View + Sized {
         softness: S,
     ) -> GraphicsFiltered<Self, GraphicsVignette> {
         GraphicsFilterViewExt::vignette(self, radius, softness)
+    }
+
+    /// Adjusts color balance using an explicit white point triplet.
+    fn white_point<R: IntoSignalF32, G: IntoSignalF32, B: IntoSignalF32>(
+        self,
+        red: R,
+        green: G,
+        blue: B,
+    ) -> GraphicsFiltered<Self, GraphicsWhitePoint> {
+        GraphicsFilterViewExt::white_point(self, red, green, blue)
+    }
+
+    /// Applies radial zoom blur around a focal point.
+    fn zoom_blur<A: IntoSignalF32, X: IntoSignalF32, Y: IntoSignalF32>(
+        self,
+        amount: A,
+        center_x: X,
+        center_y: Y,
+    ) -> GraphicsFiltered<Self, GraphicsZoomBlur> {
+        GraphicsFilterViewExt::zoom_blur(self, amount, center_x, center_y)
+    }
+
+    /// Transitions to another image with a directional swipe.
+    fn swipe_transition_to_image(
+        self,
+        target: waterui_graphics::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+        direction: TransitionDirection,
+    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::SwipeTransitionToImageFilter>
+    {
+        GraphicsFilterViewExt::swipe_transition_to_image(
+            self, target, progress, softness, direction,
+        )
+    }
+
+    /// Transitions to another image from a radial reveal center.
+    fn radial_transition_to_image(
+        self,
+        target: waterui_graphics::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::RadialTransitionToImageFilter>
+    {
+        GraphicsFilterViewExt::radial_transition_to_image(
+            self, target, progress, softness, center_x, center_y,
+        )
+    }
+
+    /// Transitions to another image with a zooming blend.
+    fn zoom_transition_to_image(
+        self,
+        target: waterui_graphics::multi_input_filter::FilterImage,
+        progress: f32,
+        amount: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::ZoomTransitionToImageFilter>
+    {
+        GraphicsFilterViewExt::zoom_transition_to_image(
+            self, target, progress, amount, center_x, center_y,
+        )
+    }
+
+    /// Transitions to another image using a displacement map.
+    fn displacement_transition_to_image(
+        self,
+        target: waterui_graphics::multi_input_filter::FilterImage,
+        map: waterui_graphics::multi_input_filter::FilterImage,
+        progress: f32,
+        scale: f32,
+    ) -> GraphicsFiltered<
+        Self,
+        waterui_graphics::multi_input_filter::DisplacementTransitionToImageFilter,
+    > {
+        GraphicsFilterViewExt::displacement_transition_to_image(self, target, map, progress, scale)
     }
 
     /// Sets the visibility of this view.

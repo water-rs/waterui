@@ -1181,7 +1181,7 @@ impl<'a> HydroSubview<'a> {
 }
 
 impl SubView for HydroSubview<'_> {
-    fn dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let state = unsafe { &mut *self.state };
         let mut dimensions =
             measure_view_dimensions_with_proposal(self.view, proposal, state, self.env);
@@ -1203,10 +1203,6 @@ impl SubView for HydroSubview<'_> {
         }
 
         dimensions
-    }
-
-    fn size_that_fits(&self, proposal: ProposalSize) -> LayoutSize {
-        self.dimensions(proposal).size
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -4590,7 +4586,7 @@ impl HydrolysisRenderer {
                         ProposalSize::new(None, Some(ctx.bounds.height() as f32))
                     }
                 };
-                let size = subview.size_that_fits(proposal);
+                let size = subview.measure(proposal).size;
                 let extent = match axis_config {
                     LazyStackAxisConfig::Vertical { .. } => f64::from(size.height),
                     LazyStackAxisConfig::Horizontal { .. } => f64::from(size.width),
@@ -4621,7 +4617,7 @@ impl HydrolysisRenderer {
                     ProposalSize::new(None, Some(ctx.bounds.height() as f32))
                 }
             };
-            let size = subview.size_that_fits(proposal);
+            let size = subview.measure(proposal).size;
             let child_rect = match axis_config {
                 LazyStackAxisConfig::Vertical { alignment, .. } => {
                     assert!(
