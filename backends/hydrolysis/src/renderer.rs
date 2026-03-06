@@ -8060,19 +8060,20 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
         base_color: vello::peniko::Color,
     ) {
-        let params = vello::RenderParams {
-            base_color,
+        self.render_scene_to_surface(
+            device,
+            queue,
+            target,
+            target_format,
             width,
             height,
-            antialiasing_method: vello::AaConfig::Area,
-        };
-        self.vello_renderer
-            .render_to_texture(device, queue, &self.scene, target, &params)
-            .expect("hydrolysis renderer: failed to render scene");
+            base_color,
+        );
     }
 
     fn ensure_gpu_surface_compositor_state(

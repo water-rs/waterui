@@ -74,6 +74,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 device,
                 queue,
                 frame.view(),
+                surface.format(),
                 width,
                 height,
                 vello::peniko::Color::TRANSPARENT,
