@@ -24,6 +24,8 @@
 #[cfg(target_os = "linux")]
 pub mod app;
 #[cfg(target_os = "linux")]
+mod applied_filter;
+#[cfg(target_os = "linux")]
 pub mod component;
 #[cfg(target_os = "linux")]
 pub mod components;
