@@ -217,10 +217,6 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         }
     }
 
-    fn has_setup_error(&self) -> bool {
-        self.runtime.setup_error.is_some()
-    }
-
     fn create_aux_image_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -423,10 +419,14 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
 }
 
 impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()> {
+    fn setup(
+        &mut self,
+        ctx: &FilterContext,
+    ) -> impl Future<Output = crate::filter_view::FilterSetupResult> {
         if O::AUX_IMAGE_COUNT > MAX_AUX_IMAGES {
-            self.set_setup_error("multi-input filter declared too many auxiliary images");
-            return core::future::ready(());
+            let err = "multi-input filter declared too many auxiliary images";
+            self.set_setup_error(err);
+            return core::future::ready(Err(err));
         }
 
         let (pipeline, bind_group_layout, sampler, uniform_buffer) = Self::create_pipeline(ctx);
@@ -456,28 +456,32 @@ impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
             }
         }
 
-        core::future::ready(())
+        core::future::ready(Ok(()))
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
-        if self.has_setup_error() {
-            return false;
+    fn render(
+        &mut self,
+        input: &FilterInput,
+        output: &FilterOutput,
+    ) -> crate::filter_view::FilterRenderResult {
+        if let Some(err) = self.runtime.setup_error {
+            return Err(err);
         }
 
         let Some(pipeline) = self.runtime.pipeline.as_ref() else {
-            return false;
+            return Err("multi-input filter pipeline missing after setup");
         };
         let Some(bind_group_layout) = self.runtime.bind_group_layout.as_ref() else {
-            return false;
+            return Err("multi-input filter bind group layout missing after setup");
         };
         let Some(sampler) = self.runtime.sampler.as_ref() else {
-            return false;
+            return Err("multi-input filter sampler missing after setup");
         };
         let Some(uniform_buffer) = self.runtime.uniform_buffer.as_ref() else {
-            return false;
+            return Err("multi-input filter uniform buffer missing after setup");
         };
         let Some(fallback_aux) = self.runtime.fallback_aux.as_ref() else {
-            return false;
+            return Err("multi-input filter fallback auxiliary texture missing after setup");
         };
 
         let mut params = [0.0f32; MAX_PARAMS];
@@ -559,7 +563,7 @@ impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
         }
 
         input.queue.submit([encoder.finish()]);
-        false
+        Ok(false)
     }
 }
 
