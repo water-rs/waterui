@@ -1187,14 +1187,21 @@ impl ToJavaStruct for crate::shape::WuiResolvedShape {
     }
 }
 
-/// WuiText -> TextStruct(contentPtr: Long)
+/// WuiText -> TextStruct(contentPtr: Long, paragraphAlignmentPtr: Long)
 impl ToJavaStruct for crate::components::text::WuiText {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
             .find_class("dev/waterui/android/runtime/TextStruct")
             .expect("TextStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(self.content as jlong)])
-            .expect("Failed to create TextStruct")
+        env.new_object(
+            &class,
+            "(JJ)V",
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.paragraph_alignment as jlong),
+            ],
+        )
+        .expect("Failed to create TextStruct")
     }
 }
 

@@ -957,14 +957,14 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    fn size_that_fits(
+    fn measure(
         &self,
         proposal: waterui_core::layout::ProposalSize,
-    ) -> waterui_core::layout::Size {
-        waterui_core::layout::Size::new(
+    ) -> waterui_core::layout::ViewDimensions {
+        waterui_core::layout::ViewDimensions::new(waterui_core::layout::Size::new(
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
