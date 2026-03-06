@@ -39,7 +39,7 @@ where
             children.len() == 1,
             "HorizontalAlignmentGuideLayout expects exactly one child"
         );
-        children[0].size_that_fits(proposal)
+        children[0].measure(proposal).size
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
@@ -153,7 +153,7 @@ where
             children.len() == 1,
             "VerticalAlignmentGuideLayout expects exactly one child"
         );
-        children[0].size_that_fits(proposal)
+        children[0].measure(proposal).size
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
@@ -265,12 +265,8 @@ mod tests {
     }
 
     impl SubView for GuidedSubview {
-        fn dimensions(&self, _proposal: ProposalSize) -> ViewDimensions {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
-        }
-
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
         }
 
         fn stretch_axis(&self) -> StretchAxis {

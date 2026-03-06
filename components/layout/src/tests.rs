@@ -24,8 +24,8 @@ struct FixedSizeView {
 }
 
 impl SubView for FixedSizeView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        self.size
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
@@ -55,8 +55,8 @@ impl FlexibleTextView {
 }
 
 impl SubView for FlexibleTextView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        match proposal.width {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(match proposal.width {
             Some(max_width) if max_width < self.intrinsic_size.width => {
                 // Text needs to wrap - calculate wrapped height
                 let lines = (self.intrinsic_size.width / max_width).ceil();
@@ -66,7 +66,7 @@ impl SubView for FlexibleTextView {
                 // No width constraint or enough space - return intrinsic
                 self.intrinsic_size
             }
-        }
+        })
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
@@ -80,8 +80,8 @@ impl SubView for FlexibleTextView {
 struct SpacerView;
 
 impl SubView for SpacerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        Size::zero()
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -99,9 +99,9 @@ struct HorizontalExpandingView {
 }
 
 impl SubView for HorizontalExpandingView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let width = proposal.width.unwrap_or(f32::INFINITY);
-        Size::new(width, self.height)
+        ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal
@@ -125,14 +125,10 @@ struct BaselineTextView {
 }
 
 impl SubView for BaselineTextView {
-    fn dimensions(&self, _proposal: ProposalSize) -> ViewDimensions {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
             .with_vertical(VerticalAlignment::FirstBaseline, self.first_baseline)
             .with_vertical(VerticalAlignment::LastBaseline, self.last_baseline)
-    }
-
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        self.size
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -158,13 +154,9 @@ struct GuidedBoxView {
 }
 
 impl SubView for GuidedBoxView {
-    fn dimensions(&self, _proposal: ProposalSize) -> ViewDimensions {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
             .with_horizontal(HorizontalAlignment::custom::<TitleGuide>(), self.guide)
-    }
-
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        self.size
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -177,9 +169,9 @@ impl SubView for GuidedBoxView {
 }
 
 impl SubView for VerticalExpandingView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let height = proposal.height.unwrap_or(f32::INFINITY);
-        Size::new(self.width, height)
+        ViewDimensions::new(Size::new(self.width, height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Vertical
@@ -1390,8 +1382,8 @@ fn test_vstack_form_with_spacer() {
 struct MainAxisSpacerView;
 
 impl SubView for MainAxisSpacerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        Size::zero()
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::MainAxis
@@ -1408,9 +1400,9 @@ struct CrossAxisDividerView {
 }
 
 impl SubView for CrossAxisDividerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         // Returns minimal size - cross axis expansion handled by layout
-        Size::new(self.thickness, self.thickness)
+        ViewDimensions::new(Size::new(self.thickness, self.thickness))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::CrossAxis
@@ -1562,12 +1554,12 @@ struct HorizontalStretchView {
 }
 
 impl SubView for HorizontalStretchView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // When proposed width, use it (but not less than minimum)
         let width = proposal
             .width
             .map_or(self.min_width, |w| w.max(self.min_width));
-        Size::new(width, self.height)
+        ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal

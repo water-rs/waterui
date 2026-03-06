@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
 /// Parsed SVG data reused across renderer paths.
@@ -352,13 +352,13 @@ impl GpuView for VelloSvgRenderer {
 }
 
 impl SubView for VelloSvgRenderer {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let svg_size = self.scene_data.svg_tree.size();
         let intrinsic = Size::new(svg_size.width(), svg_size.height());
-        Size::new(
+        ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(intrinsic.width),
             proposal.height.unwrap_or(intrinsic.height),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
