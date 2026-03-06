@@ -29,7 +29,7 @@ impl Layout for PaddingLayout {
         // Measure the child
         let child_size = children
             .first()
-            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
+            .map_or(Size::zero(), |c| c.measure(child_proposal).size);
 
         // Handle infinite dimensions
         let child_width = if child_size.width.is_infinite() {
@@ -207,6 +207,7 @@ impl View for Padding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewDimensions;
     use crate::StretchAxis;
 
     struct MockSubView {
@@ -214,8 +215,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None

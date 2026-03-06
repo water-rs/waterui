@@ -15,13 +15,18 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use jni::JNIEnv;
-use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use nami::SignalExt;
-use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
+use waterui_layout::{
+    AlignmentKeyId, HorizontalAlignment, Layout, ProposalSize, Rect, Size, StretchAxis, SubView,
+    VerticalAlignment, ViewDimensions, measure_layout,
+};
 
 use crate::IntoFFI;
 use crate::IntoRust;
+use crate::WuiTypeId;
+use super::type_id_to_java;
 use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
@@ -207,7 +212,7 @@ struct JniSubView {
 }
 
 impl SubView for JniSubView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Attach to JVM (may already be attached on main thread)
         let vm = super::java_vm();
         let mut env = vm.attach_current_thread().expect("Failed to attach to JVM");
@@ -215,31 +220,17 @@ impl SubView for JniSubView {
         let width = proposal.width.unwrap_or(f32::NAN);
         let height = proposal.height.unwrap_or(f32::NAN);
 
-        let size_obj = env
+        let dimensions_obj = env
             .call_method(
                 &self.subview_ref,
                 "measureForLayout",
-                "(FF)Ldev/waterui/android/runtime/SizeStruct;",
+                "(FF)Ldev/waterui/android/runtime/ViewDimensionsStruct;",
                 &[JValue::Float(width), JValue::Float(height)],
             )
             .expect("measureForLayout call failed")
             .l()
             .expect("measureForLayout should return object");
-        // Extract width and height from SizeStruct
-        let w = env
-            .get_field(&size_obj, "width", "F")
-            .expect("SizeStruct.width")
-            .f()
-            .expect("width is float");
-        let h = env
-            .get_field(&size_obj, "height", "F")
-            .expect("SizeStruct.height")
-            .f()
-            .expect("height is float");
-        Size {
-            width: w,
-            height: h,
-        }
+        extract_view_dimensions(&mut env, &dimensions_obj)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -249,6 +240,212 @@ impl SubView for JniSubView {
     fn priority(&self) -> i32 {
         self.priority
     }
+}
+
+fn extract_type_id(env: &mut JNIEnv, type_id: &JObject) -> AlignmentKeyId {
+    let low = env
+        .get_field(type_id, "low", "J")
+        .expect("TypeIdStruct.low")
+        .j()
+        .expect("low is long") as u64;
+    let high = env
+        .get_field(type_id, "high", "J")
+        .expect("TypeIdStruct.high")
+        .j()
+        .expect("high is long") as u64;
+    AlignmentKeyId::new(low, high)
+}
+
+fn size_to_java<'local>(env: &mut JNIEnv<'local>, size: Size) -> JObject<'local> {
+    let class = env
+        .find_class("dev/waterui/android/runtime/SizeStruct")
+        .expect("SizeStruct class");
+    env.new_object(
+        &class,
+        "(FF)V",
+        &[JValue::Float(size.width), JValue::Float(size.height)],
+    )
+    .expect("create SizeStruct")
+}
+
+fn horizontal_guide_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    alignment: HorizontalAlignment,
+    value: f32,
+) -> JObject<'local> {
+    let class = env
+        .find_class("dev/waterui/android/runtime/HorizontalGuideStruct")
+        .expect("HorizontalGuideStruct class");
+    let alignment_id = WuiTypeId {
+        low: alignment.stable_id().low(),
+        high: alignment.stable_id().high(),
+    };
+    let type_id = type_id_to_java(env, alignment_id);
+    env.new_object(
+        &class,
+        "(Ldev/waterui/android/runtime/TypeIdStruct;F)V",
+        &[JValue::Object(&type_id), JValue::Float(value)],
+    )
+    .expect("create HorizontalGuideStruct")
+}
+
+fn vertical_guide_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    alignment: VerticalAlignment,
+    value: f32,
+) -> JObject<'local> {
+    let class = env
+        .find_class("dev/waterui/android/runtime/VerticalGuideStruct")
+        .expect("VerticalGuideStruct class");
+    let alignment_id = WuiTypeId {
+        low: alignment.stable_id().low(),
+        high: alignment.stable_id().high(),
+    };
+    let type_id = type_id_to_java(env, alignment_id);
+    env.new_object(
+        &class,
+        "(Ldev/waterui/android/runtime/TypeIdStruct;F)V",
+        &[JValue::Object(&type_id), JValue::Float(value)],
+    )
+    .expect("create VerticalGuideStruct")
+}
+
+fn view_dimensions_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    dimensions: &ViewDimensions,
+) -> JObject<'local> {
+    let size = size_to_java(env, dimensions.size);
+
+    let horizontal_class = env
+        .find_class("dev/waterui/android/runtime/HorizontalGuideStruct")
+        .expect("HorizontalGuideStruct class");
+    let horizontal_guides: Vec<_> = dimensions
+        .explicit_horizontal_guides()
+        .map(|(alignment, value)| horizontal_guide_to_java(env, alignment, value))
+        .collect();
+    let horizontal_array = env
+        .new_object_array(horizontal_guides.len() as i32, &horizontal_class, JObject::null())
+        .expect("create HorizontalGuideStruct array");
+    for (index, guide) in horizontal_guides.iter().enumerate() {
+        env.set_object_array_element(&horizontal_array, index as i32, guide)
+            .expect("set horizontal guide element");
+    }
+
+    let vertical_class = env
+        .find_class("dev/waterui/android/runtime/VerticalGuideStruct")
+        .expect("VerticalGuideStruct class");
+    let vertical_guides: Vec<_> = dimensions
+        .explicit_vertical_guides()
+        .map(|(alignment, value)| vertical_guide_to_java(env, alignment, value))
+        .collect();
+    let vertical_array = env
+        .new_object_array(vertical_guides.len() as i32, &vertical_class, JObject::null())
+        .expect("create VerticalGuideStruct array");
+    for (index, guide) in vertical_guides.iter().enumerate() {
+        env.set_object_array_element(&vertical_array, index as i32, guide)
+            .expect("set vertical guide element");
+    }
+
+    let dimensions_class = env
+        .find_class("dev/waterui/android/runtime/ViewDimensionsStruct")
+        .expect("ViewDimensionsStruct class");
+    env.new_object(
+        &dimensions_class,
+        "(Ldev/waterui/android/runtime/SizeStruct;[Ldev/waterui/android/runtime/HorizontalGuideStruct;[Ldev/waterui/android/runtime/VerticalGuideStruct;)V",
+        &[
+            JValue::Object(&size),
+            JValue::Object(&JObject::from(horizontal_array)),
+            JValue::Object(&JObject::from(vertical_array)),
+        ],
+    )
+    .expect("create ViewDimensionsStruct")
+}
+
+fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimensions {
+    let size_obj = env
+        .get_field(dimensions, "size", "Ldev/waterui/android/runtime/SizeStruct;")
+        .expect("ViewDimensionsStruct.size")
+        .l()
+        .expect("size is object");
+    let width = env
+        .get_field(&size_obj, "width", "F")
+        .expect("SizeStruct.width")
+        .f()
+        .expect("width is float");
+    let height = env
+        .get_field(&size_obj, "height", "F")
+        .expect("SizeStruct.height")
+        .f()
+        .expect("height is float");
+    let mut result = ViewDimensions::new(Size { width, height });
+
+    let horizontal_array = env
+        .get_field(
+            dimensions,
+            "horizontalGuides",
+            "[Ldev/waterui/android/runtime/HorizontalGuideStruct;",
+        )
+        .expect("ViewDimensionsStruct.horizontalGuides")
+        .l()
+        .expect("horizontalGuides is object");
+    let horizontal_array = JObjectArray::from(horizontal_array);
+    let horizontal_len = env
+        .get_array_length(&horizontal_array)
+        .expect("horizontal guide array length");
+    for index in 0..horizontal_len {
+        let guide = env
+            .get_object_array_element(&horizontal_array, index)
+            .expect("horizontal guide element");
+        let alignment_obj = env
+            .get_field(&guide, "alignment", "Ldev/waterui/android/runtime/TypeIdStruct;")
+            .expect("HorizontalGuideStruct.alignment")
+            .l()
+            .expect("alignment is object");
+        let value = env
+            .get_field(&guide, "value", "F")
+            .expect("HorizontalGuideStruct.value")
+            .f()
+            .expect("value is float");
+        result.set_horizontal(
+            HorizontalAlignment::from_stable_id(extract_type_id(env, &alignment_obj)),
+            value,
+        );
+    }
+
+    let vertical_array = env
+        .get_field(
+            dimensions,
+            "verticalGuides",
+            "[Ldev/waterui/android/runtime/VerticalGuideStruct;",
+        )
+        .expect("ViewDimensionsStruct.verticalGuides")
+        .l()
+        .expect("verticalGuides is object");
+    let vertical_array = JObjectArray::from(vertical_array);
+    let vertical_len = env
+        .get_array_length(&vertical_array)
+        .expect("vertical guide array length");
+    for index in 0..vertical_len {
+        let guide = env
+            .get_object_array_element(&vertical_array, index)
+            .expect("vertical guide element");
+        let alignment_obj = env
+            .get_field(&guide, "alignment", "Ldev/waterui/android/runtime/TypeIdStruct;")
+            .expect("VerticalGuideStruct.alignment")
+            .l()
+            .expect("alignment is object");
+        let value = env
+            .get_field(&guide, "value", "F")
+            .expect("VerticalGuideStruct.value")
+            .f()
+            .expect("value is float");
+        result.set_vertical(
+            VerticalAlignment::from_stable_id(extract_type_id(env, &alignment_obj)),
+            value,
+        );
+    }
+
+    result
 }
 
 /// Extract ProposalStruct from Java object
@@ -361,7 +558,40 @@ fn extract_subviews(env: &mut JNIEnv, subviews_array: jobjectArray) -> Vec<JniSu
     result
 }
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    layout_ptr: jlong,
+    proposal: JObject<'local>,
+    subviews: jobjectArray,
+) -> jobject {
+    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+    let proposal = extract_proposal(&mut env, &proposal);
+    let jni_subviews = extract_subviews(&mut env, subviews);
+    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
+    let dimensions = measure_layout(layout, proposal, &subview_refs);
+    view_dimensions_to_java(&mut env, &dimensions).into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    layout_ptr: jlong,
+    proposal: JObject<'local>,
+    subviews: jobjectArray,
+) -> jobject {
+    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+    let proposal = extract_proposal(&mut env, &proposal);
+    let jni_subviews = extract_subviews(&mut env, subviews);
+    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
+    let dimensions = measure_layout(layout, proposal, &subview_refs);
+    view_dimensions_to_java(&mut env, &dimensions).into_raw()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'local>(
+'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -2002,4 +2232,34 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropExitHandl
     ) as *const crate::drag_drop::WuiDropDestination;
     let wui_env = require_env_const(env_ptr, "callDropExitHandler");
     unsafe { crate::drag_drop::waterui_call_drop_exit_handler(drop_dest, wui_env) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentFirstBaselineId<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jobject {
+    type_id_to_java(
+        &mut env,
+        WuiTypeId {
+            low: VerticalAlignment::FirstBaseline.stable_id().low(),
+            high: VerticalAlignment::FirstBaseline.stable_id().high(),
+        },
+    )
+    .into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentLastBaselineId<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jobject {
+    type_id_to_java(
+        &mut env,
+        WuiTypeId {
+            low: VerticalAlignment::LastBaseline.stable_id().low(),
+            high: VerticalAlignment::LastBaseline.stable_id().high(),
+        },
+    )
+    .into_raw()
 }

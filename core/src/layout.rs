@@ -26,7 +26,7 @@
 //! )).spacing(8.0)                    // 8 logical pixels between items
 //! ```
 
-use core::any::{Any, TypeId};
+use core::any::Any;
 use core::fmt::Debug;
 
 use alloc::vec::Vec;
@@ -81,6 +81,58 @@ impl StretchAxis {
 // Alignment Guides
 // ============================================================================
 
+/// Stable identifier for an alignment key across FFI boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AlignmentKeyId {
+    low: u64,
+    high: u64,
+}
+
+impl AlignmentKeyId {
+    #[must_use]
+    pub const fn new(low: u64, high: u64) -> Self {
+        Self { low, high }
+    }
+
+    #[must_use]
+    pub const fn low(self) -> u64 {
+        self.low
+    }
+
+    #[must_use]
+    pub const fn high(self) -> u64 {
+        self.high
+    }
+
+    #[must_use]
+    pub const fn from_name(name: &str) -> Self {
+        let hash = fnv1a_128(name.as_bytes());
+        Self {
+            low: hash as u64,
+            high: (hash >> 64) as u64,
+        }
+    }
+
+    #[must_use]
+    pub fn from_type_name(name: &str) -> Self {
+        Self::from_name(name)
+    }
+}
+
+const fn fnv1a_128(bytes: &[u8]) -> u128 {
+    const FNV_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const FNV_PRIME: u128 = 0x0000000001000000000000000000013b;
+
+    let mut hash = FNV_OFFSET;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u128;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    hash
+}
+
 /// Key trait for horizontal alignment guides.
 pub trait HorizontalAlignmentKey: 'static {
     /// Returns the default local-space guide value for the provided dimensions.
@@ -96,7 +148,7 @@ pub trait VerticalAlignmentKey: 'static {
 #[derive(Clone, Copy)]
 /// Horizontal alignment guide handle.
 pub struct HorizontalAlignment {
-    id: TypeId,
+    stable_id: AlignmentKeyId,
     default_value: fn(&ViewDimensions) -> f32,
 }
 
@@ -104,21 +156,21 @@ impl HorizontalAlignment {
     /// Leading alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Leading: Self = Self {
-        id: TypeId::of::<LeadingAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.horizontal.leading"),
         default_value: leading_alignment_default,
     };
 
     /// Center alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Center: Self = Self {
-        id: TypeId::of::<CenterHorizontalAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.horizontal.center"),
         default_value: center_horizontal_alignment_default,
     };
 
     /// Trailing alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Trailing: Self = Self {
-        id: TypeId::of::<TrailingAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.horizontal.trailing"),
         default_value: trailing_alignment_default,
     };
 
@@ -126,9 +178,31 @@ impl HorizontalAlignment {
     #[must_use]
     pub fn custom<K: HorizontalAlignmentKey>() -> Self {
         Self {
-            id: TypeId::of::<K>(),
+            stable_id: AlignmentKeyId::from_type_name(core::any::type_name::<K>()),
             default_value: K::default_value,
         }
+    }
+
+    /// Reconstructs an alignment handle from a stable identifier.
+    #[must_use]
+    pub fn from_stable_id(stable_id: AlignmentKeyId) -> Self {
+        if stable_id == Self::Leading.stable_id {
+            Self::Leading
+        } else if stable_id == Self::Center.stable_id {
+            Self::Center
+        } else if stable_id == Self::Trailing.stable_id {
+            Self::Trailing
+        } else {
+            Self {
+                stable_id,
+                default_value: opaque_horizontal_alignment_default,
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn stable_id(self) -> AlignmentKeyId {
+        self.stable_id
     }
 
     #[must_use]
@@ -145,7 +219,7 @@ impl Default for HorizontalAlignment {
 
 impl PartialEq for HorizontalAlignment {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.stable_id == other.stable_id
     }
 }
 
@@ -154,7 +228,7 @@ impl Eq for HorizontalAlignment {}
 impl Debug for HorizontalAlignment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HorizontalAlignment")
-            .field("id", &self.id)
+            .field("stable_id", &self.stable_id)
             .finish()
     }
 }
@@ -162,7 +236,7 @@ impl Debug for HorizontalAlignment {
 #[derive(Clone, Copy)]
 /// Vertical alignment guide handle.
 pub struct VerticalAlignment {
-    id: TypeId,
+    stable_id: AlignmentKeyId,
     default_value: fn(&ViewDimensions) -> f32,
 }
 
@@ -170,35 +244,35 @@ impl VerticalAlignment {
     /// Top alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Top: Self = Self {
-        id: TypeId::of::<TopAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.vertical.top"),
         default_value: top_alignment_default,
     };
 
     /// Center alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Center: Self = Self {
-        id: TypeId::of::<CenterVerticalAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.vertical.center"),
         default_value: center_vertical_alignment_default,
     };
 
     /// Bottom alignment guide.
     #[allow(non_upper_case_globals)]
     pub const Bottom: Self = Self {
-        id: TypeId::of::<BottomAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.vertical.bottom"),
         default_value: bottom_alignment_default,
     };
 
     /// First baseline alignment guide.
     #[allow(non_upper_case_globals)]
     pub const FirstBaseline: Self = Self {
-        id: TypeId::of::<FirstBaselineAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.vertical.first_baseline"),
         default_value: first_baseline_alignment_default,
     };
 
     /// Last baseline alignment guide.
     #[allow(non_upper_case_globals)]
     pub const LastBaseline: Self = Self {
-        id: TypeId::of::<LastBaselineAlignmentKey>(),
+        stable_id: AlignmentKeyId::from_name("waterui.layout.vertical.last_baseline"),
         default_value: last_baseline_alignment_default,
     };
 
@@ -206,9 +280,35 @@ impl VerticalAlignment {
     #[must_use]
     pub fn custom<K: VerticalAlignmentKey>() -> Self {
         Self {
-            id: TypeId::of::<K>(),
+            stable_id: AlignmentKeyId::from_type_name(core::any::type_name::<K>()),
             default_value: K::default_value,
         }
+    }
+
+    /// Reconstructs an alignment handle from a stable identifier.
+    #[must_use]
+    pub fn from_stable_id(stable_id: AlignmentKeyId) -> Self {
+        if stable_id == Self::Top.stable_id {
+            Self::Top
+        } else if stable_id == Self::Center.stable_id {
+            Self::Center
+        } else if stable_id == Self::Bottom.stable_id {
+            Self::Bottom
+        } else if stable_id == Self::FirstBaseline.stable_id {
+            Self::FirstBaseline
+        } else if stable_id == Self::LastBaseline.stable_id {
+            Self::LastBaseline
+        } else {
+            Self {
+                stable_id,
+                default_value: opaque_vertical_alignment_default,
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn stable_id(self) -> AlignmentKeyId {
+        self.stable_id
     }
 
     #[must_use]
@@ -225,7 +325,7 @@ impl Default for VerticalAlignment {
 
 impl PartialEq for VerticalAlignment {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.stable_id == other.stable_id
     }
 }
 
@@ -234,9 +334,17 @@ impl Eq for VerticalAlignment {}
 impl Debug for VerticalAlignment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VerticalAlignment")
-            .field("id", &self.id)
+            .field("stable_id", &self.stable_id)
             .finish()
     }
+}
+
+fn opaque_horizontal_alignment_default(_dimensions: &ViewDimensions) -> f32 {
+    panic!("opaque horizontal alignment default requested without Rust key metadata")
+}
+
+fn opaque_vertical_alignment_default(_dimensions: &ViewDimensions) -> f32 {
+    panic!("opaque vertical alignment default requested without Rust key metadata")
 }
 
 /// Combined two-dimensional alignment used by layout containers.
@@ -429,7 +537,7 @@ impl<'a> PlacedSubview<'a> {
     /// Returns the child's dimensions for its placed size proposal.
     #[must_use]
     pub fn dimensions(&self) -> ViewDimensions {
-        self.view.dimensions(ProposalSize::new(
+        self.view.measure(ProposalSize::new(
             Some(self.frame.width()),
             Some(self.frame.height()),
         ))
@@ -569,13 +677,7 @@ fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
 /// caching should be owned by leaf implementations, while containers can
 /// re-query freely.
 pub trait SubView {
-    /// Query the child's full dimensions for a given proposal.
-    #[must_use]
-    fn dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(self.size_that_fits(proposal))
-    }
-
-    /// Query the child's size for a given proposal.
+    /// Measure the child for a given proposal.
     ///
     /// This method may be called multiple times with different proposals
     /// to probe the child's flexibility:
@@ -584,7 +686,8 @@ pub trait SubView {
     /// - `ProposalSize::new(Some(0.0), None)` - minimum width
     /// - `ProposalSize::new(Some(f32::INFINITY), None)` - maximum width
     /// - `ProposalSize::new(Some(200.0), None)` - constrained width
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size;
+    #[must_use]
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
 
     /// Which axis (or axes) this view stretches to fill available space.
     ///
@@ -698,6 +801,54 @@ pub trait Layout: Debug + Any {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
+}
+
+/// Measures a layout and resolves its explicit guides for the given children.
+#[must_use]
+pub fn measure_layout(
+    layout: &dyn Layout,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> ViewDimensions {
+    let size = layout.size_that_fits(proposal, children);
+    let bounds = Rect::from_size(size);
+    let child_rects = layout.place(bounds, children);
+    let placed_subviews: Vec<PlacedSubview<'_>> = children
+        .iter()
+        .zip(child_rects.iter().copied())
+        .map(|(view, frame)| PlacedSubview::new(*view, frame))
+        .collect();
+
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal_keys = layout.explicit_horizontal_alignments();
+    let mut vertical_keys = layout.explicit_vertical_alignments();
+
+    for child in &placed_subviews {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal_keys.contains(&alignment) {
+                horizontal_keys.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical_keys.contains(&alignment) {
+                vertical_keys.push(alignment);
+            }
+        }
+    }
+
+    for alignment in horizontal_keys {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed_subviews) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical_keys {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed_subviews) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+
+    dimensions
 }
 
 // ============================================================================

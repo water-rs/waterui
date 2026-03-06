@@ -21,7 +21,7 @@ use waterui_controls::{button, slider::slider};
 use waterui_core::{
     AnyView, Binding, Environment, View,
     dynamic::Dynamic,
-    layout::{ProposalSize, Size, StretchAxis, SubView},
+    layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
 use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
 use waterui_layout::{
@@ -2552,31 +2552,31 @@ impl GpuView for VideoRenderer {
 }
 
 impl SubView for VideoRenderer {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if self.aspect_ratio != AspectRatio::Fit {
-            return Size::new(
+            return ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
-            );
+            ));
         }
 
         let ratio = self.current_video_aspect_ratio();
         let Some(ratio) = ratio else {
-            return Size::new(
+            return ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
-            );
+            ));
         };
 
         match (proposal.width, proposal.height) {
-            (Some(width), Some(height)) => Size::new(width, height),
-            (Some(width), None) => Size::new(width, width / ratio),
-            (None, Some(height)) => Size::new(height * ratio, height),
+            (Some(width), Some(height)) => ViewDimensions::new(Size::new(width, height)),
+            (Some(width), None) => ViewDimensions::new(Size::new(width, width / ratio)),
+            (None, Some(height)) => ViewDimensions::new(Size::new(height * ratio, height)),
             (None, None) => {
                 if let Some((video_width, video_height)) = self.current_video_dimensions() {
-                    Size::new(video_width as f32, video_height as f32)
+                    ViewDimensions::new(Size::new(video_width as f32, video_height as f32))
                 } else {
-                    Size::zero()
+                    ViewDimensions::new(Size::zero())
                 }
             }
         }
