@@ -7,8 +7,8 @@
 //! 1. Creating a capture layer for the child view
 //! 2. Creating an output layer for the filter result
 //! 3. Calling `waterui_applied_filter_init` with the output layer
-//! 4. Calling `waterui_applied_filter_setup` with a callback
-//! 5. Waiting for the callback before rendering
+//! 4. Calling `waterui_applied_filter_setup` and checking the returned success flag
+//! 5. Resolving output size after `waterui_applied_filter_sync_targets`
 //! 6. Calling `waterui_applied_filter_render` when rendering is scheduled (with width/height)
 //! 7. Calling `waterui_applied_filter_drop` when the view is destroyed
 
@@ -39,9 +39,6 @@ fn abort_on_panic(scope: &'static str) -> ! {
     tracing::error!("{scope} panicked; aborting process");
     std::process::abort();
 }
-
-/// Callback type for async completion notifications.
-pub type WuiCallback = unsafe extern "C" fn(user_data: *mut c_void);
 
 /// FFI representation of a Metadata<AppliedFilter>.
 #[repr(C)]
@@ -106,21 +103,57 @@ pub struct WuiAppliedFilterState {
     /// Current output dimensions
     output_width: u32,
     output_height: u32,
+    /// Latest output dimensions resolved from snapped filter state.
+    resolved_output_width: u32,
+    resolved_output_height: u32,
+}
+
+/// Resolved output size returned to native before render scheduling.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WuiAppliedFilterOutputSize {
+    /// Output width in pixels.
+    pub width: u32,
+    /// Output height in pixels.
+    pub height: u32,
+}
+
+fn output_dimensions_for_input(
+    state: &WuiAppliedFilterState,
+    input_width: u32,
+    input_height: u32,
+) -> (u32, u32) {
+    let output_width = if state.resolved_output_width == 0 {
+        input_width
+    } else {
+        state.resolved_output_width
+    };
+    let output_height = if state.resolved_output_height == 0 {
+        input_height
+    } else {
+        state.resolved_output_height
+    };
+    (output_width, output_height)
 }
 
 fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32) {
-    let needs_resize = width != state.input_width || height != state.input_height;
+    let (output_width, output_height) = output_dimensions_for_input(state, width, height);
+    let input_resized = width != state.input_width || height != state.input_height;
+    let output_resized = output_width != state.output_width || output_height != state.output_height;
 
-    if needs_resize {
+    if input_resized {
         state.input_width = width;
         state.input_height = height;
-        state.output_width = width;
-        state.output_height = height;
-        state.output_config.width = width;
-        state.output_config.height = height;
     }
 
-    if needs_resize || state.capture_texture.is_none() {
+    if output_resized {
+        state.output_width = output_width;
+        state.output_height = output_height;
+        state.output_config.width = output_width;
+        state.output_config.height = output_height;
+    }
+
+    if input_resized || state.capture_texture.is_none() {
         state.capture_texture = Some(state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("AppliedFilter Capture Texture"),
             size: wgpu::Extent3d {
@@ -139,8 +172,30 @@ fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32)
         }));
     }
 
-    if needs_resize {
+    if output_resized {
         try_configure_surface(&state.output_surface, &state.device, &state.output_config);
+    }
+}
+
+fn resolve_output_size(
+    state: &mut WuiAppliedFilterState,
+    input_width: u32,
+    input_height: u32,
+) -> WuiAppliedFilterOutputSize {
+    let (output_width, output_height) = state.filter.output_size(input_width, input_height);
+    assert!(
+        output_width > 0 && output_height > 0,
+        "waterui_applied_filter_resolve_output_size: filter produced invalid output size {}x{} for input {}x{}",
+        output_width,
+        output_height,
+        input_width,
+        input_height
+    );
+    state.resolved_output_width = output_width;
+    state.resolved_output_height = output_height;
+    WuiAppliedFilterOutputSize {
+        width: output_width,
+        height: output_height,
     }
 }
 
@@ -188,7 +243,6 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
         // Null out to prevent double-free
         wui_filter.filter = core::ptr::null_mut();
 
-        // Output size matches input for filters
         let output_width = input_width;
         let output_height = input_height;
 
@@ -332,6 +386,8 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             input_height,
             output_width,
             output_height,
+            resolved_output_width: output_width,
+            resolved_output_height: output_height,
         });
 
         Box::into_raw(state)
@@ -343,50 +399,51 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
     }
 }
 
-/// Setup the filter synchronously, call callback when ready.
-///
-/// This function runs setup on the synchronous FFI path and calls the callback
-/// when setup completes.
+/// Await filter setup to completion on the synchronous FFI path.
 ///
 /// # Arguments
 ///
 /// * `state` - Pointer to initialized state from `waterui_applied_filter_init`
-/// * `callback` - Function to call when setup is complete
-/// * `user_data` - Opaque pointer passed to callback
+/// Returns `true` when setup completes successfully.
 ///
 /// # Safety
 ///
 /// - `state` must be a valid pointer from `waterui_applied_filter_init`
-/// - `callback` must be a valid function pointer
-/// - `user_data` must remain valid until callback is invoked
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_applied_filter_setup(
-    state: *mut WuiAppliedFilterState,
-    callback: WuiCallback,
-    user_data: *mut c_void,
-) {
-    let state =
-        unsafe { crate::expect_non_null_mut(state, "waterui_applied_filter_setup", "state") };
+pub unsafe extern "C" fn waterui_applied_filter_setup(state: *mut WuiAppliedFilterState) -> bool {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_applied_filter_setup", "state");
+    }
 
-    // Build FilterContext
-    let ctx = FilterContext {
-        device: &state.device,
-        queue: &state.queue,
-        input_format: state.capture_format,
-        output_format: state.output_config.format,
-        pipeline_cache: state.pipeline_cache.as_ref(),
-    };
+    let setup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let state = unsafe { &mut *state };
 
-    // Run setup synchronously without blocking the thread.
-    let setup_future = state.filter.setup(&ctx);
-    crate::ready_now_or_panic(setup_future, "waterui_applied_filter_setup::setup");
+        let ctx = FilterContext {
+            device: &state.device,
+            queue: &state.queue,
+            input_format: state.capture_format,
+            output_format: state.output_config.format,
+            pipeline_cache: state.pipeline_cache.as_ref(),
+        };
 
-    state.initialized = true;
+        let setup_future = state.filter.setup(&ctx);
+        match pollster::block_on(setup_future) {
+            Ok(()) => {
+                state.initialized = true;
+                tracing::debug!("[AppliedFilter] setup complete");
+                true
+            }
+            Err(err) => {
+                tracing::error!("[AppliedFilter] setup failed fast: {err}");
+                false
+            }
+        }
+    }));
 
-    tracing::debug!("[AppliedFilter] setup complete");
-
-    // Call completion callback
-    unsafe { callback(user_data) };
+    match setup_result {
+        Ok(success) => success,
+        Err(_) => abort_on_panic("waterui_applied_filter_setup"),
+    }
 }
 
 /// Result of a filter render operation.
@@ -419,7 +476,7 @@ pub struct WuiAppliedFilterRenderResult {
 /// # Safety
 ///
 /// - `state` must be a valid pointer from `waterui_applied_filter_init`
-/// - `waterui_applied_filter_setup` must have completed (callback was called)
+/// - `waterui_applied_filter_setup` must have returned `true`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_applied_filter_render(
     state: *mut WuiAppliedFilterState,
@@ -431,6 +488,14 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     }
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
+
+        if !state.initialized {
+            tracing::error!("[AppliedFilter] render requested before successful setup");
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
+        }
 
         ensure_dimensions(state, width, height);
 
@@ -503,8 +568,16 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             height: state.output_height,
         };
 
-        // Call filter render - returns true if animation needs more frames
-        let needs_redraw = state.filter.render(&input, &filter_output);
+        let needs_redraw = match state.filter.render(&input, &filter_output) {
+            Ok(needs_redraw) => needs_redraw,
+            Err(err) => {
+                tracing::error!("[AppliedFilter] render failed fast: {err}");
+                return WuiAppliedFilterRenderResult {
+                    success: false,
+                    needs_redraw: false,
+                };
+            }
+        };
 
         // Present
         output.present();
@@ -546,6 +619,34 @@ pub unsafe extern "C" fn waterui_applied_filter_sync_targets(
     match sync_result {
         Ok(ok) => ok,
         Err(_) => abort_on_panic("waterui_applied_filter_sync_targets"),
+    }
+}
+
+/// Resolve the current output size from snapped filter state.
+///
+/// Call this after `waterui_applied_filter_sync_targets` and before scheduling render work.
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_applied_filter_init`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_resolve_output_size(
+    state: *mut WuiAppliedFilterState,
+    input_width: u32,
+    input_height: u32,
+) -> WuiAppliedFilterOutputSize {
+    unsafe {
+        crate::expect_non_null_mut(state, "waterui_applied_filter_resolve_output_size", "state");
+    }
+
+    let resolve_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let state = unsafe { &mut *state };
+        resolve_output_size(state, input_width, input_height)
+    }));
+
+    match resolve_result {
+        Ok(output_size) => output_size,
+        Err(_) => abort_on_panic("waterui_applied_filter_resolve_output_size"),
     }
 }
 

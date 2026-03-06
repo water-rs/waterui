@@ -7063,7 +7063,12 @@ impl HydrolysisRenderer {
             width,
             height,
         };
-        let needs_redraw = filter.render(&input, &output) || filter.redraw_hint();
+        let needs_redraw = match filter.render(&input, &output) {
+            Ok(needs_redraw) => needs_redraw || filter.redraw_hint(),
+            Err(err) => {
+                panic!("hydrolysis filter render failed: {err}");
+            }
+        };
         if needs_redraw {
             renderer.request_rebuild();
         }

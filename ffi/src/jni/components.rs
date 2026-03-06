@@ -1506,26 +1506,15 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetu
 ) {
     let state_ptr = require_state_ptr::<JniAppliedFilterState>(state_ptr, "appliedFilterSetup");
     let wrapper = unsafe { &mut *state_ptr };
-    let runnable = env
-        .new_global_ref(callback)
-        .expect("AppliedFilterSetup: global ref");
-
-    unsafe extern "C" fn run_callback(data: *mut c_void) {
-        let runnable = unsafe { Box::from_raw(data as *mut GlobalRef) };
-        crate::jni::with_jni_env(|env| {
-            env.call_method(&*runnable, "run", "()V", &[])
-                .expect("AppliedFilterSetup.run_callback: Java runnable run() failed");
-        });
-    }
-
-    let boxed = Box::new(runnable);
-    let user_data = Box::into_raw(boxed) as *mut c_void;
-
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_setup(
-            wrapper.state,
-            run_callback,
-            user_data,
+    let ok =
+        unsafe { crate::components::applied_filter::waterui_applied_filter_setup(wrapper.state) };
+    if ok {
+        env.call_method(callback, "run", "()V", &[])
+            .expect("AppliedFilterSetup: Java runnable run() failed");
+    } else {
+        throw_runtime(
+            &mut env,
+            "WatcherJni.appliedFilterSetup failed to initialize the applied filter",
         );
     }
 }
