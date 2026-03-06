@@ -22,6 +22,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::pin::Pin;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
@@ -32,7 +33,14 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
 
-use crate::gpu_surface::SetupFuture;
+/// Boxed future for filter setup.
+pub type FilterSetupFuture<'a> = Pin<Box<dyn Future<Output = FilterSetupResult> + 'a>>;
+
+/// Result returned by filter setup.
+pub type FilterSetupResult = Result<(), &'static str>;
+
+/// Result returned by one filter render pass.
+pub type FilterRenderResult = Result<bool, &'static str>;
 
 /// GPU resources provided to the filter during setup.
 ///
@@ -125,25 +133,36 @@ impl core::fmt::Debug for FilterOutput<'_> {
 ///
 /// The `setup` method returns a future, allowing async initialization.
 /// For sync filters, return `async {}` after doing sync work.
+/// The future is awaited on the same render thread that created it.
 ///
 /// # Animation Support
 ///
-/// The `render` method returns a boolean indicating whether another frame
-/// is needed (for animations). Return `true` if an animation is in progress.
+/// The `render` method returns a [`FilterRenderResult`]. Return `Ok(true)`
+/// while animation is in progress, `Ok(false)` for a completed frame, and
+/// `Err(...)` for an explicit render failure.
 pub trait GpuFilter: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, bind groups, samplers, and other
     /// GPU resources that persist across frames.
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()>;
+    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult>;
 
     /// Called each frame to apply the filter.
     ///
     /// Read from `input.texture`/`input.view` and write to `output.texture`/`output.view`.
     /// Input and output may have different dimensions.
     ///
-    /// Returns `true` if another frame is needed (animation in progress).
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+    /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
+
+    /// Resolve the output dimensions from the current snapped filter state.
+    ///
+    /// Implementations that depend on reactive inputs must snapshot those values
+    /// in [`GpuFilter::sync_targets`] and only read the snapped state here.
+    #[must_use]
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        (input_width, input_height)
+    }
 
     /// Snapshot reactive target values before render dispatch.
     ///
@@ -162,19 +181,24 @@ pub trait GpuFilter: 'static {
 
 /// Object-safe trait for type-erased GPU filters.
 pub(crate) trait GpuFilterImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a>;
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a>;
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     fn sync_targets(&mut self);
     fn redraw_hint(&self) -> bool;
 }
 
 impl<T: GpuFilter> GpuFilterImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a> {
+    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
         Box::pin(GpuFilter::setup(self, ctx))
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         GpuFilter::render(self, input, output)
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        GpuFilter::output_size(self, input_width, input_height)
     }
 
     fn sync_targets(&mut self) {
@@ -211,15 +235,21 @@ impl AppliedFilter {
     }
 
     /// Calls `setup` on the filter, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a> {
+    pub fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
         self.filter.setup(ctx)
     }
 
     /// Calls `render` on the filter.
     ///
-    /// Returns `true` if another frame is needed (animation in progress).
-    pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         self.filter.render(input, output)
+    }
+
+    /// Resolve the current output dimensions from snapped filter state.
+    #[must_use]
+    pub fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        self.filter.output_size(input_width, input_height)
     }
 
     /// Snapshot reactive target values before render dispatch.
@@ -1117,6 +1147,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         }
     }
 
+    #[cfg(test)]
     fn has_setup_error(&self) -> bool {
         self.setup_error.is_some()
     }
@@ -1404,11 +1435,12 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
 }
 
 impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()> {
+    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult> {
         let param_count = <F::Params as ParamArray>::LEN;
         if param_count > MAX_FILTER_PARAMS {
-            self.set_setup_error("filter chain exceeds 64 params (uniform limit)");
-            return core::future::ready(());
+            let err = "filter chain exceeds 64 params (uniform limit)";
+            self.set_setup_error(err);
+            return core::future::ready(Err(err));
         }
 
         // Create shared sampler
@@ -1430,7 +1462,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             Ok(passes) => passes,
             Err(err) => {
                 self.set_setup_error(err);
-                return core::future::ready(());
+                return core::future::ready(Err(err));
             }
         };
 
@@ -1485,29 +1517,33 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         }
 
         if !build_ok {
-            self.set_setup_error(match (self.hdr_policy, last_err) {
+            let err = match (self.hdr_policy, last_err) {
                 (HdrPolicy::RequireHdr, Some(_)) => {
                     "HDR is required by policy but unavailable for this filter pipeline"
                 }
                 (_, Some(err)) => err,
                 (_, None) => "filter setup produced no executable passes",
-            });
-            return core::future::ready(());
+            };
+            self.set_setup_error(err);
+            return core::future::ready(Err(err));
         }
 
         // Initialize current values from the latest snapped targets.
         self.apply_target_params_to_current_values();
 
-        core::future::ready(())
+        core::future::ready(Ok(()))
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         #[cfg(test)]
         {
             self.last_render_used_direct_output = false;
         }
-        if self.has_setup_error() || self.passes.is_empty() {
-            return false;
+        if let Some(err) = self.setup_error {
+            return Err(err);
+        }
+        if self.passes.is_empty() {
+            return Err("filter render called before a compiled pass graph exists");
         }
 
         let direct_output_runtime = self
@@ -1543,7 +1579,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             );
             for (slot, required) in required_scratch_slots.into_iter().enumerate() {
                 if required && self.scratch_views[slot].is_none() {
-                    return false;
+                    return Err("required scratch texture view was not allocated");
                 }
             }
         }
@@ -1551,11 +1587,11 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         let needs_redraw = self.update_interpolated_params();
         let current_values = &self.animation_state.current_values;
         if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
-            return false;
+            return Err("filter render missing current parameter values");
         }
 
         let Some(sampler) = &self.sampler else {
-            return false;
+            return Err("filter sampler missing after setup");
         };
 
         let mut encoder = input
@@ -1583,7 +1619,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         PassTextureSource::Input => &input.view,
                         PassTextureSource::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("color pass source scratch view missing");
                             };
                             view
                         }
@@ -1592,7 +1628,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         ColorTarget::Output => &output.view,
                         ColorTarget::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("color pass target scratch view missing");
                             };
                             view
                         }
@@ -1654,7 +1690,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                 }));
                         }
                         let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                            return false;
+                            return Err("color pass bind group cache missing after creation");
                         };
                         bind_group
                     };
@@ -1700,7 +1736,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         PassTextureSource::Input => &input.view,
                         PassTextureSource::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("spatial pass source scratch view missing");
                             };
                             view
                         }
@@ -1722,13 +1758,13 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         } else {
                             let Some(target_view) = self.scratch_views[target_scratch].as_ref()
                             else {
-                                return false;
+                                return Err("spatial pass target scratch view missing");
                             };
                             (target_view, pipeline, bind_group_layout)
                         }
                     } else {
                         let Some(target_view) = self.scratch_views[target_scratch].as_ref() else {
-                            return false;
+                            return Err("spatial pass target scratch view missing");
                         };
                         (target_view, pipeline, bind_group_layout)
                     };
@@ -1800,7 +1836,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                 }));
                         }
                         let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                            return false;
+                            return Err("spatial pass bind group cache missing after creation");
                         };
                         bind_group
                     };
@@ -1825,20 +1861,24 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     source_width = target_width;
                     source_height = target_height;
                 }
-                _ => return false,
+                _ => {
+                    return Err(
+                        "compiled filter pass kind does not match its runtime binding plan",
+                    );
+                }
             }
         }
 
         if !used_direct_spatial_output {
             if let Some(blit_source_slot) = self.blit_source_scratch_slot {
                 let Some(blit_pipeline) = &self.blit_pipeline else {
-                    return false;
+                    return Err("final blit pipeline missing after setup");
                 };
                 let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
-                    return false;
+                    return Err("final blit bind group layout missing after setup");
                 };
                 let Some(blit_source_view) = self.scratch_views[blit_source_slot].as_ref() else {
-                    return false;
+                    return Err("final blit source scratch view missing");
                 };
 
                 if self.blit_bind_group.is_none() {
@@ -1859,7 +1899,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         }));
                 }
                 let Some(blit_bind_group) = self.blit_bind_group.as_ref() else {
-                    return false;
+                    return Err("final blit bind group missing after creation");
                 };
 
                 {
@@ -1891,7 +1931,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         {
             self.last_render_used_direct_output = used_direct_spatial_output;
         }
-        needs_redraw
+        Ok(needs_redraw)
     }
 
     fn sync_targets(&mut self) {
@@ -2954,7 +2994,7 @@ mod tests {
         };
 
         let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
-        assert!(!needs_redraw);
+        assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, width, height);
         assert!(pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0);
@@ -3072,7 +3112,7 @@ mod tests {
         };
 
         let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
-        assert!(!needs_redraw);
+        assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, out_width, out_height);
         assert!(
