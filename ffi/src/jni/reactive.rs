@@ -1468,6 +1468,15 @@ unsafe extern "C" fn watcher_call_cursor_style(
     watcher_call_int(data, value, metadata_ptr);
 }
 
+/// Call function for HorizontalAlignment watcher (uses i32).
+unsafe extern "C" fn watcher_call_horizontal_alignment(
+    data: *mut (),
+    value: i32,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    watcher_call_int(data, value, metadata_ptr);
+}
+
 // Array-based watchers need special handling for PickerItems, TableCols, Annotations
 
 /// Call function for PickerItems watcher.
@@ -1713,6 +1722,7 @@ jni_create_watcher_typed!(TableCols, watcher_call_table_cols);
 jni_create_watcher_typed!(Region, watcher_call_region);
 jni_create_watcher_typed!(Annotations, watcher_call_annotations);
 jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style);
+jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment);
 jni_create_watcher_typed!(Date, watcher_call_date);
 
 // ============================================================================

@@ -702,6 +702,7 @@ jni_computed_primitive!(f64, f64);
 // Generate additional computed aliases (ColorScheme and CursorStyle use i32)
 jni_computed_primitive!(i32, color_scheme);
 jni_computed_primitive!(i32, cursor_style);
+jni_computed_primitive!(i32, horizontal_alignment);
 
 // Date reactive bindings (using WuiDate FFI representation)
 use crate::components::form::WuiDate;

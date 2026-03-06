@@ -119,6 +119,15 @@ typedef enum WuiButtonStyle {
   WuiButtonStyle_BorderedProminent,
 } WuiButtonStyle;
 
+/**
+ * FFI-safe horizontal paragraph alignment.
+ */
+typedef enum WuiHorizontalAlignment {
+  WuiHorizontalAlignment_Leading = 0,
+  WuiHorizontalAlignment_Center = 1,
+  WuiHorizontalAlignment_Trailing = 2,
+} WuiHorizontalAlignment;
+
 typedef enum WuiFontWeight {
   WuiFontWeight_Thin,
   WuiFontWeight_UltraLight,
@@ -732,6 +741,14 @@ typedef struct Computed_Font Computed_Font;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_HorizontalAlignment Computed_HorizontalAlignment;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Id Computed_Id;
 
 /**
@@ -984,6 +1001,8 @@ typedef struct WuiWatcher_CursorStyle WuiWatcher_CursorStyle;
 typedef struct WuiWatcher_Date WuiWatcher_Date;
 
 typedef struct WuiWatcher_Font WuiWatcher_Font;
+
+typedef struct WuiWatcher_HorizontalAlignment WuiWatcher_HorizontalAlignment;
 
 typedef struct WuiWatcher_Id WuiWatcher_Id;
 
@@ -1700,8 +1719,11 @@ typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
 
 typedef struct Computed_StyledStr WuiComputed_StyledStr;
 
+typedef struct Computed_HorizontalAlignment WuiComputed_HorizontalAlignment;
+
 typedef struct WuiText {
   WuiComputed_StyledStr *content;
+  WuiComputed_HorizontalAlignment *paragraph_alignment;
 } WuiText;
 
 /**
@@ -1976,6 +1998,66 @@ typedef struct WuiSize {
   float height;
 } WuiSize;
 
+typedef struct WuiHorizontalGuide {
+  struct WuiTypeId alignment;
+  float value;
+} WuiHorizontalGuide;
+
+typedef struct WuiArraySlice_WuiHorizontalGuide {
+  struct WuiHorizontalGuide *head;
+  uintptr_t len;
+} WuiArraySlice_WuiHorizontalGuide;
+
+typedef struct WuiArrayVTable_WuiHorizontalGuide {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiHorizontalGuide (*slice)(const void*);
+} WuiArrayVTable_WuiHorizontalGuide;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiHorizontalGuide {
+  NonNull data;
+  struct WuiArrayVTable_WuiHorizontalGuide vtable;
+} WuiArray_WuiHorizontalGuide;
+
+typedef struct WuiVerticalGuide {
+  struct WuiTypeId alignment;
+  float value;
+} WuiVerticalGuide;
+
+typedef struct WuiArraySlice_WuiVerticalGuide {
+  struct WuiVerticalGuide *head;
+  uintptr_t len;
+} WuiArraySlice_WuiVerticalGuide;
+
+typedef struct WuiArrayVTable_WuiVerticalGuide {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiVerticalGuide (*slice)(const void*);
+} WuiArrayVTable_WuiVerticalGuide;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiVerticalGuide {
+  NonNull data;
+  struct WuiArrayVTable_WuiVerticalGuide vtable;
+} WuiArray_WuiVerticalGuide;
+
+typedef struct WuiViewDimensions {
+  struct WuiSize size;
+  struct WuiArray_WuiHorizontalGuide horizontal_guides;
+  struct WuiArray_WuiVerticalGuide vertical_guides;
+} WuiViewDimensions;
+
 typedef struct WuiProposalSize {
   float width;
   float height;
@@ -1993,7 +2075,7 @@ typedef struct WuiSubViewVTable {
    * Measures the child view given a size proposal.
    * Called potentially multiple times with different proposals during layout.
    */
-  struct WuiSize (*measure)(void *context, struct WuiProposalSize proposal);
+  struct WuiViewDimensions (*measure)(void *context, struct WuiProposalSize proposal);
   /**
    * Cleans up the context when the subview is no longer needed.
    * Called when the WuiSubView is dropped.
@@ -4248,6 +4330,22 @@ void waterui_drop_layout(struct WuiLayout *value);
  */
 struct WuiTypeId waterui_spacer_id(void);
 
+struct WuiTypeId waterui_horizontal_alignment_leading_id(void);
+
+struct WuiTypeId waterui_horizontal_alignment_center_id(void);
+
+struct WuiTypeId waterui_horizontal_alignment_trailing_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_top_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_center_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_bottom_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_first_baseline_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_last_baseline_id(void);
+
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_fixed_container_id(void);
@@ -4255,6 +4353,8 @@ struct WuiTypeId waterui_fixed_container_id(void);
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_layout_container_id(void);
+
+void waterui_drop_view_dimensions(struct WuiViewDimensions dimensions);
 
 /**
  * Calculates the size required by the layout given a proposal and child proxies.
@@ -4269,6 +4369,10 @@ struct WuiTypeId waterui_layout_container_id(void);
  * - The measure callbacks in each child must be safe to call.
  * - The `children` array will be consumed and dropped after this call.
  */
+struct WuiViewDimensions waterui_layout_measure(struct WuiLayout *layout,
+                                                struct WuiProposalSize proposal,
+                                                struct WuiArray_WuiSubView children);
+
 struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
                                              struct WuiProposalSize proposal,
                                              struct WuiArray_WuiSubView children);
@@ -4343,6 +4447,47 @@ struct WuiWatcher_StyledStr *waterui_new_watcher_styled_str(void *data,
                                                                          struct WuiStyledStr,
                                                                          struct WuiWatcherMetadata*),
                                                             void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiHorizontalAlignment waterui_read_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed,
+                                                                    struct WuiWatcher_HorizontalAlignment *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_horizontal_alignment(WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_HorizontalAlignment *waterui_clone_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_HorizontalAlignment *waterui_new_watcher_horizontal_alignment(void *data,
+                                                                                void (*call)(void*,
+                                                                                             enum WuiHorizontalAlignment,
+                                                                                             struct WuiWatcherMetadata*),
+                                                                                void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
