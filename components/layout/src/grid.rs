@@ -5,14 +5,14 @@ use core::num::NonZeroUsize;
 use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, SubView,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
-    size: Size,
+    dimensions: ViewDimensions,
 }
 
 struct GridMeasurement {
@@ -24,7 +24,7 @@ struct GridMeasurement {
 }
 
 /// The core layout engine for a `Grid`.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GridLayout {
     columns: NonZeroUsize,
     spacing: Size, // (horizontal, vertical)
@@ -80,7 +80,7 @@ impl GridLayout {
                 let column_index = index % num_columns;
                 let child_proposal = ProposalSize::new(Some(column_widths[column_index]), None);
                 ChildMeasurement {
-                    size: child.size_that_fits(child_proposal),
+                    dimensions: child.dimensions(child_proposal),
                 }
             })
             .collect();
@@ -90,7 +90,7 @@ impl GridLayout {
             .map(|row_children| {
                 row_children
                     .iter()
-                    .map(|measurement| measurement.size.height)
+                    .map(|measurement| measurement.dimensions.size.height)
                     .filter(|height| height.is_finite())
                     .fold(0.0, f32::max)
             })
@@ -161,36 +161,50 @@ impl Layout for GridLayout {
                 );
 
                 // Handle infinite dimensions
-                let child_width = if child_measurement.size.width.is_infinite() {
+                let child_width = if child_measurement.dimensions.size.width.is_infinite() {
                     column_width
                 } else {
-                    child_measurement.size.width
+                    child_measurement.dimensions.size.width
                 };
 
-                let child_height = if child_measurement.size.height.is_infinite() {
+                let child_height = if child_measurement.dimensions.size.height.is_infinite() {
                     row_height
                 } else {
-                    child_measurement.size.height
+                    child_measurement.dimensions.size.height
                 };
 
                 let child_size = Size::new(child_width, child_height);
+                let mut adjusted_dimensions = child_measurement.dimensions.clone();
+                adjusted_dimensions.size = child_size;
 
                 // Align the child within its cell
-                let child_x = match self.alignment.horizontal() {
-                    HorizontalAlignment::Leading => cell_frame.x(),
-                    HorizontalAlignment::Center => {
-                        cell_frame.x() + (cell_frame.width() - child_size.width) / 2.0
-                    }
-                    HorizontalAlignment::Trailing => cell_frame.max_x() - child_size.width,
+                let horizontal = self.alignment.horizontal();
+                let target_x = if horizontal == HorizontalAlignment::Leading {
+                    0.0
+                } else if horizontal == HorizontalAlignment::Trailing {
+                    cell_frame.width()
+                } else if horizontal == HorizontalAlignment::Center {
+                    cell_frame.width() * 0.5
+                } else {
+                    adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width)
                 };
+                let child_x = cell_frame.x()
+                    + target_x
+                    - adjusted_dimensions.horizontal(horizontal).clamp(0.0, child_size.width);
 
-                let child_y = match self.alignment.vertical() {
-                    VerticalAlignment::Top => cell_frame.y(),
-                    VerticalAlignment::Center => {
-                        cell_frame.y() + (cell_frame.height() - child_size.height) / 2.0
-                    }
-                    VerticalAlignment::Bottom => cell_frame.max_y() - child_size.height,
+                let vertical = self.alignment.vertical();
+                let target_y = if vertical == VerticalAlignment::Top {
+                    0.0
+                } else if vertical == VerticalAlignment::Bottom {
+                    cell_frame.height()
+                } else if vertical == VerticalAlignment::Center {
+                    cell_frame.height() * 0.5
+                } else {
+                    adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height)
                 };
+                let child_y = cell_frame.y()
+                    + target_y
+                    - adjusted_dimensions.vertical(vertical).clamp(0.0, child_size.height);
 
                 placements.push(Rect::new(Point::new(child_x, child_y), child_size));
 
@@ -201,6 +215,42 @@ impl Layout for GridLayout {
         }
 
         placements
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == self.alignment.horizontal() {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_horizontal(alignment))
+                .min_by(f32::total_cmp);
+        }
+        None
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == VerticalAlignment::LastBaseline {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .max_by(f32::total_cmp);
+        }
+        if alignment == VerticalAlignment::FirstBaseline || alignment == self.alignment.vertical() {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .min_by(f32::total_cmp);
+        }
+        None
     }
 }
 

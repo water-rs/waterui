@@ -8,7 +8,10 @@
 use alloc::{format, vec, vec::Vec};
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
-use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
+use crate::{
+    HorizontalAlignmentKey, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 // ============================================================================
 // Test Infrastructure
@@ -113,6 +116,64 @@ impl SubView for HorizontalExpandingView {
 /// Uses [`StretchAxis::Vertical`] - stretches HEIGHT only, not WIDTH.
 struct VerticalExpandingView {
     width: f32,
+}
+
+struct BaselineTextView {
+    size: Size,
+    first_baseline: f32,
+    last_baseline: f32,
+}
+
+impl SubView for BaselineTextView {
+    fn dimensions(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_vertical(VerticalAlignment::FirstBaseline, self.first_baseline)
+            .with_vertical(VerticalAlignment::LastBaseline, self.last_baseline)
+    }
+
+    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+        self.size
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+struct TitleGuide;
+
+impl HorizontalAlignmentKey for TitleGuide {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.width * 0.5
+    }
+}
+
+struct GuidedBoxView {
+    size: Size,
+    guide: f32,
+}
+
+impl SubView for GuidedBoxView {
+    fn dimensions(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_horizontal(HorizontalAlignment::custom::<TitleGuide>(), self.guide)
+    }
+
+    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+        self.size
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
 }
 
 impl SubView for VerticalExpandingView {
@@ -1222,6 +1283,61 @@ fn test_vstack_form_layout() {
 
     // No overlapping
     assert_no_overlap(&rects, "vertical");
+}
+
+#[test]
+fn test_hstack_first_baseline_uses_text_baselines() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::FirstBaseline,
+        spacing: 10.0,
+    };
+
+    let left = BaselineTextView {
+        size: Size::new(80.0, 20.0),
+        first_baseline: 14.0,
+        last_baseline: 14.0,
+    };
+    let right = BaselineTextView {
+        size: Size::new(40.0, 40.0),
+        first_baseline: 28.0,
+        last_baseline: 28.0,
+    };
+
+    let children: Vec<&dyn SubView> = vec![&left, &right];
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_eq!(size.height, 40.0);
+
+    let rects = layout.place(Rect::from_size(size), &children);
+    let left_baseline = rects[0].y() + left.first_baseline;
+    let right_baseline = rects[1].y() + right.first_baseline;
+    assert!((left_baseline - right_baseline).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_vstack_custom_horizontal_alignment_uses_guides() {
+    let alignment = HorizontalAlignment::custom::<TitleGuide>();
+    let layout = VStackLayout {
+        alignment,
+        spacing: 8.0,
+    };
+
+    let top = GuidedBoxView {
+        size: Size::new(120.0, 20.0),
+        guide: 30.0,
+    };
+    let bottom = GuidedBoxView {
+        size: Size::new(80.0, 20.0),
+        guide: 10.0,
+    };
+
+    let children: Vec<&dyn SubView> = vec![&top, &bottom];
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_eq!(size.width, 120.0);
+
+    let rects = layout.place(Rect::from_size(size), &children);
+    let top_guide = rects[0].x() + top.guide;
+    let bottom_guide = rects[1].x() + bottom.guide;
+    assert!((top_guide - bottom_guide).abs() < f32::EPSILON);
 }
 
 #[test]

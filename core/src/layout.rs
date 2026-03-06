@@ -26,10 +26,13 @@
 //! )).spacing(8.0)                    // 8 logical pixels between items
 //! ```
 
-use core::any::Any;
+use core::any::{Any, TypeId};
 use core::fmt::Debug;
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+
+use crate::metadata::MetadataKey;
 
 // ============================================================================
 // StretchAxis - Specifies which axis a view stretches on
@@ -78,6 +81,568 @@ impl StretchAxis {
 }
 
 // ============================================================================
+// Alignment Guides
+// ============================================================================
+
+/// Key trait for horizontal alignment guides.
+pub trait HorizontalAlignmentKey: 'static {
+    /// Returns the default local-space guide value for the provided dimensions.
+    fn default_value(dimensions: &ViewDimensions) -> f32;
+}
+
+/// Key trait for vertical alignment guides.
+pub trait VerticalAlignmentKey: 'static {
+    /// Returns the default local-space guide value for the provided dimensions.
+    fn default_value(dimensions: &ViewDimensions) -> f32;
+}
+
+#[derive(Clone, Copy)]
+/// Horizontal alignment guide handle.
+pub struct HorizontalAlignment {
+    id: TypeId,
+    default_value: fn(&ViewDimensions) -> f32,
+}
+
+impl HorizontalAlignment {
+    /// Leading alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Leading: Self = Self {
+        id: TypeId::of::<LeadingAlignmentKey>(),
+        default_value: leading_alignment_default,
+    };
+
+    /// Center alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Center: Self = Self {
+        id: TypeId::of::<CenterHorizontalAlignmentKey>(),
+        default_value: center_horizontal_alignment_default,
+    };
+
+    /// Trailing alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Trailing: Self = Self {
+        id: TypeId::of::<TrailingAlignmentKey>(),
+        default_value: trailing_alignment_default,
+    };
+
+    /// Creates a custom horizontal alignment guide from a key type.
+    #[must_use]
+    pub fn custom<K: HorizontalAlignmentKey>() -> Self {
+        Self {
+            id: TypeId::of::<K>(),
+            default_value: K::default_value,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn default_value(self, dimensions: &ViewDimensions) -> f32 {
+        (self.default_value)(dimensions)
+    }
+}
+
+impl Default for HorizontalAlignment {
+    fn default() -> Self {
+        Self::Center
+    }
+}
+
+impl PartialEq for HorizontalAlignment {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for HorizontalAlignment {}
+
+impl Debug for HorizontalAlignment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HorizontalAlignment")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+/// Vertical alignment guide handle.
+pub struct VerticalAlignment {
+    id: TypeId,
+    default_value: fn(&ViewDimensions) -> f32,
+}
+
+impl VerticalAlignment {
+    /// Top alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Top: Self = Self {
+        id: TypeId::of::<TopAlignmentKey>(),
+        default_value: top_alignment_default,
+    };
+
+    /// Center alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Center: Self = Self {
+        id: TypeId::of::<CenterVerticalAlignmentKey>(),
+        default_value: center_vertical_alignment_default,
+    };
+
+    /// Bottom alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const Bottom: Self = Self {
+        id: TypeId::of::<BottomAlignmentKey>(),
+        default_value: bottom_alignment_default,
+    };
+
+    /// First baseline alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const FirstBaseline: Self = Self {
+        id: TypeId::of::<FirstBaselineAlignmentKey>(),
+        default_value: first_baseline_alignment_default,
+    };
+
+    /// Last baseline alignment guide.
+    #[allow(non_upper_case_globals)]
+    pub const LastBaseline: Self = Self {
+        id: TypeId::of::<LastBaselineAlignmentKey>(),
+        default_value: last_baseline_alignment_default,
+    };
+
+    /// Creates a custom vertical alignment guide from a key type.
+    #[must_use]
+    pub fn custom<K: VerticalAlignmentKey>() -> Self {
+        Self {
+            id: TypeId::of::<K>(),
+            default_value: K::default_value,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn default_value(self, dimensions: &ViewDimensions) -> f32 {
+        (self.default_value)(dimensions)
+    }
+}
+
+impl Default for VerticalAlignment {
+    fn default() -> Self {
+        Self::Center
+    }
+}
+
+impl PartialEq for VerticalAlignment {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for VerticalAlignment {}
+
+impl Debug for VerticalAlignment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VerticalAlignment")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+/// Combined two-dimensional alignment used by layout containers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Alignment {
+    horizontal: HorizontalAlignment,
+    vertical: VerticalAlignment,
+}
+
+impl Alignment {
+    /// Top-center alignment.
+    #[allow(non_upper_case_globals)]
+    pub const Top: Self = Self::new(HorizontalAlignment::Center, VerticalAlignment::Top);
+
+    /// Top-leading alignment.
+    #[allow(non_upper_case_globals)]
+    pub const TopLeading: Self = Self::new(HorizontalAlignment::Leading, VerticalAlignment::Top);
+
+    /// Top-trailing alignment.
+    #[allow(non_upper_case_globals)]
+    pub const TopTrailing: Self = Self::new(HorizontalAlignment::Trailing, VerticalAlignment::Top);
+
+    /// Center alignment.
+    #[allow(non_upper_case_globals)]
+    pub const Center: Self = Self::new(HorizontalAlignment::Center, VerticalAlignment::Center);
+
+    /// Leading-center alignment.
+    #[allow(non_upper_case_globals)]
+    pub const Leading: Self = Self::new(HorizontalAlignment::Leading, VerticalAlignment::Center);
+
+    /// Trailing-center alignment.
+    #[allow(non_upper_case_globals)]
+    pub const Trailing: Self = Self::new(HorizontalAlignment::Trailing, VerticalAlignment::Center);
+
+    /// Bottom-center alignment.
+    #[allow(non_upper_case_globals)]
+    pub const Bottom: Self = Self::new(HorizontalAlignment::Center, VerticalAlignment::Bottom);
+
+    /// Bottom-leading alignment.
+    #[allow(non_upper_case_globals)]
+    pub const BottomLeading: Self = Self::new(HorizontalAlignment::Leading, VerticalAlignment::Bottom);
+
+    /// Bottom-trailing alignment.
+    #[allow(non_upper_case_globals)]
+    pub const BottomTrailing: Self = Self::new(HorizontalAlignment::Trailing, VerticalAlignment::Bottom);
+
+    /// Creates a combined alignment from horizontal and vertical guides.
+    #[must_use]
+    pub const fn new(horizontal: HorizontalAlignment, vertical: VerticalAlignment) -> Self {
+        Self {
+            horizontal,
+            vertical,
+        }
+    }
+
+    /// Returns the horizontal component.
+    #[must_use]
+    pub const fn horizontal(&self) -> HorizontalAlignment {
+        self.horizontal
+    }
+
+    /// Returns the vertical component.
+    #[must_use]
+    pub const fn vertical(&self) -> VerticalAlignment {
+        self.vertical
+    }
+}
+
+impl Default for Alignment {
+    fn default() -> Self {
+        Self::Center
+    }
+}
+
+/// Measured dimensions together with explicit alignment guides.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ViewDimensions {
+    /// The measured size.
+    pub size: Size,
+    explicit_horizontal_guides: Vec<(HorizontalAlignment, f32)>,
+    explicit_vertical_guides: Vec<(VerticalAlignment, f32)>,
+}
+
+impl ViewDimensions {
+    /// Creates dimensions for the provided size.
+    #[must_use]
+    pub const fn new(size: Size) -> Self {
+        Self {
+            size,
+            explicit_horizontal_guides: Vec::new(),
+            explicit_vertical_guides: Vec::new(),
+        }
+    }
+
+    /// Returns the resolved horizontal guide value.
+    #[must_use]
+    pub fn horizontal(&self, alignment: HorizontalAlignment) -> f32 {
+        self.explicit_horizontal(alignment)
+            .unwrap_or_else(|| alignment.default_value(self))
+    }
+
+    /// Returns the resolved vertical guide value.
+    #[must_use]
+    pub fn vertical(&self, alignment: VerticalAlignment) -> f32 {
+        self.explicit_vertical(alignment)
+            .unwrap_or_else(|| alignment.default_value(self))
+    }
+
+    /// Returns the explicit horizontal guide value, if any.
+    #[must_use]
+    pub fn explicit_horizontal(&self, alignment: HorizontalAlignment) -> Option<f32> {
+        self.explicit_horizontal_guides
+            .iter()
+            .rev()
+            .find_map(|(guide, value)| (*guide == alignment).then_some(*value))
+    }
+
+    /// Returns the explicit vertical guide value, if any.
+    #[must_use]
+    pub fn explicit_vertical(&self, alignment: VerticalAlignment) -> Option<f32> {
+        self.explicit_vertical_guides
+            .iter()
+            .rev()
+            .find_map(|(guide, value)| (*guide == alignment).then_some(*value))
+    }
+
+    /// Returns an iterator over explicit horizontal guides.
+    pub fn explicit_horizontal_guides(
+        &self,
+    ) -> impl Iterator<Item = (HorizontalAlignment, f32)> + '_ {
+        self.explicit_horizontal_guides.iter().copied()
+    }
+
+    /// Returns an iterator over explicit vertical guides.
+    pub fn explicit_vertical_guides(
+        &self,
+    ) -> impl Iterator<Item = (VerticalAlignment, f32)> + '_ {
+        self.explicit_vertical_guides.iter().copied()
+    }
+
+    /// Stores an explicit horizontal guide value.
+    pub fn set_horizontal(&mut self, alignment: HorizontalAlignment, value: f32) {
+        self.explicit_horizontal_guides.push((alignment, value));
+    }
+
+    /// Stores an explicit vertical guide value.
+    pub fn set_vertical(&mut self, alignment: VerticalAlignment, value: f32) {
+        self.explicit_vertical_guides.push((alignment, value));
+    }
+
+    /// Builder-style horizontal guide setter.
+    #[must_use]
+    pub fn with_horizontal(mut self, alignment: HorizontalAlignment, value: f32) -> Self {
+        self.set_horizontal(alignment, value);
+        self
+    }
+
+    /// Builder-style vertical guide setter.
+    #[must_use]
+    pub fn with_vertical(mut self, alignment: VerticalAlignment, value: f32) -> Self {
+        self.set_vertical(alignment, value);
+        self
+    }
+}
+
+/// A child view together with its placed frame inside a container.
+#[derive(Clone, Copy)]
+pub struct PlacedSubview<'a> {
+    /// The child proxy.
+    pub view: &'a dyn SubView,
+    /// The child frame in container-local coordinates.
+    pub frame: Rect,
+}
+
+impl Debug for PlacedSubview<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PlacedSubview")
+            .field("frame", &self.frame)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> PlacedSubview<'a> {
+    /// Creates a placed subview.
+    #[must_use]
+    pub const fn new(view: &'a dyn SubView, frame: Rect) -> Self {
+        Self { view, frame }
+    }
+
+    /// Returns the child's dimensions for its placed size proposal.
+    #[must_use]
+    pub fn dimensions(&self) -> ViewDimensions {
+        self.view.dimensions(ProposalSize::new(
+            Some(self.frame.width()),
+            Some(self.frame.height()),
+        ))
+    }
+
+    /// Returns the resolved horizontal guide in container coordinates.
+    #[must_use]
+    pub fn horizontal(&self, alignment: HorizontalAlignment) -> f32 {
+        self.frame.x() + self.dimensions().horizontal(alignment)
+    }
+
+    /// Returns the resolved vertical guide in container coordinates.
+    #[must_use]
+    pub fn vertical(&self, alignment: VerticalAlignment) -> f32 {
+        self.frame.y() + self.dimensions().vertical(alignment)
+    }
+
+    /// Returns the explicit horizontal guide in container coordinates, if any.
+    #[must_use]
+    pub fn explicit_horizontal(&self, alignment: HorizontalAlignment) -> Option<f32> {
+        self.dimensions()
+            .explicit_horizontal(alignment)
+            .map(|value| self.frame.x() + value)
+    }
+
+    /// Returns the explicit vertical guide in container coordinates, if any.
+    #[must_use]
+    pub fn explicit_vertical(&self, alignment: VerticalAlignment) -> Option<f32> {
+        self.dimensions()
+            .explicit_vertical(alignment)
+            .map(|value| self.frame.y() + value)
+    }
+}
+
+#[derive(Clone)]
+/// Horizontal alignment guide override metadata.
+pub struct HorizontalAlignmentGuide {
+    alignment: HorizontalAlignment,
+    compute: Rc<dyn Fn(&ViewDimensions) -> f32>,
+}
+
+impl Debug for HorizontalAlignmentGuide {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HorizontalAlignmentGuide")
+            .field("alignment", &self.alignment)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MetadataKey for HorizontalAlignmentGuide {}
+
+impl HorizontalAlignmentGuide {
+    /// Creates a new horizontal guide override.
+    #[must_use]
+    pub fn new(
+        alignment: HorizontalAlignment,
+        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
+    ) -> Self {
+        Self {
+            alignment,
+            compute: Rc::new(compute),
+        }
+    }
+
+    /// Returns the overridden horizontal guide handle.
+    #[must_use]
+    pub const fn alignment(&self) -> HorizontalAlignment {
+        self.alignment
+    }
+
+    /// Evaluates the override against measured dimensions.
+    #[must_use]
+    pub fn resolve(&self, dimensions: &ViewDimensions) -> f32 {
+        (self.compute)(dimensions)
+    }
+}
+
+#[derive(Clone)]
+/// Vertical alignment guide override metadata.
+pub struct VerticalAlignmentGuide {
+    alignment: VerticalAlignment,
+    compute: Rc<dyn Fn(&ViewDimensions) -> f32>,
+}
+
+impl Debug for VerticalAlignmentGuide {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VerticalAlignmentGuide")
+            .field("alignment", &self.alignment)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MetadataKey for VerticalAlignmentGuide {}
+
+impl VerticalAlignmentGuide {
+    /// Creates a new vertical guide override.
+    #[must_use]
+    pub fn new(
+        alignment: VerticalAlignment,
+        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
+    ) -> Self {
+        Self {
+            alignment,
+            compute: Rc::new(compute),
+        }
+    }
+
+    /// Returns the overridden vertical guide handle.
+    #[must_use]
+    pub const fn alignment(&self) -> VerticalAlignment {
+        self.alignment
+    }
+
+    /// Evaluates the override against measured dimensions.
+    #[must_use]
+    pub fn resolve(&self, dimensions: &ViewDimensions) -> f32 {
+        (self.compute)(dimensions)
+    }
+}
+
+struct LeadingAlignmentKey;
+struct CenterHorizontalAlignmentKey;
+struct TrailingAlignmentKey;
+struct TopAlignmentKey;
+struct CenterVerticalAlignmentKey;
+struct BottomAlignmentKey;
+struct FirstBaselineAlignmentKey;
+struct LastBaselineAlignmentKey;
+
+impl HorizontalAlignmentKey for LeadingAlignmentKey {
+    fn default_value(_dimensions: &ViewDimensions) -> f32 {
+        0.0
+    }
+}
+
+impl HorizontalAlignmentKey for CenterHorizontalAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.width * 0.5
+    }
+}
+
+impl HorizontalAlignmentKey for TrailingAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.width
+    }
+}
+
+impl VerticalAlignmentKey for TopAlignmentKey {
+    fn default_value(_dimensions: &ViewDimensions) -> f32 {
+        0.0
+    }
+}
+
+impl VerticalAlignmentKey for CenterVerticalAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.height * 0.5
+    }
+}
+
+impl VerticalAlignmentKey for BottomAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.height
+    }
+}
+
+impl VerticalAlignmentKey for FirstBaselineAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.height
+    }
+}
+
+impl VerticalAlignmentKey for LastBaselineAlignmentKey {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.height
+    }
+}
+
+fn leading_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    LeadingAlignmentKey::default_value(dimensions)
+}
+
+fn center_horizontal_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    CenterHorizontalAlignmentKey::default_value(dimensions)
+}
+
+fn trailing_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    TrailingAlignmentKey::default_value(dimensions)
+}
+
+fn top_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    TopAlignmentKey::default_value(dimensions)
+}
+
+fn center_vertical_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    CenterVerticalAlignmentKey::default_value(dimensions)
+}
+
+fn bottom_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    BottomAlignmentKey::default_value(dimensions)
+}
+
+fn first_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    FirstBaselineAlignmentKey::default_value(dimensions)
+}
+
+fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    LastBaselineAlignmentKey::default_value(dimensions)
+}
+
+// ============================================================================
 // SubView Trait - Child View Proxy
 // ============================================================================
 
@@ -93,6 +658,12 @@ impl StretchAxis {
 /// caching should be owned by leaf implementations, while containers can
 /// re-query freely.
 pub trait SubView {
+    /// Query the child's full dimensions for a given proposal.
+    #[must_use]
+    fn dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size_that_fits(proposal))
+    }
+
     /// Query the child's size for a given proposal.
     ///
     /// This method may be called multiple times with different proposals
@@ -173,6 +744,26 @@ pub trait Layout: Debug + Any {
     /// * `bounds` - The rectangle this layout should fill
     /// * `children` - References to child proxies (may query sizes again)
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect>;
+
+    /// Returns an explicit horizontal guide for this container, if any.
+    fn explicit_horizontal(
+        &self,
+        _alignment: HorizontalAlignment,
+        _bounds: Rect,
+        _children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        None
+    }
+
+    /// Returns an explicit vertical guide for this container, if any.
+    fn explicit_vertical(
+        &self,
+        _alignment: VerticalAlignment,
+        _bounds: Rect,
+        _children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        None
+    }
 
     /// Which axis this container stretches to fill available space.
     ///
@@ -390,7 +981,7 @@ macro_rules! impl_layout_signal_constant {
     };
 }
 
-impl_layout_signal_constant!(Point, Size, Rect);
+impl_layout_signal_constant!(Point, Size, Rect, HorizontalAlignment, VerticalAlignment, Alignment);
 
 // ============================================================================
 // ProposalSize

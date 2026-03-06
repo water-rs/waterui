@@ -28,7 +28,7 @@ use waterui_core::{IntoSignalF32, View, view::TupleViews};
 
 use crate::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
-    stack::Alignment,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 // ============================================================================
@@ -76,16 +76,32 @@ impl UnitPoint {
 
 impl From<Alignment> for UnitPoint {
     fn from(alignment: Alignment) -> Self {
-        match alignment {
-            Alignment::TopLeading => Self::TOP_LEADING,
-            Alignment::Top => Self::TOP,
-            Alignment::TopTrailing => Self::TOP_TRAILING,
-            Alignment::Leading => Self::LEADING,
-            Alignment::Center => Self::CENTER,
-            Alignment::Trailing => Self::TRAILING,
-            Alignment::BottomLeading => Self::BOTTOM_LEADING,
-            Alignment::Bottom => Self::BOTTOM,
-            Alignment::BottomTrailing => Self::BOTTOM_TRAILING,
+        let horizontal = alignment.horizontal();
+        let vertical = alignment.vertical();
+        if horizontal == HorizontalAlignment::Leading && vertical == VerticalAlignment::Top {
+            Self::TOP_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing
+            && vertical == VerticalAlignment::Top
+        {
+            Self::TOP_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading {
+            Self::LEADING
+        } else if horizontal == HorizontalAlignment::Trailing {
+            Self::TRAILING
+        } else if vertical == VerticalAlignment::Top {
+            Self::TOP
+        } else if vertical == VerticalAlignment::Bottom {
+            Self::BOTTOM
+        } else {
+            Self::CENTER
         }
     }
 }
