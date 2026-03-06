@@ -99,10 +99,9 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View {
             .padding()
             .background(CHAINED_COLOR.with_opacity(0.3))
             .with_state(chained_status)
-            .gesture(
-                TapGesture::new().then(LongPressGesture::new(300).into()),
-                |s| s.set("Chained gesture completed!"),
-            ),
+            .gesture(TapGesture::new().then(LongPressGesture::new(300)), |s| {
+                s.set("Chained gesture completed!")
+            }),
     ))
     .padding()
 }
