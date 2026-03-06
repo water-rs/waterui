@@ -17,6 +17,10 @@ pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
+    layout::{
+        HorizontalAlignment, HorizontalAlignmentGuide, VerticalAlignment,
+        VerticalAlignmentGuide, ViewDimensions,
+    },
     metadata::MetadataKey,
     plugin::Plugin,
 };
@@ -462,6 +466,24 @@ pub trait ViewExt: View + Sized {
     /// Aligns this view within its frame using the provided alignment.
     fn alignment(self, alignment: Alignment) -> Frame {
         Frame::new(self).alignment(alignment)
+    }
+
+    /// Overrides a horizontal alignment guide for this view.
+    fn horizontal_alignment_guide(
+        self,
+        alignment: HorizontalAlignment,
+        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
+    ) -> IgnorableMetadata<HorizontalAlignmentGuide> {
+        IgnorableMetadata::new(self, HorizontalAlignmentGuide::new(alignment, compute))
+    }
+
+    /// Overrides a vertical alignment guide for this view.
+    fn vertical_alignment_guide(
+        self,
+        alignment: VerticalAlignment,
+        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
+    ) -> IgnorableMetadata<VerticalAlignmentGuide> {
+        IgnorableMetadata::new(self, VerticalAlignmentGuide::new(alignment, compute))
     }
 
     /// Adds padding to this view with custom edge insets.

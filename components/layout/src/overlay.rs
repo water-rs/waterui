@@ -11,13 +11,14 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
-    stack::Alignment,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    ViewDimensions, container::FixedContainer,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
-    size: Size,
+    dimensions: ViewDimensions,
 }
 
 /// Layout used by [`Overlay`] to keep the base child's size authoritative while
@@ -41,35 +42,6 @@ impl OverlayLayout {
         self.alignment
     }
 
-    fn aligned_origin(&self, bounds: &Rect, size: Size) -> Point {
-        match self.alignment {
-            Alignment::TopLeading => Point::new(bounds.x(), bounds.y()),
-            Alignment::Top => {
-                Point::new(bounds.x() + (bounds.width() - size.width) / 2.0, bounds.y())
-            }
-            Alignment::TopTrailing => Point::new(bounds.max_x() - size.width, bounds.y()),
-            Alignment::Leading => Point::new(
-                bounds.x(),
-                bounds.y() + (bounds.height() - size.height) / 2.0,
-            ),
-            Alignment::Center => Point::new(
-                bounds.x() + (bounds.width() - size.width) / 2.0,
-                bounds.y() + (bounds.height() - size.height) / 2.0,
-            ),
-            Alignment::Trailing => Point::new(
-                bounds.max_x() - size.width,
-                bounds.y() + (bounds.height() - size.height) / 2.0,
-            ),
-            Alignment::BottomLeading => Point::new(bounds.x(), bounds.max_y() - size.height),
-            Alignment::Bottom => Point::new(
-                bounds.x() + (bounds.width() - size.width) / 2.0,
-                bounds.max_y() - size.height,
-            ),
-            Alignment::BottomTrailing => {
-                Point::new(bounds.max_x() - size.width, bounds.max_y() - size.height)
-            }
-        }
-    }
 }
 
 impl Layout for OverlayLayout {
@@ -115,7 +87,7 @@ impl Layout for OverlayLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(child_proposal),
+                dimensions: child.dimensions(child_proposal),
             })
             .collect();
 
@@ -123,15 +95,15 @@ impl Layout for OverlayLayout {
 
         // Base child always fills the container's bounds
         if let Some(base) = measurements.first() {
-            let base_width = if base.size.width.is_infinite() {
+            let base_width = if base.dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                base.size.width
+                base.dimensions.size.width
             };
-            let base_height = if base.size.height.is_infinite() {
+            let base_height = if base.dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                base.size.height
+                base.dimensions.size.height
             };
             placements.push(Rect::new(
                 bounds.origin(),
@@ -141,22 +113,70 @@ impl Layout for OverlayLayout {
 
         // Overlay children are aligned within the bounds
         for measurement in measurements.iter().skip(1) {
-            let width = if measurement.size.width.is_infinite() {
+            let child_dimensions = &measurement.dimensions;
+            let width = if child_dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                measurement.size.width.min(bounds.width()).max(0.0)
+                child_dimensions.size.width.min(bounds.width()).max(0.0)
             };
-            let height = if measurement.size.height.is_infinite() {
+            let height = if child_dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                measurement.size.height.min(bounds.height()).max(0.0)
+                child_dimensions.size.height.min(bounds.height()).max(0.0)
             };
             let size = Size::new(width, height);
-            let origin = self.aligned_origin(&bounds, size);
+            let mut adjusted_dimensions = child_dimensions.clone();
+            adjusted_dimensions.size = size;
+            let horizontal = self.alignment.horizontal();
+            let vertical = self.alignment.vertical();
+            let target_x = if horizontal == HorizontalAlignment::Leading {
+                0.0
+            } else if horizontal == HorizontalAlignment::Trailing {
+                bounds.width()
+            } else if horizontal == HorizontalAlignment::Center {
+                bounds.width() * 0.5
+            } else {
+                adjusted_dimensions.horizontal(horizontal).clamp(0.0, size.width)
+            };
+            let target_y = if vertical == VerticalAlignment::Top {
+                0.0
+            } else if vertical == VerticalAlignment::Bottom {
+                bounds.height()
+            } else if vertical == VerticalAlignment::Center {
+                bounds.height() * 0.5
+            } else {
+                adjusted_dimensions.vertical(vertical).clamp(0.0, size.height)
+            };
+            let origin = Point::new(
+                bounds.x() + target_x - adjusted_dimensions.horizontal(horizontal).clamp(0.0, size.width),
+                bounds.y() + target_y - adjusted_dimensions.vertical(vertical).clamp(0.0, size.height),
+            );
             placements.push(Rect::new(origin, size));
         }
 
         placements
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_horizontal(alignment))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 }
 
