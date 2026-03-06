@@ -31,17 +31,20 @@ use waterui_layout::{
 use waterui_text::text;
 
 use crate::Url;
-use crate::video::{AspectRatio, Event, VideoConfig, VideoPlayerConfig, Volume};
+use crate::video::{AspectRatio, Event, PlaybackPolicy, VideoConfig, VideoPlayerConfig, Volume};
 
 const SEEK_EPSILON: f64 = 0.005;
 const SEEK_RESTART_THROTTLE: Duration = Duration::from_millis(40);
 const PRESENT_TOLERANCE: Duration = Duration::from_millis(3);
-const LATE_FRAME_DROP_THRESHOLD: Duration = Duration::from_millis(300);
+const VOD_FRAME_DROP_THRESHOLD: Duration = Duration::from_millis(300);
 const DECODE_FRAME_QUEUE_CAPACITY: usize = 4;
 const STREAMING_PROBE_INTERVAL_BYTES: usize = 256 * 1024;
 const STREAMING_MIN_READY_BYTES: usize = 512 * 1024;
+const DOWNLOAD_PROGRESS_REPORT_INTERVAL_BYTES: usize = 64 * 1024;
 const MIN_PLAYBACK_RATE: f32 = 0.25;
 const MAX_PLAYBACK_RATE: f32 = 4.0;
+const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
+const BUFFER_LEVEL_REPORT_STEP_MS: u32 = 50;
 
 type OnEvent = Rc<dyn Fn(Event) + 'static>;
 
@@ -157,6 +160,39 @@ fn clamp_playback_rate(rate: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+fn should_wait_for_vod_buffering(
+    policy: PlaybackPolicy,
+    source_downloading: bool,
+    has_download_total: bool,
+    first_frame_presented: bool,
+    buffered_ahead_ms: u32,
+) -> bool {
+    if policy.realtime || !source_downloading || !has_download_total {
+        return false;
+    }
+
+    let threshold_ms = if first_frame_presented {
+        policy.vod_resume_buffer_ms
+    } else {
+        policy.vod_start_buffer_ms
+    };
+    buffered_ahead_ms < threshold_ms
+}
+
+fn should_enter_vod_stall_buffering(
+    policy: PlaybackPolicy,
+    source_downloading: bool,
+    has_download_total: bool,
+    first_frame_presented: bool,
+    buffered_ahead_ms: u32,
+) -> bool {
+    if policy.realtime || !source_downloading || !has_download_total || !first_frame_presented {
+        return false;
+    }
+
+    buffered_ahead_ms <= policy.vod_stall_buffer_ms
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -430,6 +466,10 @@ enum SourceAssetState {
 #[derive(Debug)]
 enum DownloadUpdate {
     Ready,
+    Progress {
+        bytes_written: usize,
+        total_bytes: Option<usize>,
+    },
     Finished,
     Failed(String),
 }
@@ -443,6 +483,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             preserve_pitch,
             aspect_ratio,
             loops,
+            playback_policy,
             on_event,
         } = config;
 
@@ -457,6 +498,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 preserve_pitch.clone(),
                 aspect_ratio,
                 loops,
+                playback_policy,
                 ui_updates,
                 None,
             ))
@@ -471,6 +513,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             preserve_pitch,
             aspect_ratio,
             show_controls,
+            playback_policy,
             on_event,
         } = config;
 
@@ -496,6 +539,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 preserve_pitch.clone(),
                 aspect_ratio,
                 true,
+                playback_policy,
                 ui_updates,
                 Some(player.clone()),
             );
@@ -689,6 +733,7 @@ impl VideoSurface {
         preserve_pitch: Binding<bool>,
         aspect_ratio: AspectRatio,
         loops: bool,
+        playback_policy: PlaybackPolicy,
         ui_updates: Sender<UiUpdate>,
         player: Option<PlayerBindings>,
     ) -> Self {
@@ -700,6 +745,7 @@ impl VideoSurface {
                 preserve_pitch,
                 aspect_ratio,
                 loops,
+                playback_policy,
                 ui_updates,
                 player,
             ),
@@ -874,6 +920,7 @@ struct VideoRenderer {
     preserve_pitch: Binding<bool>,
     aspect_ratio: AspectRatio,
     loops: bool,
+    playback_policy: PlaybackPolicy,
     ui_updates: Sender<UiUpdate>,
     player: Option<PlayerBindings>,
     decode_worker: Option<DecoderWorker>,
@@ -919,6 +966,11 @@ struct VideoRenderer {
     source_asset: SourceAssetState,
     source_error_reported: bool,
     download_retry_at: Option<Instant>,
+    downloaded_bytes: usize,
+    download_total_bytes: Option<usize>,
+    last_reported_buffer_level_ms: Option<u32>,
+    dropped_video_frames: u64,
+    last_metrics_report_at: Option<Instant>,
     surface_prefers_hdr_cache: OnceLock<Option<bool>>,
 }
 
@@ -947,6 +999,7 @@ impl VideoRenderer {
         preserve_pitch: Binding<bool>,
         aspect_ratio: AspectRatio,
         loops: bool,
+        playback_policy: PlaybackPolicy,
         ui_updates: Sender<UiUpdate>,
         player: Option<PlayerBindings>,
     ) -> Self {
@@ -960,6 +1013,7 @@ impl VideoRenderer {
             preserve_pitch,
             aspect_ratio,
             loops,
+            playback_policy,
             ui_updates,
             player,
             decode_worker: None,
@@ -1005,6 +1059,11 @@ impl VideoRenderer {
             source_asset: SourceAssetState::Unresolved,
             source_error_reported: false,
             download_retry_at: None,
+            downloaded_bytes: 0,
+            download_total_bytes: None,
+            last_reported_buffer_level_ms: None,
+            dropped_video_frames: 0,
+            last_metrics_report_at: None,
             surface_prefers_hdr_cache: OnceLock::new(),
         }
     }
@@ -1247,6 +1306,10 @@ impl VideoRenderer {
                                 cache_path.display()
                             );
                             self.source_asset = SourceAssetState::Ready(cache_path.clone());
+                            self.downloaded_bytes = fs::metadata(&cache_path)
+                                .ok()
+                                .map_or(0, |meta| meta.len() as usize);
+                            self.download_total_bytes = Some(self.downloaded_bytes);
                             return Ok(Some(cache_path));
                         }
 
@@ -1254,6 +1317,8 @@ impl VideoRenderer {
                             "[VideoFallback] starting download: {}",
                             self.source.as_str()
                         );
+                        self.downloaded_bytes = 0;
+                        self.download_total_bytes = None;
                         self.source_asset = SourceAssetState::Downloading {
                             path: cache_path.clone(),
                             receiver: start_video_download(
@@ -1267,6 +1332,10 @@ impl VideoRenderer {
 
                     let local_path = local_source_path(&self.source);
                     self.source_asset = SourceAssetState::Ready(local_path.clone());
+                    self.downloaded_bytes = fs::metadata(&local_path)
+                        .ok()
+                        .map_or(0, |meta| meta.len() as usize);
+                    self.download_total_bytes = Some(self.downloaded_bytes);
                     return Ok(Some(local_path));
                 }
                 SourceAssetState::Downloading {
@@ -1274,6 +1343,14 @@ impl VideoRenderer {
                     receiver,
                     ready,
                 } => match receiver.try_recv() {
+                    Ok(DownloadUpdate::Progress {
+                        bytes_written,
+                        total_bytes,
+                    }) => {
+                        self.downloaded_bytes = bytes_written;
+                        self.download_total_bytes = total_bytes;
+                        continue;
+                    }
                     Ok(DownloadUpdate::Ready) => {
                         tracing::info!(
                             "[VideoFallback] download became playable: {}",
@@ -1287,6 +1364,10 @@ impl VideoRenderer {
                         // Retry audio open once the file is complete. Early attempts on
                         // partial downloads may fail when container metadata isn't ready.
                         self.audio_failed = false;
+                        self.downloaded_bytes = fs::metadata(path.as_path())
+                            .ok()
+                            .map_or(0, |meta| meta.len() as usize);
+                        self.download_total_bytes = Some(self.downloaded_bytes);
                         let resolved = path.clone();
                         self.source_asset = SourceAssetState::Ready(resolved.clone());
                         return Ok(Some(resolved));
@@ -1305,6 +1386,10 @@ impl VideoRenderer {
                     }
                     Err(TryRecvError::Disconnected) => {
                         return if *ready {
+                            self.downloaded_bytes = fs::metadata(path.as_path())
+                                .ok()
+                                .map_or(0, |meta| meta.len() as usize);
+                            self.download_total_bytes = Some(self.downloaded_bytes);
                             let resolved = path.clone();
                             self.source_asset = SourceAssetState::Ready(resolved.clone());
                             Ok(Some(resolved))
@@ -1342,21 +1427,10 @@ impl VideoRenderer {
         self.last_applied_playback_rate = None;
         self.last_applied_preserve_pitch = None;
 
-        let remote_url = is_remote_url(&self.source).then(|| self.source.as_str().to_owned());
         let source_path = source_path.to_path_buf();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let open_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                #[cfg(any(target_os = "ios", target_os = "macos"))]
-                if let Some(url) = remote_url.as_deref()
-                    && let Ok(player) = futures::executor::block_on(AudioPlayer::open_url(url))
-                {
-                    return Ok(player);
-                }
-
-                #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-                let _ = &remote_url;
-
                 AudioPlayer::open(&source_path).map_err(|error| error.to_string())
             }))
             .unwrap_or_else(|_| Err(String::from("Audio player initialization panicked")));
@@ -1488,6 +1562,10 @@ impl VideoRenderer {
     }
 
     fn start_decode_worker(&mut self, source_path: PathBuf, start_progress: f64) {
+        let playback_source_changed = self
+            .source_path
+            .as_ref()
+            .is_none_or(|path| path != &source_path);
         let source_changed = self
             .color_profile_source_path
             .as_ref()
@@ -1503,6 +1581,9 @@ impl VideoRenderer {
             "[VideoFallback] start decoder worker source={} progress={start_progress:.3}",
             source_path.display()
         );
+        if playback_source_changed {
+            self.dropped_video_frames = 0;
+        }
         self.stop_decode_worker();
         self.decode_worker = Some(DecoderWorker::spawn(source_path.clone(), start_progress));
         self.ensure_audio_player(&source_path);
@@ -1516,6 +1597,8 @@ impl VideoRenderer {
         self.last_seek_restart_at = None;
         self.download_retry_at = None;
         self.last_audio_retry_at = None;
+        self.last_reported_buffer_level_ms = None;
+        self.last_metrics_report_at = None;
         self.set_buffering(true);
     }
 
@@ -1581,6 +1664,120 @@ impl VideoRenderer {
 
     fn requested_preserve_pitch(&self) -> bool {
         self.preserve_pitch.get()
+    }
+
+    fn is_realtime_policy(&self) -> bool {
+        self.playback_policy.realtime
+    }
+
+    fn live_drop_threshold(&self) -> Duration {
+        Duration::from_millis(u64::from(
+            self.playback_policy.live_max_video_late_ms.max(1),
+        ))
+    }
+
+    fn estimated_buffered_ahead(&self, now: Instant) -> Duration {
+        let playback = self.playback_position(now);
+        if self.duration.is_zero() {
+            return Duration::ZERO;
+        }
+
+        if self.is_source_downloading()
+            && let Some(total) = self.download_total_bytes
+        {
+            if total > 0 {
+                let ratio = (self.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0);
+                let downloaded_duration = self.duration.mul_f64(ratio);
+                return downloaded_duration.saturating_sub(playback);
+            }
+        }
+
+        if let Some(frame) = self.pending_frame.as_ref() {
+            return frame.pts.saturating_sub(playback);
+        }
+
+        if matches!(self.source_asset, SourceAssetState::Ready(_)) {
+            return self.duration.saturating_sub(playback);
+        }
+
+        Duration::ZERO
+    }
+
+    fn estimated_buffered_ahead_ms(&self, now: Instant) -> u32 {
+        self.estimated_buffered_ahead(now)
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32
+    }
+
+    fn maybe_emit_buffer_level(&mut self, now: Instant) {
+        let buffered_ms = self.estimated_buffered_ahead_ms(now);
+        let should_emit = self
+            .last_reported_buffer_level_ms
+            .is_none_or(|last| last.abs_diff(buffered_ms) >= BUFFER_LEVEL_REPORT_STEP_MS);
+        if !should_emit {
+            return;
+        }
+
+        self.last_reported_buffer_level_ms = Some(buffered_ms);
+        self.emit_event(Event::BufferLevel { buffered_ms });
+    }
+
+    fn video_timeline_position(&self, now: Instant) -> Duration {
+        match self.playback_anchor_instant {
+            Some(anchor) => self.playback_anchor_pts.saturating_add(
+                now.saturating_duration_since(anchor)
+                    .mul_f64(f64::from(self.last_playback_rate)),
+            ),
+            None => self.playback_anchor_pts,
+        }
+    }
+
+    fn av_drift_ms(&self, now: Instant) -> f32 {
+        let Some(audio) = self.audio_player.as_ref() else {
+            return 0.0;
+        };
+        let audio_position = audio.position();
+        let video_position = self.video_timeline_position(now);
+        let delta = audio_position.as_secs_f64() - video_position.as_secs_f64();
+        (delta * 1000.0) as f32
+    }
+
+    fn maybe_emit_playback_metrics(&mut self, now: Instant) {
+        if !self.should_play() || !self.first_frame_presented {
+            return;
+        }
+        if self
+            .last_metrics_report_at
+            .is_some_and(|last| now.saturating_duration_since(last) < METRICS_REPORT_INTERVAL)
+        {
+            return;
+        }
+
+        self.last_metrics_report_at = Some(now);
+        self.emit_event(Event::PlaybackMetrics {
+            av_drift_ms: self.av_drift_ms(now),
+            dropped_video_frames: self.dropped_video_frames,
+        });
+    }
+
+    fn should_wait_for_vod_buffer(&self, now: Instant) -> bool {
+        should_wait_for_vod_buffering(
+            self.playback_policy,
+            self.is_source_downloading(),
+            self.download_total_bytes.is_some(),
+            self.first_frame_presented,
+            self.estimated_buffered_ahead_ms(now),
+        )
+    }
+
+    fn should_enter_vod_stall_buffering(&self, now: Instant) -> bool {
+        should_enter_vod_stall_buffering(
+            self.playback_policy,
+            self.is_source_downloading(),
+            self.download_total_bytes.is_some(),
+            self.first_frame_presented,
+            self.estimated_buffered_ahead_ms(now),
+        )
     }
 
     fn playback_position(&self, now: Instant) -> Duration {
@@ -1668,6 +1865,7 @@ impl VideoRenderer {
         } else {
             Event::BufferingEnded
         });
+        self.maybe_emit_buffer_level(Instant::now());
     }
 
     fn sync_audio_volume(&mut self) {
@@ -1753,12 +1951,18 @@ impl VideoRenderer {
                     self.playback_position(Instant::now())
                         .saturating_sub(frame.pts)
                 });
-                if should_play && late_by > LATE_FRAME_DROP_THRESHOLD {
+                let late_frame_threshold = if self.is_realtime_policy() {
+                    self.live_drop_threshold()
+                } else {
+                    VOD_FRAME_DROP_THRESHOLD
+                };
+                if should_play && late_by > late_frame_threshold {
                     tracing::warn!(
                         "[VideoFallback] dropping stale frame late_by_ms={} progress={:.3}",
                         late_by.as_millis(),
                         self.last_reported_progress
                     );
+                    self.dropped_video_frames = self.dropped_video_frames.saturating_add(1);
                     self.pending_frame = None;
                 } else {
                     // Keep decoder backpressured while waiting to present the current frame.
@@ -1826,8 +2030,18 @@ impl VideoRenderer {
                     }
                     tracing::info!("[VideoFallback] decoder reached end");
                     if self.is_source_downloading() {
-                        self.set_buffering(true);
                         let now = Instant::now();
+                        if !self.is_realtime_policy() {
+                            self.set_buffering(true);
+                            self.maybe_emit_buffer_level(now);
+                            let buffered_ms = self.estimated_buffered_ahead_ms(now);
+                            if buffered_ms < self.playback_policy.vod_resume_buffer_ms {
+                                return;
+                            }
+                        } else {
+                            self.set_buffering(false);
+                        }
+
                         if self.download_retry_at.is_none_or(|next| now >= next) {
                             self.download_retry_at = Some(now + Duration::from_millis(150));
                             if let Err(message) =
@@ -2174,6 +2388,9 @@ impl VideoRenderer {
         self.sync_audio_playback_params();
         self.maybe_seek_from_ui(should_play);
         self.drain_decoder_outputs(should_play);
+        let now = Instant::now();
+        self.maybe_emit_buffer_level(now);
+        self.maybe_emit_playback_metrics(now);
 
         if self.decode_worker.is_none() {
             return;
@@ -2185,6 +2402,15 @@ impl VideoRenderer {
             return;
         }
 
+        if should_play && self.should_enter_vod_stall_buffering(now) {
+            self.set_buffering(true);
+        }
+
+        if should_play && self.should_wait_for_vod_buffer(now) {
+            self.set_buffering(true);
+            return;
+        }
+
         let Some(pending) = self.pending_frame.as_ref() else {
             return;
         };
@@ -2193,7 +2419,7 @@ impl VideoRenderer {
         let present_immediately = self.y_texture.is_none();
         let due = should_play
             && self
-                .playback_position(Instant::now())
+                .playback_position(now)
                 .saturating_add(PRESENT_TOLERANCE)
                 >= pending_pts;
 
@@ -2384,7 +2610,7 @@ struct MediaSessionState {
 impl MediaSessionState {
     fn new(source: &Url) -> Option<Self> {
         let session = MediaSession::new().ok()?;
-        let _ = session.set_metadata(&MediaMetadata::new().title(source.as_str()));
+        let _ = session.set_metadata(&MediaMetadata::new().with_title(source.as_str()));
         Some(Self { session })
     }
 
@@ -2395,14 +2621,16 @@ impl MediaSessionState {
             let _ = self.session.abandon_audio_focus();
         }
 
-        let mut playback = if playing {
+        let playback = if playing {
             PlaybackState::playing(position)
         } else {
             PlaybackState::paused(position)
         };
-        if playing {
-            playback.rate = f64::from(playback_rate);
-        }
+        let playback = if playing {
+            playback.with_rate(f64::from(playback_rate))
+        } else {
+            playback
+        };
         let _ = self.session.set_playback_state(&playback);
     }
 }
@@ -2657,16 +2885,37 @@ fn download_video_to_path(
             return Err(format!("HTTP error: {}", response.status()));
         }
 
+        let total_bytes = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok());
+
         let mut body = response.into_body();
         let mut file = File::create(destination).map_err(|error| error.to_string())?;
         let mut bytes_written = 0usize;
         let mut last_probe = 0usize;
+        let mut last_progress_report = 0usize;
         let mut ready_sent = false;
+        let _ = updates.send(DownloadUpdate::Progress {
+            bytes_written,
+            total_bytes,
+        });
 
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|error| error.to_string())?;
             file.write_all(&chunk).map_err(|error| error.to_string())?;
             bytes_written = bytes_written.saturating_add(chunk.len());
+
+            if bytes_written.saturating_sub(last_progress_report)
+                >= DOWNLOAD_PROGRESS_REPORT_INTERVAL_BYTES
+            {
+                last_progress_report = bytes_written;
+                let _ = updates.send(DownloadUpdate::Progress {
+                    bytes_written,
+                    total_bytes,
+                });
+            }
 
             if !ready_sent && bytes_written >= STREAMING_MIN_READY_BYTES {
                 let should_probe =
@@ -2683,6 +2932,10 @@ fn download_video_to_path(
         }
 
         file.flush().map_err(|error| error.to_string())?;
+        let _ = updates.send(DownloadUpdate::Progress {
+            bytes_written,
+            total_bytes,
+        });
         if !ready_sent && VideoReader::probe(destination).is_ok() {
             let _ = updates.send(DownloadUpdate::Ready);
         }
@@ -2790,7 +3043,10 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShaderTargetMode, preferred_surface_hdr_for_source, shader_target_mode};
+    use super::{
+        PlaybackPolicy, ShaderTargetMode, preferred_surface_hdr_for_source, shader_target_mode,
+        should_enter_vod_stall_buffering, should_wait_for_vod_buffering,
+    };
     use std::{fs, path::PathBuf, time::SystemTime};
     use waterui_graphics::wgpu;
     use waterui_url::Url;
@@ -2838,7 +3094,7 @@ mod tests {
     fn preferred_surface_uses_sdr_for_sdr_source() {
         let path = unique_temp_file("sdr_pref");
         write_nclx_file(&path, 1);
-        let url = Url::from_file_path(&path);
+        let url = Url::from_file_path_str(path.to_string_lossy().to_string());
         let preference = preferred_surface_hdr_for_source(&url);
         assert_eq!(preference, Some(false));
         let _ = fs::remove_file(path);
@@ -2848,9 +3104,48 @@ mod tests {
     fn preferred_surface_uses_hdr_for_hdr_source() {
         let path = unique_temp_file("hdr_pref");
         write_nclx_file(&path, 16);
-        let url = Url::from_file_path(&path);
+        let url = Url::from_file_path_str(path.to_string_lossy().to_string());
         let preference = preferred_surface_hdr_for_source(&url);
         assert_eq!(preference, Some(true));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn vod_buffer_wait_uses_start_then_resume_thresholds() {
+        let policy = PlaybackPolicy::vod_default();
+        assert!(should_wait_for_vod_buffering(
+            policy, true, true, false, 900
+        ));
+        assert!(!should_wait_for_vod_buffering(
+            policy, true, true, false, 1300
+        ));
+
+        assert!(should_wait_for_vod_buffering(policy, true, true, true, 700));
+        assert!(!should_wait_for_vod_buffering(
+            policy, true, true, true, 900
+        ));
+    }
+
+    #[test]
+    fn vod_stall_buffering_only_applies_after_first_frame() {
+        let policy = PlaybackPolicy::vod_default();
+        assert!(!should_enter_vod_stall_buffering(
+            policy, true, true, false, 50
+        ));
+        assert!(should_enter_vod_stall_buffering(
+            policy, true, true, true, 150
+        ));
+        assert!(!should_enter_vod_stall_buffering(
+            policy, true, true, true, 500
+        ));
+    }
+
+    #[test]
+    fn realtime_policy_bypasses_vod_buffer_thresholds() {
+        let policy = PlaybackPolicy::live_default();
+        assert!(!should_wait_for_vod_buffering(policy, true, true, false, 0));
+        assert!(!should_enter_vod_stall_buffering(
+            policy, true, true, true, 0
+        ));
     }
 }
