@@ -973,18 +973,15 @@ impl DrawingContext<'_> {
     /// println!("Text width: {}", metrics.width);
     /// ```
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn measure_text(&self, text: &str) -> TextMetrics {
-        // Simple approximation based on font size
-        // In a real implementation, this would use Parley to layout the text
-        let char_count = text.chars().count() as f32;
-        let font_size = self.current_state.font.size;
+        if text.is_empty() {
+            return TextMetrics::new(0.0, 0.0);
+        }
 
-        // Approximate width (assuming average character width is ~0.6 * font_size)
-        let width = char_count * font_size * 0.6;
-        let height = font_size;
-
-        TextMetrics::new(width, height)
+        let mut text_engine = TextEngine::default();
+        let layout =
+            build_text_layout_with_engine(&mut text_engine, &self.current_state.font, text, None);
+        TextMetrics::new(layout.full_width(), layout.height())
     }
 
     /// Draws filled text at the specified position.
@@ -1026,8 +1023,16 @@ impl DrawingContext<'_> {
     }
 
     /// Strokes text at the specified position.
-    pub fn stroke_text(&mut self, _text: &str, _pos: impl IntoSignal<Point>) {
-        panic!("Canvas stroke_text is not implemented");
+    pub fn stroke_text(&mut self, text: &str, pos: impl IntoSignal<Point>) {
+        if text.is_empty() || self.skip_draw_for_zero_alpha() {
+            return;
+        }
+
+        let pos = self.resolve_signal(pos);
+        let layout = self.build_text_layout(text, None);
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        self.draw_text_layout_with_style(&layout, pos, &brush, (&stroke).into());
     }
 
     // ========================================================================
@@ -1093,45 +1098,25 @@ impl DrawingContext<'_> {
     }
 
     fn build_text_layout(&mut self, text: &str, max_width: Option<f32>) -> parley::Layout<[u8; 4]> {
-        let font = self.current_state.font.clone();
-        let family = font.family.trim().to_owned();
-
-        let mut builder = self.text_engine.layout_cx.ranged_builder(
-            &mut self.text_engine.font_cx,
-            text,
-            1.0,
-            true,
-        );
-        builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
-        builder.push_default(parley::StyleProperty::FontSize(font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
-            font.weight,
-        )));
-        builder.push_default(parley::StyleProperty::FontStyle(parley_font_style(
-            font.style,
-        )));
-        if !family.is_empty() {
-            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
-                parley::FontFamily::Named(Cow::Owned(family)),
-            )));
-        }
-
-        let mut layout = builder.build(text);
-        layout.break_all_lines(max_width);
-        layout.align(
-            max_width,
-            parley::Alignment::Start,
-            parley::AlignmentOptions::default(),
-        );
-        layout
+        build_text_layout_with_engine(self.text_engine, &self.current_state.font, text, max_width)
     }
 
     fn draw_text_layout(&mut self, layout: &parley::Layout<[u8; 4]>, origin: Point) {
+        let brush = self.resolve_fill_style();
+        self.draw_text_layout_with_style(layout, origin, &brush, peniko::Fill::NonZero.into());
+    }
+
+    fn draw_text_layout_with_style(
+        &mut self,
+        layout: &parley::Layout<[u8; 4]>,
+        origin: Point,
+        brush: &peniko::Brush,
+        style: peniko::StyleRef<'_>,
+    ) {
         if layout.is_empty() {
             return;
         }
 
-        let brush = self.resolve_fill_style();
         let alpha = self.normalized_global_alpha();
         let transform = self.current_state.transform
             * kurbo::Affine::translate((f64::from(origin.x), f64::from(origin.y)));
@@ -1154,18 +1139,54 @@ impl DrawingContext<'_> {
 
                     text_scene
                         .draw_glyphs(run.font())
-                        .brush(&brush)
+                        .brush(brush)
                         .brush_alpha(alpha)
                         .transform(transform)
                         .font_size(run.font_size())
                         .normalized_coords(&normalized_coords)
-                        .draw(peniko::Fill::NonZero, glyphs);
+                        .draw(style, glyphs);
                 }
             }
         }
 
         self.scene.append_vello_scene(&text_scene, None);
     }
+}
+
+fn build_text_layout_with_engine(
+    text_engine: &mut TextEngine,
+    font: &FontSpec,
+    text: &str,
+    max_width: Option<f32>,
+) -> parley::Layout<[u8; 4]> {
+    let family = font.family.trim().to_owned();
+
+    let mut builder =
+        text_engine
+            .layout_cx
+            .ranged_builder(&mut text_engine.font_cx, text, 1.0, true);
+    builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
+    builder.push_default(parley::StyleProperty::FontSize(font.size));
+    builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+        font.weight,
+    )));
+    builder.push_default(parley::StyleProperty::FontStyle(parley_font_style(
+        font.style,
+    )));
+    if !family.is_empty() {
+        builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
+            parley::FontFamily::Named(Cow::Owned(family)),
+        )));
+    }
+
+    let mut layout = builder.build(text);
+    layout.break_all_lines(max_width);
+    layout.align(
+        max_width,
+        parley::Alignment::Start,
+        parley::AlignmentOptions::default(),
+    );
+    layout
 }
 
 fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
@@ -1214,5 +1235,124 @@ impl SceneContent for CanvasContent {
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.invalidator = invalidator;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestScene {
+        appended_scene: bool,
+    }
+
+    impl TestScene {
+        const fn new() -> Self {
+            Self {
+                appended_scene: false,
+            }
+        }
+    }
+
+    impl Scene2D for TestScene {
+        fn fill(
+            &mut self,
+            _fill: peniko::Fill,
+            _transform: kurbo::Affine,
+            _brush: &peniko::Brush,
+            _shape: &kurbo::BezPath,
+        ) {
+        }
+
+        fn stroke(
+            &mut self,
+            _stroke: &kurbo::Stroke,
+            _transform: kurbo::Affine,
+            _brush: &peniko::Brush,
+            _shape: &kurbo::BezPath,
+        ) {
+        }
+
+        fn push_layer(
+            &mut self,
+            _fill: peniko::Fill,
+            _blend: peniko::BlendMode,
+            _alpha: f32,
+            _transform: kurbo::Affine,
+            _clip: &kurbo::BezPath,
+        ) {
+        }
+
+        fn push_clip_layer(
+            &mut self,
+            _fill: peniko::Fill,
+            _transform: kurbo::Affine,
+            _clip: &kurbo::BezPath,
+        ) {
+        }
+
+        fn pop_layer(&mut self) {}
+
+        fn draw_image(&mut self, _image: &peniko::ImageBrush, _transform: kurbo::Affine) {}
+
+        fn append_vello_scene(&mut self, _scene: &vello::Scene, _transform: Option<kurbo::Affine>) {
+            self.appended_scene = true;
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    #[test]
+    fn measure_text_uses_real_layout_metrics() {
+        let mut scene = TestScene::new();
+        let mut text_engine = TextEngine::default();
+        let mut guards = Vec::new();
+        let ctx = DrawingContext {
+            scene: &mut scene,
+            width: 640.0,
+            height: 480.0,
+            state_stack: Vec::new(),
+            current_state: DrawingState::new(),
+            reactive: ReactiveFrameState {
+                pending_redraw: Rc::new(Cell::new(false)),
+                invalidator: None,
+                guards: &mut guards,
+            },
+            text_engine: &mut text_engine,
+            requested_next_frame: false,
+        };
+
+        let metrics = ctx.measure_text("Hello, canvas");
+        assert!(metrics.width > 0.0, "expected positive text width");
+        assert!(metrics.height > 0.0, "expected positive text height");
+        assert_eq!(ctx.measure_text("").width, 0.0);
+        assert_eq!(ctx.measure_text("").height, 0.0);
+    }
+
+    #[test]
+    fn stroke_text_appends_scene_commands() {
+        let mut scene = TestScene::new();
+        let mut text_engine = TextEngine::default();
+        let mut guards = Vec::new();
+
+        {
+            let mut ctx = DrawingContext {
+                scene: &mut scene,
+                width: 640.0,
+                height: 480.0,
+                state_stack: Vec::new(),
+                current_state: DrawingState::new(),
+                reactive: ReactiveFrameState {
+                    pending_redraw: Rc::new(Cell::new(false)),
+                    invalidator: None,
+                    guards: &mut guards,
+                },
+                text_engine: &mut text_engine,
+                requested_next_frame: false,
+            };
+            ctx.stroke_text("Stroke", Point::new(24.0, 32.0));
+        }
+
+        assert!(scene.appended_scene, "expected stroke_text to append a scene");
     }
 }

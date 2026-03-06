@@ -54,6 +54,7 @@ fn main() -> impl View {
         .on_event(move |event| match event {
             video::Event::Buffering => is_buffering.set(true),
             video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
+            video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
             video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
         });
 

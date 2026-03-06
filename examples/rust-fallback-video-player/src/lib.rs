@@ -61,6 +61,7 @@ fn main() -> impl View {
                     is_buffering.set(false);
                     status.set(Str::from("Playing"));
                 }
+                video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
                 video::Event::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from("Ended"));
@@ -110,6 +111,8 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
+    let mut env = env;
+    video::install_rust_player_hooks(&mut env);
     App::new(main, env)
 }
 
