@@ -111,7 +111,9 @@ fn hstack_intrinsic_cross_metrics(
 
     for measurement in measurements.iter().filter(|m| !m.stretches_cross_axis()) {
         let size = measurement.size();
-        let guide = measurement.vertical_guide(alignment).clamp(0.0, size.height);
+        let guide = measurement
+            .vertical_guide(alignment)
+            .clamp(0.0, size.height);
         max_above = max_above.max(guide);
         max_below = max_below.max((size.height - guide).max(0.0));
     }
@@ -159,7 +161,7 @@ impl Layout for HStackLayout {
         let mut measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(intrinsic_proposal),
+                dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -252,7 +254,7 @@ impl Layout for HStackLayout {
                 if reduction > 0.0 {
                     let new_width = current_width - reduction;
                     let constrained_proposal = ProposalSize::new(Some(new_width), proposal.height);
-                    measurements[idx].dimensions = children[idx].dimensions(constrained_proposal);
+                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
                     remaining_overflow -= reduction;
                 }
             }
@@ -273,7 +275,7 @@ impl Layout for HStackLayout {
 
             for idx in main_axis_stretch_indices {
                 let constrained_proposal = ProposalSize::new(Some(stretch_width), proposal.height);
-                measurements[idx].dimensions = children[idx].dimensions(constrained_proposal);
+                measurements[idx].dimensions = children[idx].measure(constrained_proposal);
                 measurements[idx].dimensions.size.width =
                     measurements[idx].size().width.min(stretch_width);
             }
@@ -307,7 +309,7 @@ impl Layout for HStackLayout {
         let mut measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.dimensions(intrinsic_proposal),
+                dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -370,7 +372,7 @@ impl Layout for HStackLayout {
                     let new_width = current_width - reduction;
                     let constrained_proposal =
                         ProposalSize::new(Some(new_width), Some(bounds.height()));
-                    measurements[idx].dimensions = children[idx].dimensions(constrained_proposal);
+                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
                     measurements[idx].dimensions.size.width =
                         measurements[idx].size().width.min(new_width);
                     remaining_overflow -= reduction;
@@ -398,7 +400,7 @@ impl Layout for HStackLayout {
             for idx in &main_axis_stretch_indices {
                 let constrained_proposal =
                     ProposalSize::new(Some(stretch_width), Some(bounds.height()));
-                measurements[*idx].dimensions = children[*idx].dimensions(constrained_proposal);
+                measurements[*idx].dimensions = children[*idx].measure(constrained_proposal);
                 measurements[*idx].dimensions.size.width =
                     measurements[*idx].size().width.min(stretch_width);
             }
@@ -406,8 +408,8 @@ impl Layout for HStackLayout {
 
         let (intrinsic_above, _intrinsic_below) =
             hstack_intrinsic_cross_metrics(&measurements, self.alignment);
-        let guide_line = bounds.y()
-            + hstack_container_guide_offset(bounds, self.alignment, intrinsic_above);
+        let guide_line =
+            bounds.y() + hstack_container_guide_offset(bounds, self.alignment, intrinsic_above);
 
         // Place children
         let mut rects = Vec::with_capacity(children.len());
@@ -444,7 +446,9 @@ impl Layout for HStackLayout {
             } else if self.alignment == VerticalAlignment::Bottom {
                 bounds.y() + bounds.height() - child_height
             } else {
-                let guide = adjusted_dimensions.vertical(self.alignment).clamp(0.0, child_height);
+                let guide = adjusted_dimensions
+                    .vertical(self.alignment)
+                    .clamp(0.0, child_height);
                 guide_line - guide
             };
 
@@ -562,8 +566,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis
@@ -581,14 +585,14 @@ mod tests {
     }
 
     impl SubView for ResponsiveSubView {
-        fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-            match proposal.width {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(match proposal.width {
                 Some(width) if width <= self.wrap_at_or_below => {
                     Size::new(width, self.wrapped_height)
                 }
                 Some(width) => Size::new(width, self.intrinsic.height),
                 None => self.intrinsic,
-            }
+            })
         }
 
         fn stretch_axis(&self) -> StretchAxis {

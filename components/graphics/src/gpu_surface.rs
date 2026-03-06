@@ -12,13 +12,13 @@ use core::num::NonZeroU32;
 use core::pin::Pin;
 use std::sync::mpsc;
 
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 
 #[doc(hidden)]
 pub use waterui_core::layout::{
     ProposalSize as __GpuProposalSize, Size as __GpuSize, StretchAxis as __GpuStretchAxis,
-    SubView as __GpuSubView,
+    SubView as __GpuSubView, ViewDimensions as __GpuViewDimensions,
 };
 
 /// Internal boxed future for object-safe GPU setup dispatch.
@@ -462,14 +462,14 @@ pub trait GpuView: SubView + 'static {
 macro_rules! impl_gpu_subview {
     ($ty:ty) => {
         impl $crate::gpu_surface::__GpuSubView for $ty {
-            fn size_that_fits(
+            fn measure(
                 &self,
                 proposal: $crate::gpu_surface::__GpuProposalSize,
-            ) -> $crate::gpu_surface::__GpuSize {
-                $crate::gpu_surface::__GpuSize::new(
+            ) -> $crate::gpu_surface::__GpuViewDimensions {
+                $crate::gpu_surface::__GpuViewDimensions::new($crate::gpu_surface::__GpuSize::new(
                     proposal.width.unwrap_or(0.0),
                     proposal.height.unwrap_or(0.0),
-                )
+                ))
             }
 
             fn stretch_axis(&self) -> $crate::gpu_surface::__GpuStretchAxis {
@@ -790,7 +790,7 @@ trait GpuViewImpl: 'static {
         env: &'a mut waterui_core::Environment,
     ) -> SetupFuture<'a>;
     fn render(&mut self, frame: &mut GpuFrame);
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size;
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
     fn require_main_thread(&self) -> bool;
@@ -810,8 +810,8 @@ impl<T: GpuView> GpuViewImpl for T {
         GpuView::render(self, frame);
     }
 
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        SubView::size_that_fits(self, proposal)
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        SubView::measure(self, proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -1162,7 +1162,7 @@ impl GpuSurface {
     /// Returns this surface's measured size for the given proposal.
     #[must_use]
     pub fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        self.renderer.size_that_fits(proposal)
+        self.renderer.measure(proposal).size
     }
 
     /// Returns this surface's stretch behavior.
@@ -1185,8 +1185,8 @@ impl GpuSurface {
 }
 
 impl SubView for GpuSurface {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        self.size_that_fits(proposal)
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size_that_fits(proposal))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

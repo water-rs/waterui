@@ -333,9 +333,11 @@ mod tests {
 
     #[test]
     fn text_align_updates_paragraph_alignment_signal() {
-        let text = Text::new(StyledStr::plain("hello"))
-            .text_align(HorizontalAlignment::Trailing);
-        assert_eq!(text.paragraph_alignment().get(), HorizontalAlignment::Trailing);
+        let text = Text::new(StyledStr::plain("hello")).text_align(HorizontalAlignment::Trailing);
+        assert_eq!(
+            text.paragraph_alignment().get(),
+            HorizontalAlignment::Trailing
+        );
     }
 }
 

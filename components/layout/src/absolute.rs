@@ -27,7 +27,8 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_core::{IntoSignalF32, View, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
@@ -80,8 +81,7 @@ impl From<Alignment> for UnitPoint {
         let vertical = alignment.vertical();
         if horizontal == HorizontalAlignment::Leading && vertical == VerticalAlignment::Top {
             Self::TOP_LEADING
-        } else if horizontal == HorizontalAlignment::Trailing
-            && vertical == VerticalAlignment::Top
+        } else if horizontal == HorizontalAlignment::Trailing && vertical == VerticalAlignment::Top
         {
             Self::TOP_TRAILING
         } else if horizontal == HorizontalAlignment::Leading
@@ -297,7 +297,7 @@ impl Layout for PositionedLayout {
         children
             .iter()
             .map(|child| {
-                let intrinsic = child.size_that_fits(child_proposal);
+                let intrinsic = child.measure(child_proposal).size;
 
                 match &self.target {
                     PositionTarget::Absolute { x, y } => {
@@ -653,6 +653,7 @@ pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewDimensions;
     use crate::StretchAxis;
     use alloc::vec;
     use core::cell::Cell;
@@ -663,8 +664,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis
@@ -693,14 +694,14 @@ mod tests {
     }
 
     impl SubView for ProposalAwareView {
-        fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_width.set(proposal.width);
             self.last_height.set(proposal.height);
-            if proposal.width.is_some() || proposal.height.is_some() {
+            ViewDimensions::new(if proposal.width.is_some() || proposal.height.is_some() {
                 self.constrained
             } else {
                 self.intrinsic
-            }
+            })
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::Both

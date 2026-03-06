@@ -48,7 +48,9 @@ impl Layout for FrameLayout {
         // Measure the child with our constrained proposal
         let child_dimensions = children
             .first()
-            .map_or(ViewDimensions::new(Size::zero()), |c| c.dimensions(child_proposal));
+            .map_or(ViewDimensions::new(Size::zero()), |c| {
+                c.measure(child_proposal)
+            });
         let child_size = child_dimensions.size;
 
         // Resolve the frame size on each axis.
@@ -97,7 +99,9 @@ impl Layout for FrameLayout {
 
         let child_dimensions = children
             .first()
-            .map_or(ViewDimensions::new(Size::zero()), |c| c.dimensions(child_proposal));
+            .map_or(ViewDimensions::new(Size::zero()), |c| {
+                c.measure(child_proposal)
+            });
         let child_size = child_dimensions.size;
 
         // Handle infinite dimensions (axis-expanding views)
@@ -126,11 +130,14 @@ impl Layout for FrameLayout {
         } else if horizontal == HorizontalAlignment::Center {
             bounds.width() * 0.5
         } else {
-            adjusted_dimensions.horizontal(horizontal).clamp(0.0, final_child_size.width)
+            adjusted_dimensions
+                .horizontal(horizontal)
+                .clamp(0.0, final_child_size.width)
         };
-        let child_x = bounds.x()
-            + horizontal_target
-            - adjusted_dimensions.horizontal(horizontal).clamp(0.0, final_child_size.width);
+        let child_x = bounds.x() + horizontal_target
+            - adjusted_dimensions
+                .horizontal(horizontal)
+                .clamp(0.0, final_child_size.width);
 
         let vertical = self.alignment.vertical();
         let vertical_target = if vertical == VerticalAlignment::Top {
@@ -140,11 +147,14 @@ impl Layout for FrameLayout {
         } else if vertical == VerticalAlignment::Center {
             bounds.height() * 0.5
         } else {
-            adjusted_dimensions.vertical(vertical).clamp(0.0, final_child_size.height)
+            adjusted_dimensions
+                .vertical(vertical)
+                .clamp(0.0, final_child_size.height)
         };
-        let child_y = bounds.y()
-            + vertical_target
-            - adjusted_dimensions.vertical(vertical).clamp(0.0, final_child_size.height);
+        let child_y = bounds.y() + vertical_target
+            - adjusted_dimensions
+                .vertical(vertical)
+                .clamp(0.0, final_child_size.height);
 
         vec![Rect::new(Point::new(child_x, child_y), final_child_size)]
     }
@@ -303,8 +313,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
