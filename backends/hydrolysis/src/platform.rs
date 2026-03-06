@@ -80,6 +80,10 @@ pub enum InputEvent {
         y: f32,
     },
     PointerCancel,
+    Moved {
+        x: f32,
+        y: f32,
+    },
     Scroll {
         x: f32,
         y: f32,
@@ -832,6 +836,13 @@ mod winit_impl {
                         height: size.height.max(1),
                     });
                 }
+                WindowEvent::Moved(position) => {
+                    let logical = position.to_logical::<f64>(self.window.scale_factor());
+                    self.pending_events.push(InputEvent::Moved {
+                        x: logical.x as f32,
+                        y: logical.y as f32,
+                    });
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer_position =
                         map_cursor_position(position, self.window.scale_factor());
@@ -1005,7 +1016,23 @@ mod winit_impl {
         fn apply_properties(&mut self, window: &waterui::window::Window) {
             self.window.set_title(window.title.get().as_str());
             self.window.set_resizable(window.resizable);
+            self.window.set_decorations(!matches!(
+                window.style,
+                waterui::window::WindowStyle::Borderless
+            ));
             let frame = window.frame.get();
+            let target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            let current_position = self
+                .window
+                .outer_position()
+                .ok()
+                .map(|value| value.to_logical::<f64>(self.window.scale_factor()));
+            if current_position.is_none_or(|current| {
+                (current.x - target_position.x).abs() > 0.5
+                    || (current.y - target_position.y).abs() > 0.5
+            }) {
+                self.window.set_outer_position(target_position);
+            }
             let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
             let current_size = self
                 .window
