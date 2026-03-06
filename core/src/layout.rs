@@ -29,10 +29,7 @@
 use core::any::{Any, TypeId};
 use core::fmt::Debug;
 
-use alloc::rc::Rc;
 use alloc::vec::Vec;
-
-use crate::metadata::MetadataKey;
 
 // ============================================================================
 // StretchAxis - Specifies which axis a view stretches on
@@ -280,11 +277,13 @@ impl Alignment {
 
     /// Bottom-leading alignment.
     #[allow(non_upper_case_globals)]
-    pub const BottomLeading: Self = Self::new(HorizontalAlignment::Leading, VerticalAlignment::Bottom);
+    pub const BottomLeading: Self =
+        Self::new(HorizontalAlignment::Leading, VerticalAlignment::Bottom);
 
     /// Bottom-trailing alignment.
     #[allow(non_upper_case_globals)]
-    pub const BottomTrailing: Self = Self::new(HorizontalAlignment::Trailing, VerticalAlignment::Bottom);
+    pub const BottomTrailing: Self =
+        Self::new(HorizontalAlignment::Trailing, VerticalAlignment::Bottom);
 
     /// Creates a combined alignment from horizontal and vertical guides.
     #[must_use]
@@ -374,9 +373,7 @@ impl ViewDimensions {
     }
 
     /// Returns an iterator over explicit vertical guides.
-    pub fn explicit_vertical_guides(
-        &self,
-    ) -> impl Iterator<Item = (VerticalAlignment, f32)> + '_ {
+    pub fn explicit_vertical_guides(&self) -> impl Iterator<Item = (VerticalAlignment, f32)> + '_ {
         self.explicit_vertical_guides.iter().copied()
     }
 
@@ -464,92 +461,6 @@ impl<'a> PlacedSubview<'a> {
         self.dimensions()
             .explicit_vertical(alignment)
             .map(|value| self.frame.y() + value)
-    }
-}
-
-#[derive(Clone)]
-/// Horizontal alignment guide override metadata.
-pub struct HorizontalAlignmentGuide {
-    alignment: HorizontalAlignment,
-    compute: Rc<dyn Fn(&ViewDimensions) -> f32>,
-}
-
-impl Debug for HorizontalAlignmentGuide {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HorizontalAlignmentGuide")
-            .field("alignment", &self.alignment)
-            .finish_non_exhaustive()
-    }
-}
-
-impl MetadataKey for HorizontalAlignmentGuide {}
-
-impl HorizontalAlignmentGuide {
-    /// Creates a new horizontal guide override.
-    #[must_use]
-    pub fn new(
-        alignment: HorizontalAlignment,
-        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
-    ) -> Self {
-        Self {
-            alignment,
-            compute: Rc::new(compute),
-        }
-    }
-
-    /// Returns the overridden horizontal guide handle.
-    #[must_use]
-    pub const fn alignment(&self) -> HorizontalAlignment {
-        self.alignment
-    }
-
-    /// Evaluates the override against measured dimensions.
-    #[must_use]
-    pub fn resolve(&self, dimensions: &ViewDimensions) -> f32 {
-        (self.compute)(dimensions)
-    }
-}
-
-#[derive(Clone)]
-/// Vertical alignment guide override metadata.
-pub struct VerticalAlignmentGuide {
-    alignment: VerticalAlignment,
-    compute: Rc<dyn Fn(&ViewDimensions) -> f32>,
-}
-
-impl Debug for VerticalAlignmentGuide {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("VerticalAlignmentGuide")
-            .field("alignment", &self.alignment)
-            .finish_non_exhaustive()
-    }
-}
-
-impl MetadataKey for VerticalAlignmentGuide {}
-
-impl VerticalAlignmentGuide {
-    /// Creates a new vertical guide override.
-    #[must_use]
-    pub fn new(
-        alignment: VerticalAlignment,
-        compute: impl Fn(&ViewDimensions) -> f32 + 'static,
-    ) -> Self {
-        Self {
-            alignment,
-            compute: Rc::new(compute),
-        }
-    }
-
-    /// Returns the overridden vertical guide handle.
-    #[must_use]
-    pub const fn alignment(&self) -> VerticalAlignment {
-        self.alignment
-    }
-
-    /// Evaluates the override against measured dimensions.
-    #[must_use]
-    pub fn resolve(&self, dimensions: &ViewDimensions) -> f32 {
-        (self.compute)(dimensions)
     }
 }
 
@@ -763,6 +674,16 @@ pub trait Layout: Debug + Any {
         _children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
         None
+    }
+
+    /// Returns the horizontal alignments this container may expose explicitly.
+    fn explicit_horizontal_alignments(&self) -> Vec<HorizontalAlignment> {
+        Vec::new()
+    }
+
+    /// Returns the vertical alignments this container may expose explicitly.
+    fn explicit_vertical_alignments(&self) -> Vec<VerticalAlignment> {
+        Vec::new()
     }
 
     /// Which axis this container stretches to fill available space.
@@ -981,7 +902,14 @@ macro_rules! impl_layout_signal_constant {
     };
 }
 
-impl_layout_signal_constant!(Point, Size, Rect, HorizontalAlignment, VerticalAlignment, Alignment);
+impl_layout_signal_constant!(
+    Point,
+    Size,
+    Rect,
+    HorizontalAlignment,
+    VerticalAlignment,
+    Alignment
+);
 
 // ============================================================================
 // ProposalSize

@@ -49,10 +49,12 @@ pub mod stack;
 
 pub mod scroll;
 pub use scroll::{ScrollView, scroll};
+pub mod alignment_guide;
 pub mod frame;
 
 pub mod container;
 
+pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
 pub use container::LazyContainer;
 
 pub mod background;
