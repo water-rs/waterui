@@ -973,7 +973,49 @@ impl_filter_graph_two_params!(HighlightsShadows, color);
 impl_filter_graph_two_params!(MotionBlur, spatial);
 impl_filter_graph_three_params!(ZoomBlur, spatial);
 impl_filter_graph_twelve_params!(ColorMatrix, color);
-impl_filter_graph_one_param!(GaussianBlur, spatial);
+impl<S> FilterGraph for filtrate_core::filters::GaussianBlur<S>
+where
+    S: Signal<Output = f32> + 'static,
+    S::Guard: 'static,
+{
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_horizontal.wgsl"),
+            1,
+        );
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_vertical.wgsl"),
+            1,
+        );
+    }
+
+    fn bind_animation_watchers(
+        &self,
+        param_base: usize,
+        animation_events: Sender<ParamAnimationEvent>,
+        guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+        let guard = self.0.watch(move |context| {
+            let Some(animation) = context.metadata().try_get::<Animation>() else {
+                return;
+            };
+            let target = context.into_value();
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base,
+                target_value: target,
+                animation: animation.clone(),
+            });
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base + 1,
+                target_value: target,
+                animation,
+            });
+        });
+        guards.push(Box::new(guard));
+    }
+}
 impl_filter_graph_array_three_params!(Bloom, spatial);
 impl_filter_graph_array_three_params!(Gloom, spatial);
 impl_filter_graph_array_two_params!(UnsharpMask, spatial);
