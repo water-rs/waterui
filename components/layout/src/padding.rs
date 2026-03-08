@@ -207,8 +207,8 @@ impl View for Padding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
     use crate::StretchAxis;
+    use crate::ViewDimensions;
 
     struct MockSubView {
         size: Size,
