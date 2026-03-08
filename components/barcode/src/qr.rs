@@ -15,6 +15,7 @@ pub enum BarcodeSymbology {
 /// A barcode data source.
 ///
 /// Generates QR matrix data lazily - actual rendering happens on GPU.
+#[derive(Clone)]
 pub struct BarcodeSource {
     symbology: BarcodeSymbology,
     content: Str,
@@ -25,7 +26,7 @@ pub struct BarcodeSource {
 }
 
 /// Barcode matrix data packed for GPU consumption.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BarcodeMatrix {
     /// Matrix dimension (number of modules per side)
     pub dimension: u32,
@@ -182,6 +183,46 @@ impl BarcodeMatrix {
             dimension: 1,
             packed_data: vec![0],
         }
+    }
+}
+
+impl waterui_graphics::image_generator::ImageGenerator for BarcodeSource {
+    fn generate(&mut self) -> waterui_graphics::image_generator::GeneratedImage {
+        let quiet_zone = self.quiet_zone();
+        let configured_size = self.size;
+        let matrix = self.matrix();
+        let extent = matrix.dimension + quiet_zone * 2;
+        let target_size = configured_size.max(extent);
+        let module_scale = (target_size / extent).max(1);
+        let width = extent * module_scale;
+        let height = extent * module_scale;
+        let mut rgba8 = vec![255u8; width as usize * height as usize * 4];
+
+        for y in 0..height {
+            for x in 0..width {
+                let module_x = x / module_scale;
+                let module_y = y / module_scale;
+                let is_dark = if module_x >= quiet_zone
+                    && module_y >= quiet_zone
+                    && module_x < quiet_zone + matrix.dimension
+                    && module_y < quiet_zone + matrix.dimension
+                {
+                    let qr_x = module_x - quiet_zone;
+                    let qr_y = module_y - quiet_zone;
+                    let linear_idx = (qr_y * matrix.dimension + qr_x) as usize;
+                    let word_idx = linear_idx / 32;
+                    let bit_idx = linear_idx % 32;
+                    matrix.packed_data[word_idx] & (1u32 << bit_idx) != 0
+                } else {
+                    false
+                };
+                let color = if is_dark { 0u8 } else { 255u8 };
+                let index = ((y * width + x) * 4) as usize;
+                rgba8[index..index + 4].copy_from_slice(&[color, color, color, 255]);
+            }
+        }
+
+        waterui_graphics::image_generator::GeneratedImage::from_rgba8(width, height, rgba8)
     }
 }
 
