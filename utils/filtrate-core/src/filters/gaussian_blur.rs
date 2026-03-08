@@ -21,6 +21,6 @@ impl<T: Signal<Output = f32> + 'static> Filter for GaussianBlur<T> {
 
     #[inline]
     fn fragments(&self) -> &'static str {
-        include_str!("../shaders/gaussian_blur.wgsl")
+        include_str!("../shaders/gaussian_blur_horizontal.wgsl")
     }
 }
