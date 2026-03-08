@@ -653,8 +653,8 @@ pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
     use crate::StretchAxis;
+    use crate::ViewDimensions;
     use alloc::vec;
     use core::cell::Cell;
 
