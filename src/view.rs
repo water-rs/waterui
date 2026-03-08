@@ -23,16 +23,28 @@ use waterui_core::{
 };
 use waterui_graphics::color::Color;
 use waterui_graphics::filter_view::{
-    Blur as GraphicsBlur, Brightness as GraphicsBrightness, Contrast as GraphicsContrast,
+    Bloom as GraphicsBloom, Blur as GraphicsBlur, Brightness as GraphicsBrightness,
+    BumpDistortion as GraphicsBumpDistortion, ColorMatrix as GraphicsColorMatrix,
+    Contrast as GraphicsContrast, Crystallize as GraphicsCrystallize,
+    DotHalftone as GraphicsDotHalftone, EdgeWork as GraphicsEdgeWork,
+    LineHalftone as GraphicsLineHalftone,
     Exposure as GraphicsExposure, FilterViewExt as GraphicsFilterViewExt,
-    Filtered as GraphicsFiltered, Gamma as GraphicsGamma, GpuFilter,
+    Filtered as GraphicsFiltered, Gamma as GraphicsGamma,
+    GaussianBlur as GraphicsGaussianBlur, Gloom as GraphicsGloom, GpuFilter,
     Grayscale as GraphicsGrayscale, HighlightsShadows as GraphicsHighlightsShadows,
-    HueRotation as GraphicsHueRotation, Invert as GraphicsInvert, MotionBlur as GraphicsMotionBlur,
-    Saturation as GraphicsSaturation, Sepia as GraphicsSepia, Sharpen as GraphicsSharpen,
-    TemperatureTint as GraphicsTemperatureTint, Vibrance as GraphicsVibrance,
-    Vignette as GraphicsVignette, WhitePoint as GraphicsWhitePoint, ZoomBlur as GraphicsZoomBlur,
-};
-use waterui_graphics::multi_input_filter::TransitionDirection;
+    HueRotation as GraphicsHueRotation, Invert as GraphicsInvert,
+    Kaleidoscope as GraphicsKaleidoscope, MirrorTile as GraphicsMirrorTile,
+    MotionBlur as GraphicsMotionBlur,
+    PerspectiveCorrection as GraphicsPerspectiveCorrection,
+    PerspectiveTransform as GraphicsPerspectiveTransform,
+    PinchDistortion as GraphicsPinchDistortion, Pixellate as GraphicsPixellate,
+    Saturation as GraphicsSaturation, Sepia as GraphicsSepia,
+    Sharpen as GraphicsSharpen, TemperatureTint as GraphicsTemperatureTint,
+    TwirlDistortion as GraphicsTwirlDistortion, UnsharpMask as GraphicsUnsharpMask,
+    Vibrance as GraphicsVibrance, Vignette as GraphicsVignette,
+    VortexDistortion as GraphicsVortexDistortion, WhitePoint as GraphicsWhitePoint,
+    ZoomBlur as GraphicsZoomBlur,
+};use waterui_graphics::multi_input_filter::TransitionDirection;
 
 use waterui_layout::{
     EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
@@ -278,6 +290,158 @@ pub trait ViewExt: View + Sized {
         waterui_graphics::multi_input_filter::DisplacementTransitionToImageFilter,
     > {
         GraphicsFilterViewExt::displacement_transition_to_image(self, target, map, progress, scale)
+    }
+
+    /// Applies a gaussian blur filter.
+    fn gaussian_blur<T: IntoSignalF32>(
+        self,
+        sigma: T,
+    ) -> GraphicsFiltered<Self, GraphicsGaussianBlur> {
+        GraphicsFilterViewExt::gaussian_blur(self, sigma)
+    }
+
+    /// Applies a 3x4 color matrix transform.
+    fn color_matrix(self, matrix: [[f32; 4]; 3]) -> GraphicsFiltered<Self, GraphicsColorMatrix> {
+        GraphicsFilterViewExt::color_matrix(self, matrix)
+    }
+
+    /// Applies bloom around bright regions.
+    fn bloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
+        self,
+        radius: T,
+        intensity: U,
+        threshold: V,
+    ) -> GraphicsFiltered<Self, GraphicsBloom> {
+        GraphicsFilterViewExt::bloom(self, radius, intensity, threshold)
+    }
+
+    /// Applies gloom around bright regions.
+    fn gloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
+        self,
+        radius: T,
+        intensity: U,
+        threshold: V,
+    ) -> GraphicsFiltered<Self, GraphicsGloom> {
+        GraphicsFilterViewExt::gloom(self, radius, intensity, threshold)
+    }
+
+    /// Applies an unsharp mask.
+    fn unsharp_mask<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        radius: T,
+        amount: U,
+    ) -> GraphicsFiltered<Self, GraphicsUnsharpMask> {
+        GraphicsFilterViewExt::unsharp_mask(self, radius, amount)
+    }
+
+    /// Applies bump distortion.
+    fn bump_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        scale: W,
+    ) -> GraphicsFiltered<Self, GraphicsBumpDistortion> {
+        GraphicsFilterViewExt::bump_distortion(self, center_x, center_y, radius, scale)
+    }
+
+    /// Applies pinch distortion.
+    fn pinch_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        scale: W,
+    ) -> GraphicsFiltered<Self, GraphicsPinchDistortion> {
+        GraphicsFilterViewExt::pinch_distortion(self, center_x, center_y, radius, scale)
+    }
+
+    /// Applies twirl distortion.
+    fn twirl_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        angle: W,
+    ) -> GraphicsFiltered<Self, GraphicsTwirlDistortion> {
+        GraphicsFilterViewExt::twirl_distortion(self, center_x, center_y, radius, angle)
+    }
+
+    /// Applies vortex distortion.
+    fn vortex_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        angle: W,
+    ) -> GraphicsFiltered<Self, GraphicsVortexDistortion> {
+        GraphicsFilterViewExt::vortex_distortion(self, center_x, center_y, radius, angle)
+    }
+
+    /// Applies perspective transform.
+    fn perspective_transform(
+        self,
+        quad: [[f32; 2]; 4],
+    ) -> GraphicsFiltered<Self, GraphicsPerspectiveTransform> {
+        GraphicsFilterViewExt::perspective_transform(self, quad)
+    }
+
+    /// Applies perspective correction.
+    fn perspective_correction(
+        self,
+        quad: [[f32; 2]; 4],
+    ) -> GraphicsFiltered<Self, GraphicsPerspectiveCorrection> {
+        GraphicsFilterViewExt::perspective_correction(self, quad)
+    }
+
+    /// Applies pixellate.
+    fn pixellate<T: IntoSignalF32>(self, size: T) -> GraphicsFiltered<Self, GraphicsPixellate> {
+        GraphicsFilterViewExt::pixellate(self, size)
+    }
+
+    /// Applies crystallize.
+    fn crystallize<T: IntoSignalF32>(self, size: T) -> GraphicsFiltered<Self, GraphicsCrystallize> {
+        GraphicsFilterViewExt::crystallize(self, size)
+    }
+
+    /// Applies edge work.
+    fn edge_work<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        radius: T,
+        amount: U,
+    ) -> GraphicsFiltered<Self, GraphicsEdgeWork> {
+        GraphicsFilterViewExt::edge_work(self, radius, amount)
+    }
+
+    /// Applies dot halftone.
+    fn dot_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        scale: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> GraphicsFiltered<Self, GraphicsDotHalftone> {
+        GraphicsFilterViewExt::dot_halftone(self, scale, angle, center_x, center_y)
+    }
+
+    /// Applies kaleidoscope.
+    fn kaleidoscope<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        segments: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> GraphicsFiltered<Self, GraphicsKaleidoscope> {
+        GraphicsFilterViewExt::kaleidoscope(self, segments, angle, center_x, center_y)
+    }
+
+    /// Applies mirror tiling.
+    fn mirror_tile<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        repeat_x: T,
+        repeat_y: U,
+    ) -> GraphicsFiltered<Self, GraphicsMirrorTile> {
+        GraphicsFilterViewExt::mirror_tile(self, repeat_x, repeat_y)
     }
 
     /// Sets the visibility of this view.

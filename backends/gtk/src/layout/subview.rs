@@ -12,7 +12,6 @@ fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
 }
 
-
 /// A wrapper around a GTK widget that implements the `SubView` trait.
 ///
 /// This allows `waterui-layout` algorithms to measure GTK widgets
