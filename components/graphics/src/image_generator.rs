@@ -156,11 +156,18 @@ impl ImageGenerator for DotGridGenerator {
             for x in 0..self.width {
                 let local_x = ((x as f32 + spacing * 0.5) % spacing) - spacing * 0.5;
                 let local_y = ((y as f32 + spacing * 0.5) % spacing) - spacing * 0.5;
-                let color = if (local_x * local_x + local_y * local_y).sqrt() <= self.radius {
-                    foreground
-                } else {
-                    background
-                };
+                let distance = (local_x * local_x + local_y * local_y).sqrt();
+                let edge_start = self.radius - 0.5;
+                let edge_end = self.radius + 0.5;
+                let t = ((distance - edge_start) / (edge_end - edge_start).max(0.0001)).clamp(0.0, 1.0);
+                let smooth = t * t * (3.0 - 2.0 * t);
+                let coverage = 1.0 - smooth;
+                let color = [
+                    (f32::from(background[0]) + (f32::from(foreground[0]) - f32::from(background[0])) * coverage).round() as u8,
+                    (f32::from(background[1]) + (f32::from(foreground[1]) - f32::from(background[1])) * coverage).round() as u8,
+                    (f32::from(background[2]) + (f32::from(foreground[2]) - f32::from(background[2])) * coverage).round() as u8,
+                    255,
+                ];
                 let index = ((y * self.width + x) * 4) as usize;
                 rgba8[index..index + 4].copy_from_slice(&color);
             }
