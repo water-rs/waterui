@@ -29,84 +29,12 @@ pub trait ParamArray {
     fn write_to(&self, buf: &mut [f32]);
 }
 
-// Implementations for fixed-size arrays
-
-impl ParamArray for [f32; 0] {
-    const LEN: usize = 0;
-
-    #[inline]
-    fn write_to(&self, _buf: &mut [f32]) {}
-}
-
-impl ParamArray for [f32; 1] {
-    const LEN: usize = 1;
+impl<const N: usize> ParamArray for [f32; N] {
+    const LEN: usize = N;
 
     #[inline]
     fn write_to(&self, buf: &mut [f32]) {
-        buf[..1].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 2] {
-    const LEN: usize = 2;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..2].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 3] {
-    const LEN: usize = 3;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..3].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 4] {
-    const LEN: usize = 4;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..4].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 5] {
-    const LEN: usize = 5;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..5].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 6] {
-    const LEN: usize = 6;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..6].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 7] {
-    const LEN: usize = 7;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..7].copy_from_slice(self);
-    }
-}
-
-impl ParamArray for [f32; 8] {
-    const LEN: usize = 8;
-
-    #[inline]
-    fn write_to(&self, buf: &mut [f32]) {
-        buf[..8].copy_from_slice(self);
+        buf[..N].copy_from_slice(self);
     }
 }
 
