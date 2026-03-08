@@ -1353,6 +1353,9 @@ mod tests {
             ctx.stroke_text("Stroke", Point::new(24.0, 32.0));
         }
 
-        assert!(scene.appended_scene, "expected stroke_text to append a scene");
+        assert!(
+            scene.appended_scene,
+            "expected stroke_text to append a scene"
+        );
     }
 }

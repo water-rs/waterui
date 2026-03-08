@@ -136,6 +136,33 @@ pub enum BlendMode {
     Multiply,
     Screen,
     Overlay,
+    Darken,
+    Lighten,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion,
+    ColorDodge,
+    ColorBurn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionDirection {
+    LeftToRight,
+    RightToLeft,
+    TopToBottom,
+    BottomToTop,
+}
+
+impl TransitionDirection {
+    const fn token(self) -> f32 {
+        match self {
+            Self::LeftToRight => 0.0,
+            Self::RightToLeft => 1.0,
+            Self::TopToBottom => 2.0,
+            Self::BottomToTop => 3.0,
+        }
+    }
 }
 
 impl BlendMode {
@@ -145,6 +172,14 @@ impl BlendMode {
             Self::Multiply => 1.0,
             Self::Screen => 2.0,
             Self::Overlay => 3.0,
+            Self::Darken => 4.0,
+            Self::Lighten => 5.0,
+            Self::SoftLight => 6.0,
+            Self::HardLight => 7.0,
+            Self::Difference => 8.0,
+            Self::Exclusion => 9.0,
+            Self::ColorDodge => 10.0,
+            Self::ColorBurn => 11.0,
         }
     }
 }
@@ -812,6 +847,114 @@ impl MultiInputOperation for ToneCurve {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SwipeTransitionToImage {
+    pub target: FilterImage,
+    pub progress: f32,
+    pub softness: f32,
+    pub direction: TransitionDirection,
+}
+
+impl MultiInputOperation for SwipeTransitionToImage {
+    const MODE_ID: u32 = 10;
+    const AUX_IMAGE_COUNT: usize = 1;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        match index {
+            0 => &self.target,
+            _ => panic!("SwipeTransitionToImage: invalid aux index {index}"),
+        }
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.progress;
+        params[1] = self.softness;
+        params[2] = self.direction.token();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RadialTransitionToImage {
+    pub target: FilterImage,
+    pub progress: f32,
+    pub softness: f32,
+    pub center_x: f32,
+    pub center_y: f32,
+}
+
+impl MultiInputOperation for RadialTransitionToImage {
+    const MODE_ID: u32 = 11;
+    const AUX_IMAGE_COUNT: usize = 1;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        match index {
+            0 => &self.target,
+            _ => panic!("RadialTransitionToImage: invalid aux index {index}"),
+        }
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.progress;
+        params[1] = self.softness;
+        params[2] = self.center_x;
+        params[3] = self.center_y;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ZoomTransitionToImage {
+    pub target: FilterImage,
+    pub progress: f32,
+    pub amount: f32,
+    pub center_x: f32,
+    pub center_y: f32,
+}
+
+impl MultiInputOperation for ZoomTransitionToImage {
+    const MODE_ID: u32 = 12;
+    const AUX_IMAGE_COUNT: usize = 1;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        match index {
+            0 => &self.target,
+            _ => panic!("ZoomTransitionToImage: invalid aux index {index}"),
+        }
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.progress;
+        params[1] = self.amount;
+        params[2] = self.center_x;
+        params[3] = self.center_y;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DisplacementTransitionToImage {
+    pub target: FilterImage,
+    pub map: FilterImage,
+    pub progress: f32,
+    pub scale: f32,
+}
+
+impl MultiInputOperation for DisplacementTransitionToImage {
+    const MODE_ID: u32 = 13;
+    const AUX_IMAGE_COUNT: usize = 2;
+
+    fn aux_image(&self, index: usize) -> &FilterImage {
+        match index {
+            0 => &self.target,
+            1 => &self.map,
+            _ => panic!("DisplacementTransitionToImage: invalid aux index {index}"),
+        }
+    }
+
+    fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
+        params[0] = self.progress;
+        params[1] = self.scale;
+    }
+}
+
 pub type BlendWithImageFilter = MultiInputFilter<BlendWithImage>;
 pub type MaskedBlurFilter = MultiInputFilter<MaskedBlur>;
 pub type TransitionToImageFilter = MultiInputFilter<TransitionToImage>;
@@ -822,6 +965,10 @@ pub type TemporalDenoiseFilter = MultiInputFilter<TemporalDenoise>;
 pub type BackgroundReplaceFilter = MultiInputFilter<BackgroundReplace>;
 pub type LutColorGradeFilter = MultiInputFilter<LutColorGrade>;
 pub type ToneCurveFilter = MultiInputFilter<ToneCurve>;
+pub type SwipeTransitionToImageFilter = MultiInputFilter<SwipeTransitionToImage>;
+pub type RadialTransitionToImageFilter = MultiInputFilter<RadialTransitionToImage>;
+pub type ZoomTransitionToImageFilter = MultiInputFilter<ZoomTransitionToImage>;
+pub type DisplacementTransitionToImageFilter = MultiInputFilter<DisplacementTransitionToImage>;
 
 #[must_use]
 pub fn blend_with_image_filter(
@@ -949,6 +1096,70 @@ pub fn tone_curve_filter(
     })
 }
 
+#[must_use]
+pub fn swipe_transition_to_image_filter(
+    target: FilterImage,
+    progress: f32,
+    softness: f32,
+    direction: TransitionDirection,
+) -> SwipeTransitionToImageFilter {
+    MultiInputFilter::new(SwipeTransitionToImage {
+        target,
+        progress,
+        softness,
+        direction,
+    })
+}
+
+#[must_use]
+pub fn radial_transition_to_image_filter(
+    target: FilterImage,
+    progress: f32,
+    softness: f32,
+    center_x: f32,
+    center_y: f32,
+) -> RadialTransitionToImageFilter {
+    MultiInputFilter::new(RadialTransitionToImage {
+        target,
+        progress,
+        softness,
+        center_x,
+        center_y,
+    })
+}
+
+#[must_use]
+pub fn zoom_transition_to_image_filter(
+    target: FilterImage,
+    progress: f32,
+    amount: f32,
+    center_x: f32,
+    center_y: f32,
+) -> ZoomTransitionToImageFilter {
+    MultiInputFilter::new(ZoomTransitionToImage {
+        target,
+        progress,
+        amount,
+        center_x,
+        center_y,
+    })
+}
+
+#[must_use]
+pub fn displacement_transition_to_image_filter(
+    target: FilterImage,
+    map: FilterImage,
+    progress: f32,
+    scale: f32,
+) -> DisplacementTransitionToImageFilter {
+    MultiInputFilter::new(DisplacementTransitionToImage {
+        target,
+        map,
+        progress,
+        scale,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,6 +1176,22 @@ mod tests {
         assert_eq!(BlendMode::Multiply.token(), 1.0);
         assert_eq!(BlendMode::Screen.token(), 2.0);
         assert_eq!(BlendMode::Overlay.token(), 3.0);
+        assert_eq!(BlendMode::Darken.token(), 4.0);
+        assert_eq!(BlendMode::Lighten.token(), 5.0);
+        assert_eq!(BlendMode::SoftLight.token(), 6.0);
+        assert_eq!(BlendMode::HardLight.token(), 7.0);
+        assert_eq!(BlendMode::Difference.token(), 8.0);
+        assert_eq!(BlendMode::Exclusion.token(), 9.0);
+        assert_eq!(BlendMode::ColorDodge.token(), 10.0);
+        assert_eq!(BlendMode::ColorBurn.token(), 11.0);
+    }
+
+    #[test]
+    fn transition_direction_tokens_are_stable() {
+        assert_eq!(TransitionDirection::LeftToRight.token(), 0.0);
+        assert_eq!(TransitionDirection::RightToLeft.token(), 1.0);
+        assert_eq!(TransitionDirection::TopToBottom.token(), 2.0);
+        assert_eq!(TransitionDirection::BottomToTop.token(), 3.0);
     }
 
     #[test]

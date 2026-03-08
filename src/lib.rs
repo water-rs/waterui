@@ -108,6 +108,13 @@ pub use form::FormBuilder;
 pub use view::ViewExt;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
+pub use waterui_graphics::image_analysis;
+pub use waterui_graphics::image_generator;
+pub use waterui_graphics::{
+    CheckerboardGenerator, DominantColor, DotGridGenerator, GeneratedImage, Histogram,
+    ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
+    RadialGradientGenerator, StripeGenerator,
+};
 
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
