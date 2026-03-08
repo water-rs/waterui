@@ -100,6 +100,13 @@ fn blend_overlay(base: vec3<f32>, top: vec3<f32>) -> vec3<f32> {
     return mix(low, high, mask);
 }
 
+fn blend_soft_light(base: vec3<f32>, top: vec3<f32>) -> vec3<f32> {
+    let low = base - (1.0 - 2.0 * top) * base * (1.0 - base);
+    let high = base + (2.0 * top - 1.0) * (sqrt(max(base, vec3<f32>(0.0))) - base);
+    let mask = step(vec3<f32>(0.5), top);
+    return mix(low, high, mask);
+}
+
 fn blend_color(base: vec3<f32>, top: vec3<f32>, mode: u32) -> vec3<f32> {
     switch mode {
         case 1u: {
@@ -110,6 +117,30 @@ fn blend_color(base: vec3<f32>, top: vec3<f32>, mode: u32) -> vec3<f32> {
         }
         case 3u: {
             return blend_overlay(base, top);
+        }
+        case 4u: {
+            return min(base, top);
+        }
+        case 5u: {
+            return max(base, top);
+        }
+        case 6u: {
+            return blend_soft_light(base, top);
+        }
+        case 7u: {
+            return blend_overlay(top, base);
+        }
+        case 8u: {
+            return abs(base - top);
+        }
+        case 9u: {
+            return base + top - 2.0 * base * top;
+        }
+        case 10u: {
+            return base / max(vec3<f32>(1.0) - top, vec3<f32>(0.0001));
+        }
+        case 11u: {
+            return 1.0 - (1.0 - base) / max(top, vec3<f32>(0.0001));
         }
         default: {
             return top;
@@ -227,6 +258,33 @@ fn sample_lut_strip(color: vec3<f32>, lut_size: u32) -> vec3<f32> {
     return mix(c0, c1, fb);
 }
 
+fn apply_swipe_transition(uv: vec2<f32>, progress: f32, softness: f32, direction: u32) -> f32 {
+    var edge = uv.x;
+    switch direction {
+        case 1u: {
+            edge = 1.0 - uv.x;
+        }
+        case 2u: {
+            edge = uv.y;
+        }
+        case 3u: {
+            edge = 1.0 - uv.y;
+        }
+        default: {}
+    }
+    return smoothstep(progress - softness, progress + softness, edge);
+}
+
+fn apply_radial_transition(
+    uv: vec2<f32>,
+    progress: f32,
+    softness: f32,
+    center: vec2<f32>,
+) -> f32 {
+    let radius = distance(uv, center) * 1.41421356;
+    return smoothstep(progress - softness, progress + softness, radius);
+}
+
 fn apply_tone_curve_channel(
     x: f32,
     shadows: f32,
@@ -329,6 +387,44 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 apply_tone_curve_channel(base.b, shadows, midtones, highlights, gamma),
             );
             return vec4<f32>(mix(base.rgb, curved, amount), base.a);
+        }
+        case 10u: {
+            let progress = clamp(param(0u), 0.0, 1.0);
+            let softness = max(param(1u), 0.001);
+            let direction = u32(param(2u) + 0.5);
+            let edge = apply_swipe_transition(uv, progress, softness, direction);
+            let target_color = sample_aux0(uv);
+            return mix(base, target_color, edge);
+        }
+        case 11u: {
+            let progress = clamp(param(0u), 0.0, 1.0);
+            let softness = max(param(1u), 0.001);
+            let center = vec2<f32>(param(2u), param(3u));
+            let radius = distance(uv, center);
+            let edge = smoothstep(progress - softness, progress + softness, radius * 1.41421356);
+            let target_color = sample_aux0(uv);
+            return mix(base, target_color, edge);
+        }
+        case 12u: {
+            let progress = clamp(param(0u), 0.0, 1.0);
+            let amount = max(param(1u), 0.0);
+            let center = vec2<f32>(param(2u), param(3u));
+            let to_center = center - uv;
+            let source_uv = uv - to_center * amount * (1.0 - progress);
+            let target_uv = uv + to_center * amount * progress;
+            let source = sample_main(source_uv);
+            let target_color = sample_aux0(target_uv);
+            return mix(source, target_color, progress);
+        }
+        case 13u: {
+            let progress = clamp(param(0u), 0.0, 1.0);
+            let scale = max(param(1u), 0.0);
+            let displacement = sample_aux1(uv).rg * 2.0 - vec2<f32>(1.0);
+            let source_uv = uv - displacement * scale * progress / uniforms.output_size;
+            let target_uv = uv + displacement * scale * (1.0 - progress) / uniforms.output_size;
+            let source = sample_main(source_uv);
+            let target_color = sample_aux0(target_uv);
+            return mix(source, target_color, progress);
         }
         default: {
             return base;

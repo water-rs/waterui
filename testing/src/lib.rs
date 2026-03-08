@@ -10,9 +10,7 @@ use accesskit::{
     NodeId as AccessibilityNodeId, Role as AccessibilityRole, Toggled as AccessibilityToggled,
     TreeId as AccessibilityTreeId, TreeUpdate as AccessibilityTreeUpdate,
 };
-use hydrolysis::{
-    HydrolysisRenderer, HydrolysisViewRenderer, OffscreenWindow, PlatformWindow,
-};
+use hydrolysis::{HydrolysisRenderer, HydrolysisViewRenderer, OffscreenWindow, PlatformWindow};
 use waterui::component::table::TableConfig;
 use waterui::graphics::SceneViewMergeToParent;
 use waterui_core::handler::AnyViewBuilder;
@@ -1274,8 +1272,8 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
     use vello::kurbo::Shape;
-    use waterui::graphics::{Scene2D, SceneContent, SceneView};
     use waterui::graphics::color::Srgb;
+    use waterui::graphics::{Scene2D, SceneContent, SceneView};
     use waterui_canvas::Canvas;
     use waterui_core::layout::{Point, Rect, Size};
 
@@ -1368,7 +1366,11 @@ mod tests {
             .chunks_exact(4)
             .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
             .count();
-        let opaque_pixels = snapshot.rgba8.chunks_exact(4).filter(|px| px[3] > 0).count();
+        let opaque_pixels = snapshot
+            .rgba8
+            .chunks_exact(4)
+            .filter(|px| px[3] > 0)
+            .count();
         assert!(
             opaque_pixels > 0,
             "expected canvas render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
@@ -1385,7 +1387,8 @@ mod tests {
                 vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
             )
             .to_path(0.1);
-            let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
+            let brush: vello::peniko::Brush =
+                vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 vello::kurbo::Affine::IDENTITY,
@@ -1422,7 +1425,11 @@ mod tests {
         renderer.set_frame_resources(surface.device(), surface.queue());
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
-        renderer.dispatch(SceneView::new(TestSceneContent(Rc::clone(&build_called))), &env, bounds);
+        renderer.dispatch(
+            SceneView::new(TestSceneContent(Rc::clone(&build_called))),
+            &env,
+            bounds,
+        );
         renderer.finish_rebuild_frame();
         assert!(build_called.get(), "expected scene view build_scene to run");
 
@@ -1438,7 +1445,8 @@ mod tests {
             72,
             vello::peniko::Color::TRANSPARENT,
         );
-        let rgba8 = readback_texture_rgba8(surface.device(), surface.queue(), frame.texture(), 96, 72);
+        let rgba8 =
+            readback_texture_rgba8(surface.device(), surface.queue(), frame.texture(), 96, 72);
         renderer.clear_frame_resources();
         surface.present(frame);
 
@@ -1452,7 +1460,11 @@ mod tests {
             .chunks_exact(4)
             .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
             .count();
-        let opaque_pixels = snapshot.rgba8.chunks_exact(4).filter(|px| px[3] > 0).count();
+        let opaque_pixels = snapshot
+            .rgba8
+            .chunks_exact(4)
+            .filter(|px| px[3] > 0)
+            .count();
         assert!(
             opaque_pixels > 0,
             "expected scene view render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
