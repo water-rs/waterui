@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 
 use accesskit::{
     Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
-    Role as AccessibilityRole, Toggled as AccessibilityToggled, TreeUpdate as AccessibilityTreeUpdate,
+    Role as AccessibilityRole, Toggled as AccessibilityToggled,
+    TreeUpdate as AccessibilityTreeUpdate,
 };
 
 use crate::selector::Selector;
