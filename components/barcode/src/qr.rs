@@ -2,6 +2,9 @@
 
 use barcoders::sym::code128::Code128;
 use waterui_core::Str;
+use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
+
+use crate::BarcodeRenderer;
 
 /// Supported barcode symbologies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +141,15 @@ impl BarcodeSource {
         }
     }
 
+    fn render_dimensions(&mut self) -> (u32, u32) {
+        let quiet_zone = self.quiet_zone();
+        let configured_size = self.size;
+        let matrix = self.matrix();
+        let extent = matrix.dimension + quiet_zone * 2;
+        let target_size = configured_size.max(extent);
+        (target_size, target_size)
+    }
+
     fn generate_code128_matrix(content: &str) -> BarcodeMatrix {
         // Barcoders requires an explicit start charset marker; default to charset B.
         let payload = match content.chars().next() {
@@ -188,43 +200,58 @@ impl BarcodeMatrix {
 
 impl waterui_graphics::image_generator::ImageGenerator for BarcodeSource {
     fn generate(&mut self) -> waterui_graphics::image_generator::GeneratedImage {
-        let quiet_zone = self.quiet_zone();
-        let configured_size = self.size;
-        let matrix = self.matrix();
-        let extent = matrix.dimension + quiet_zone * 2;
-        let target_size = configured_size.max(extent);
-        let module_scale = (target_size / extent).max(1);
-        let width = extent * module_scale;
-        let height = extent * module_scale;
-        let mut rgba8 = vec![255u8; width as usize * height as usize * 4];
-
-        for y in 0..height {
-            for x in 0..width {
-                let module_x = x / module_scale;
-                let module_y = y / module_scale;
-                let is_dark = if module_x >= quiet_zone
-                    && module_y >= quiet_zone
-                    && module_x < quiet_zone + matrix.dimension
-                    && module_y < quiet_zone + matrix.dimension
-                {
-                    let qr_x = module_x - quiet_zone;
-                    let qr_y = module_y - quiet_zone;
-                    let linear_idx = (qr_y * matrix.dimension + qr_x) as usize;
-                    let word_idx = linear_idx / 32;
-                    let bit_idx = linear_idx % 32;
-                    matrix.packed_data[word_idx] & (1u32 << bit_idx) != 0
-                } else {
-                    false
-                };
-                let color = if is_dark { 0u8 } else { 255u8 };
-                let index = ((y * width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&[color, color, color, 255]);
-            }
-        }
-
-        waterui_graphics::image_generator::GeneratedImage::from_rgba8(width, height, rgba8)
+        let (width, height) = self.render_dimensions();
+        let size = OffscreenSize::try_from_pixels(width, height)
+            .expect("BarcodeSource::generate: dimensions must be non-zero");
+        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+        let mut env = waterui_core::Environment::new();
+        let output = GpuSurface::new(BarcodeRenderer::new(self.clone()))
+            .render_offscreen(config, &mut env)
+            .expect("BarcodeSource::generate: GPU offscreen render should succeed");
+        waterui_graphics::image_generator::GeneratedImage::from_rgba8(
+            output.width,
+            output.height,
+            output.rgba8,
+        )
     }
 }
 
 /// Backward-compatible alias for previous QR-focused matrix name.
 pub type QrMatrix = BarcodeMatrix;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_graphics::image_generator::ImageGenerator;
+
+    #[test]
+    fn qr_generator_produces_expected_size_and_pixels() {
+        let mut source = BarcodeSource::qr("https://waterui.dev");
+        source.set_size(192);
+
+        let image = source.generate();
+
+        assert_eq!(image.width(), 192);
+        assert_eq!(image.height(), 192);
+        assert_eq!(image.rgba8().len(), 192 * 192 * 4);
+        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 0));
+        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 255));
+    }
+
+    #[test]
+    fn code128_generator_produces_expected_size_and_pixels() {
+        let mut source = BarcodeSource::code128("HELLO-WATERUI");
+        source.set_size(256);
+
+        let image = source.generate();
+
+        assert!(image.width() >= 256);
+        assert_eq!(image.width(), image.height());
+        assert_eq!(
+            image.rgba8().len(),
+            image.width() as usize * image.height() as usize * 4
+        );
+        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 0));
+        assert!(image.rgba8().chunks_exact(4).any(|px| px[0] == 255));
+    }
+}
