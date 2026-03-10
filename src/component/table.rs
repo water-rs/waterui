@@ -22,10 +22,10 @@ use waterui_core::{
 };
 use waterui_text::Text;
 
-use crate::{views::Views, AnyView, Environment, Native, View};
+use crate::{views::Views, AnyView, Environment, View};
 
 use waterui_core::id::SelfId;
-use waterui_core::NativeView;
+use waterui_core::{Native, NativeView};
 
 /// Configuration for a table component.
 #[derive(Debug)]
