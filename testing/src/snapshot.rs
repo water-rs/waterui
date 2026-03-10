@@ -1,5 +1,5 @@
-use waterui_core::{Environment, View};
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
+use waterui_core::{Environment, View};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
