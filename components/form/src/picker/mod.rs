@@ -10,6 +10,7 @@ use nami::SignalExt;
 use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
 use waterui_core::configurable;
+use waterui_core::{AnyView, View};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
 
@@ -38,6 +39,8 @@ pub enum PickerStyle {
 #[derive(Debug)]
 /// Configuration for the `Picker` component.
 pub struct PickerConfig {
+    /// The label to display for the picker.
+    pub label: AnyView,
     /// The items to display in the picker.
     pub items: Computed<Vec<PickerItem<Id>>>,
     /// The binding to the currently selected item.
@@ -95,10 +98,18 @@ impl Picker {
         };
 
         Self(PickerConfig {
+            label: AnyView::default(),
             items,
             selection: mapping.binding(selection),
             style: PickerStyle::default(),
         })
+    }
+
+    /// Sets the label for the picker.
+    #[must_use]
+    pub fn label(mut self, label: impl View) -> Self {
+        self.0.label = AnyView::new(label);
+        self
     }
 
     /// Sets the visual style of the picker.
