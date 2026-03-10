@@ -2809,7 +2809,7 @@ impl DecodeState {
             let Some((sample_data, _, _)) = self.reader.read_sample_ref() else {
                 break;
             };
-            let mut stream = self.decoder.decode(sample_data);
+            let mut stream = self.decoder.decode(&sample_data);
             while let Some(result) = stream.next() {
                 result.map_err(|error| error.to_string())?;
             }
@@ -2842,7 +2842,7 @@ impl DecodeState {
                     / f64::from(self.total_samples - 1)
             };
 
-            let mut stream = self.decoder.decode(sample_data);
+            let mut stream = self.decoder.decode(&sample_data);
             while let Some(result) = stream.next() {
                 let decoded = result.map_err(|error| error.to_string())?;
                 let decoded_pts = if decoded.timestamp_ns() > 0 {

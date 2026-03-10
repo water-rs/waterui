@@ -605,6 +605,14 @@ typedef struct Binding_Id Binding_Id;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_PrimitiveDateTime Binding_PrimitiveDateTime;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Rect Binding_Rect;
 
 /**
@@ -766,6 +774,14 @@ typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_MenuItems Computed_MenuItems;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_PrimitiveDateTime Computed_PrimitiveDateTime;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1009,6 +1025,8 @@ typedef struct WuiWatcher_Id WuiWatcher_Id;
 typedef struct WuiWatcher_LivePhotoSource WuiWatcher_LivePhotoSource;
 
 typedef struct WuiWatcher_MenuItems WuiWatcher_MenuItems;
+
+typedef struct WuiWatcher_PrimitiveDateTime WuiWatcher_PrimitiveDateTime;
 
 typedef struct WuiWatcher_Region WuiWatcher_Region;
 
@@ -2333,12 +2351,12 @@ typedef struct WuiSecureField {
   WuiBinding_Secure *value;
 } WuiSecureField;
 
-typedef struct Binding_Date WuiBinding_Date;
+typedef struct Binding_PrimitiveDateTime WuiBinding_PrimitiveDateTime;
 
 /**
- * C-compatible date representation using year, month (1-12), and day (1-31).
+ * C-compatible date-time representation with second precision.
  */
-typedef struct WuiDate {
+typedef struct WuiDateTime {
   /**
    * Year (e.g., 2024)
    */
@@ -2351,26 +2369,38 @@ typedef struct WuiDate {
    * Day of month (1-31)
    */
   uint8_t day;
-} WuiDate;
+  /**
+   * Hour of day (0-23)
+   */
+  uint8_t hour;
+  /**
+   * Minute of hour (0-59)
+   */
+  uint8_t minute;
+  /**
+   * Second of minute (0-59)
+   */
+  uint8_t second;
+} WuiDateTime;
 
 /**
  * C representation of a range
  */
-typedef struct WuiRange_WuiDate {
+typedef struct WuiRange_WuiDateTime {
   /**
    * Start of the range
    */
-  struct WuiDate start;
+  struct WuiDateTime start;
   /**
    * End of the range
    */
-  struct WuiDate end;
-} WuiRange_WuiDate;
+  struct WuiDateTime end;
+} WuiRange_WuiDateTime;
 
 typedef struct WuiDatePicker {
   struct WuiAnyView *label;
-  WuiBinding_Date *value;
-  struct WuiRange_WuiDate range;
+  WuiBinding_PrimitiveDateTime *value;
+  struct WuiRange_WuiDateTime range;
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
@@ -3341,7 +3371,29 @@ typedef struct Computed_AnyView WuiComputed_AnyView;
 
 typedef struct Binding_f32 WuiBinding_f32;
 
+/**
+ * C-compatible date representation using year, month (1-12), and day (1-31).
+ */
+typedef struct WuiDate {
+  /**
+   * Year (e.g., 2024)
+   */
+  int32_t year;
+  /**
+   * Month (1-12)
+   */
+  uint8_t month;
+  /**
+   * Day of month (1-31)
+   */
+  uint8_t day;
+} WuiDate;
+
+typedef struct Binding_Date WuiBinding_Date;
+
 typedef struct Computed_Date WuiComputed_Date;
+
+typedef struct Computed_PrimitiveDateTime WuiComputed_PrimitiveDateTime;
 
 typedef struct WuiPickerItem {
   struct WuiId tag;
@@ -6517,6 +6569,77 @@ struct WuiWatcher_Date *waterui_new_watcher_date(void *data,
                                                               struct WuiDate,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiDateTime waterui_read_binding_date_time(const WuiBinding_PrimitiveDateTime *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_date_time(WuiBinding_PrimitiveDateTime *binding, struct WuiDateTime value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_date_time(const WuiBinding_PrimitiveDateTime *binding,
+                                                        struct WuiWatcher_PrimitiveDateTime *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_date_time(WuiBinding_PrimitiveDateTime *binding);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiDateTime waterui_read_computed_date_time(const WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_date_time(const WuiComputed_PrimitiveDateTime *computed,
+                                                         struct WuiWatcher_PrimitiveDateTime *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_date_time(WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_PrimitiveDateTime *waterui_clone_computed_date_time(const WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_PrimitiveDateTime *waterui_new_watcher_date_time(void *data,
+                                                                   void (*call)(void*,
+                                                                                struct WuiDateTime,
+                                                                                struct WuiWatcherMetadata*),
+                                                                   void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
