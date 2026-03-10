@@ -776,7 +776,12 @@ macro_rules! impl_filter_graph_array_two_params {
                 guards: &mut Vec<Box<dyn core::any::Any>>,
             ) {
                 for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(signal, param_base + index, animation_events.clone(), guards);
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
                 }
             }
         }
@@ -798,7 +803,12 @@ macro_rules! impl_filter_graph_array_two_params {
                 guards: &mut Vec<Box<dyn core::any::Any>>,
             ) {
                 for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(signal, param_base + index, animation_events.clone(), guards);
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
                 }
             }
 
@@ -827,7 +837,12 @@ macro_rules! impl_filter_graph_array_three_params {
                 guards: &mut Vec<Box<dyn core::any::Any>>,
             ) {
                 for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(signal, param_base + index, animation_events.clone(), guards);
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
                 }
             }
 
@@ -4396,6 +4411,19 @@ mod tests {
             ])),
         )
         .expect("dot halftone output");
+        let line_halftone = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::LineHalftone([
+                8.0f32, 0.0f32, 0.5f32, 0.5f32,
+            ])),
+        )
+        .expect("line halftone output");
         let kaleidoscope = run_filter_and_readback(
             device,
             queue,
@@ -4987,10 +5015,8 @@ pub type BumpDistortion = FilterAdapter<filtrate_core::filters::BumpDistortion<C
 pub type PinchDistortion = FilterAdapter<filtrate_core::filters::PinchDistortion<Computed<f32>>>;
 pub type TwirlDistortion = FilterAdapter<filtrate_core::filters::TwirlDistortion<Computed<f32>>>;
 pub type VortexDistortion = FilterAdapter<filtrate_core::filters::VortexDistortion<Computed<f32>>>;
-pub type PerspectiveTransform =
-    FilterAdapter<filtrate_core::filters::PerspectiveTransform<f32>>;
-pub type PerspectiveCorrection =
-    FilterAdapter<filtrate_core::filters::PerspectiveCorrection<f32>>;
+pub type PerspectiveTransform = FilterAdapter<filtrate_core::filters::PerspectiveTransform<f32>>;
+pub type PerspectiveCorrection = FilterAdapter<filtrate_core::filters::PerspectiveCorrection<f32>>;
 pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
 pub type Vibrance = FilterAdapter<filtrate_core::filters::Vibrance<Computed<f32>>>;
 pub type Pixellate = FilterAdapter<filtrate_core::filters::Pixellate<Computed<f32>>>;
