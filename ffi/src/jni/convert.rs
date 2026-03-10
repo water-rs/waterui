@@ -1371,18 +1371,45 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
         let class = env
             .find_class("dev/waterui/android/runtime/DatePickerStruct")
             .expect("DatePickerStruct class not found");
+        let date_time_class = env
+            .find_class("dev/waterui/android/runtime/DateTimeStruct")
+            .expect("DateTimeStruct class not found");
+        let start = env
+            .new_object(
+                &date_time_class,
+                "(IIIIII)V",
+                &[
+                    JValue::Int(self.range.start.year),
+                    JValue::Int(self.range.start.month as i32),
+                    JValue::Int(self.range.start.day as i32),
+                    JValue::Int(self.range.start.hour as i32),
+                    JValue::Int(self.range.start.minute as i32),
+                    JValue::Int(self.range.start.second as i32),
+                ],
+            )
+            .expect("Failed to create DateTimeStruct for range start");
+        let end = env
+            .new_object(
+                &date_time_class,
+                "(IIIIII)V",
+                &[
+                    JValue::Int(self.range.end.year),
+                    JValue::Int(self.range.end.month as i32),
+                    JValue::Int(self.range.end.day as i32),
+                    JValue::Int(self.range.end.hour as i32),
+                    JValue::Int(self.range.end.minute as i32),
+                    JValue::Int(self.range.end.second as i32),
+                ],
+            )
+            .expect("Failed to create DateTimeStruct for range end");
         env.new_object(
             &class,
-            "(JJIIIIIIII)V",
+            "(JJLdev/waterui/android/runtime/DateTimeStruct;Ldev/waterui/android/runtime/DateTimeStruct;I)V",
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.value as jlong),
-                JValue::Int(self.range.start.year),
-                JValue::Int(self.range.start.month as i32),
-                JValue::Int(self.range.start.day as i32),
-                JValue::Int(self.range.end.year),
-                JValue::Int(self.range.end.month as i32),
-                JValue::Int(self.range.end.day as i32),
+                JValue::Object(&start),
+                JValue::Object(&end),
                 JValue::Int(self.ty as i32),
             ],
         )

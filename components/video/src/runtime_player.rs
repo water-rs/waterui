@@ -96,6 +96,7 @@ struct VideoColorProfile {
     transfer: TransferMode,
     hdr: bool,
     wide_gamut: bool,
+    dolby_vision: bool,
 }
 
 impl Default for VideoColorProfile {
@@ -107,6 +108,7 @@ impl Default for VideoColorProfile {
             transfer: TransferMode::Sdr,
             hdr: false,
             wide_gamut: false,
+            dolby_vision: false,
         }
     }
 }
@@ -203,6 +205,18 @@ struct NclxColorInfo {
     full_range: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DolbyVisionInfo {
+    profile: u8,
+    level: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Mp4ColorMetadata {
+    nclx: Option<NclxColorInfo>,
+    dolby_vision: Option<DolbyVisionInfo>,
+}
+
 fn is_hdr_transfer(transfer: u16) -> bool {
     matches!(transfer, 16 | 18)
 }
@@ -241,36 +255,59 @@ fn map_transfer_mode(transfer: u16) -> TransferMode {
 }
 
 fn probe_video_color_profile(path: &Path, height_hint: Option<u32>) -> VideoColorProfile {
-    let Some(info) = probe_mp4_nclx(path) else {
-        return VideoColorProfile {
+    let metadata = probe_mp4_color_metadata(path);
+    let mut profile = if let Some(info) = metadata.nclx {
+        let transfer = map_transfer_mode(info.transfer);
+        VideoColorProfile {
+            matrix: map_color_matrix(info.matrix, height_hint),
+            primaries: map_color_primaries(info.primaries, height_hint),
+            range: if info.full_range {
+                ColorRangeMode::Full
+            } else {
+                ColorRangeMode::Limited
+            },
+            transfer,
+            hdr: is_hdr_transfer(info.transfer),
+            wide_gamut: is_wide_gamut_primaries(info.primaries),
+            dolby_vision: false,
+        }
+    } else {
+        VideoColorProfile {
             matrix: map_color_matrix(0, height_hint),
             primaries: map_color_primaries(0, height_hint),
             ..VideoColorProfile::default()
-        };
+        }
     };
 
-    let transfer = map_transfer_mode(info.transfer);
-    VideoColorProfile {
-        matrix: map_color_matrix(info.matrix, height_hint),
-        primaries: map_color_primaries(info.primaries, height_hint),
-        range: if info.full_range {
-            ColorRangeMode::Full
-        } else {
-            ColorRangeMode::Limited
-        },
-        transfer,
-        hdr: is_hdr_transfer(info.transfer),
-        wide_gamut: is_wide_gamut_primaries(info.primaries),
+    if metadata.dolby_vision.is_some() {
+        profile.dolby_vision = true;
+        profile.hdr = true;
+        if profile.transfer == TransferMode::Sdr {
+            profile.transfer = TransferMode::Pq;
+        }
+        if profile.primaries == ColorPrimaries::Bt709 {
+            profile.primaries = ColorPrimaries::Bt2020;
+        }
+        profile.wide_gamut = true;
     }
+
+    profile
 }
 
-fn probe_mp4_nclx(path: &Path) -> Option<NclxColorInfo> {
-    let mut file = std::io::BufReader::new(File::open(path).ok()?);
+fn probe_mp4_color_metadata(path: &Path) -> Mp4ColorMetadata {
+    let Ok(file) = File::open(path) else {
+        return Mp4ColorMetadata::default();
+    };
+    let mut file = std::io::BufReader::new(file);
     let mut chunk = [0_u8; 64 * 1024];
     let mut carry = Vec::<u8>::new();
+    let mut metadata = Mp4ColorMetadata::default();
 
     loop {
-        let read = file.read(&mut chunk).ok()?;
+        let read = match file.read(&mut chunk) {
+            Ok(read) => read,
+            Err(_) => return metadata,
+        };
         if read == 0 {
             break;
         }
@@ -279,13 +316,61 @@ fn probe_mp4_nclx(path: &Path) -> Option<NclxColorInfo> {
         buffer.extend_from_slice(&carry);
         buffer.extend_from_slice(&chunk[..read]);
 
-        if let Some(info) = find_nclx_box(&buffer) {
-            return Some(info);
+        if metadata.nclx.is_none() {
+            metadata.nclx = find_nclx_box(&buffer);
+        }
+        if metadata.dolby_vision.is_none() {
+            metadata.dolby_vision = find_dolby_vision_box(&buffer);
+        }
+        if metadata.nclx.is_some() && metadata.dolby_vision.is_some() {
+            break;
         }
 
         let keep = buffer.len().min(32);
         carry.clear();
         carry.extend_from_slice(&buffer[buffer.len().saturating_sub(keep)..]);
+    }
+
+    metadata
+}
+
+fn find_dolby_vision_box(bytes: &[u8]) -> Option<DolbyVisionInfo> {
+    const MIN_DOLBY_VISION_BOX_SIZE: usize = 12;
+    const MAX_DOLBY_VISION_BOX_SIZE: usize = 128;
+
+    for index in 0..bytes.len().saturating_sub(4) {
+        let box_type = &bytes[index..index + 4];
+        if box_type != b"dvcC" && box_type != b"dvvC" {
+            continue;
+        }
+        if index < 4 {
+            continue;
+        }
+
+        let box_size = u32::from_be_bytes([
+            bytes[index - 4],
+            bytes[index - 3],
+            bytes[index - 2],
+            bytes[index - 1],
+        ]) as usize;
+        if !(MIN_DOLBY_VISION_BOX_SIZE..=MAX_DOLBY_VISION_BOX_SIZE).contains(&box_size) {
+            continue;
+        }
+
+        let box_start = index - 4;
+        let box_end = box_start.saturating_add(box_size);
+        if box_end > bytes.len() || index + 8 > bytes.len() {
+            continue;
+        }
+
+        let config0 = bytes[index + 6];
+        let config1 = bytes[index + 7];
+        let profile = (config0 & 0xfe) >> 1;
+        let level = ((config0 & 0x01) << 5) | ((config1 & 0xf8) >> 3);
+        if profile == 0 || level == 0 {
+            continue;
+        }
+        return Some(DolbyVisionInfo { profile, level });
     }
 
     None
@@ -2724,7 +2809,7 @@ impl DecodeState {
             let Some((sample_data, _, _)) = self.reader.read_sample_ref() else {
                 break;
             };
-            let mut stream = self.decoder.decode(sample_data);
+            let mut stream = self.decoder.decode(&sample_data);
             while let Some(result) = stream.next() {
                 result.map_err(|error| error.to_string())?;
             }
@@ -2757,7 +2842,7 @@ impl DecodeState {
                     / f64::from(self.total_samples - 1)
             };
 
-            let mut stream = self.decoder.decode(sample_data);
+            let mut stream = self.decoder.decode(&sample_data);
             while let Some(result) = stream.next() {
                 let decoded = result.map_err(|error| error.to_string())?;
                 let decoded_pts = if decoded.timestamp_ns() > 0 {

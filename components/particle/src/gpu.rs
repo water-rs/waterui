@@ -44,7 +44,8 @@ pub struct Uniforms {
     pub wind: glam::Vec2,
     /// Emitter position.
     pub emitter_pos: glam::Vec2,
-    /// Emitter size (width, height for rect; radius, 0 for circle).
+    /// Emitter size.
+    /// `Rect`: `(width, height)`, `Circle`: `(radius, -1.0)`, `Point`: `(0.0, 0.0)`.
     pub emitter_size: glam::Vec2,
     /// Emission rate (particles per second).
     pub emit_rate: f32,
@@ -56,24 +57,20 @@ pub struct Uniforms {
     pub stretch_factor: f32,
     /// Edge softness (0.0=hard, 1.0=soft).
     pub softness: f32,
-
     /// Life range (min, max).
     pub life_range: glam::Vec2,
     /// Speed range (min, max).
     pub speed_range: glam::Vec2,
-
     /// Angle range (min, max) in radians.
     pub angle_range: glam::Vec2,
     /// Size range (min, max).
     pub size_range: glam::Vec2,
     /// Spin speed range (min, max) in radians/sec.
     pub spin_range: glam::Vec2,
-
     /// Start color.
     pub color_start: glam::Vec4,
     /// End color.
     pub color_end: glam::Vec4,
-
     /// Particle shape (0=Circle, 1=Rect).
     pub shape: u32,
     /// Viewport width in pixels.

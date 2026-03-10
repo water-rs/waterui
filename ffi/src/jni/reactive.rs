@@ -198,6 +198,33 @@ fn create_date_struct<'local>(
     }
 }
 
+fn create_date_time_struct<'local>(
+    env: &mut JNIEnv<'local>,
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+) -> JObject<'local> {
+    let classes = crate::jni::java_classes();
+    unsafe {
+        env.new_object_unchecked(
+            &classes.date_time_struct_class,
+            jni::objects::JMethodID::from_raw(classes.date_time_struct_ctor),
+            &[
+                JValue::Int(year).as_jni(),
+                JValue::Int(month).as_jni(),
+                JValue::Int(day).as_jni(),
+                JValue::Int(hour).as_jni(),
+                JValue::Int(minute).as_jni(),
+                JValue::Int(second).as_jni(),
+            ],
+        )
+        .expect("Failed to create DateTimeStruct")
+    }
+}
+
 // ============================================================================
 // String-based Binding Macros (Str, Secure use byte array conversion)
 // ============================================================================
@@ -456,6 +483,75 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'l
     };
     let date = unsafe { wui_date.into_rust() };
     binding.set(date);
+}
+
+// --- DateTime Binding ---
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jobject {
+    use crate::IntoFFI;
+    use nami::Signal;
+    use waterui_form::picker::date::PrimitiveDateTime;
+
+    let binding = unsafe {
+        &*require_jlong_ptr::<WuiBinding<PrimitiveDateTime>>(
+            binding_ptr,
+            "readBindingDateTime",
+            "binding",
+        )
+    };
+    let date_time: PrimitiveDateTime = binding.get();
+    let ffi = date_time.into_ffi();
+
+    create_date_time_struct(
+        &mut env,
+        ffi.year,
+        ffi.month as i32,
+        ffi.day as i32,
+        ffi.hour as i32,
+        ffi.minute as i32,
+        ffi.second as i32,
+    )
+    .into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTime<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    year: jint,
+    month: jint,
+    day: jint,
+    hour: jint,
+    minute: jint,
+    second: jint,
+) {
+    use crate::IntoRust;
+    use crate::components::form::WuiDateTime;
+    use waterui_form::picker::date::PrimitiveDateTime;
+
+    let binding = unsafe {
+        &*require_jlong_ptr::<WuiBinding<PrimitiveDateTime>>(
+            binding_ptr,
+            "setBindingDateTime",
+            "binding",
+        )
+    };
+    let wui_date_time = WuiDateTime {
+        year,
+        month: month as u8,
+        day: day as u8,
+        hour: hour as u8,
+        minute: minute as u8,
+        second: second as u8,
+    };
+    let date_time = unsafe { wui_date_time.into_rust() };
+    binding.set(date_time);
 }
 
 // ============================================================================
@@ -984,6 +1080,39 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDate<
     create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32).into_raw()
 }
 
+/// Read PrimitiveDateTime computed value and return Java DateTimeStruct.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateTime<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    computed_ptr: jlong,
+) -> jobject {
+    use crate::IntoFFI;
+    use waterui::Signal;
+    use waterui_form::picker::date::PrimitiveDateTime;
+
+    let computed = unsafe {
+        &*require_jlong_ptr::<WuiComputed<PrimitiveDateTime>>(
+            computed_ptr,
+            "readComputedDateTime",
+            "computed",
+        )
+    };
+    let date_time: PrimitiveDateTime = computed.get();
+    let ffi = date_time.into_ffi();
+
+    create_date_time_struct(
+        &mut env,
+        ffi.year,
+        ffi.month as i32,
+        ffi.day as i32,
+        ffi.hour as i32,
+        ffi.minute as i32,
+        ffi.second as i32,
+    )
+    .into_raw()
+}
+
 // ============================================================================
 // Watcher Guard Drop
 // ============================================================================
@@ -1450,6 +1579,32 @@ unsafe extern "C" fn watcher_call_date(
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
+/// Call function for PrimitiveDateTime watcher.
+unsafe extern "C" fn watcher_call_date_time(
+    data: *mut (),
+    value: crate::components::form::WuiDateTime,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let mut env = watcher_data
+        .jvm
+        .attach_current_thread()
+        .expect("Failed to attach JVM thread");
+
+    let java_value = create_date_time_struct(
+        &mut env,
+        value.year,
+        value.month as i32,
+        value.day as i32,
+        value.hour as i32,
+        value.minute as i32,
+        value.second as i32,
+    );
+
+    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
+}
+
 /// Call function for WindowState watcher (uses i32).
 unsafe extern "C" fn watcher_call_window_state(
     data: *mut (),
@@ -1724,6 +1879,7 @@ jni_create_watcher_typed!(Annotations, watcher_call_annotations);
 jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style);
 jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment);
 jni_create_watcher_typed!(Date, watcher_call_date);
+jni_create_watcher_typed!(DateTime, watcher_call_date_time);
 
 // ============================================================================
 // Dynamic Connect
