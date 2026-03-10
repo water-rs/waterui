@@ -26,25 +26,23 @@ use waterui_graphics::filter_view::{
     Bloom as GraphicsBloom, Blur as GraphicsBlur, Brightness as GraphicsBrightness,
     BumpDistortion as GraphicsBumpDistortion, ColorMatrix as GraphicsColorMatrix,
     Contrast as GraphicsContrast, Crystallize as GraphicsCrystallize,
-    DotHalftone as GraphicsDotHalftone, EdgeWork as GraphicsEdgeWork,
-    LineHalftone as GraphicsLineHalftone,
-    Exposure as GraphicsExposure, FilterViewExt as GraphicsFilterViewExt,
-    Filtered as GraphicsFiltered, Gamma as GraphicsGamma,
+    DotHalftone as GraphicsDotHalftone, EdgeWork as GraphicsEdgeWork, Exposure as GraphicsExposure,
+    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered, Gamma as GraphicsGamma,
     GaussianBlur as GraphicsGaussianBlur, Gloom as GraphicsGloom, GpuFilter,
     Grayscale as GraphicsGrayscale, HighlightsShadows as GraphicsHighlightsShadows,
     HueRotation as GraphicsHueRotation, Invert as GraphicsInvert,
-    Kaleidoscope as GraphicsKaleidoscope, MirrorTile as GraphicsMirrorTile,
-    MotionBlur as GraphicsMotionBlur,
+    Kaleidoscope as GraphicsKaleidoscope, LineHalftone as GraphicsLineHalftone,
+    MirrorTile as GraphicsMirrorTile, MotionBlur as GraphicsMotionBlur,
     PerspectiveCorrection as GraphicsPerspectiveCorrection,
     PerspectiveTransform as GraphicsPerspectiveTransform,
     PinchDistortion as GraphicsPinchDistortion, Pixellate as GraphicsPixellate,
-    Saturation as GraphicsSaturation, Sepia as GraphicsSepia,
-    Sharpen as GraphicsSharpen, TemperatureTint as GraphicsTemperatureTint,
-    TwirlDistortion as GraphicsTwirlDistortion, UnsharpMask as GraphicsUnsharpMask,
-    Vibrance as GraphicsVibrance, Vignette as GraphicsVignette,
+    Saturation as GraphicsSaturation, Sepia as GraphicsSepia, Sharpen as GraphicsSharpen,
+    TemperatureTint as GraphicsTemperatureTint, TwirlDistortion as GraphicsTwirlDistortion,
+    UnsharpMask as GraphicsUnsharpMask, Vibrance as GraphicsVibrance, Vignette as GraphicsVignette,
     VortexDistortion as GraphicsVortexDistortion, WhitePoint as GraphicsWhitePoint,
     ZoomBlur as GraphicsZoomBlur,
-};use waterui_graphics::multi_input_filter::TransitionDirection;
+};
+use waterui_graphics::multi_input_filter::TransitionDirection;
 
 use waterui_layout::{
     EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
@@ -422,6 +420,17 @@ pub trait ViewExt: View + Sized {
         center_y: W,
     ) -> GraphicsFiltered<Self, GraphicsDotHalftone> {
         GraphicsFilterViewExt::dot_halftone(self, scale, angle, center_x, center_y)
+    }
+
+    /// Applies line halftone.
+    fn line_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        scale: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> GraphicsFiltered<Self, GraphicsLineHalftone> {
+        GraphicsFilterViewExt::line_halftone(self, scale, angle, center_x, center_y)
     }
 
     /// Applies kaleidoscope.

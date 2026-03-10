@@ -75,6 +75,9 @@ pub struct JavaClasses {
     /// dev.waterui.android.runtime.DateStruct
     pub date_struct_class: GlobalRef,
     pub date_struct_ctor: jni::sys::jmethodID,
+    // dev.waterui.android.runtime.DateTimeStruct
+    pub date_time_struct_class: GlobalRef,
+    pub date_time_struct_ctor: jni::sys::jmethodID,
     /// dev.waterui.android.runtime.RegionStruct
     pub region_struct_class: GlobalRef,
     pub region_struct_ctor: jni::sys::jmethodID,
@@ -302,6 +305,18 @@ fn init_classes(env: &mut JNIEnv) -> JavaClasses {
         .expect("DateStruct constructor not found")
         .into_raw();
 
+    // DateTimeStruct
+    let date_time_struct_class = env
+        .find_class("dev/waterui/android/runtime/DateTimeStruct")
+        .expect("DateTimeStruct class not found");
+    let date_time_struct_class = env
+        .new_global_ref(date_time_struct_class)
+        .expect("Failed to create global ref");
+    let date_time_struct_ctor = env
+        .get_method_id(&date_time_struct_class, "<init>", "(IIIIII)V")
+        .expect("DateTimeStruct constructor not found")
+        .into_raw();
+
     // RegionStruct
     let region_struct_class = env
         .find_class("dev/waterui/android/runtime/RegionStruct")
@@ -429,6 +444,8 @@ fn init_classes(env: &mut JNIEnv) -> JavaClasses {
         live_photo_source_struct_ctor,
         date_struct_class,
         date_struct_ctor,
+        date_time_struct_class,
+        date_time_struct_ctor,
         region_struct_class,
         region_struct_ctor,
         annotation_struct_class,
