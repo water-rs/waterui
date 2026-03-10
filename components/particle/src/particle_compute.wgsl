@@ -6,6 +6,9 @@ struct Particle {
     size: f32,
     rotation: f32,
     rot_speed: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
     color: vec4<f32>,
 }
 

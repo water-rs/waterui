@@ -8,6 +8,7 @@ use crate::{
 };
 use encase::{ShaderSize, UniformBuffer};
 use std::borrow::Cow;
+use std::mem::offset_of;
 use waterui_graphics::{
     color::ResolvedColor,
     gpu_surface::{GpuContext, GpuFrame, GpuView},
@@ -58,6 +59,63 @@ const fn particle_shape_code(shape: ParticleShape) -> u32 {
     }
 }
 
+fn particle_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    assert_eq!(
+        core::mem::size_of::<GpuParticle>() as u64,
+        <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64,
+        "GpuParticle Rust layout must match shader storage stride"
+    );
+
+    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = [
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, pos) as u64,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, vel) as u64,
+            shader_location: 1,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, life) as u64,
+            shader_location: 2,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, max_life) as u64,
+            shader_location: 3,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, size) as u64,
+            shader_location: 4,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, rotation) as u64,
+            shader_location: 5,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, rot_speed) as u64,
+            shader_location: 6,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: offset_of!(GpuParticle, color) as u64,
+            shader_location: 7,
+            format: wgpu::VertexFormat::Float32x4,
+        },
+    ];
+
+    wgpu::VertexBufferLayout {
+        array_stride: core::mem::size_of::<GpuParticle>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &ATTRIBUTES,
+    }
+}
+
 fn blend_state(blend_mode: BlendMode, hdr: bool) -> Option<wgpu::BlendState> {
     if hdr {
         None
@@ -89,8 +147,6 @@ pub struct ParticleRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     compute_bind_group: Option<wgpu::BindGroup>,
     render_bind_group: Option<wgpu::BindGroup>,
-    start_time: std::time::Instant,
-    last_frame_time: std::time::Instant,
 }
 
 impl ParticleRenderer {
@@ -104,20 +160,20 @@ impl ParticleRenderer {
             uniform_buffer: None,
             compute_bind_group: None,
             render_bind_group: None,
-            start_time: std::time::Instant::now(),
-            last_frame_time: std::time::Instant::now(),
         }
     }
 
-    fn update_uniforms(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
+    fn update_uniforms(
+        &mut self,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        elapsed: std::time::Duration,
+        delta: std::time::Duration,
+    ) {
         if let Some(buffer) = &self.uniform_buffer {
-            let now = std::time::Instant::now();
-            let time = now.duration_since(self.start_time).as_secs_f32();
-            let dt = now
-                .duration_since(self.last_frame_time)
-                .as_secs_f32()
-                .min(0.1);
-            self.last_frame_time = now;
+            let time = elapsed.as_secs_f32();
+            let dt = delta.as_secs_f32().min(0.1);
 
             let uniforms = Uniforms {
                 time,
@@ -169,7 +225,8 @@ impl GpuView for ParticleRenderer {
             size: buffer_size,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST,
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
         particle_buffer.slice(..).get_mapped_range_mut().fill(0);
@@ -219,6 +276,7 @@ impl GpuView for ParticleRenderer {
                 bind_group_layouts: &[&compute_bind_group_layout],
                 push_constant_ranges: &[],
             });
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Particle Compute Pipeline"),
             layout: Some(&compute_pipeline_layout),
@@ -227,6 +285,11 @@ impl GpuView for ParticleRenderer {
             compilation_options: Default::default(),
             cache: ctx.pipeline_cache,
         });
+        let compute_pipeline_error = device.pop_error_scope().await;
+        assert!(
+            compute_pipeline_error.is_none(),
+            "particle compute pipeline creation failed: {compute_pipeline_error:?}"
+        );
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Particle Compute BG"),
             layout: &compute_bind_group_layout,
@@ -242,35 +305,29 @@ impl GpuView for ParticleRenderer {
             ],
         });
 
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Particle Render Shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RENDER_SHADER)),
         });
+        let render_shader_error = device.pop_error_scope().await;
+        assert!(
+            render_shader_error.is_none(),
+            "particle render shader creation failed: {render_shader_error:?}"
+        );
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Particle Render BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+                    count: None,
+                }],
             });
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -278,13 +335,14 @@ impl GpuView for ParticleRenderer {
                 bind_group_layouts: &[&render_bind_group_layout],
                 push_constant_ranges: &[],
             });
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Particle Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &render_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[particle_vertex_layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -306,19 +364,18 @@ impl GpuView for ParticleRenderer {
             multiview: None,
             cache: ctx.pipeline_cache,
         });
+        let render_pipeline_error = device.pop_error_scope().await;
+        assert!(
+            render_pipeline_error.is_none(),
+            "particle render pipeline creation failed: {render_pipeline_error:?}"
+        );
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Particle Render BG"),
             layout: &render_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: particle_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
 
         self.particle_buffer = Some(particle_buffer);
@@ -327,14 +384,16 @@ impl GpuView for ParticleRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.compute_bind_group = Some(compute_bind_group);
         self.render_bind_group = Some(render_bind_group);
-
-        let now = std::time::Instant::now();
-        self.start_time = now;
-        self.last_frame_time = now - std::time::Duration::from_secs_f32(1.0 / 60.0);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        self.update_uniforms(frame.queue, frame.width, frame.height);
+        self.update_uniforms(
+            frame.queue,
+            frame.width,
+            frame.height,
+            frame.elapsed(),
+            frame.delta(),
+        );
 
         let mut encoder = frame
             .device
@@ -373,6 +432,13 @@ impl GpuView for ParticleRenderer {
             });
             rpass.set_pipeline(pipeline);
             rpass.set_bind_group(0, bind_group, &[]);
+            rpass.set_vertex_buffer(
+                0,
+                self.particle_buffer
+                    .as_ref()
+                    .expect("particle buffer must exist before render")
+                    .slice(..),
+            );
             rpass.draw(0..6, 0..self.config.max_particles);
         }
 
@@ -385,13 +451,18 @@ impl_gpu_subview!(ParticleRenderer);
 
 #[cfg(test)]
 mod tests {
-    use super::{blend_state, encode_emitter_size, resolved_linear_color};
+    use super::{
+        ParticleRenderer, ResolvedParticleConfig, blend_state, encode_emitter_size,
+        resolved_linear_color,
+    };
     use crate::{
-        EmitterShape,
+        EmitterShape, ParticleShape,
         config::BlendMode,
+        gpu::GpuParticle,
         shaders::{COMPUTE_SHADER, RENDER_SHADER},
     };
-    use waterui_graphics::{color::ResolvedColor, wgpu};
+    use encase::{ShaderSize, StorageBuffer};
+    use waterui_graphics::{GpuView, color::ResolvedColor, wgpu};
 
     #[test]
     fn alpha_mode_uses_premultiplied_blending() {
@@ -452,7 +523,255 @@ mod tests {
     fn render_shader_contains_local_aspect_correction() {
         assert!(RENDER_SHADER.contains("fn aspect_correct_offset"));
         assert!(
-            RENDER_SHADER.contains("let world_pos = p.pos + aspect_correct_offset(local_offset);")
+            RENDER_SHADER.contains("let world_pos = pos + aspect_correct_offset(local_offset);")
         );
+    }
+
+    #[test]
+    fn render_pass_draws_when_particle_buffer_is_prefilled() {
+        use waterui_graphics::{
+            GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
+            gpu_surface::GpuContext, shared_context,
+        };
+
+        struct PrefilledParticleRenderer {
+            inner: ParticleRenderer,
+        }
+
+        impl GpuView for PrefilledParticleRenderer {
+            async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut waterui_core::Environment) {
+                self.inner.setup(ctx, env).await;
+
+                let mut particle = GpuParticle::default();
+                particle.pos = glam::Vec2::new(0.5, 0.5);
+                particle.vel = glam::Vec2::ZERO;
+                particle.life = 1.0;
+                particle.max_life = 1.0;
+                particle.size = 0.25;
+                particle.rotation = 0.0;
+                particle.rot_speed = 0.0;
+                particle.color = glam::Vec4::ONE;
+
+                let mut particle_data = StorageBuffer::new(Vec::new());
+                particle_data
+                    .write(&vec![particle])
+                    .expect("prefilled particle buffer encoding must succeed");
+                ctx.queue.write_buffer(
+                    self.inner
+                        .particle_buffer
+                        .as_ref()
+                        .expect("particle buffer must exist after setup"),
+                    0,
+                    particle_data.as_ref(),
+                );
+            }
+
+            fn render(&mut self, frame: &mut GpuFrame) {
+                self.inner.render(frame);
+            }
+        }
+
+        waterui_graphics::impl_gpu_subview!(PrefilledParticleRenderer);
+
+        let renderer = PrefilledParticleRenderer {
+            inner: ParticleRenderer::new(ResolvedParticleConfig {
+                max_particles: 1,
+                emitter_pos: [0.5, 0.5],
+                emitter_shape: EmitterShape::Point,
+                emit_rate: 0.0,
+                gravity: [0.0, 0.0],
+                wind: [0.0, 0.0],
+                turbulence: 0.0,
+                drag: 1.0,
+                life_range: [1.0, 1.0],
+                speed_range: [0.0, 0.0],
+                angle_range: [0.0, 0.0],
+                size_range: [0.25, 0.25],
+                spin_range: [0.0, 0.0],
+                color_start: ResolvedColor {
+                    red: 1.0,
+                    green: 0.5,
+                    blue: 0.0,
+                    headroom: 0.0,
+                    opacity: 1.0,
+                },
+                color_end: ResolvedColor {
+                    red: 1.0,
+                    green: 0.5,
+                    blue: 0.0,
+                    headroom: 0.0,
+                    opacity: 1.0,
+                },
+                stretch_with_velocity: false,
+                blend_mode: BlendMode::Alpha,
+                softness: 0.0,
+                shape: ParticleShape::Circle,
+            }),
+        };
+
+        shared_context::init_shared_context().expect("shared gpu context must initialize");
+        let size = OffscreenSize::try_from_pixels(256, 256).expect("test size must be valid");
+        let config = OffscreenRenderConfig::new(size);
+        let mut env = waterui_core::Environment::new();
+        let output = GpuSurface::new(renderer)
+            .render_offscreen(config, &mut env)
+            .expect("prefilled particle offscreen render should succeed");
+
+        assert!(
+            output.rgba8.chunks_exact(4).any(|pixel| pixel[3] > 0),
+            "prefilled particle should produce visible pixels"
+        );
+    }
+
+    #[test]
+    fn compute_pass_writes_live_particles_to_storage_buffer() {
+        use std::sync::mpsc;
+        use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
+
+        let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
+            max_particles: 256,
+            emitter_pos: [0.5, 0.5],
+            emitter_shape: EmitterShape::Point,
+            emit_rate: 1_000_000.0,
+            gravity: [0.0, 0.0],
+            wind: [0.0, 0.0],
+            turbulence: 0.0,
+            drag: 1.0,
+            life_range: [1.0, 1.0],
+            speed_range: [0.0, 0.0],
+            angle_range: [0.0, 0.0],
+            size_range: [0.1, 0.1],
+            spin_range: [0.0, 0.0],
+            color_start: ResolvedColor {
+                red: 1.0,
+                green: 1.0,
+                blue: 1.0,
+                headroom: 0.0,
+                opacity: 1.0,
+            },
+            color_end: ResolvedColor {
+                red: 1.0,
+                green: 1.0,
+                blue: 1.0,
+                headroom: 0.0,
+                opacity: 0.0,
+            },
+            stretch_with_velocity: false,
+            blend_mode: BlendMode::Alpha,
+            softness: 0.0,
+            shape: ParticleShape::Circle,
+        });
+
+        shared_context::init_shared_context().expect("shared gpu context must initialize");
+        let shared = shared_context::shared_context();
+        let guard = shared.read();
+        let ctx = GpuContext {
+            adapter: Some(&guard.adapter),
+            device: guard.device.as_ref(),
+            queue: guard.queue.as_ref(),
+            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            msaa_samples: 1,
+            pipeline_cache: guard.pipeline_cache.as_ref(),
+            redraw_handle: RedrawHandle::new(),
+        };
+        let mut env = waterui_core::Environment::new();
+        pollster::block_on(renderer.setup(&ctx, &mut env));
+        renderer.update_uniforms(
+            ctx.queue,
+            256,
+            256,
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+        );
+
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("particle_compute_buffer_test_encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("particle_compute_buffer_test_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(
+                renderer
+                    .compute_pipeline
+                    .as_ref()
+                    .expect("compute pipeline must exist after setup"),
+            );
+            cpass.set_bind_group(
+                0,
+                renderer
+                    .compute_bind_group
+                    .as_ref()
+                    .expect("compute bind group must exist after setup"),
+                &[],
+            );
+            cpass.dispatch_workgroups(renderer.config.max_particles.div_ceil(64), 1, 1);
+        }
+
+        let buffer_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64
+            * u64::from(renderer.config.max_particles);
+        let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle_compute_buffer_test_readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(
+            renderer
+                .particle_buffer
+                .as_ref()
+                .expect("particle buffer must exist after setup"),
+            0,
+            &readback,
+            0,
+            buffer_size,
+        );
+        ctx.queue.submit([encoder.finish()]);
+
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv()
+            .expect("particle compute readback callback dropped")
+            .expect("particle compute readback mapping failed");
+
+        let mapped = slice.get_mapped_range();
+        assert!(
+            mapped.iter().any(|byte| *byte != 0),
+            "compute pass should write non-zero particle data"
+        );
+
+        let stride = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as usize;
+        let mut live_particles = 0usize;
+        for chunk in mapped.chunks_exact(stride) {
+            let life = f32::from_ne_bytes(chunk[16..20].try_into().expect("life bytes must exist"));
+            let max_life =
+                f32::from_ne_bytes(chunk[20..24].try_into().expect("max life bytes must exist"));
+            let size = f32::from_ne_bytes(chunk[24..28].try_into().expect("size bytes must exist"));
+            let pos_x = f32::from_ne_bytes(chunk[0..4].try_into().expect("pos x bytes must exist"));
+            let pos_y = f32::from_ne_bytes(chunk[4..8].try_into().expect("pos y bytes must exist"));
+            if life.is_finite() && max_life.is_finite() && size.is_finite() && life > 0.0 {
+                assert!(max_life > 0.0, "live particle must have positive max_life");
+                assert!(size > 0.0, "live particle must have positive size");
+                assert!(
+                    (0.0..=1.0).contains(&pos_x) && (0.0..=1.0).contains(&pos_y),
+                    "live particle position should stay normalized, got ({pos_x}, {pos_y})"
+                );
+                live_particles += 1;
+            }
+        }
+        assert!(
+            live_particles > 0,
+            "compute pass should spawn at least one live particle"
+        );
+
+        drop(mapped);
+        readback.unmap();
     }
 }
