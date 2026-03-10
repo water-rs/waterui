@@ -5,8 +5,9 @@
 use encase::ShaderType;
 
 /// GPU representation of a single particle.
-/// Uses encase for automatic WGSL-compatible alignment.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
+/// Uses explicit padding so the storage layout also works as an instanced vertex buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuParticle {
     /// Position in normalized coordinates [0, 1].
     pub pos: glam::Vec2,
@@ -22,6 +23,9 @@ pub struct GpuParticle {
     pub rotation: f32,
     /// Rotation speed (radians/sec).
     pub rot_speed: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
     /// Color in Linear sRGB.
     pub color: glam::Vec4,
 }
