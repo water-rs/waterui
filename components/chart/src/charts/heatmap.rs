@@ -1,10 +1,9 @@
 //! Heatmap chart component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{draw_heatmap, reactive_canvas};
+use crate::charts::canvas::{draw_heatmap, signal_canvas};
 use crate::data::HeatmapData;
 
 /// Heatmap chart for matrix visualization.
@@ -42,10 +41,8 @@ impl<S: Signal<Output = HeatmapData>> HeatmapChart<S> {
 
 impl<S: Signal<Output = HeatmapData> + Clone + 'static> View for HeatmapChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_heatmap(ctx, &data);
-            })
+        signal_canvas(self.data, move |ctx, data| {
+            draw_heatmap(ctx, data);
         })
     }
 }
