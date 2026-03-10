@@ -76,25 +76,21 @@ fn fog() -> impl View {
 }
 
 fn flame() -> impl View {
-    ParticleSystem::new(4000)
-        .emit_from_rect(0.035, 0.018)
-        .at(0.5, 0.86)
-        .rate(720.0)
-        .life(0.24..0.48)
-        .speed(0.8..1.75)
-        .angle(PI * 1.44..PI * 1.56)
-        .size(0.012..0.028)
+    ParticleSystem::new(3000)
+        .emit_from_rect(0.05, 0.0) // Small source
+        .at(0.5, 0.8)
+        .rate(1200.0)
+        .life(0.4..0.8)
+        .speed(0.5..1.2)
+        .angle(PI * 1.4..PI * 1.6) // Up
+        .size(0.03..0.06)
         .color(
-            Color::srgb_hex("#FFF2A6").with_opacity(0.18),
-            Color::srgb_hex("#FF5A1F").with_opacity(0.0),
+            Color::from(Srgb::new(1.0, 0.7, 0.1)).with_opacity(0.6), // Orange
+            Color::from(Srgb::new(1.0, 0.1, 0.05)).with_opacity(0.0), // Red fade
         )
-        .gravity(0.0, -1.6)
-        .wind(0.03, 0.0)
-        .turbulence(0.28)
-        .drag(0.94)
-        .stretch_with_velocity()
+        .gravity(0.0, -1.0) // Rise
         .additive()
-        .softness(0.45)
+        .softness(0.6) // Soft plasma look
 }
 
 fn firework() -> impl View {
