@@ -705,9 +705,10 @@ jni_computed_primitive!(i32, cursor_style);
 jni_computed_primitive!(i32, horizontal_alignment);
 
 // Date reactive bindings (using WuiDate FFI representation)
-use crate::components::form::WuiDate;
-use waterui_form::picker::date::Date;
+use crate::components::form::{WuiDate, WuiDateTime};
+use waterui_form::picker::date::{Date, PrimitiveDateTime};
 ffi_reactive!(Date, WuiDate, date);
+ffi_reactive!(PrimitiveDateTime, WuiDateTime, date_time);
 
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
