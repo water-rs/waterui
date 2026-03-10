@@ -116,26 +116,22 @@ fn particle_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-fn blend_state(blend_mode: BlendMode, hdr: bool) -> Option<wgpu::BlendState> {
-    if hdr {
-        None
-    } else {
-        Some(match blend_mode {
-            BlendMode::Alpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            BlendMode::Additive => wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
+fn blend_state(blend_mode: BlendMode, _hdr: bool) -> Option<wgpu::BlendState> {
+    Some(match blend_mode {
+        BlendMode::Alpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        BlendMode::Additive => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
             },
-        })
-    }
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        },
+    })
 }
 
 /// GPU renderer for particle systems.
@@ -473,8 +469,11 @@ mod tests {
     }
 
     #[test]
-    fn hdr_surfaces_do_not_force_blending() {
-        assert_eq!(blend_state(BlendMode::Alpha, true), None);
+    fn hdr_surfaces_keep_particle_blending() {
+        assert_eq!(
+            blend_state(BlendMode::Alpha, true),
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+        );
     }
 
     #[test]
@@ -523,7 +522,7 @@ mod tests {
     fn render_shader_contains_local_aspect_correction() {
         assert!(RENDER_SHADER.contains("fn aspect_correct_offset"));
         assert!(
-            RENDER_SHADER.contains("let world_pos = p.pos + aspect_correct_offset(local_offset);")
+            RENDER_SHADER.contains("let world_pos = pos + aspect_correct_offset(local_offset);")
         );
     }
 
