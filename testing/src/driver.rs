@@ -1,4 +1,6 @@
-use accesskit::{ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate};
+use accesskit::{
+    ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
+};
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow, PointerButton};
 use waterui::component::table::TableConfig;
 use waterui_core::view::Hook;
@@ -7,8 +9,12 @@ use waterui_core::{AnyView, Environment, Native};
 use crate::snapshot::{Snapshot, readback_texture_rgba8};
 
 pub(crate) trait A11yDriver {
-    fn pump(&mut self, content: AnyView, env: &Environment, capture_snapshot: bool)
-        -> DriverPumpResult;
+    fn pump(
+        &mut self,
+        content: AnyView,
+        env: &Environment,
+        capture_snapshot: bool,
+    ) -> DriverPumpResult;
     fn perform_action(&mut self, request: AccessibilityActionRequest, env: &Environment) -> bool;
     fn hover_at(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool;

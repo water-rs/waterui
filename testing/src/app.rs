@@ -8,9 +8,12 @@ use hydrolysis::HydrolysisViewRenderer;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
-use crate::driver::{A11yDriver, DriverPumpResult, HydrolysisA11yDriver, install_native_component_hooks};
+use crate::driver::{
+    A11yDriver, DriverPumpResult, HydrolysisA11yDriver, install_native_component_hooks,
+};
+use crate::query::Query;
 use crate::selector::{ElementRef, ElementSet, Selector};
-use crate::semantics::{NodeId, Role, TreeSnapshot};
+use crate::semantics::{NodeId, TreeSnapshot};
 use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
@@ -69,7 +72,7 @@ impl UiTest {
         };
         let rebuilt = app.pump_once();
         assert!(
-            !(!rebuilt),
+            rebuilt,
             "waterui-testing initial mount did not produce a frame"
         );
         app
@@ -301,7 +304,7 @@ impl MountedApp {
         self.tree.matching(selector)
     }
 
-    fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
+    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
         let ids = self.matching_ids(selector);
         let elements = ids
             .into_iter()
@@ -313,7 +316,7 @@ impl MountedApp {
         ElementSet::new(elements)
     }
 
-    fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
+    pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
         let results = self.resolve_elements(selector);
         match results.len() {
             1 => results[0].clone(),
@@ -396,7 +399,9 @@ impl MountedApp {
                 idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
             };
             idle_backoff = next_backoff;
-            std::thread::sleep(next_backoff.min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(
+                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -424,132 +429,12 @@ impl MountedApp {
     }
 }
 
-/// Chainable query builder bound to a mounted app session.
-pub struct Query<'a> {
-    app: &'a mut MountedApp,
-    selector: Selector,
-}
-
-impl<'a> Query<'a> {
-    #[must_use]
-    pub fn role(mut self, role: Role) -> Self {
-        self.selector = self.selector.role(role);
-        self
-    }
-
-    #[must_use]
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.selector = self.selector.label(label);
-        self
-    }
-
-    #[must_use]
-    pub fn label_contains(mut self, label: impl Into<String>) -> Self {
-        self.selector = self.selector.label_contains(label);
-        self
-    }
-
-    #[must_use]
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.selector = self.selector.enabled(enabled);
-        self
-    }
-
-    #[must_use]
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selector = self.selector.selected(selected);
-        self
-    }
-
-    #[must_use]
-    pub fn checked(mut self, checked: bool) -> Self {
-        self.selector = self.selector.checked(checked);
-        self
-    }
-
-    #[must_use]
-    pub fn expanded(mut self, expanded: bool) -> Self {
-        self.selector = self.selector.expanded(expanded);
-        self
-    }
-
-    #[must_use]
-    pub fn value(mut self, value: impl Into<String>) -> Self {
-        self.selector = self.selector.value(value);
-        self
-    }
-
-    #[must_use]
-    pub fn all(self) -> ElementSet {
-        self.app.resolve_elements(&self.selector)
-    }
-
-    #[must_use]
-    pub fn optional(self) -> Option<ElementRef> {
-        let all = self.app.resolve_elements(&self.selector);
-        if all.is_empty() {
-            return None;
-        }
-        assert!(
-            !(all.len() > 1),
-            "waterui-testing selector resolved {} nodes, expected at most 1",
-            all.len()
-        );
-        Some(all[0].clone())
-    }
-
-    #[must_use]
-    pub fn single(self) -> ElementRef {
-        self.app.resolve_single(&self.selector)
-    }
-
-    pub fn tap(self) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        self.app.tap_node(element.id())
-    }
-
-    pub fn set_text(self, value: impl Into<String>) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        self.app.set_text_node(element.id(), value)
-    }
-
-    pub fn increment(self) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        self.app.increment_node(element.id())
-    }
-
-    pub fn decrement(self) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        self.app.decrement_node(element.id())
-    }
-
-    pub fn scroll_down(self) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        self.app.scroll_down_node(element.id())
-    }
-
-    pub fn hover(self) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        element.hover(self.app)
-    }
-
-    pub fn drag_by(self, dx: f32, dy: f32) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        element.drag_by(self.app, dx, dy)
-    }
-
-    pub fn magnify(self, factor: f32) -> bool {
-        let element = self.app.resolve_single(&self.selector);
-        element.magnify(self.app, factor)
-    }
-}
-
 impl MountedApp {
-    fn tap_node(&mut self, node_id: NodeId) -> bool {
+    pub(crate) fn tap_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::Click, None)
     }
 
-    fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) -> bool {
+    pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) -> bool {
         self.perform_action(
             node_id,
             AccessibilityAction::SetValue,
@@ -559,15 +444,15 @@ impl MountedApp {
         )
     }
 
-    fn increment_node(&mut self, node_id: NodeId) -> bool {
+    pub(crate) fn increment_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::Increment, None)
     }
 
-    fn decrement_node(&mut self, node_id: NodeId) -> bool {
+    pub(crate) fn decrement_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::Decrement, None)
     }
 
-    fn scroll_down_node(&mut self, node_id: NodeId) -> bool {
+    pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::ScrollDown, None)
     }
 }
