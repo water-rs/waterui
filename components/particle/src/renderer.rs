@@ -147,6 +147,8 @@ pub struct ParticleRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     compute_bind_group: Option<wgpu::BindGroup>,
     render_bind_group: Option<wgpu::BindGroup>,
+    start_time: std::time::Instant,
+    last_frame_time: std::time::Instant,
 }
 
 impl ParticleRenderer {
@@ -160,20 +162,20 @@ impl ParticleRenderer {
             uniform_buffer: None,
             compute_bind_group: None,
             render_bind_group: None,
+            start_time: std::time::Instant::now(),
+            last_frame_time: std::time::Instant::now(),
         }
     }
 
-    fn update_uniforms(
-        &mut self,
-        queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        elapsed: std::time::Duration,
-        delta: std::time::Duration,
-    ) {
+    fn update_uniforms(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
         if let Some(buffer) = &self.uniform_buffer {
-            let time = elapsed.as_secs_f32();
-            let dt = delta.as_secs_f32().min(0.1);
+            let now = std::time::Instant::now();
+            let time = now.duration_since(self.start_time).as_secs_f32();
+            let dt = now
+                .duration_since(self.last_frame_time)
+                .as_secs_f32()
+                .min(0.1);
+            self.last_frame_time = now;
 
             let uniforms = Uniforms {
                 time,
@@ -384,16 +386,14 @@ impl GpuView for ParticleRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.compute_bind_group = Some(compute_bind_group);
         self.render_bind_group = Some(render_bind_group);
+
+        let now = std::time::Instant::now();
+        self.start_time = now;
+        self.last_frame_time = now - std::time::Duration::from_secs_f32(1.0 / 60.0);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        self.update_uniforms(
-            frame.queue,
-            frame.width,
-            frame.height,
-            frame.elapsed(),
-            frame.delta(),
-        );
+        self.update_uniforms(frame.queue, frame.width, frame.height);
 
         let mut encoder = frame
             .device
@@ -523,7 +523,7 @@ mod tests {
     fn render_shader_contains_local_aspect_correction() {
         assert!(RENDER_SHADER.contains("fn aspect_correct_offset"));
         assert!(
-            RENDER_SHADER.contains("let world_pos = pos + aspect_correct_offset(local_offset);")
+            RENDER_SHADER.contains("let world_pos = p.pos + aspect_correct_offset(local_offset);")
         );
     }
 
@@ -676,13 +676,7 @@ mod tests {
         };
         let mut env = waterui_core::Environment::new();
         pollster::block_on(renderer.setup(&ctx, &mut env));
-        renderer.update_uniforms(
-            ctx.queue,
-            256,
-            256,
-            std::time::Duration::from_secs_f32(1.0 / 60.0),
-            std::time::Duration::from_secs_f32(1.0 / 60.0),
-        );
+        renderer.update_uniforms(ctx.queue, 256, 256);
 
         let mut encoder = ctx
             .device
