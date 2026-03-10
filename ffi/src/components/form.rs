@@ -127,6 +127,7 @@ into_ffi! {PickerStyle, Automatic, pub enum WuiPickerStyle {
 
 into_ffi! {PickerConfig,
     pub struct WuiPicker {
+        label: *mut WuiAnyView,
         items: *mut WuiComputed<Vec<PickerItem<Id>>>,
         selection: *mut WuiBinding<Id>,
         style: WuiPickerStyle,
