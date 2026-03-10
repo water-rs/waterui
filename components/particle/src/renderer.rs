@@ -38,18 +38,57 @@ pub struct ResolvedParticleConfig {
     pub shape: ParticleShape,
 }
 
+fn encode_emitter_size(shape: EmitterShape) -> glam::Vec2 {
+    match shape {
+        EmitterShape::Point => glam::Vec2::ZERO,
+        EmitterShape::Rect { width, height } => glam::Vec2::new(width, height),
+        EmitterShape::Circle { radius } => glam::Vec2::new(radius, -1.0),
+    }
+}
+
+fn resolved_linear_color(color: ResolvedColor) -> glam::Vec4 {
+    let [red, green, blue] = color.linear_with_headroom();
+    glam::Vec4::new(red, green, blue, color.opacity)
+}
+
+const fn particle_shape_code(shape: ParticleShape) -> u32 {
+    match shape {
+        ParticleShape::Circle => 0,
+        ParticleShape::Rect => 1,
+    }
+}
+
+fn blend_state(blend_mode: BlendMode, hdr: bool) -> Option<wgpu::BlendState> {
+    if hdr {
+        None
+    } else {
+        Some(match blend_mode {
+            BlendMode::Alpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            BlendMode::Additive => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+        })
+    }
+}
+
 /// GPU renderer for particle systems.
 pub struct ParticleRenderer {
     config: ResolvedParticleConfig,
-
-    // GPU Resources
     compute_pipeline: Option<wgpu::ComputePipeline>,
     render_pipeline: Option<wgpu::RenderPipeline>,
     particle_buffer: Option<wgpu::Buffer>,
     uniform_buffer: Option<wgpu::Buffer>,
     compute_bind_group: Option<wgpu::BindGroup>,
     render_bind_group: Option<wgpu::BindGroup>,
-
     start_time: std::time::Instant,
     last_frame_time: std::time::Instant,
 }
@@ -80,28 +119,15 @@ impl ParticleRenderer {
                 .min(0.1);
             self.last_frame_time = now;
 
-            let seed = fastrand::u32(..);
-
-            let (emitter_w, emitter_h) = match self.config.emitter_shape {
-                EmitterShape::Rect { width, height } => (width, height),
-                EmitterShape::Circle { radius } => (radius, 0.0),
-                EmitterShape::Point => (0.0, 0.0),
-            };
-
-            let shape_val = match self.config.shape {
-                ParticleShape::Circle => 0,
-                ParticleShape::Rect => 1,
-            };
-
             let uniforms = Uniforms {
                 time,
                 dt,
-                seed,
+                seed: fastrand::u32(..),
                 max_particles: self.config.max_particles,
                 gravity: glam::Vec2::from_array(self.config.gravity),
                 wind: glam::Vec2::from_array(self.config.wind),
                 emitter_pos: glam::Vec2::from_array(self.config.emitter_pos),
-                emitter_size: glam::Vec2::new(emitter_w, emitter_h),
+                emitter_size: encode_emitter_size(self.config.emitter_shape),
                 emit_rate: self.config.emit_rate,
                 turbulence: self.config.turbulence,
                 drag: self.config.drag,
@@ -116,28 +142,17 @@ impl ParticleRenderer {
                 angle_range: glam::Vec2::from_array(self.config.angle_range),
                 size_range: glam::Vec2::from_array(self.config.size_range),
                 spin_range: glam::Vec2::from_array(self.config.spin_range),
-                color_start: glam::Vec4::new(
-                    self.config.color_start.red,
-                    self.config.color_start.green,
-                    self.config.color_start.blue,
-                    self.config.color_start.opacity,
-                ),
-                color_end: glam::Vec4::new(
-                    self.config.color_end.red,
-                    self.config.color_end.green,
-                    self.config.color_end.blue,
-                    self.config.color_end.opacity,
-                ),
-                shape: shape_val,
+                color_start: resolved_linear_color(self.config.color_start),
+                color_end: resolved_linear_color(self.config.color_end),
+                shape: particle_shape_code(self.config.shape),
                 viewport_width: width,
                 viewport_height: height,
             };
 
-            // Use encase for uniform buffer write
             let mut uniform_data = UniformBuffer::new(Vec::new());
             uniform_data
                 .write(&uniforms)
-                .expect("Failed to write uniform buffer");
+                .expect("failed to write particle uniform buffer");
             queue.write_buffer(buffer, 0, uniform_data.as_ref());
         }
     }
@@ -146,8 +161,6 @@ impl ParticleRenderer {
 impl GpuView for ParticleRenderer {
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         let device = ctx.device;
-
-        // 1. Create Buffers using encase size calculation
         let particle_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64;
         let buffer_size = particle_size * u64::from(self.config.max_particles);
 
@@ -157,8 +170,10 @@ impl GpuView for ParticleRenderer {
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+            mapped_at_creation: true,
         });
+        particle_buffer.slice(..).get_mapped_range_mut().fill(0);
+        particle_buffer.unmap();
 
         let uniform_size = <Uniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -168,12 +183,10 @@ impl GpuView for ParticleRenderer {
             mapped_at_creation: false,
         });
 
-        // 2. Compute Pipeline
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Particle Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPUTE_SHADER)),
         });
-
         let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Particle Compute BGL"),
@@ -200,23 +213,20 @@ impl GpuView for ParticleRenderer {
                     },
                 ],
             });
-
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Compute PL"),
                 bind_group_layouts: &[&compute_bind_group_layout],
                 push_constant_ranges: &[],
             });
-
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Particle Compute Pipeline"),
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
             entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache: None,
+            cache: ctx.pipeline_cache,
         });
-
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Particle Compute BG"),
             layout: &compute_bind_group_layout,
@@ -232,17 +242,14 @@ impl GpuView for ParticleRenderer {
             ],
         });
 
-        // 3. Render Pipeline
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Particle Render Shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RENDER_SHADER)),
         });
-
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Particle Render BGL"),
                 entries: &[
-                    // Binding 0: Uniforms
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -253,7 +260,6 @@ impl GpuView for ParticleRenderer {
                         },
                         count: None,
                     },
-                    // Binding 1: Particles
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::VERTEX,
@@ -266,34 +272,12 @@ impl GpuView for ParticleRenderer {
                     },
                 ],
             });
-
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Render PL"),
                 bind_group_layouts: &[&render_bind_group_layout],
                 push_constant_ranges: &[],
             });
-
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(match self.config.blend_mode {
-                BlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
-                BlendMode::Additive => wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                },
-            })
-        };
-
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Particle Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -308,7 +292,7 @@ impl GpuView for ParticleRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend,
+                    blend: blend_state(self.config.blend_mode, ctx.is_hdr()),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -322,7 +306,6 @@ impl GpuView for ParticleRenderer {
             multiview: None,
             cache: ctx.pipeline_cache,
         });
-
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Particle Render BG"),
             layout: &render_bind_group_layout,
@@ -338,7 +321,6 @@ impl GpuView for ParticleRenderer {
             ],
         });
 
-        // Store resources
         self.particle_buffer = Some(particle_buffer);
         self.uniform_buffer = Some(uniform_buffer);
         self.compute_pipeline = Some(compute_pipeline);
@@ -346,8 +328,9 @@ impl GpuView for ParticleRenderer {
         self.compute_bind_group = Some(compute_bind_group);
         self.render_bind_group = Some(render_bind_group);
 
-        self.start_time = std::time::Instant::now();
-        self.last_frame_time = std::time::Instant::now();
+        let now = std::time::Instant::now();
+        self.start_time = now;
+        self.last_frame_time = now - std::time::Duration::from_secs_f32(1.0 / 60.0);
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -359,7 +342,6 @@ impl GpuView for ParticleRenderer {
                 label: Some("Particle Encoder"),
             });
 
-        // Compute Pass
         if let (Some(pipeline), Some(bind_group)) =
             (&self.compute_pipeline, &self.compute_bind_group)
         {
@@ -369,13 +351,9 @@ impl GpuView for ParticleRenderer {
             });
             cpass.set_pipeline(pipeline);
             cpass.set_bind_group(0, bind_group, &[]);
-
-            let workgroup_size = 64;
-            let count = (self.config.max_particles + workgroup_size - 1) / workgroup_size;
-            cpass.dispatch_workgroups(count, 1, 1);
+            cpass.dispatch_workgroups(self.config.max_particles.div_ceil(64), 1, 1);
         }
 
-        // Render Pass
         if let (Some(pipeline), Some(bind_group)) = (&self.render_pipeline, &self.render_bind_group)
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -385,7 +363,7 @@ impl GpuView for ParticleRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -393,7 +371,6 @@ impl GpuView for ParticleRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
             rpass.set_pipeline(pipeline);
             rpass.set_bind_group(0, bind_group, &[]);
             rpass.draw(0..6, 0..self.config.max_particles);
@@ -405,3 +382,77 @@ impl GpuView for ParticleRenderer {
 }
 
 impl_gpu_subview!(ParticleRenderer);
+
+#[cfg(test)]
+mod tests {
+    use super::{blend_state, encode_emitter_size, resolved_linear_color};
+    use crate::{
+        EmitterShape,
+        config::BlendMode,
+        shaders::{COMPUTE_SHADER, RENDER_SHADER},
+    };
+    use waterui_graphics::{color::ResolvedColor, wgpu};
+
+    #[test]
+    fn alpha_mode_uses_premultiplied_blending() {
+        assert_eq!(
+            blend_state(BlendMode::Alpha, false),
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+        );
+    }
+
+    #[test]
+    fn hdr_surfaces_do_not_force_blending() {
+        assert_eq!(blend_state(BlendMode::Alpha, true), None);
+    }
+
+    #[test]
+    fn circle_emitters_use_disk_encoding() {
+        assert_eq!(
+            encode_emitter_size(EmitterShape::Circle { radius: 0.25 }),
+            glam::Vec2::new(0.25, -1.0)
+        );
+        assert_eq!(
+            encode_emitter_size(EmitterShape::Rect {
+                width: 0.4,
+                height: 0.2,
+            }),
+            glam::Vec2::new(0.4, 0.2)
+        );
+    }
+
+    #[test]
+    fn resolved_colors_keep_hdr_headroom() {
+        let color = ResolvedColor {
+            red: 0.25,
+            green: 0.5,
+            blue: 0.75,
+            headroom: 1.0,
+            opacity: 0.4,
+        };
+
+        assert_eq!(
+            resolved_linear_color(color),
+            glam::Vec4::new(0.5, 1.0, 1.5, 0.4)
+        );
+    }
+
+    #[test]
+    fn compute_shader_contains_frame_rate_normalized_drag() {
+        assert!(COMPUTE_SHADER.contains("pow(uniforms.drag, uniforms.dt * 60.0)"));
+    }
+
+    #[test]
+    fn compute_shader_contains_disk_sampling() {
+        assert!(COMPUTE_SHADER.contains("uniforms.emitter_size.y >= 0.0"));
+        assert!(COMPUTE_SHADER.contains("sqrt(rand(seed)) * uniforms.emitter_size.x"));
+    }
+
+    #[test]
+    fn render_shader_contains_local_aspect_correction() {
+        assert!(RENDER_SHADER.contains("fn aspect_correct_offset"));
+        assert!(
+            RENDER_SHADER.contains("let world_pos = p.pos + aspect_correct_offset(local_offset);")
+        );
+    }
+}
