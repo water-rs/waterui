@@ -293,6 +293,17 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
+fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+    if !changed {
+        return;
+    }
+    if runtime.renderer.take_rebuild_request() {
+        runtime.needs_rebuild = true;
+        return;
+    }
+    runtime.renderer.request_redraw();
+}
+
 fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
     assert!(
         !(!scale_factor.is_finite() || scale_factor <= 0.0),
@@ -367,7 +378,11 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             runtime.needs_rebuild = false;
             if let Some((x, y)) = runtime.pointer_position {
                 if runtime.renderer.sync_pointer_hover_state(x, y, env) {
-                    runtime.needs_rebuild = true;
+                    if runtime.renderer.take_rebuild_request() {
+                        runtime.needs_rebuild = true;
+                    } else {
+                        runtime.renderer.request_redraw();
+                    }
                 }
             }
         }
@@ -429,7 +444,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 pub fn run(app: App) {
     init_main_thread_executors();
     let (windows, env) = app.into_parts();
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env;
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
     env.insert(waterui_core::ViewRenderer::new(
@@ -548,7 +563,7 @@ mod winit_runner {
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
         let (windows, env) = app.into_parts();
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env;
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
         env.insert(waterui_core::ViewRenderer::new(
@@ -704,9 +719,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::PointerUp { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
@@ -720,9 +733,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::PointerMove { x, y } => {
                         runtime.pointer_position = Some((x, y));
@@ -735,9 +746,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::PointerCancel => {
                         let changed = runtime.renderer.handle_pointer_cancel(env);
@@ -747,9 +756,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Scroll {
                         x,
@@ -771,24 +778,19 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Magnification { x, y, delta, phase } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime
+                        let changed = runtime
                             .renderer
-                            .handle_magnification(x, y, delta, phase, env)
-                        {
-                            runtime.needs_rebuild = true;
-                        }
+                            .handle_magnification(x, y, delta, phase, env);
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::Rotation { x, y, delta, phase } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_rotation(x, y, delta, phase, env) {
-                            runtime.needs_rebuild = true;
-                        }
+                        let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::Key {
                         key,
@@ -804,9 +806,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImePreedit { text } => {
                         let changed = runtime.renderer.handle_ime_preedit(text.as_str());
@@ -817,9 +817,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImeCommit { text } => {
                         let changed = runtime.renderer.handle_ime_commit(text.as_str());
@@ -830,9 +828,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImeDisabled => {
                         let changed = runtime.renderer.handle_ime_disabled();
@@ -842,9 +838,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Key {
                         state: KeyState::Released,

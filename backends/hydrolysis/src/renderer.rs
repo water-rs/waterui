@@ -28,7 +28,7 @@ use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
-use waterui::component::list::{ListConfig, ListItem};
+use waterui::component::list::{ListConfig, ListItem, Move};
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
@@ -47,6 +47,7 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
+    use crate::platform::PlatformWindow as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
@@ -209,6 +210,8 @@ pub struct HydrolysisRenderer {
     active_pointer_drag_target: Option<PointerAction>,
     active_pointer_drag_signature: Option<(usize, usize)>,
     gesture_engine: GestureEngine,
+    gesture_group_ids: BTreeMap<usize, usize>,
+    next_gesture_group_id: usize,
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
     text_input_targets: Vec<TextInputTarget>,
@@ -1380,8 +1383,6 @@ const PICKER_MIN_HEIGHT: f64 = 30.0;
 const PICKER_HORIZONTAL_INSET: f64 = 8.0;
 const PICKER_VERTICAL_INSET: f64 = 6.0;
 const PICKER_INDICATOR_SPACE: f64 = 18.0;
-const PICKER_LABEL_SPACING: f64 = 8.0;
-const PICKER_GROUP_LABEL_SPACING: f64 = 4.0;
 const PICKER_RADIO_INDICATOR_SIZE: f64 = 16.0;
 const PICKER_RADIO_LABEL_SPACING: f64 = 8.0;
 const PICKER_RADIO_ROW_SPACING: f64 = 6.0;
@@ -2227,35 +2228,6 @@ fn measure_slider_intrinsic(
     LayoutSize::new(min_width as f32, intrinsic_height as f32)
 }
 
-fn picker_visible_label_size(
-    label: &AnyView,
-    state: &mut HydroState,
-    env: &Environment,
-) -> Option<LayoutSize> {
-    let size = measure_view_intrinsic(label, state, env);
-    if size.width > 0.0 || size.height > 0.0 {
-        Some(size)
-    } else {
-        None
-    }
-}
-
-fn picker_menu_field_bounds(
-    bounds: vello::kurbo::Rect,
-    label_width: f64,
-) -> vello::kurbo::Rect {
-    let field_x0 = (bounds.x0 + label_width + PICKER_LABEL_SPACING).min(bounds.x1);
-    vello::kurbo::Rect::new(field_x0, bounds.y0, bounds.x1, bounds.y1)
-}
-
-fn picker_radio_content_top(bounds: vello::kurbo::Rect, label_height: f64) -> f64 {
-    if label_height > 0.0 {
-        bounds.y0 + label_height + PICKER_GROUP_LABEL_SPACING
-    } else {
-        bounds.y0
-    }
-}
-
 fn measure_picker_intrinsic(
     picker: &PickerConfig,
     state: &mut HydroState,
@@ -2267,11 +2239,6 @@ fn measure_picker_intrinsic(
         "hydrolysis picker requires at least one item"
     );
     let item_count = items.len();
-    let label_size = picker_visible_label_size(&picker.label, state, env);
-    let label_width = label_size.map_or(0.0, |size| f64::from(size.width));
-    let label_height = label_size
-        .map(|size| f64::from(size.height).max(INPUT_LABEL_HEIGHT))
-        .unwrap_or(0.0);
 
     match picker.style {
         PickerStyle::Automatic | PickerStyle::Menu => {
@@ -2284,17 +2251,9 @@ fn measure_picker_intrinsic(
                 max_item_height = max_item_height.max(f64::from(size.height));
             }
 
-            let control_width =
-                (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
-                    .max(PICKER_MIN_WIDTH);
-            let control_height =
-                (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
-            let width = if label_size.is_some() {
-                label_width + PICKER_LABEL_SPACING + control_width
-            } else {
-                control_width
-            };
-            let height = control_height.max(label_height);
+            let width = (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
+                .max(PICKER_MIN_WIDTH);
+            let height = (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
             LayoutSize::new(width as f32, height as f32)
         }
         PickerStyle::Radio => {
@@ -2309,18 +2268,12 @@ fn measure_picker_intrinsic(
                     total_height += PICKER_RADIO_ROW_SPACING;
                 }
             }
-            let content_width = (PICKER_HORIZONTAL_INSET * 2.0
+            let width = (PICKER_HORIZONTAL_INSET * 2.0
                 + PICKER_RADIO_INDICATOR_SIZE
                 + PICKER_RADIO_LABEL_SPACING
                 + max_item_width)
                 .max(PICKER_MIN_WIDTH);
-            let content_height = (PICKER_VERTICAL_INSET * 2.0 + total_height).max(PICKER_MIN_HEIGHT);
-            let width = content_width.max(label_width);
-            let height = if label_height > 0.0 {
-                label_height + PICKER_GROUP_LABEL_SPACING + content_height
-            } else {
-                content_height
-            };
+            let height = (PICKER_VERTICAL_INSET * 2.0 + total_height).max(PICKER_MIN_HEIGHT);
             LayoutSize::new(width as f32, height as f32)
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
@@ -3546,7 +3499,6 @@ impl HydroNativeView for Native<PickerConfig> {
                 !(items.is_empty()),
                 "hydrolysis picker requires at least one item"
             );
-            let label_size = picker_visible_label_size(&picker.label, state, env);
             match picker.style {
                 PickerStyle::Automatic | PickerStyle::Menu => {
                     let selected = renderer.read_signal(&picker.selection);
@@ -3574,22 +3526,16 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut node = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
                     );
-                    let default_label = renderer
-                        .accessibility_label_from_view(&picker.label, env)
-                        .or_else(|| Some(selected_text.as_str().to_owned()));
-                    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+                    let label = renderer
+                        .resolve_accessibility_label(env, Some(selected_text.as_str().to_owned()));
+                    if let Some(label) = label {
                         node.set_label(label);
                     }
                     node.set_value(selected_text.as_str().to_owned());
                     node.add_action(AccessibilityAction::Focus);
                     node.add_action(AccessibilityAction::Click);
-                    let field_rect = if let Some(size) = label_size {
-                        picker_menu_field_bounds(ctx.bounds, f64::from(size.width))
-                    } else {
-                        ctx.bounds
-                    };
-                    let row_height = menu_picker_row_height(field_rect, max_item_text_height);
-                    let popup_rect = menu_picker_popup_rect(field_rect, row_height, items.len());
+                    let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
+                    let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
                     for (index, item) in items.iter().enumerate() {
                         let mut option =
                             AccessibilityNode::new(renderer.resolve_accessibility_role(
@@ -3634,15 +3580,12 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut group = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
                     );
-                    let default_label = renderer.accessibility_label_from_view(&picker.label, env);
-                    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+                    let group_label = renderer.resolve_accessibility_label(env, None);
+                    if let Some(label) = group_label {
                         group.set_label(label);
                     }
                     let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-                    let label_height = label_size
-                        .map(|size| f64::from(size.height).max(INPUT_LABEL_HEIGHT))
-                        .unwrap_or(0.0);
-                    let mut row_y = picker_radio_content_top(ctx.bounds, label_height) + PICKER_VERTICAL_INSET;
+                    let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
                     let selected = renderer.read_signal(&picker.selection);
                     for item in &items {
                         let label_signal = item.content.content();
@@ -3840,6 +3783,8 @@ impl HydrolysisRenderer {
             active_pointer_drag_target: None,
             active_pointer_drag_signature: None,
             gesture_engine: GestureEngine::default(),
+            gesture_group_ids: BTreeMap::new(),
+            next_gesture_group_id: 0,
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
             text_input_targets: Vec::new(),
@@ -4332,6 +4277,7 @@ impl HydrolysisRenderer {
 
     fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
         self.scene.append(&subtree.scene, Some(ctx.transform));
+        let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
@@ -4344,10 +4290,14 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.gesture_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            let group_id = *gesture_group_remap
+                .entry(target.group_id)
+                .or_insert_with(|| self.allocate_gesture_group_id());
             self.register_gesture_target_recognizer(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 target.clone(),
                 depth,
+                group_id,
             );
         }
         for target in &subtree.cursor_targets {
@@ -5329,7 +5279,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, up_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, waterui::component::list::Move::new(index, index - 1));
+                            (action.as_ref())(env, Move::new(index, index - 1));
                             true
                         },
                     );
@@ -5346,7 +5296,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, down_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, waterui::component::list::Move::new(index, index + 1));
+                            (action.as_ref())(env, Move::new(index, index + 1));
                             true
                         },
                     );
@@ -6726,8 +6676,7 @@ impl HydrolysisRenderer {
         picker: Native<PickerConfig>,
         env: &Environment,
     ) {
-        let mut picker = picker.into_inner();
-        picker.label = normalize_layout_view(picker.label, env);
+        let picker = picker.into_inner();
         let items = {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&picker.items)
@@ -6738,10 +6687,10 @@ impl HydrolysisRenderer {
         );
         match picker.style {
             PickerStyle::Automatic | PickerStyle::Menu => {
-                Self::render_menu_picker(state, ctx, picker.label, picker.selection, items, env);
+                Self::render_menu_picker(state, ctx, picker.selection, items, env);
             }
             PickerStyle::Radio => {
-                Self::render_radio_picker(state, ctx, picker.label, picker.selection, items, env);
+                Self::render_radio_picker(state, ctx, picker.selection, items, env);
             }
             _ => panic!("hydrolysis PickerStyle variant is not implemented"),
         }
@@ -6750,7 +6699,6 @@ impl HydrolysisRenderer {
     fn render_menu_picker(
         state: &mut HydroState,
         ctx: RenderContext,
-        label: AnyView,
         selection: nami::Binding<waterui_core::id::Id>,
         items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
         env: &Environment,
@@ -6788,28 +6736,12 @@ impl HydrolysisRenderer {
             option_texts.push(plain);
         }
         let selected_text = option_texts[selected_index].clone();
-        let label_size = picker_visible_label_size(&label, state, env);
-        let field_rect = if let Some(size) = label_size {
-            let label_width = f64::from(size.width);
-            let label_rect = vello::kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                (ctx.bounds.x0 + label_width).min(ctx.bounds.x1),
-                ctx.bounds.y1,
-            );
-            if label_rect.width() > 0.0 {
-                Self::dispatch_in_rect_without_accessibility(ctx, env, label, label_rect);
-            }
-            picker_menu_field_bounds(ctx.bounds, label_width)
-        } else {
-            ctx.bounds
-        };
 
         let scene = unsafe { ctx.scene() };
-        draw_input_field(scene, ctx.transform, field_rect);
-        draw_picker_indicator(scene, ctx.transform, field_rect);
+        draw_input_field(scene, ctx.transform, ctx.bounds);
+        draw_picker_indicator(scene, ctx.transform, ctx.bounds);
 
-        let text_bounds = inset_rect(field_rect, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
+        let text_bounds = inset_rect(ctx.bounds, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
         let text_bounds = vello::kurbo::Rect::new(
             text_bounds.x0,
             text_bounds.y0,
@@ -6841,8 +6773,8 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let row_height = menu_picker_row_height(field_rect, max_item_text_height);
-        let popup_rect = menu_picker_popup_rect(field_rect, row_height, items.len());
+        let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
+        let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
         let scene = unsafe { ctx.scene() };
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -6925,7 +6857,6 @@ impl HydrolysisRenderer {
     fn render_radio_picker(
         state: &mut HydroState,
         ctx: RenderContext,
-        label: AnyView,
         selection: nami::Binding<waterui_core::id::Id>,
         items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
         env: &Environment,
@@ -6934,23 +6865,7 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&selection)
         };
-        let label_height = if let Some(size) = picker_visible_label_size(&label, state, env) {
-            let height = f64::from(size.height).max(INPUT_LABEL_HEIGHT);
-            let label_rect = vello::kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                (ctx.bounds.y0 + height).min(ctx.bounds.y1),
-            );
-            if label_rect.height() > 0.0 {
-                Self::dispatch_in_rect_without_accessibility(ctx, env, label, label_rect);
-            }
-            height
-        } else {
-            0.0
-        };
-        let content_top = picker_radio_content_top(ctx.bounds, label_height);
-        let mut row_y = content_top + PICKER_VERTICAL_INSET;
+        let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
         for item in items {
             let label_signal = item.content.content();
             let label = {
@@ -7803,8 +7718,10 @@ impl HydrolysisRenderer {
             gesture, action, ..
         } = value;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let gesture_group_identity = gesture_group_identity(&content);
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_gesture_target(bounds, gesture, action);
+        let group_id = renderer.gesture_group_id_for_identity(gesture_group_identity);
+        renderer.register_gesture_target(bounds, group_id, gesture, action);
 
         Self::dispatch_any(ctx, env, content);
     }
@@ -8063,6 +7980,8 @@ impl HydrolysisRenderer {
         self.lifecycle_disappear_slot = 0;
         self.hit_test_opacity = 1.0;
         self.hit_test_order = 0;
+        self.gesture_group_ids.clear();
+        self.next_gesture_group_id = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.hover_controller.begin_rebuild_frame();
@@ -9049,6 +8968,23 @@ impl HydrolysisRenderer {
             .handle_magnification(center, delta, phase, at, env)
     }
 
+    pub fn apply_magnification_gesture(
+        &mut self,
+        x: f32,
+        y: f32,
+        factor: f32,
+        env: &Environment,
+    ) -> bool {
+        assert!(
+            factor.is_finite() && factor > 0.0,
+            "hydrolysis magnification factor must be finite and positive"
+        );
+        let mut changed = self.handle_magnification(x, y, 0.0, TouchPhase::Started, env);
+        changed |= self.handle_magnification(x, y, factor - 1.0, TouchPhase::Moved, env);
+        changed |= self.handle_magnification(x, y, 0.0, TouchPhase::Ended, env);
+        changed
+    }
+
     pub fn handle_rotation(
         &mut self,
         x: f32,
@@ -9321,6 +9257,7 @@ impl HydrolysisRenderer {
     fn register_gesture_target(
         &mut self,
         bounds: vello::kurbo::Rect,
+        group_id: usize,
         gesture: Gesture,
         action: BoxedAction<()>,
     ) {
@@ -9328,8 +9265,14 @@ impl HydrolysisRenderer {
             return;
         }
         let order = self.next_hit_test_order();
-        self.gesture_engine
-            .register_target(bounds, gesture, action, self.render_depth, order);
+        self.gesture_engine.register_target(
+            bounds,
+            gesture,
+            action,
+            self.render_depth,
+            order,
+            group_id,
+        );
     }
 
     fn register_gesture_target_recognizer(
@@ -9337,12 +9280,32 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         target: GestureTarget,
         depth: usize,
+        group_id: usize,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_engine
-            .register_existing_target(target.with_bounds_and_depth(bounds, depth));
+        self.gesture_engine.register_existing_target(
+            target.with_bounds_depth_and_group(bounds, depth, group_id),
+        );
+    }
+
+    fn allocate_gesture_group_id(&mut self) -> usize {
+        let group_id = self.next_gesture_group_id;
+        self.next_gesture_group_id = self
+            .next_gesture_group_id
+            .checked_add(1)
+            .expect("hydrolysis gesture group id overflow");
+        group_id
+    }
+
+    fn gesture_group_id_for_identity(&mut self, identity: usize) -> usize {
+        if let Some(group_id) = self.gesture_group_ids.get(&identity).copied() {
+            return group_id;
+        }
+        let group_id = self.allocate_gesture_group_id();
+        self.gesture_group_ids.insert(identity, group_id);
+        group_id
     }
 
     fn ensure_active_pointer_drag_target_is_live(&mut self) {
@@ -10171,6 +10134,25 @@ fn handle_accessibility_picker_select_action(
             action
         ),
     }
+}
+
+fn gesture_group_identity(view: &AnyView) -> usize {
+    gesture_group_identity_with_budget(view, 64)
+}
+
+fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
+    assert!(
+        !(remaining == 0),
+        "hydrolysis gesture group identity extraction exceeded recursion budget for {}",
+        view.name()
+    );
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return gesture_group_identity_with_budget(&metadata.content, remaining - 1);
+    }
+    if let Some(content) = passthrough_content(view) {
+        return gesture_group_identity_with_budget(content, remaining - 1);
+    }
+    view.stable_ptr() as usize
 }
 
 fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
@@ -11044,7 +11026,9 @@ fn draw_stepper_button(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::ViewExt as _;
+    use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui_canvas::Canvas;
 
     #[test]
     fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
@@ -11073,5 +11057,93 @@ mod tests {
             dimensions.explicit_horizontal(HorizontalAlignment::Leading),
             Some(10.0)
         );
+    }
+
+    #[test]
+    fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
+        let view = AnyView::new(Metadata::new(
+            Metadata::new(
+                ().size(20.0, 10.0),
+                GestureObserver::new(DragGesture::new(8.0)).action(|| {}),
+            ),
+            GestureObserver::new(MagnificationGesture::new(1.0)).action(|| {}),
+        ));
+        let outer = view
+            .downcast_ref::<Metadata<GestureObserver>>()
+            .expect("expected outer gesture observer metadata");
+        let inner = outer
+            .content
+            .downcast_ref::<Metadata<GestureObserver>>()
+            .expect("expected inner gesture observer metadata");
+
+        assert_eq!(
+            gesture_group_identity(&outer.content),
+            gesture_group_identity(&inner.content)
+        );
+    }
+
+    #[test]
+    fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui_core::Metadata;
+
+        let offset = Binding::f32(0.0);
+        let scale = Binding::f32(1.0);
+        let drag_hits = Rc::new(Cell::new(0u32));
+        let magnify_hits = Rc::new(Cell::new(0u32));
+        let view = {
+            let canvas = Canvas::with_signal(offset.zip(&scale), |_ctx, (_offset, _scale)| {})
+                .size(120.0, 120.0);
+            let canvas = {
+                let drag_hits = Rc::clone(&drag_hits);
+                Metadata::new(
+                    canvas,
+                    GestureObserver::new(DragGesture::new(0.0)).action(move || {
+                        drag_hits.set(drag_hits.get() + 1);
+                    }),
+                )
+            };
+            {
+                let magnify_hits = Rc::clone(&magnify_hits);
+                Metadata::new(
+                    canvas,
+                    GestureObserver::new(MagnificationGesture::new(1.0)).action(move || {
+                        magnify_hits.set(magnify_hits.get() + 1);
+                    }),
+                )
+            }
+        };
+
+        let mut platform = crate::platform::OffscreenWindow::new(
+            160,
+            160,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let mut renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+        let env = Environment::new();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
+        let surface = platform.surface();
+        renderer.set_frame_resources(surface.device(), surface.queue());
+        renderer.reset_scene();
+        renderer.begin_rebuild_frame();
+        renderer.dispatch(view, &env, bounds);
+        renderer.finish_rebuild_frame();
+
+        let point = vello::kurbo::Point::new(60.0, 60.0);
+        let debug_targets = renderer.gesture_engine.debug_targets_at(point);
+        assert_eq!(
+            debug_targets.len(),
+            2,
+            "expected stacked drag+magnification gesture targets at point, got {:?}",
+            debug_targets
+        );
+        assert_eq!(debug_targets[0].2, debug_targets[1].2);
+
+        assert!(renderer.apply_magnification_gesture(60.0, 60.0, 1.2, &env));
+        assert_eq!(drag_hits.get(), 0);
+        assert_eq!(magnify_hits.get(), 3);
     }
 }
