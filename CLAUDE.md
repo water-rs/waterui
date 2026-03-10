@@ -36,6 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.
 - `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
 - CI is expensive, please read full error message if CI fails. Do not blindly push commits to trigger CI again before fixing all problems you learnt.
+- For public API design, follow this repository style consistently: `Type::new(...)` is the general constructor, while free function constructors such as `button(...)` are ergonomic convenience entry points. Do not introduce parallel APIs like `Type::custom(...)` when `Type::new(...)` already covers the general case.
 </important>
 
 ## Build Commands
