@@ -5,7 +5,6 @@ use std::cell::RefCell;
 
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize};
 use waterui_core::{AnyView, Environment};
-use waterui_graphics::SceneViewMergeToParent;
 
 use crate::platform::{OffscreenSurface, SurfaceProvider};
 use crate::renderer::HydrolysisRenderer;
@@ -66,7 +65,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             renderer.reset_scene();
             renderer.begin_rebuild_frame();
 
-            let env = Environment::new().extending(SceneViewMergeToParent);
+            let env = Environment::new();
             let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
             renderer.dispatch(view, &env, bounds);
             renderer.finish_rebuild_frame();

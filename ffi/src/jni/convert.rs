@@ -1345,7 +1345,7 @@ impl ToJavaStruct for crate::components::form::WuiColorPicker {
     }
 }
 
-/// WuiPicker -> PickerStruct(labelPtr, itemsPtr, selectionPtr, style)
+/// WuiPicker -> PickerStruct(itemsPtr, selectionPtr, style)
 impl ToJavaStruct for crate::components::form::WuiPicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1353,9 +1353,8 @@ impl ToJavaStruct for crate::components::form::WuiPicker {
             .expect("PickerStruct class not found");
         env.new_object(
             &class,
-            "(JJJI)V",
+            "(JJI)V",
             &[
-                JValue::Long(self.label as jlong),
                 JValue::Long(self.items as jlong),
                 JValue::Long(self.selection as jlong),
                 JValue::Int(self.style as i32),
