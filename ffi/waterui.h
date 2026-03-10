@@ -2339,7 +2339,6 @@ typedef struct Computed_Vec_PickerItem_Id WuiComputed_Vec_PickerItem_Id;
 typedef struct Binding_Id WuiBinding_Id;
 
 typedef struct WuiPicker {
-  struct WuiAnyView *label;
   WuiComputed_Vec_PickerItem_Id *items;
   WuiBinding_Id *selection;
   enum WuiPickerStyle style;
