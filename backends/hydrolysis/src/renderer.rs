@@ -1380,6 +1380,8 @@ const PICKER_MIN_HEIGHT: f64 = 30.0;
 const PICKER_HORIZONTAL_INSET: f64 = 8.0;
 const PICKER_VERTICAL_INSET: f64 = 6.0;
 const PICKER_INDICATOR_SPACE: f64 = 18.0;
+const PICKER_LABEL_SPACING: f64 = 8.0;
+const PICKER_GROUP_LABEL_SPACING: f64 = 4.0;
 const PICKER_RADIO_INDICATOR_SIZE: f64 = 16.0;
 const PICKER_RADIO_LABEL_SPACING: f64 = 8.0;
 const PICKER_RADIO_ROW_SPACING: f64 = 6.0;
@@ -2225,6 +2227,35 @@ fn measure_slider_intrinsic(
     LayoutSize::new(min_width as f32, intrinsic_height as f32)
 }
 
+fn picker_visible_label_size(
+    label: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> Option<LayoutSize> {
+    let size = measure_view_intrinsic(label, state, env);
+    if size.width > 0.0 || size.height > 0.0 {
+        Some(size)
+    } else {
+        None
+    }
+}
+
+fn picker_menu_field_bounds(
+    bounds: vello::kurbo::Rect,
+    label_width: f64,
+) -> vello::kurbo::Rect {
+    let field_x0 = (bounds.x0 + label_width + PICKER_LABEL_SPACING).min(bounds.x1);
+    vello::kurbo::Rect::new(field_x0, bounds.y0, bounds.x1, bounds.y1)
+}
+
+fn picker_radio_content_top(bounds: vello::kurbo::Rect, label_height: f64) -> f64 {
+    if label_height > 0.0 {
+        bounds.y0 + label_height + PICKER_GROUP_LABEL_SPACING
+    } else {
+        bounds.y0
+    }
+}
+
 fn measure_picker_intrinsic(
     picker: &PickerConfig,
     state: &mut HydroState,
@@ -2236,6 +2267,11 @@ fn measure_picker_intrinsic(
         "hydrolysis picker requires at least one item"
     );
     let item_count = items.len();
+    let label_size = picker_visible_label_size(&picker.label, state, env);
+    let label_width = label_size.map_or(0.0, |size| f64::from(size.width));
+    let label_height = label_size
+        .map(|size| f64::from(size.height).max(INPUT_LABEL_HEIGHT))
+        .unwrap_or(0.0);
 
     match picker.style {
         PickerStyle::Automatic | PickerStyle::Menu => {
@@ -2248,9 +2284,17 @@ fn measure_picker_intrinsic(
                 max_item_height = max_item_height.max(f64::from(size.height));
             }
 
-            let width = (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
-                .max(PICKER_MIN_WIDTH);
-            let height = (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
+            let control_width =
+                (max_item_width + PICKER_HORIZONTAL_INSET * 2.0 + PICKER_INDICATOR_SPACE)
+                    .max(PICKER_MIN_WIDTH);
+            let control_height =
+                (max_item_height + PICKER_VERTICAL_INSET * 2.0).max(PICKER_MIN_HEIGHT);
+            let width = if label_size.is_some() {
+                label_width + PICKER_LABEL_SPACING + control_width
+            } else {
+                control_width
+            };
+            let height = control_height.max(label_height);
             LayoutSize::new(width as f32, height as f32)
         }
         PickerStyle::Radio => {
@@ -2265,12 +2309,18 @@ fn measure_picker_intrinsic(
                     total_height += PICKER_RADIO_ROW_SPACING;
                 }
             }
-            let width = (PICKER_HORIZONTAL_INSET * 2.0
+            let content_width = (PICKER_HORIZONTAL_INSET * 2.0
                 + PICKER_RADIO_INDICATOR_SIZE
                 + PICKER_RADIO_LABEL_SPACING
                 + max_item_width)
                 .max(PICKER_MIN_WIDTH);
-            let height = (PICKER_VERTICAL_INSET * 2.0 + total_height).max(PICKER_MIN_HEIGHT);
+            let content_height = (PICKER_VERTICAL_INSET * 2.0 + total_height).max(PICKER_MIN_HEIGHT);
+            let width = content_width.max(label_width);
+            let height = if label_height > 0.0 {
+                label_height + PICKER_GROUP_LABEL_SPACING + content_height
+            } else {
+                content_height
+            };
             LayoutSize::new(width as f32, height as f32)
         }
         _ => panic!("hydrolysis PickerStyle variant is not implemented"),
@@ -3496,6 +3546,7 @@ impl HydroNativeView for Native<PickerConfig> {
                 !(items.is_empty()),
                 "hydrolysis picker requires at least one item"
             );
+            let label_size = picker_visible_label_size(&picker.label, state, env);
             match picker.style {
                 PickerStyle::Automatic | PickerStyle::Menu => {
                     let selected = renderer.read_signal(&picker.selection);
@@ -3523,16 +3574,22 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut node = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
                     );
-                    let label = renderer
-                        .resolve_accessibility_label(env, Some(selected_text.as_str().to_owned()));
-                    if let Some(label) = label {
+                    let default_label = renderer
+                        .accessibility_label_from_view(&picker.label, env)
+                        .or_else(|| Some(selected_text.as_str().to_owned()));
+                    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                         node.set_label(label);
                     }
                     node.set_value(selected_text.as_str().to_owned());
                     node.add_action(AccessibilityAction::Focus);
                     node.add_action(AccessibilityAction::Click);
-                    let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
-                    let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
+                    let field_rect = if let Some(size) = label_size {
+                        picker_menu_field_bounds(ctx.bounds, f64::from(size.width))
+                    } else {
+                        ctx.bounds
+                    };
+                    let row_height = menu_picker_row_height(field_rect, max_item_text_height);
+                    let popup_rect = menu_picker_popup_rect(field_rect, row_height, items.len());
                     for (index, item) in items.iter().enumerate() {
                         let mut option =
                             AccessibilityNode::new(renderer.resolve_accessibility_role(
@@ -3577,12 +3634,15 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut group = AccessibilityNode::new(
                         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
                     );
-                    let group_label = renderer.resolve_accessibility_label(env, None);
-                    if let Some(label) = group_label {
+                    let default_label = renderer.accessibility_label_from_view(&picker.label, env);
+                    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                         group.set_label(label);
                     }
                     let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-                    let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
+                    let label_height = label_size
+                        .map(|size| f64::from(size.height).max(INPUT_LABEL_HEIGHT))
+                        .unwrap_or(0.0);
+                    let mut row_y = picker_radio_content_top(ctx.bounds, label_height) + PICKER_VERTICAL_INSET;
                     let selected = renderer.read_signal(&picker.selection);
                     for item in &items {
                         let label_signal = item.content.content();
@@ -5269,7 +5329,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, up_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, index, index - 1);
+                            (action.as_ref())(env, waterui::component::list::Move::new(index, index - 1));
                             true
                         },
                     );
@@ -5286,7 +5346,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, down_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, index, index + 1);
+                            (action.as_ref())(env, waterui::component::list::Move::new(index, index + 1));
                             true
                         },
                     );
@@ -6666,7 +6726,8 @@ impl HydrolysisRenderer {
         picker: Native<PickerConfig>,
         env: &Environment,
     ) {
-        let picker = picker.into_inner();
+        let mut picker = picker.into_inner();
+        picker.label = normalize_layout_view(picker.label, env);
         let items = {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&picker.items)
@@ -6677,10 +6738,10 @@ impl HydrolysisRenderer {
         );
         match picker.style {
             PickerStyle::Automatic | PickerStyle::Menu => {
-                Self::render_menu_picker(state, ctx, picker.selection, items, env);
+                Self::render_menu_picker(state, ctx, picker.label, picker.selection, items, env);
             }
             PickerStyle::Radio => {
-                Self::render_radio_picker(state, ctx, picker.selection, items, env);
+                Self::render_radio_picker(state, ctx, picker.label, picker.selection, items, env);
             }
             _ => panic!("hydrolysis PickerStyle variant is not implemented"),
         }
@@ -6689,6 +6750,7 @@ impl HydrolysisRenderer {
     fn render_menu_picker(
         state: &mut HydroState,
         ctx: RenderContext,
+        label: AnyView,
         selection: nami::Binding<waterui_core::id::Id>,
         items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
         env: &Environment,
@@ -6726,12 +6788,28 @@ impl HydrolysisRenderer {
             option_texts.push(plain);
         }
         let selected_text = option_texts[selected_index].clone();
+        let label_size = picker_visible_label_size(&label, state, env);
+        let field_rect = if let Some(size) = label_size {
+            let label_width = f64::from(size.width);
+            let label_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                (ctx.bounds.x0 + label_width).min(ctx.bounds.x1),
+                ctx.bounds.y1,
+            );
+            if label_rect.width() > 0.0 {
+                Self::dispatch_in_rect_without_accessibility(ctx, env, label, label_rect);
+            }
+            picker_menu_field_bounds(ctx.bounds, label_width)
+        } else {
+            ctx.bounds
+        };
 
         let scene = unsafe { ctx.scene() };
-        draw_input_field(scene, ctx.transform, ctx.bounds);
-        draw_picker_indicator(scene, ctx.transform, ctx.bounds);
+        draw_input_field(scene, ctx.transform, field_rect);
+        draw_picker_indicator(scene, ctx.transform, field_rect);
 
-        let text_bounds = inset_rect(ctx.bounds, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
+        let text_bounds = inset_rect(field_rect, PICKER_HORIZONTAL_INSET, PICKER_VERTICAL_INSET);
         let text_bounds = vello::kurbo::Rect::new(
             text_bounds.x0,
             text_bounds.y0,
@@ -6763,8 +6841,8 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height);
-        let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len());
+        let row_height = menu_picker_row_height(field_rect, max_item_text_height);
+        let popup_rect = menu_picker_popup_rect(field_rect, row_height, items.len());
         let scene = unsafe { ctx.scene() };
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -6847,6 +6925,7 @@ impl HydrolysisRenderer {
     fn render_radio_picker(
         state: &mut HydroState,
         ctx: RenderContext,
+        label: AnyView,
         selection: nami::Binding<waterui_core::id::Id>,
         items: Vec<waterui_form::picker::PickerItem<waterui_core::id::Id>>,
         env: &Environment,
@@ -6855,7 +6934,23 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&selection)
         };
-        let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
+        let label_height = if let Some(size) = picker_visible_label_size(&label, state, env) {
+            let height = f64::from(size.height).max(INPUT_LABEL_HEIGHT);
+            let label_rect = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                (ctx.bounds.y0 + height).min(ctx.bounds.y1),
+            );
+            if label_rect.height() > 0.0 {
+                Self::dispatch_in_rect_without_accessibility(ctx, env, label, label_rect);
+            }
+            height
+        } else {
+            0.0
+        };
+        let content_top = picker_radio_content_top(ctx.bounds, label_height);
+        let mut row_y = content_top + PICKER_VERTICAL_INSET;
         for item in items {
             let label_signal = item.content.content();
             let label = {
