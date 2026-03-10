@@ -291,13 +291,23 @@ impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListStatefulBuilder<V, S
     }
 }
 
-waterui_core::impl_stateful_builder!(ListStatefulBuilder<V>; state; contents, editing, on_delete, on_move);
-
 impl<V, S> ListStatefulBuilder<V, S>
 where
     V: Views<View = ListItem>,
     S: Clone + 'static,
 {
+    /// Adds another state value, accumulating as nested tuples.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListStatefulBuilder<V, (S, T)> {
+        ListStatefulBuilder {
+            contents: self.contents,
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+            state: (self.state, state.clone()),
+        }
+    }
+
     /// Enables edit mode with the given reactive signal.
     #[must_use]
     pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {
