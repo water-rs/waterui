@@ -1,7 +1,7 @@
-use image::RgbaImage;
-
 use crate::color::Srgb;
+use crate::gpu_surface::{OffscreenRenderConfig, OffscreenSize};
 use crate::multi_input_filter::FilterImage;
+use crate::shader_surface::ShaderSurface;
 
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
@@ -31,29 +31,24 @@ impl GeneratedImage {
     pub const fn width(&self) -> u32 {
         self.width
     }
-
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
     }
-
     #[must_use]
     pub fn rgba8(&self) -> &[u8] {
         &self.rgba8
     }
-
     #[must_use]
     pub fn into_rgba8(self) -> Vec<u8> {
         self.rgba8
     }
-
     #[must_use]
     pub fn to_filter_image(&self) -> FilterImage {
         FilterImage::from_rgba8(self.width, self.height, self.rgba8.clone())
     }
-
     pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> image::ImageResult<()> {
-        let image = RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
+        let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
             .expect("GeneratedImage::save_png: rgba buffer shape must match dimensions");
         image.save(path)
     }
@@ -63,13 +58,24 @@ pub trait ImageGenerator {
     fn generate(&mut self) -> GeneratedImage;
 }
 
-fn srgb_to_rgba8(color: Srgb) -> [u8; 4] {
+fn srgb_rgb_literal(color: Srgb) -> [String; 3] {
     [
-        (color.red * 255.0).round() as u8,
-        (color.green * 255.0).round() as u8,
-        (color.blue * 255.0).round() as u8,
-        255,
+        color.red.to_string(),
+        color.green.to_string(),
+        color.blue.to_string(),
     ]
+}
+
+fn render_fragment(width: u32, height: u32, fragment: String) -> GeneratedImage {
+    let size = OffscreenSize::try_from_pixels(width, height)
+        .expect("ImageGenerator::render_fragment: dimensions must be non-zero");
+    let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
+    let mut env = waterui_core::Environment::new();
+    let output = ShaderSurface::new(fragment)
+        .into_inner()
+        .render_offscreen(config, &mut env)
+        .expect("ImageGenerator::render_fragment: GPU offscreen render should succeed");
+    GeneratedImage::from_rgba8(output.width, output.height, output.rgba8)
 }
 
 #[derive(Debug, Clone)]
@@ -85,20 +91,24 @@ pub struct CheckerboardGenerator {
 
 impl ImageGenerator for CheckerboardGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        assert!(self.cell_size > 0, "CheckerboardGenerator: cell_size must be > 0");
-        let light = srgb_to_rgba8(self.light);
-        let dark = srgb_to_rgba8(self.dark);
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let cell_x = (x + self.offset_x) / self.cell_size;
-                let cell_y = (y + self.offset_y) / self.cell_size;
-                let color = if (cell_x + cell_y) % 2 == 0 { light } else { dark };
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&color);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        assert!(
+            self.cell_size > 0,
+            "CheckerboardGenerator: cell_size must be > 0"
+        );
+        let [lr, lg, lb] = srgb_rgb_literal(self.light);
+        let [dr, dg, db] = srgb_rgb_literal(self.dark);
+        let fragment = include_str!("shaders/generators/checkerboard.wgsl")
+            .replace("__LIGHT_R__", &lr)
+            .replace("__LIGHT_G__", &lg)
+            .replace("__LIGHT_B__", &lb)
+            .replace("__DARK_R__", &dr)
+            .replace("__DARK_G__", &dg)
+            .replace("__DARK_B__", &db)
+            .replace("__CELL_W__", &self.cell_size.to_string())
+            .replace("__CELL_H__", &self.cell_size.to_string())
+            .replace("__OFFSET_X__", &self.offset_x.to_string())
+            .replace("__OFFSET_Y__", &self.offset_y.to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
@@ -115,23 +125,26 @@ pub struct StripeGenerator {
 
 impl ImageGenerator for StripeGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        assert!(self.stripe_width > 0, "StripeGenerator: stripe_width must be > 0");
-        let primary = srgb_to_rgba8(self.primary);
-        let secondary = srgb_to_rgba8(self.secondary);
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let stripe = if self.horizontal {
-                    (y + self.offset) / self.stripe_width
-                } else {
-                    (x + self.offset) / self.stripe_width
-                };
-                let color = if stripe % 2 == 0 { primary } else { secondary };
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&color);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        assert!(
+            self.stripe_width > 0,
+            "StripeGenerator: stripe_width must be > 0"
+        );
+        let [pr, pg, pb] = srgb_rgb_literal(self.primary);
+        let [sr, sg, sb] = srgb_rgb_literal(self.secondary);
+        let fragment = include_str!("shaders/generators/stripes.wgsl")
+            .replace("__PRIMARY_R__", &pr)
+            .replace("__PRIMARY_G__", &pg)
+            .replace("__PRIMARY_B__", &pb)
+            .replace("__SECONDARY_R__", &sr)
+            .replace("__SECONDARY_G__", &sg)
+            .replace("__SECONDARY_B__", &sb)
+            .replace("__STRIPE_WIDTH__", &self.stripe_width.to_string())
+            .replace(
+                "__HORIZONTAL__",
+                if self.horizontal { "true" } else { "false" },
+            )
+            .replace("__OFFSET__", &self.offset.to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
@@ -148,31 +161,18 @@ pub struct DotGridGenerator {
 impl ImageGenerator for DotGridGenerator {
     fn generate(&mut self) -> GeneratedImage {
         assert!(self.spacing > 0, "DotGridGenerator: spacing must be > 0");
-        let foreground = srgb_to_rgba8(self.foreground);
-        let background = srgb_to_rgba8(self.background);
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        let spacing = self.spacing as f32;
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let local_x = ((x as f32 + spacing * 0.5) % spacing) - spacing * 0.5;
-                let local_y = ((y as f32 + spacing * 0.5) % spacing) - spacing * 0.5;
-                let distance = (local_x * local_x + local_y * local_y).sqrt();
-                let edge_start = self.radius - 0.5;
-                let edge_end = self.radius + 0.5;
-                let t = ((distance - edge_start) / (edge_end - edge_start).max(0.0001)).clamp(0.0, 1.0);
-                let smooth = t * t * (3.0 - 2.0 * t);
-                let coverage = 1.0 - smooth;
-                let color = [
-                    (f32::from(background[0]) + (f32::from(foreground[0]) - f32::from(background[0])) * coverage).round() as u8,
-                    (f32::from(background[1]) + (f32::from(foreground[1]) - f32::from(background[1])) * coverage).round() as u8,
-                    (f32::from(background[2]) + (f32::from(foreground[2]) - f32::from(background[2])) * coverage).round() as u8,
-                    255,
-                ];
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&color);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        let [fr, fg, fb] = srgb_rgb_literal(self.foreground);
+        let [br, bg, bb] = srgb_rgb_literal(self.background);
+        let fragment = include_str!("shaders/generators/dot_grid.wgsl")
+            .replace("__FG_R__", &fr)
+            .replace("__FG_G__", &fg)
+            .replace("__FG_B__", &fb)
+            .replace("__BG_R__", &br)
+            .replace("__BG_G__", &bg)
+            .replace("__BG_B__", &bb)
+            .replace("__SPACING__", &self.spacing.to_string())
+            .replace("__RADIUS__", &self.radius.to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
@@ -185,21 +185,9 @@ pub struct NoiseGenerator {
 
 impl ImageGenerator for NoiseGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let mut value = u64::from(x).wrapping_mul(0x9E3779B185EBCA87)
-                    ^ u64::from(y).wrapping_mul(0xC2B2AE3D27D4EB4F)
-                    ^ self.seed;
-                value ^= value >> 33;
-                value = value.wrapping_mul(0xff51afd7ed558ccd);
-                value ^= value >> 33;
-                let sample = (value & 0xFF) as u8;
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&[sample, sample, sample, 255]);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        let fragment = include_str!("shaders/generators/noise.wgsl")
+            .replace("__SEED__", &self.seed.to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
@@ -215,31 +203,20 @@ pub struct LinearGradientGenerator {
 
 impl ImageGenerator for LinearGradientGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        let start = self.start_point;
-        let end = self.end_point;
-        let direction = [end[0] - start[0], end[1] - start[1]];
-        let len_sq = (direction[0] * direction[0] + direction[1] * direction[1]).max(0.0001);
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let uv = [x as f32 / self.width as f32, y as f32 / self.height as f32];
-                let rel = [uv[0] - start[0], uv[1] - start[1]];
-                let t = ((rel[0] * direction[0] + rel[1] * direction[1]) / len_sq).clamp(0.0, 1.0);
-                let color = [
-                    self.start_color.red + (self.end_color.red - self.start_color.red) * t,
-                    self.start_color.green + (self.end_color.green - self.start_color.green) * t,
-                    self.start_color.blue + (self.end_color.blue - self.start_color.blue) * t,
-                ];
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&[
-                    (color[0] * 255.0).round() as u8,
-                    (color[1] * 255.0).round() as u8,
-                    (color[2] * 255.0).round() as u8,
-                    255,
-                ]);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        let [sr, sg, sb] = srgb_rgb_literal(self.start_color);
+        let [er, eg, eb] = srgb_rgb_literal(self.end_color);
+        let fragment = include_str!("shaders/generators/linear_gradient.wgsl")
+            .replace("__START_R__", &sr)
+            .replace("__START_G__", &sg)
+            .replace("__START_B__", &sb)
+            .replace("__END_R__", &er)
+            .replace("__END_G__", &eg)
+            .replace("__END_B__", &eb)
+            .replace("__START_X__", &self.start_point[0].to_string())
+            .replace("__START_Y__", &self.start_point[1].to_string())
+            .replace("__END_X__", &self.end_point[0].to_string())
+            .replace("__END_Y__", &self.end_point[1].to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
@@ -255,29 +232,19 @@ pub struct RadialGradientGenerator {
 
 impl ImageGenerator for RadialGradientGenerator {
     fn generate(&mut self) -> GeneratedImage {
-        let mut rgba8 = vec![0u8; self.width as usize * self.height as usize * 4];
-        let radius = self.radius.max(0.0001);
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let uv = [x as f32 / self.width as f32, y as f32 / self.height as f32];
-                let dx = uv[0] - self.center[0];
-                let dy = uv[1] - self.center[1];
-                let t = ((dx * dx + dy * dy).sqrt() / radius).clamp(0.0, 1.0);
-                let color = [
-                    self.inner_color.red + (self.outer_color.red - self.inner_color.red) * t,
-                    self.inner_color.green + (self.outer_color.green - self.inner_color.green) * t,
-                    self.inner_color.blue + (self.outer_color.blue - self.inner_color.blue) * t,
-                ];
-                let index = ((y * self.width + x) * 4) as usize;
-                rgba8[index..index + 4].copy_from_slice(&[
-                    (color[0] * 255.0).round() as u8,
-                    (color[1] * 255.0).round() as u8,
-                    (color[2] * 255.0).round() as u8,
-                    255,
-                ]);
-            }
-        }
-        GeneratedImage::from_rgba8(self.width, self.height, rgba8)
+        let [ir, ig, ib] = srgb_rgb_literal(self.inner_color);
+        let [or, og, ob] = srgb_rgb_literal(self.outer_color);
+        let fragment = include_str!("shaders/generators/radial_gradient.wgsl")
+            .replace("__INNER_R__", &ir)
+            .replace("__INNER_G__", &ig)
+            .replace("__INNER_B__", &ib)
+            .replace("__OUTER_R__", &or)
+            .replace("__OUTER_G__", &og)
+            .replace("__OUTER_B__", &ob)
+            .replace("__CENTER_X__", &self.center[0].to_string())
+            .replace("__CENTER_Y__", &self.center[1].to_string())
+            .replace("__RADIUS__", &self.radius.to_string());
+        render_fragment(self.width, self.height, fragment)
     }
 }
 
