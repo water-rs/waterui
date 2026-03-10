@@ -1,14 +1,3 @@
-struct Particle {
-    pos: vec2<f32>,
-    vel: vec2<f32>,
-    life: f32,
-    max_life: f32,
-    size: f32,
-    rotation: f32,
-    rot_speed: f32,
-    color: vec4<f32>,
-}
-
 struct Uniforms {
     time: f32,
     dt: f32,
@@ -35,16 +24,6 @@ struct Uniforms {
     viewport_height: u32,
 }
 
-fn pcg_hash(input: u32) -> u32 {
-    let state = input * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn mix_f32(a: f32, b: f32, t: f32) -> f32 {
-    return a * (1.0 - t) + b * t;
-}
-
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -52,7 +31,6 @@ struct VertexOutput {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> particles: array<Particle>;
 
 const QUAD_VERTICES: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(-1.0, -1.0),
@@ -62,6 +40,16 @@ const QUAD_VERTICES: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(1.0, -1.0),
     vec2<f32>(1.0, 1.0),
 );
+
+fn pcg_hash(input: u32) -> u32 {
+    let state = input * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn mix_f32(a: f32, b: f32, t: f32) -> f32 {
+    return a * (1.0 - t) + b * t;
+}
 
 fn aspect_correct_offset(offset: vec2<f32>) -> vec2<f32> {
     let vp_width = f32(uniforms.viewport_width);
@@ -79,13 +67,19 @@ fn aspect_correct_offset(offset: vec2<f32>) -> vec2<f32> {
 
 @vertex
 fn vs_main(
+    @location(0) pos: vec2<f32>,
+    @location(1) vel: vec2<f32>,
+    @location(2) life: f32,
+    @location(3) max_life: f32,
+    @location(4) size: f32,
+    @location(5) rotation: f32,
+    @location(6) rot_speed: f32,
+    @location(7) color: vec4<f32>,
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOutput {
-    let p = particles[instance_index];
-
     var out: VertexOutput;
-    if (p.life <= 0.0) {
+    if (life <= 0.0 || max_life <= 0.0) {
         out.position = vec4<f32>(-10.0, -10.0, 0.0, 1.0);
         return out;
     }
@@ -99,54 +93,50 @@ fn vs_main(
         quad_pos.x = quad_pos.x * 0.4 * abs(tumble);
     }
 
-    let c = cos(p.rotation);
-    let s = sin(p.rotation);
+    let c = cos(rotation);
+    let s = sin(rotation);
     let rotated_pos = vec2<f32>(
         quad_pos.x * c - quad_pos.y * s,
         quad_pos.x * s + quad_pos.y * c,
     );
 
-    let local_offset = if (uniforms.stretch_factor > 0.0) {
-        let speed = length(p.vel);
+    var local_offset = rotated_pos * size;
+    if (uniforms.stretch_factor > 0.0) {
+        let speed = length(vel);
         if (speed > 0.0001) {
-            let dir = p.vel / speed;
+            let dir = vel / speed;
             let perp = vec2<f32>(-dir.y, dir.x);
             let stretch_amount = 1.0 + speed * uniforms.stretch_factor * 10.0;
-            let width = p.size;
-            let length_value = p.size * stretch_amount;
-            (perp * quad_pos.x * width) + (dir * quad_pos.y * length_value)
-        } else {
-            rotated_pos * p.size
+            let width = size;
+            let length_value = size * stretch_amount;
+            local_offset = (perp * quad_pos.x * width) + (dir * quad_pos.y * length_value);
         }
-    } else {
-        rotated_pos * p.size
-    };
+    }
 
-    let world_pos = p.pos + aspect_correct_offset(local_offset);
+    let world_pos = pos + aspect_correct_offset(local_offset);
     let clip_pos = world_pos * 2.0 - 1.0;
     out.position = vec4<f32>(clip_pos.x, -clip_pos.y, 0.0, 1.0);
     out.uv = (quad_pos + 1.0) * 0.5;
-
-    let ratio = p.life / p.max_life;
+    let ratio = life / max_life;
     out.color = mix(uniforms.color_end, uniforms.color_start, ratio);
     return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let center = vec2<f32>(0.5, 0.5);
     var dist = 0.0;
 
     if (uniforms.shape == 1u) {
-        let d = abs(in.uv - center);
+        let d = abs(input.uv - center);
         dist = max(d.x, d.y);
     } else {
-        dist = distance(in.uv, center);
+        dist = distance(input.uv, center);
     }
 
     let edge = 0.5;
     let smooth_width = max(0.01, uniforms.softness * 0.5);
     let alpha = 1.0 - smoothstep(edge - smooth_width, edge, dist);
-    let final_alpha = in.color.a * alpha;
-    return vec4<f32>(in.color.rgb * final_alpha, final_alpha);
+    let final_alpha = input.color.a * alpha;
+    return vec4<f32>(input.color.rgb * final_alpha, final_alpha);
 }
