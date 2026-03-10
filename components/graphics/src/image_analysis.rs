@@ -72,10 +72,9 @@ impl<'a> ImageAnalysis<'a> {
         let mut min = 1.0f32;
         let mut max = 0.0f32;
         for px in self.image.rgba8().chunks_exact(4) {
-            let luma = (0.2126 * f32::from(px[0])
-                + 0.7152 * f32::from(px[1])
-                + 0.0722 * f32::from(px[2]))
-                / 255.0;
+            let luma =
+                (0.2126 * f32::from(px[0]) + 0.7152 * f32::from(px[1]) + 0.0722 * f32::from(px[2]))
+                    / 255.0;
             min = min.min(luma);
             max = max.max(luma);
         }
@@ -86,7 +85,8 @@ impl<'a> ImageAnalysis<'a> {
     pub fn dominant_color(&self) -> DominantColor {
         let mut buckets = std::collections::BTreeMap::<u16, u32>::new();
         for px in self.image.rgba8().chunks_exact(4) {
-            let key = (((px[0] >> 5) as u16) << 10) | (((px[1] >> 5) as u16) << 5) | (px[2] >> 5) as u16;
+            let key =
+                (((px[0] >> 5) as u16) << 10) | (((px[1] >> 5) as u16) << 5) | (px[2] >> 5) as u16;
             *buckets.entry(key).or_insert(0) += 1;
         }
         let (&key, &count) = buckets

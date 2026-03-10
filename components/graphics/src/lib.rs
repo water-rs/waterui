@@ -74,12 +74,11 @@ pub use view_effect::{
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
     DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterContext, FilterInput, FilterOutput,
-    LineHalftone,
     FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, GpuFilter, Grayscale,
-    HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope, MirrorTile, MotionBlur,
-    PerspectiveCorrection, PerspectiveTransform, PinchDistortion, Pixellate, Saturation, Sepia,
-    Sharpen, TemperatureTint, TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion,
-    WhitePoint, ZoomBlur,
+    HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, MirrorTile,
+    MotionBlur, PerspectiveCorrection, PerspectiveTransform, PinchDistortion, Pixellate,
+    Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
+    VortexDistortion, WhitePoint, ZoomBlur,
 };
 pub use multi_input_filter::{
     BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
