@@ -5,11 +5,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_line, reactive_canvas};
+use crate::charts::canvas::{draw_line, interactive_cartesian_canvas, point_bounds};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
@@ -109,10 +108,20 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
         let line_width = self.line_width;
         let show_fill = self.show_fill;
         let fill_opacity = self.fill_opacity;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_line(ctx, &data, color, line_width, show_fill, fill_opacity);
-            })
-        })
+        interactive_cartesian_canvas(
+            self.data,
+            |data: &Vec<DataPoint>| point_bounds(data),
+            move |ctx, data, bounds| {
+                draw_line(
+                    ctx,
+                    data,
+                    bounds,
+                    color,
+                    line_width,
+                    show_fill,
+                    fill_opacity,
+                );
+            },
+        )
     }
 }

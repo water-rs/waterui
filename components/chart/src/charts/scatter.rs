@@ -5,11 +5,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_scatter, reactive_canvas};
+use crate::charts::canvas::{draw_scatter, interactive_cartesian_canvas, point_bounds};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, PositiveF32};
 
@@ -83,10 +82,12 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart
     fn body(self, _env: &Environment) -> impl View {
         let color = self.color;
         let radius = self.radius;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_scatter(ctx, &data, color, radius);
-            })
-        })
+        interactive_cartesian_canvas(
+            self.data,
+            |data: &Vec<DataPoint>| point_bounds(data),
+            move |ctx, data, bounds| {
+                draw_scatter(ctx, data, bounds, color, radius);
+            },
+        )
     }
 }
