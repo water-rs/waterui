@@ -1,11 +1,10 @@
 //! Choropleth chart view component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_choropleth, reactive_canvas};
+use crate::charts::canvas::{draw_choropleth, signal_canvas};
 use crate::data::ChoroplethData;
 use crate::params::{ChartParamError, PositiveF32};
 
@@ -86,10 +85,8 @@ impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethCh
         let stroke_width = self.stroke_width;
         let stroke_color = self.stroke_color;
         let show_stroke = self.show_stroke;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_choropleth(ctx, &data, stroke_width, stroke_color, show_stroke);
-            })
+        signal_canvas(self.data, move |ctx, data| {
+            draw_choropleth(ctx, data, stroke_width, stroke_color, show_stroke);
         })
     }
 }
