@@ -34,8 +34,6 @@ impl ParticleSystem {
         }
     }
 
-    // --- Flat Modifier API ---
-
     /// Set emission rate (particles per second).
     #[must_use]
     pub fn rate(mut self, rate: f32) -> Self {
@@ -127,6 +125,7 @@ impl ParticleSystem {
         self.config.blend_mode = BlendMode::Additive;
         self
     }
+
     /// Set edge softness (0.0=hard, 1.0=soft).
     #[must_use]
     pub fn softness(mut self, value: f32) -> Self {
@@ -141,16 +140,17 @@ impl ParticleSystem {
         self
     }
 
-    /// Set velocity damping factor.
+    /// Set velocity damping factor normalized to a 60 FPS baseline.
     ///
-    /// `1.0` keeps velocity unchanged, lower values damp motion each frame.
+    /// `1.0` keeps velocity unchanged, lower values damp motion over time
+    /// without changing behavior across frame rates.
     #[must_use]
     pub fn drag(mut self, value: f32) -> Self {
         self.config.environment.drag = value;
         self
     }
 
-    /// Set emitter as a circle.
+    /// Set emitter as a disk with the given radius.
     #[must_use]
     pub fn emit_from_circle(mut self, radius: f32) -> Self {
         self.config.emitter.shape = EmitterShape::Circle { radius };
@@ -165,6 +165,7 @@ impl ParticleSystem {
     }
 
     /// Set initial particle spin speed (radians/sec).
+    #[must_use]
     pub fn spin(mut self, range: Range<f32>) -> Self {
         self.config.particle.spin = range;
         self
@@ -173,11 +174,9 @@ impl ParticleSystem {
 
 impl View for ParticleSystem {
     fn body(self, env: &Environment) -> impl View {
-        // Resolve colors using the Environment
         let color_start = self.config.particle.color_start.resolve(env).get();
         let color_end = self.config.particle.color_end.resolve(env).get();
 
-        // Build resolved config for the renderer
         let resolved = ResolvedParticleConfig {
             max_particles: self.max_particles,
             emitter_pos: self.config.emitter.position,
@@ -215,7 +214,6 @@ impl View for ParticleSystem {
             shape: self.config.particle.shape,
         };
 
-        // Return a GpuSurface wrapping the renderer
         GpuSurface::new(ParticleRenderer::new(resolved))
     }
 }
