@@ -291,14 +291,13 @@ impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListStatefulBuilder<V, S
     }
 }
 
-impl<V, S> ListStatefulBuilder<V, S>
+impl<V, __S> ListStatefulBuilder<V, __S>
 where
     V: Views<View = ListItem>,
-    S: Clone + 'static,
+    __S: Clone + 'static,
 {
-    /// Adds another state value, accumulating as nested tuples.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListStatefulBuilder<V, (S, T)> {
+    pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> ListStatefulBuilder<V, (__S, __T)> {
         ListStatefulBuilder {
             contents: self.contents,
             editing: self.editing,
@@ -307,7 +306,13 @@ where
             state: (self.state, state.clone()),
         }
     }
+}
 
+impl<V, S> ListStatefulBuilder<V, S>
+where
+    V: Views<View = ListItem>,
+    S: Clone + 'static,
+{
     /// Enables edit mode with the given reactive signal.
     #[must_use]
     pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {

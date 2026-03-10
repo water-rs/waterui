@@ -23,15 +23,22 @@ pub(crate) struct GestureTarget {
     pub bounds: vello::kurbo::Rect,
     pub depth: usize,
     pub order: usize,
+    pub group_id: usize,
     recognizer: GestureRecognizerHandle,
 }
 
 impl GestureTarget {
-    pub(crate) fn with_bounds_and_depth(&self, bounds: vello::kurbo::Rect, depth: usize) -> Self {
+    pub(crate) fn with_bounds_depth_and_group(
+        &self,
+        bounds: vello::kurbo::Rect,
+        depth: usize,
+        group_id: usize,
+    ) -> Self {
         Self {
             bounds,
             depth,
             order: self.order,
+            group_id,
             recognizer: Rc::clone(&self.recognizer),
         }
     }
@@ -151,7 +158,7 @@ impl GestureBinding {
 #[derive(Default)]
 pub(crate) struct GestureEngine {
     targets: Vec<GestureTarget>,
-    active_recognizer: Option<GestureRecognizerHandle>,
+    active_recognizers: Vec<GestureRecognizerHandle>,
 }
 
 impl GestureEngine {
@@ -164,12 +171,12 @@ impl GestureEngine {
     }
 
     pub(crate) fn has_active_recognizer(&self) -> bool {
-        self.active_recognizer.is_some()
+        !self.active_recognizers.is_empty()
     }
 
     pub(crate) fn truncate_targets(&mut self, len: usize) {
         self.targets.truncate(len);
-        self.ensure_active_recognizer_is_live();
+        self.ensure_active_recognizers_are_live();
     }
 
     pub(crate) fn swap_targets(&mut self, external: &mut Vec<GestureTarget>) {
@@ -183,11 +190,13 @@ impl GestureEngine {
         action: BoxedAction<()>,
         depth: usize,
         order: usize,
+        group_id: usize,
     ) {
         self.register_target_recognizer(
             bounds,
             depth,
             order,
+            group_id,
             Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
         );
     }
@@ -197,12 +206,14 @@ impl GestureEngine {
         bounds: vello::kurbo::Rect,
         depth: usize,
         order: usize,
+        group_id: usize,
         recognizer: GestureRecognizerHandle,
     ) {
         self.targets.push(GestureTarget {
             bounds,
             depth,
             order,
+            group_id,
             recognizer,
         });
     }
@@ -217,18 +228,8 @@ impl GestureEngine {
         at: Instant,
         env: &Environment,
     ) -> bool {
-        let mut changed = false;
-        if let Some(previous) = self.active_recognizer.take() {
-            changed |= previous
-                .borrow_mut()
-                .input(GestureInput::PointerCancel { at }, env);
-        }
-        if let Some(recognizer) = self.recognizer_at(point) {
-            changed |= recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerDown { point, at }, env);
-            self.active_recognizer = Some(recognizer);
-        }
+        let mut changed = self.replace_active_recognizers(point, at, env);
+        changed |= self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
         changed
     }
 
@@ -238,11 +239,7 @@ impl GestureEngine {
         at: Instant,
         env: &Environment,
     ) -> bool {
-        self.active_recognizer.as_ref().is_some_and(|recognizer| {
-            recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerMove { point, at }, env)
-        })
+        self.dispatch_to_active_recognizers(GestureInput::PointerMove { point, at }, env)
     }
 
     pub(crate) fn handle_pointer_up(
@@ -251,19 +248,12 @@ impl GestureEngine {
         at: Instant,
         env: &Environment,
     ) -> bool {
-        self.active_recognizer.take().is_some_and(|recognizer| {
-            recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerUp { point, at }, env)
-        })
+        let active = core::mem::take(&mut self.active_recognizers);
+        Self::dispatch_to_recognizers(&active, GestureInput::PointerUp { point, at }, env)
     }
 
     pub(crate) fn handle_pointer_cancel(&mut self, at: Instant, env: &Environment) -> bool {
-        self.active_recognizer.take().is_some_and(|recognizer| {
-            recognizer
-                .borrow_mut()
-                .input(GestureInput::PointerCancel { at }, env)
-        })
+        self.cancel_active_recognizers(at, env)
     }
 
     pub(crate) fn handle_magnification(
@@ -276,26 +266,19 @@ impl GestureEngine {
     ) -> bool {
         let mut changed = false;
         if phase == TouchPhase::Started {
-            if let Some(previous) = self.active_recognizer.take() {
-                changed |= previous
-                    .borrow_mut()
-                    .input(GestureInput::PointerCancel { at }, env);
-            }
-            self.active_recognizer = self.recognizer_at(center);
+            changed |= self.replace_active_recognizers(center, at, env);
         }
-        if let Some(recognizer) = self.active_recognizer.as_ref() {
-            changed |= recognizer.borrow_mut().input(
-                GestureInput::Magnification {
-                    center,
-                    delta,
-                    phase,
-                    at,
-                },
-                env,
-            );
-        }
+        changed |= self.dispatch_to_active_recognizers(
+            GestureInput::Magnification {
+                center,
+                delta,
+                phase,
+                at,
+            },
+            env,
+        );
         if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.active_recognizer = None;
+            self.active_recognizers.clear();
         }
         changed
     }
@@ -310,67 +293,103 @@ impl GestureEngine {
     ) -> bool {
         let mut changed = false;
         if phase == TouchPhase::Started {
-            if let Some(previous) = self.active_recognizer.take() {
-                changed |= previous
-                    .borrow_mut()
-                    .input(GestureInput::PointerCancel { at }, env);
-            }
-            self.active_recognizer = self.recognizer_at(center);
+            changed |= self.replace_active_recognizers(center, at, env);
         }
-        if let Some(recognizer) = self.active_recognizer.as_ref() {
-            changed |= recognizer.borrow_mut().input(
-                GestureInput::Rotation {
-                    center,
-                    delta,
-                    phase,
-                    at,
-                },
-                env,
-            );
-        }
+        changed |= self.dispatch_to_active_recognizers(
+            GestureInput::Rotation {
+                center,
+                delta,
+                phase,
+                at,
+            },
+            env,
+        );
         if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.active_recognizer = None;
+            self.active_recognizers.clear();
         }
         changed
     }
 
     pub(crate) fn handle_tick(&mut self, at: Instant, env: &Environment) -> bool {
-        self.active_recognizer.as_ref().is_some_and(|recognizer| {
-            recognizer
-                .borrow_mut()
-                .input(GestureInput::Tick { at }, env)
-        })
+        self.dispatch_to_active_recognizers(GestureInput::Tick { at }, env)
     }
 
     pub(crate) fn sync_after_layout(&mut self, pointer: Option<vello::kurbo::Point>) {
-        let Some(active) = self.active_recognizer.as_ref() else {
-            return;
-        };
-        let alive = self
-            .targets
-            .iter()
-            .any(|target| Rc::ptr_eq(&target.recognizer, active));
-        if alive {
+        if self.active_recognizers_are_live() {
             return;
         }
         let Some(pointer) = pointer else {
-            self.active_recognizer = None;
+            self.active_recognizers.clear();
             return;
         };
-        self.active_recognizer = self.recognizer_at(pointer);
+        self.active_recognizers = self.recognizers_at(pointer);
     }
 
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.active_recognizer
-            .as_ref()
-            .and_then(|recognizer| recognizer.borrow().next_deadline())
+        self.active_recognizers
+            .iter()
+            .filter_map(|recognizer| recognizer.borrow().next_deadline())
+            .min()
+    }
+
+    fn replace_active_recognizers(
+        &mut self,
+        point: vello::kurbo::Point,
+        at: Instant,
+        env: &Environment,
+    ) -> bool {
+        let mut changed = self.cancel_active_recognizers(at, env);
+        self.active_recognizers = self.recognizers_at(point);
+        changed
+    }
+
+    fn cancel_active_recognizers(&mut self, at: Instant, env: &Environment) -> bool {
+        let active = core::mem::take(&mut self.active_recognizers);
+        Self::dispatch_to_recognizers(&active, GestureInput::PointerCancel { at }, env)
+    }
+
+    fn dispatch_to_active_recognizers(&mut self, input: GestureInput, env: &Environment) -> bool {
+        Self::dispatch_to_recognizers(&self.active_recognizers, input, env)
+    }
+
+    fn dispatch_to_recognizers(
+        recognizers: &[GestureRecognizerHandle],
+        input: GestureInput,
+        env: &Environment,
+    ) -> bool {
+        let mut changed = false;
+        for recognizer in recognizers {
+            changed |= recognizer.borrow_mut().input(input, env);
+        }
+        changed
     }
 
     fn target_priority(target: &GestureTarget, index: usize) -> (usize, usize, usize) {
         (target.depth, target.order, index)
     }
 
-    fn recognizer_at(&self, point: vello::kurbo::Point) -> Option<GestureRecognizerHandle> {
+    fn recognizers_at(&self, point: vello::kurbo::Point) -> Vec<GestureRecognizerHandle> {
+        let Some(group_id) = self.top_group_id_at(point) else {
+            return Vec::new();
+        };
+        let mut targets: Vec<_> = self
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.group_id == group_id && target.bounds.contains(point))
+            .collect();
+        targets.sort_by(|(left_index, left), (right_index, right)| {
+            Self::target_priority(right, *right_index)
+                .cmp(&Self::target_priority(left, *left_index))
+        });
+        let mut recognizers = Vec::with_capacity(targets.len());
+        for (_, target) in targets {
+            Self::push_unique_recognizer(&mut recognizers, &target.recognizer);
+        }
+        recognizers
+    }
+
+    fn top_group_id_at(&self, point: vello::kurbo::Point) -> Option<usize> {
         self.targets
             .iter()
             .enumerate()
@@ -379,20 +398,50 @@ impl GestureEngine {
                 Self::target_priority(left, *left_index)
                     .cmp(&Self::target_priority(right, *right_index))
             })
-            .map(|(_, target)| Rc::clone(&target.recognizer))
+            .map(|(_, target)| target.group_id)
     }
 
-    fn ensure_active_recognizer_is_live(&mut self) {
-        let Some(active) = self.active_recognizer.as_ref() else {
-            return;
-        };
-        let alive = self
-            .targets
+    fn active_recognizers_are_live(&self) -> bool {
+        self.active_recognizers
             .iter()
-            .any(|target| Rc::ptr_eq(&target.recognizer, active));
-        if !alive {
-            self.active_recognizer = None;
+            .all(|recognizer| self.is_recognizer_live(recognizer))
+    }
+
+    fn ensure_active_recognizers_are_live(&mut self) {
+        if !self.active_recognizers_are_live() {
+            self.active_recognizers.clear();
         }
+    }
+
+    fn is_recognizer_live(&self, recognizer: &GestureRecognizerHandle) -> bool {
+        self.targets
+            .iter()
+            .any(|target| Rc::ptr_eq(&target.recognizer, recognizer))
+    }
+
+    fn push_unique_recognizer(
+        recognizers: &mut Vec<GestureRecognizerHandle>,
+        candidate: &GestureRecognizerHandle,
+    ) {
+        if recognizers
+            .iter()
+            .any(|recognizer| Rc::ptr_eq(recognizer, candidate))
+        {
+            return;
+        }
+        recognizers.push(Rc::clone(candidate));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_targets_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Vec<(usize, usize, usize)> {
+        self.targets
+            .iter()
+            .filter(|target| target.bounds.contains(point))
+            .map(|target| (target.depth, target.order, target.group_id))
+            .collect()
     }
 }
 
@@ -422,6 +471,18 @@ impl GestureDetector for TapDetector {
             GestureInput::PointerDown { point, .. } => {
                 self.pressed_point = Some(point);
                 GestureDetection::default()
+            }
+            GestureInput::PointerMove { point, .. } => {
+                let Some(pressed_point) = self.pressed_point else {
+                    return GestureDetection::default();
+                };
+                if (point.x - pressed_point.x).hypot(point.y - pressed_point.y)
+                    <= TAP_SPATIAL_TOLERANCE
+                {
+                    return GestureDetection::default();
+                }
+                self.reset();
+                GestureDetection::failed()
             }
             GestureInput::PointerUp { point, at } => {
                 if self.pressed_point.take().is_none() {
@@ -1207,5 +1268,147 @@ mod tests {
             at: start + Duration::from_millis(10),
         });
         assert!(matches!(recognized.recognized, Some(GesturePayload::None)));
+    }
+
+    #[test]
+    fn tap_fails_after_pointer_moves_beyond_spatial_tolerance() {
+        let mut detector = TapDetector::new(1);
+        let start = Instant::now();
+        let origin = vello::kurbo::Point::new(0.0, 0.0);
+        let moved_point = vello::kurbo::Point::new(TAP_SPATIAL_TOLERANCE + 1.0, 0.0);
+
+        detector.input(GestureInput::PointerDown {
+            point: origin,
+            at: start,
+        });
+        let moved = detector.input(GestureInput::PointerMove {
+            point: moved_point,
+            at: start + Duration::from_millis(16),
+        });
+        assert!(moved.recognized.is_none());
+        assert!(moved.failed);
+
+        let ended = detector.input(GestureInput::PointerUp {
+            point: moved_point,
+            at: start + Duration::from_millis(32),
+        });
+        assert!(ended.recognized.is_none());
+    }
+
+    #[test]
+    fn gesture_engine_dispatches_pointer_input_to_same_group_recognizers() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::{DragGesture, TapGesture};
+        use waterui_core::handler::boxed_action_with_env;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let tap_hits = Rc::new(Cell::new(0u32));
+        let drag_hits = Rc::new(Cell::new(0u32));
+
+        {
+            let tap_hits = Rc::clone(&tap_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action_with_env(move |env| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    tap_hits.set(tap_hits.get() + 1);
+                }),
+                0,
+                3,
+                7,
+            );
+        }
+        {
+            let drag_hits = Rc::clone(&drag_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Drag(DragGesture::new(8.0)),
+                boxed_action_with_env(move |env| {
+                    env.get::<DragEvent>()
+                        .expect("drag action missing DragEvent in environment");
+                    drag_hits.set(drag_hits.get() + 1);
+                }),
+                0,
+                2,
+                7,
+            );
+        }
+
+        let start = Instant::now();
+        let origin = vello::kurbo::Point::new(16.0, 16.0);
+        let moved = vello::kurbo::Point::new(48.0, 16.0);
+        assert!(!engine.handle_pointer_down(origin, start, &env));
+        assert!(engine.handle_pointer_move(moved, start + Duration::from_millis(16), &env));
+        assert!(engine.handle_pointer_up(moved, start + Duration::from_millis(32), &env));
+        assert_eq!(tap_hits.get(), 0);
+        assert_eq!(drag_hits.get(), 2);
+    }
+
+    #[test]
+    fn gesture_engine_dispatches_magnification_to_same_group_recognizers() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::{DragGesture, MagnificationGesture};
+        use waterui_core::handler::boxed_action_with_env;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let drag_hits = Rc::new(Cell::new(0u32));
+        let magnify_hits = Rc::new(Cell::new(0u32));
+
+        {
+            let drag_hits = Rc::clone(&drag_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Drag(DragGesture::new(0.0)),
+                boxed_action_with_env(move |env| {
+                    env.get::<DragEvent>()
+                        .expect("drag action missing DragEvent in environment");
+                    drag_hits.set(drag_hits.get() + 1);
+                }),
+                0,
+                3,
+                11,
+            );
+        }
+        {
+            let magnify_hits = Rc::clone(&magnify_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Magnification(MagnificationGesture::new(1.0)),
+                boxed_action_with_env(move |env| {
+                    env.get::<MagnificationEvent>()
+                        .expect("magnification action missing MagnificationEvent in environment");
+                    magnify_hits.set(magnify_hits.get() + 1);
+                }),
+                0,
+                2,
+                11,
+            );
+        }
+
+        let start = Instant::now();
+        let center = vello::kurbo::Point::new(32.0, 32.0);
+        assert!(engine.handle_magnification(center, 0.0, TouchPhase::Started, start, &env));
+        assert!(engine.handle_magnification(
+            center,
+            0.1,
+            TouchPhase::Moved,
+            start + Duration::from_millis(16),
+            &env,
+        ));
+        assert!(engine.handle_magnification(
+            center,
+            0.0,
+            TouchPhase::Ended,
+            start + Duration::from_millis(32),
+            &env,
+        ));
+        assert_eq!(drag_hits.get(), 0);
+        assert_eq!(magnify_hits.get(), 3);
     }
 }

@@ -17,15 +17,15 @@ use core::any::type_name;
 use alloc::{rc::Rc, vec::Vec};
 use nami::{impl_constant, signal::IntoSignal, Computed, Signal, SignalExt};
 use waterui_core::{
+    id::SelfId,
     view::{ConfigurableView, Hook, ViewConfiguration},
     views::{ForEach, SharedAnyViews},
+    Native, NativeView,
 };
 use waterui_text::Text;
 
 use crate::{views::Views, AnyView, Environment, View};
 
-use waterui_core::id::SelfId;
-use waterui_core::{Native, NativeView};
 
 /// Configuration for a table component.
 #[derive(Debug)]
