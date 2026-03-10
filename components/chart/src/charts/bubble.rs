@@ -1,11 +1,10 @@
 //! Bubble chart component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_bubble, reactive_canvas};
+use crate::charts::canvas::{bubble_bounds, draw_bubble, interactive_cartesian_canvas};
 use crate::data::BubblePoint;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
@@ -127,10 +126,12 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
         let min_radius = self.min_radius;
         let max_radius = self.max_radius;
         let opacity = self.opacity;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_bubble(ctx, &data, color, min_radius, max_radius, opacity);
-            })
-        })
+        interactive_cartesian_canvas(
+            self.data,
+            |data: &Vec<BubblePoint>| bubble_bounds(data),
+            move |ctx, data, bounds| {
+                draw_bubble(ctx, data, bounds, color, min_radius, max_radius, opacity);
+            },
+        )
     }
 }

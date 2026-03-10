@@ -1,7 +1,9 @@
 //! Hit-testing and interaction system for charts.
 
-use waterui_core::layout::Point;
-use waterui_graphics::gpu_surface::GestureState;
+use waterui_core::{
+    gesture::{DragEvent, GesturePhase, MagnificationEvent},
+    layout::Point,
+};
 
 /// Result of a hit test on chart data.
 #[derive(Debug, Clone)]
@@ -188,64 +190,74 @@ impl ZoomPanState {
         }
     }
 
-    /// Updates the zoom/pan state from gesture input.
-    ///
-    /// Call this each frame with the current gesture state from `GpuFrame`.
-    /// Handles gesture start/end detection and double-tap reset.
-    pub fn update(&mut self, gesture: &GestureState, viewport_width: f32, viewport_height: f32) {
-        // Handle double-tap reset
-        if gesture.double_tap {
-            self.reset();
+    /// Updates zoom/pan state from a drag gesture event.
+    pub fn apply_drag_event(&mut self, event: &DragEvent, viewport: ChartViewport) {
+        if viewport.width <= 0.0 || viewport.height <= 0.0 {
             return;
         }
 
-        // Handle gesture start
-        if gesture.active && !self.gesture_active {
-            self.gesture_active = true;
-            self.gesture_start_scale = self.scale;
-            self.gesture_start_offset = self.offset;
-        }
-
-        // Handle gesture end
-        if !gesture.active && self.gesture_active {
-            self.gesture_active = false;
-        }
-
-        // Apply gesture transforms
-        if gesture.active {
-            // Apply pinch zoom
-            if gesture.is_pinching() {
-                // Clamp scale to reasonable range
-                let new_scale = (self.gesture_start_scale * gesture.pinch_scale).clamp(0.5, 10.0);
-
-                // Zoom around pinch center
-                if let Some(center) = gesture.pinch_center {
-                    // Convert center to normalized coordinates
-                    let norm_x = center.x / viewport_width;
-                    let norm_y = center.y / viewport_height;
-
-                    // Adjust offset to keep the center point fixed
-                    let scale_delta = new_scale / self.scale;
-                    self.offset.x = norm_x - (norm_x - self.offset.x) * scale_delta;
-                    self.offset.y = norm_y - (norm_y - self.offset.y) * scale_delta;
-                }
-
-                self.scale = new_scale;
+        match event.phase {
+            GesturePhase::Started => {
+                self.gesture_active = true;
+                self.gesture_start_offset = self.offset;
             }
-
-            // Apply pan
-            if gesture.is_panning() {
-                // Convert pan from pixels to normalized coordinates
-                let pan_x = gesture.pan_offset.x / viewport_width;
-                let pan_y = gesture.pan_offset.y / viewport_height;
-
-                self.offset.x = self.gesture_start_offset.x + pan_x / self.scale;
-                self.offset.y = self.gesture_start_offset.y + pan_y / self.scale;
+            GesturePhase::Updated => {}
+            GesturePhase::Ended | GesturePhase::Cancelled => {
+                self.gesture_active = false;
             }
-
-            // Clamp offset to valid range
-            self.clamp_offset();
         }
+
+        if !matches!(event.phase, GesturePhase::Started | GesturePhase::Updated) {
+            return;
+        }
+
+        let pan_x = event.translation.x / viewport.width;
+        let pan_y = event.translation.y / viewport.height;
+        self.offset.x = self.gesture_start_offset.x + pan_x / self.scale;
+        self.offset.y = self.gesture_start_offset.y + pan_y / self.scale;
+        self.clamp_offset();
+    }
+
+    /// Updates zoom/pan state from a magnification gesture event.
+    pub fn apply_magnification_event(
+        &mut self,
+        event: &MagnificationEvent,
+        viewport: ChartViewport,
+    ) {
+        if viewport.width <= 0.0 || viewport.height <= 0.0 {
+            return;
+        }
+
+        match event.phase {
+            GesturePhase::Started => {
+                self.gesture_active = true;
+                self.gesture_start_scale = self.scale;
+                self.gesture_start_offset = self.offset;
+            }
+            GesturePhase::Updated => {}
+            GesturePhase::Ended | GesturePhase::Cancelled => {
+                self.gesture_active = false;
+            }
+        }
+
+        if !matches!(event.phase, GesturePhase::Started | GesturePhase::Updated) {
+            return;
+        }
+
+        let new_scale = (self.gesture_start_scale * event.scale).clamp(0.5, 10.0);
+        let center = Point::new(event.center.x, event.center.y);
+        if let Some((norm_x, norm_y)) = viewport.screen_to_normalized(center) {
+            let scale_delta = new_scale / self.scale;
+            self.offset.x = norm_x - (norm_x - self.offset.x) * scale_delta;
+            self.offset.y = norm_y - (norm_y - self.offset.y) * scale_delta;
+        }
+        self.scale = new_scale;
+        self.clamp_offset();
+    }
+
+    /// Resets zoom/pan in response to a double tap.
+    pub fn apply_double_tap(&mut self) {
+        self.reset();
     }
 
     /// Resets zoom and pan to default state.

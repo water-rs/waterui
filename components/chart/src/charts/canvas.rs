@@ -1,21 +1,35 @@
 extern crate alloc;
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::f32::consts::{FRAC_PI_2, PI, TAU};
+use core::cell::RefCell;
+use core::f32::consts::{FRAC_PI_2, TAU};
+use core::time::Duration;
+use std::time::Instant;
 
-use nami::Signal;
+use nami::{Binding, Signal, SignalExt as _};
 use waterui_canvas::{Canvas, DrawingContext, Path};
-use waterui_core::View;
-use waterui_core::dynamic::Dynamic;
-use waterui_core::layout::{Point, Rect, Size};
+use waterui_core::{
+    Metadata,
+    gesture::{
+        DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
+        TapGesture,
+    },
+    layout::{Point, Rect, Size},
+};
 use waterui_graphics::color::Srgb;
 
-use crate::data::{
-    AreaData, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataBounds, DataPoint,
-    DepthData, GaugeData, HeatmapData, RadarData,
+use crate::{
+    animation::{AnimationConfig, ChartAnimator},
+    data::{
+        AreaData, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataBounds,
+        DataPoint, DepthData, GaugeData, HeatmapData, RadarData,
+    },
+    interaction::{ChartViewport, ZoomPanState},
 };
 
 const PLOT_PADDING_RATIO: f32 = 0.1;
+const CHART_TRANSITION: AnimationConfig = AnimationConfig::ease_in_out(Duration::from_millis(240));
 const PIE_DEFAULT_COLORS: [u32; 8] = [
     0x3B82F6, 0x22C55E, 0xEF4444, 0xF59E0B, 0x8B5CF6, 0xEC4899, 0x06B6D4, 0xF97316,
 ];
@@ -27,13 +41,153 @@ const VIRIDIS_STOPS: [(f32, Srgb); 5] = [
     (1.0, Srgb::from_hex("#FDE725")),
 ];
 
-pub(crate) fn reactive_canvas<S, D, F>(signal: S, make_canvas: F) -> impl View
+#[derive(Debug)]
+struct ChartTransitionState<D> {
+    epoch: Instant,
+    animator: ChartAnimator,
+    last_data: Option<D>,
+}
+
+impl<D> ChartTransitionState<D> {
+    fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            animator: ChartAnimator::new(),
+            last_data: None,
+        }
+    }
+
+    fn progress_for(&mut self, data: &D) -> f32
+    where
+        D: Clone + PartialEq,
+    {
+        let now = self.epoch.elapsed();
+        match &self.last_data {
+            None => self.last_data = Some(data.clone()),
+            Some(previous) if previous != data => {
+                self.animator.start_transition(
+                    now,
+                    CHART_TRANSITION.duration,
+                    CHART_TRANSITION.easing,
+                );
+                self.last_data = Some(data.clone());
+            }
+            Some(_) => {}
+        }
+        self.animator.update(now).progress
+    }
+
+    fn is_animating(&self) -> bool {
+        self.animator.is_animating()
+    }
+}
+
+pub(crate) fn signal_canvas<S, D, F>(signal: S, mut draw: F) -> Canvas
 where
     S: Signal<Output = D> + 'static,
-    D: 'static,
-    F: Fn(D) -> Canvas + 'static,
+    S::Guard: 'static,
+    D: Clone + PartialEq + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D) + 'static,
 {
-    Dynamic::watch(signal, move |data| make_canvas(data))
+    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
+    Canvas::with_signal(signal, move |ctx, data| {
+        let (progress, animating) = {
+            let mut transition = transition.borrow_mut();
+            let progress = transition.progress_for(&data);
+            let animating = transition.is_animating();
+            (progress, animating)
+        };
+        if animating {
+            ctx.request_next_frame();
+        }
+        ctx.save();
+        ctx.set_global_alpha(progress);
+        draw(ctx, &data);
+        ctx.restore();
+    })
+}
+
+pub(crate) fn interactive_cartesian_canvas<S, D, B, F>(
+    data: S,
+    bounds_of: B,
+    mut draw: F,
+) -> impl waterui_core::View
+where
+    S: Signal<Output = D> + Clone + 'static,
+    S::Guard: 'static,
+    D: Clone + PartialEq + 'static,
+    B: Fn(&D) -> DataBounds + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D, DataBounds) + 'static,
+{
+    let zoom_pan = Binding::container(ZoomPanState::new());
+    let viewport = Rc::new(RefCell::new(ChartViewport::default()));
+    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
+    let canvas = {
+        let viewport_for_draw = Rc::clone(&viewport);
+        let transition_for_draw = Rc::clone(&transition);
+        Canvas::with_signal(data.zip(&zoom_pan), move |ctx, (data, zoom_pan)| {
+            let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+            *viewport_for_draw.borrow_mut() =
+                ChartViewport::new(plot.min_x(), plot.min_y(), plot.width(), plot.height());
+            let base_bounds = normalize_bounds(bounds_of(&data));
+            let visible_bounds = if zoom_pan.is_transformed() {
+                zoom_pan.transform_bounds(&base_bounds)
+            } else {
+                base_bounds
+            };
+            let (progress, animating) = {
+                let mut transition = transition_for_draw.borrow_mut();
+                let progress = transition.progress_for(&data);
+                let animating = transition.is_animating();
+                (progress, animating)
+            };
+            if animating {
+                ctx.request_next_frame();
+            }
+            ctx.save();
+            ctx.set_global_alpha(progress);
+            draw(ctx, &data, visible_bounds);
+            ctx.restore();
+        })
+    };
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(DragGesture::new(0.0))
+            .with_state(&zoom_pan)
+            .with_state(&viewport)
+            .action_with_env(|(zoom_pan, viewport), env| {
+                let drag = env.get::<DragEvent>().expect(
+                    "interactive_cartesian_canvas: DragEvent missing from gesture environment",
+                );
+                let mut state = zoom_pan.get();
+                state.apply_drag_event(drag, *viewport.borrow());
+                zoom_pan.set(state);
+            }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(MagnificationGesture::new(1.0))
+            .with_state(&zoom_pan)
+            .with_state(&viewport)
+            .action_with_env(|(zoom_pan, viewport), env| {
+                let magnification = env
+                    .get::<MagnificationEvent>()
+                    .expect("interactive_cartesian_canvas: MagnificationEvent missing from gesture environment");
+                let mut state = zoom_pan.get();
+                state.apply_magnification_event(magnification, *viewport.borrow());
+                zoom_pan.set(state);
+            }),
+    );
+    Metadata::new(
+        canvas,
+        GestureObserver::new(TapGesture::repeat(2))
+            .with_state(&zoom_pan)
+            .action(|zoom_pan| {
+                let mut state = zoom_pan.get();
+                state.apply_double_tap();
+                zoom_pan.set(state);
+            }),
+    )
 }
 
 #[inline]
@@ -75,6 +229,48 @@ fn normalize_bounds(mut bounds: DataBounds) -> DataBounds {
 }
 
 #[inline]
+pub(crate) fn point_bounds(data: &[DataPoint]) -> DataBounds {
+    normalize_bounds(DataBounds::from_points(data).with_padding(0.1))
+}
+
+pub(crate) fn bar_bounds(data: &[DataPoint]) -> DataBounds {
+    let source_bounds = DataBounds::from_points(data);
+    normalize_bounds(DataBounds::new(
+        source_bounds.min_x,
+        source_bounds.max_x,
+        source_bounds.min_y.min(0.0),
+        source_bounds.max_y.max(0.0),
+    ))
+}
+
+pub(crate) fn bubble_bounds(data: &[BubblePoint]) -> DataBounds {
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_y = f32::MAX;
+    let mut max_y = f32::MIN;
+
+    for point in data {
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+
+    normalize_bounds(DataBounds::new(min_x, max_x, min_y, max_y).with_padding(0.1))
+}
+
+pub(crate) fn candlestick_bounds(data: &[Candle]) -> DataBounds {
+    normalize_bounds(DataBounds::from_candles(data).with_padding(0.05))
+}
+
+pub(crate) fn depth_bounds(data: &DepthData) -> DataBounds {
+    normalize_bounds(data.bounds().with_padding(0.04))
+}
+
+pub(crate) fn area_bounds(data: &AreaData) -> DataBounds {
+    normalize_bounds(data.bounds().with_padding(0.05))
+}
+
 fn plot_rect(ctx: &DrawingContext<'_>, padding_ratio: f32) -> Rect {
     let width = ctx.width;
     let height = ctx.height;
@@ -156,6 +352,7 @@ fn viridis(value: f32, min: f32, max: f32) -> Srgb {
 pub(crate) fn draw_line(
     ctx: &mut DrawingContext<'_>,
     data: &[DataPoint],
+    bounds: DataBounds,
     color: Srgb,
     line_width: f32,
     show_fill: bool,
@@ -165,7 +362,6 @@ pub(crate) fn draw_line(
         return;
     }
 
-    let bounds = normalize_bounds(DataBounds::from_points(data).with_padding(0.1));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
     let mut line = Path::new();
@@ -204,18 +400,16 @@ pub(crate) fn draw_line(
     ctx.stroke_path(&line);
 }
 
-pub(crate) fn draw_bar(ctx: &mut DrawingContext<'_>, data: &[DataPoint], color: Srgb) {
+pub(crate) fn draw_bar(
+    ctx: &mut DrawingContext<'_>,
+    data: &[DataPoint],
+    bounds: DataBounds,
+    color: Srgb,
+) {
     if data.is_empty() {
         return;
     }
 
-    let source_bounds = DataBounds::from_points(data);
-    let bounds = normalize_bounds(DataBounds::new(
-        source_bounds.min_x,
-        source_bounds.max_x,
-        source_bounds.min_y.min(0.0),
-        source_bounds.max_y.max(0.0),
-    ));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
     let bar_width = (plot.width() / data.len() as f32) * 0.7;
@@ -238,6 +432,7 @@ pub(crate) fn draw_bar(ctx: &mut DrawingContext<'_>, data: &[DataPoint], color: 
 pub(crate) fn draw_scatter(
     ctx: &mut DrawingContext<'_>,
     data: &[DataPoint],
+    bounds: DataBounds,
     color: Srgb,
     radius: f32,
 ) {
@@ -245,7 +440,6 @@ pub(crate) fn draw_scatter(
         return;
     }
 
-    let bounds = normalize_bounds(DataBounds::from_points(data).with_padding(0.1));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
     ctx.set_fill_style(color);
@@ -258,6 +452,7 @@ pub(crate) fn draw_scatter(
 pub(crate) fn draw_bubble(
     ctx: &mut DrawingContext<'_>,
     data: &[BubblePoint],
+    bounds: DataBounds,
     default_color: Srgb,
     min_radius: f32,
     max_radius: f32,
@@ -267,23 +462,14 @@ pub(crate) fn draw_bubble(
         return;
     }
 
-    let mut min_x = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut min_y = f32::MAX;
-    let mut max_y = f32::MIN;
     let mut min_size = f32::MAX;
     let mut max_size = f32::MIN;
 
     for point in data {
-        min_x = min_x.min(point.x);
-        max_x = max_x.max(point.x);
-        min_y = min_y.min(point.y);
-        max_y = max_y.max(point.y);
         min_size = min_size.min(point.size);
         max_size = max_size.max(point.size);
     }
 
-    let bounds = normalize_bounds(DataBounds::new(min_x, max_x, min_y, max_y).with_padding(0.1));
     let size_span = (max_size - min_size).max(1.0);
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
@@ -309,6 +495,7 @@ pub(crate) fn draw_bubble(
 pub(crate) fn draw_candlestick(
     ctx: &mut DrawingContext<'_>,
     data: &[Candle],
+    bounds: DataBounds,
     bullish: Srgb,
     bearish: Srgb,
 ) {
@@ -316,7 +503,6 @@ pub(crate) fn draw_candlestick(
         return;
     }
 
-    let bounds = normalize_bounds(DataBounds::from_candles(data).with_padding(0.05));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let candle_width = (plot.width() / data.len() as f32 * 0.65).max(1.0);
 
@@ -348,12 +534,17 @@ pub(crate) fn draw_candlestick(
     }
 }
 
-pub(crate) fn draw_depth(ctx: &mut DrawingContext<'_>, data: &DepthData, bid: Srgb, ask: Srgb) {
+pub(crate) fn draw_depth(
+    ctx: &mut DrawingContext<'_>,
+    data: &DepthData,
+    bounds: DataBounds,
+    bid: Srgb,
+    ask: Srgb,
+) {
     if data.bids.is_empty() && data.asks.is_empty() {
         return;
     }
 
-    let bounds = normalize_bounds(data.bounds().with_padding(0.04));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
     let draw_side = |ctx: &mut DrawingContext<'_>,
@@ -802,12 +993,11 @@ pub(crate) fn draw_choropleth(
     }
 }
 
-pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData) {
+pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: DataBounds) {
     if data.x_values.is_empty() || data.series.is_empty() {
         return;
     }
 
-    let bounds = normalize_bounds(data.bounds().with_padding(0.05));
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let point_count = data.x_values.len();
     let mut cumulative = vec![0.0f32; point_count];
