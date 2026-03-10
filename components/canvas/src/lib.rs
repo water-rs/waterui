@@ -116,6 +116,24 @@ impl Canvas {
             draw_fn: Box::new(draw),
         }
     }
+
+    /// Creates a canvas whose drawing callback receives the current value of a signal.
+    ///
+    /// The canvas tracks the signal precisely and redraws when that signal changes,
+    /// without rebuilding the `Canvas` view itself.
+    #[must_use]
+    pub fn with_signal<S, D, F>(signal: S, mut draw: F) -> Self
+    where
+        S: Signal<Output = D> + 'static,
+        S::Guard: 'static,
+        D: 'static,
+        F: FnMut(&mut DrawingContext, D) + 'static,
+    {
+        Self::new(move |ctx| {
+            ctx.track_signal(&signal);
+            draw(ctx, signal.get());
+        })
+    }
 }
 
 impl waterui_core::View for Canvas {
