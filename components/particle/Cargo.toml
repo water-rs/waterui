@@ -16,7 +16,7 @@ waterui-graphics.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true
-glam = "0.29"
+glam = { version = "0.29", features = ["bytemuck"] }
 tracing.workspace = true
 fastrand = "2.3"
 

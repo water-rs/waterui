@@ -5,10 +5,13 @@ use crate::{
     config::{BlendMode, ParticleConfig},
     renderer::{ParticleRenderer, ResolvedParticleConfig},
 };
-use core::ops::Range;
+use core::{num::NonZeroU32, ops::Range};
 use waterui_core::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::{GpuSurface, color::Color};
+use waterui_graphics::{
+    GpuSurface, OffscreenRenderConfig, OffscreenRenderError, OffscreenRenderOutput,
+    OffscreenRenderOutputHdr, color::Color,
+};
 
 /// High-performance GPU particle system.
 ///
@@ -170,14 +173,12 @@ impl ParticleSystem {
         self.config.particle.spin = range;
         self
     }
-}
 
-impl View for ParticleSystem {
-    fn body(self, env: &Environment) -> impl View {
+    fn resolved_config(self, env: &Environment) -> ResolvedParticleConfig {
         let color_start = self.config.particle.color_start.resolve(env).get();
         let color_end = self.config.particle.color_end.resolve(env).get();
 
-        let resolved = ResolvedParticleConfig {
+        ResolvedParticleConfig {
             max_particles: self.max_particles,
             emitter_pos: self.config.emitter.position,
             emitter_shape: self.config.emitter.shape,
@@ -212,8 +213,60 @@ impl View for ParticleSystem {
             blend_mode: self.config.blend_mode,
             softness: self.config.particle.softness,
             shape: self.config.particle.shape,
-        };
+        }
+    }
 
-        GpuSurface::new(ParticleRenderer::new(resolved))
+    /// Render the particle system to an offscreen RGBA8 target via `GpuSurface`.
+    pub fn render_offscreen(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        self.render_offscreen_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Render the particle system to an offscreen RGBA8 target for `frame_count` frames via `GpuSurface`.
+    pub fn render_offscreen_frames(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+        frame_count: NonZeroU32,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        let resolved = self.resolved_config(env);
+        GpuSurface::new(ParticleRenderer::new(resolved)).render_offscreen_frames(
+            config,
+            env,
+            frame_count,
+        )
+    }
+
+    /// Render the particle system to an HDR offscreen target via `GpuSurface`.
+    pub fn render_offscreen_hdr(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        self.render_offscreen_hdr_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Render the particle system to an HDR offscreen target for `frame_count` frames via `GpuSurface`.
+    pub fn render_offscreen_hdr_frames(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+        frame_count: NonZeroU32,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        let resolved = self.resolved_config(env);
+        GpuSurface::new(ParticleRenderer::new(resolved)).render_offscreen_hdr_frames(
+            config,
+            env,
+            frame_count,
+        )
+    }
+}
+
+impl View for ParticleSystem {
+    fn body(self, env: &Environment) -> impl View {
+        GpuSurface::new(ParticleRenderer::new(self.resolved_config(env)))
     }
 }

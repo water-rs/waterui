@@ -11,6 +11,7 @@ use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
@@ -113,6 +114,8 @@ pub fn preferred_msaa_samples(
     }
     1
 }
+
+const DEFAULT_OFFSCREEN_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
 /// GPU resources provided to the renderer during setup.
 ///
@@ -308,6 +311,10 @@ pub struct GpuFrame<'a> {
     /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
     /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
+    /// Time elapsed since this surface started rendering.
+    pub elapsed: Duration,
+    /// Time since the previous render of this surface.
+    pub delta: Duration,
     /// Internal: set to true when `request_redraw()` is called.
     redraw_requested: bool,
 }
@@ -320,6 +327,8 @@ impl core::fmt::Debug for GpuFrame<'_> {
             .field("height", &self.height)
             .field("pointer", &self.pointer)
             .field("gesture", &self.gesture)
+            .field("elapsed", &self.elapsed)
+            .field("delta", &self.delta)
             .finish_non_exhaustive()
     }
 }
@@ -348,6 +357,8 @@ impl<'a> GpuFrame<'a> {
             height,
             pointer,
             gesture,
+            elapsed: Duration::ZERO,
+            delta: Duration::ZERO,
             redraw_requested: false,
         }
     }
@@ -372,6 +383,23 @@ impl<'a> GpuFrame<'a> {
     #[must_use]
     pub const fn is_hovering(&self) -> bool {
         self.pointer.is_hovering()
+    }
+
+    /// Returns the elapsed render time for this surface.
+    #[must_use]
+    pub const fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Returns the delta time since the previous render of this surface.
+    #[must_use]
+    pub const fn delta(&self) -> Duration {
+        self.delta
+    }
+
+    fn set_timing(&mut self, elapsed: Duration, delta: Duration) {
+        self.elapsed = elapsed;
+        self.delta = delta;
     }
 
     /// Request that `render()` be called again on the next frame.
@@ -544,6 +572,8 @@ pub struct OffscreenRenderConfig {
     pub pointer: PointerState,
     /// Gesture state snapshot used for zoom/pan renderers.
     pub gesture: GestureState,
+    /// Simulated frame interval between consecutive offscreen renders.
+    pub frame_interval: Duration,
 }
 
 impl Default for OffscreenRenderConfig {
@@ -555,6 +585,7 @@ impl Default for OffscreenRenderConfig {
             msaa_samples: None,
             pointer: PointerState::default(),
             gesture: GestureState::new(),
+            frame_interval: DEFAULT_OFFSCREEN_FRAME_INTERVAL,
         }
     }
 }
@@ -594,6 +625,17 @@ impl OffscreenRenderConfig {
     #[must_use]
     pub const fn gesture(mut self, gesture: GestureState) -> Self {
         self.gesture = gesture;
+        self
+    }
+
+    /// Sets the simulated interval between consecutive offscreen frames.
+    #[must_use]
+    pub fn frame_interval(mut self, frame_interval: Duration) -> Self {
+        assert!(
+            !frame_interval.is_zero(),
+            "offscreen frame interval must be non-zero"
+        );
+        self.frame_interval = frame_interval;
         self
     }
 }
@@ -782,6 +824,65 @@ impl core::fmt::Display for OffscreenRenderError {
 
 impl std::error::Error for OffscreenRenderError {}
 
+#[derive(Debug, Clone, Copy)]
+struct FrameClock {
+    fixed_delta: Option<Duration>,
+    start_instant: Instant,
+    last_instant: Instant,
+    elapsed: Duration,
+    initialized: bool,
+}
+
+impl FrameClock {
+    fn realtime() -> Self {
+        let now = Instant::now();
+        Self {
+            fixed_delta: None,
+            start_instant: now,
+            last_instant: now,
+            elapsed: Duration::ZERO,
+            initialized: false,
+        }
+    }
+
+    fn fixed(delta: Duration) -> Self {
+        assert!(
+            !delta.is_zero(),
+            "offscreen frame interval must be non-zero"
+        );
+        let now = Instant::now();
+        Self {
+            fixed_delta: Some(delta),
+            start_instant: now,
+            last_instant: now,
+            elapsed: Duration::ZERO,
+            initialized: false,
+        }
+    }
+
+    fn next(&mut self) -> (Duration, Duration) {
+        if let Some(delta) = self.fixed_delta {
+            self.elapsed += delta;
+            self.initialized = true;
+            return (self.elapsed, delta);
+        }
+
+        let now = Instant::now();
+        let delta = if self.initialized {
+            now.duration_since(self.last_instant)
+        } else {
+            DEFAULT_OFFSCREEN_FRAME_INTERVAL
+        };
+        self.last_instant = now;
+        if !self.initialized {
+            self.start_instant = now - delta;
+            self.initialized = true;
+        }
+        self.elapsed = now.duration_since(self.start_instant);
+        (self.elapsed, delta)
+    }
+}
+
 /// Private object-safe trait for type-erased GPU views.
 trait GpuViewImpl: 'static {
     fn setup<'a>(
@@ -870,6 +971,7 @@ pub struct GpuSurface {
     /// `None` follows global `WATERUI_GPU_PREFER_HDR` behavior.
     /// `Some(true)` prefers HDR, `Some(false)` prefers SDR.
     surface_prefers_hdr: Option<bool>,
+    frame_clock: FrameClock,
 }
 
 impl core::fmt::Debug for GpuSurface {
@@ -912,6 +1014,7 @@ impl GpuSurface {
             renderer: Box::new(view),
             msaa_max_samples: Self::default_msaa_max_samples(),
             surface_prefers_hdr: None,
+            frame_clock: FrameClock::realtime(),
         }
     }
 
@@ -962,9 +1065,21 @@ impl GpuSurface {
     /// This is intended for fast visual regression checks and snapshot generation
     /// without launching a full app window.
     pub fn render_offscreen(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        self.render_offscreen_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Renders this surface into an offscreen texture for `frame_count` frames and reads back RGBA8 pixels.
+    ///
+    /// This is useful for animated GPU views that need one or more warm-up frames before producing a stable snapshot.
+    pub fn render_offscreen_frames(
         mut self,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
+        frame_count: NonZeroU32,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
         if !matches!(
             config.format,
@@ -1002,6 +1117,8 @@ impl GpuSurface {
         let device = guard.device.as_ref();
         let queue = guard.queue.as_ref();
 
+        self.frame_clock = FrameClock::fixed(config.frame_interval);
+
         let ctx = GpuContext {
             adapter: Some(adapter),
             device,
@@ -1031,19 +1148,20 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut frame = GpuFrame {
+        let mut frame = GpuFrame::new(
             device,
             queue,
-            texture: &texture,
+            &texture,
             view,
-            format: config.format,
+            config.format,
             width,
             height,
-            pointer: config.pointer,
-            gesture: config.gesture,
-            redraw_requested: false,
-        };
-        self.render(&mut frame);
+            config.pointer,
+            config.gesture,
+        );
+        for _ in 0..frame_count.get() {
+            self.render(&mut frame);
+        }
 
         let rgba8 = readback_texture_rgba8(device, queue, &texture, width, height)?;
         Ok(OffscreenRenderOutput {
@@ -1057,9 +1175,19 @@ impl GpuSurface {
     ///
     /// Use this when you need to preserve HDR headroom during capture/export.
     pub fn render_offscreen_hdr(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        self.render_offscreen_hdr_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Renders this surface into an HDR offscreen texture for `frame_count` frames and reads back `RGBA16F` pixels.
+    pub fn render_offscreen_hdr_frames(
         mut self,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
+        frame_count: NonZeroU32,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
         if config.format != wgpu::TextureFormat::Rgba16Float {
             return Err(OffscreenRenderError::UnsupportedReadbackFormat(
@@ -1094,6 +1222,8 @@ impl GpuSurface {
         let device = guard.device.as_ref();
         let queue = guard.queue.as_ref();
 
+        self.frame_clock = FrameClock::fixed(config.frame_interval);
+
         let ctx = GpuContext {
             adapter: Some(adapter),
             device,
@@ -1123,19 +1253,20 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut frame = GpuFrame {
+        let mut frame = GpuFrame::new(
             device,
             queue,
-            texture: &texture,
+            &texture,
             view,
-            format: config.format,
+            config.format,
             width,
             height,
-            pointer: config.pointer,
-            gesture: config.gesture,
-            redraw_requested: false,
-        };
-        self.render(&mut frame);
+            config.pointer,
+            config.gesture,
+        );
+        for _ in 0..frame_count.get() {
+            self.render(&mut frame);
+        }
 
         let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height)?;
         Ok(OffscreenRenderOutputHdr {
@@ -1156,6 +1287,8 @@ impl GpuSurface {
 
     /// Calls `render` on the GPU view.
     pub fn render(&mut self, frame: &mut GpuFrame) {
+        let (elapsed, delta) = self.frame_clock.next();
+        frame.set_timing(elapsed, delta);
         self.renderer.render(frame);
     }
 
@@ -1707,5 +1840,63 @@ mod tests {
             .to_sdr_rgba8()
             .expect("hdr tone mapping should succeed");
         assert_eq!(rgba8, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn offscreen_multi_frame_uses_configured_frame_interval() {
+        use core::num::NonZeroU32;
+        use std::{cell::RefCell, rc::Rc, time::Duration};
+
+        struct TimingProbe {
+            frames: Rc<RefCell<Vec<(Duration, Duration)>>>,
+        }
+
+        impl GpuView for TimingProbe {
+            async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+            }
+
+            fn render(&mut self, frame: &mut GpuFrame) {
+                self.frames
+                    .borrow_mut()
+                    .push((frame.elapsed(), frame.delta()));
+            }
+        }
+
+        impl_gpu_subview!(TimingProbe);
+
+        let size = OffscreenSize::try_from_pixels(4, 4).expect("test size must be valid");
+        let frame_interval = Duration::from_millis(40);
+        let frames = Rc::new(RefCell::new(Vec::new()));
+        let mut env = waterui_core::Environment::new();
+
+        GpuSurface::new(TimingProbe {
+            frames: Rc::clone(&frames),
+        })
+        .render_offscreen_frames(
+            OffscreenRenderConfig::new(size).frame_interval(frame_interval),
+            &mut env,
+            NonZeroU32::new(3).expect("non-zero literal"),
+        )
+        .expect("offscreen timing probe render should succeed");
+
+        let recorded = frames.borrow();
+        assert_eq!(
+            recorded.as_slice(),
+            &[
+                (frame_interval, frame_interval),
+                (
+                    frame_interval
+                        .checked_mul(2)
+                        .expect("duration multiply should succeed"),
+                    frame_interval
+                ),
+                (
+                    frame_interval
+                        .checked_mul(3)
+                        .expect("duration multiply should succeed"),
+                    frame_interval
+                ),
+            ]
+        );
     }
 }
