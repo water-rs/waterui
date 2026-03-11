@@ -63,7 +63,9 @@ fn main() -> impl View {
         Time::from_hms(9, 45, 30).unwrap(),
     ));
     let available_dates = binding(BTreeSet::<Date>::new());
-    let available_date_count = available_dates.map(|dates| dates.len()).computed();
+    let available_date_count = available_dates
+        .map(|dates: BTreeSet<Date>| dates.len())
+        .computed();
 
     // ColorPicker bindings
     let basic_color = binding(Color::from(PICKER_BLUE));
@@ -230,7 +232,7 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main(), env)
+    App::new(main, env)
 }
 
 waterui_ffi::export!();
