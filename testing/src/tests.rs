@@ -32,6 +32,7 @@ impl A11yDriver for NoopDriver {
             rebuilt: false,
             tree_update: None,
             snapshot: None,
+            ui_focus: None,
         }
     }
 
@@ -57,6 +58,14 @@ impl A11yDriver for NoopDriver {
 
     fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) -> bool {
         false
+    }
+
+    fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
+        false
+    }
+
+    fn ui_focus(&self) -> Option<NodeId> {
+        None
     }
 }
 
@@ -105,6 +114,7 @@ fn mounted(tree: TreeSnapshot) -> MountedApp {
         content: AnyViewBuilder::new(|| AnyView::new(())),
         driver: Box::new(NoopDriver),
         tree,
+        ui_focus: None,
         revision: 2,
     }
 }
@@ -448,4 +458,93 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
     );
     let magnified_frame = app.snapshot();
     assert!(dragged_frame.changed_pixels(&magnified_frame) > 0);
+}
+
+#[test]
+fn ui_focus_is_separate_from_accessibility_focus() {
+    use waterui::form::secure::Secure;
+    use waterui::prelude::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Field {
+        Username,
+        Password,
+    }
+
+    let focus = Binding::container(Some(Field::Username));
+    let username = Binding::container(Str::from(""));
+    let password = Binding::container(Secure::default());
+    let focus_for_view = focus.clone();
+    let username_for_view = username.clone();
+    let password_for_view = password.clone();
+
+    let mut app = UiTest::new().mount(move || {
+        vstack((
+            TextField::new(&username_for_view)
+                .label(text("Username"))
+                .focused(&focus_for_view, Field::Username),
+            SecureField::new(text("Password"), &password_for_view)
+                .focused(&focus_for_view, Field::Password),
+            button("Submit"),
+        ))
+    });
+
+    let username_selector = Selector::default().role(Role::TEXT_INPUT).label("Username");
+    let password_selector = Selector::default()
+        .role(Role::PASSWORD_INPUT)
+        .label("Password");
+
+    assert!(
+        app.wait_for_ui_focus(username_selector.clone(), Duration::from_millis(200)),
+        "expected initial FocusState to focus the username field"
+    );
+    app.assert_ui_focus(username_selector.clone());
+    assert_eq!(focus.get(), Some(Field::Username));
+
+    let username_id = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Username")
+        .single()
+        .id();
+    assert_eq!(app.ui_focus(), Some(username_id));
+
+    assert!(
+        app.query()
+            .role(Role::PASSWORD_INPUT)
+            .label("Password")
+            .focus(),
+        "expected password field focus action to succeed"
+    );
+    let password_id = app
+        .query()
+        .role(Role::PASSWORD_INPUT)
+        .label("Password")
+        .single()
+        .id();
+    app.assert_ui_focus(password_selector.clone());
+    assert_eq!(app.ui_focus(), Some(password_id));
+    assert_eq!(focus.get(), Some(Field::Password));
+
+    assert!(
+        app.query().role(Role::BUTTON).label("Submit").focus(),
+        "expected button accessibility focus action to succeed"
+    );
+    let submit_id = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Submit")
+        .single()
+        .id();
+    assert_eq!(submit_id, app.tree().focus());
+    assert_eq!(app.ui_focus(), Some(password_id));
+    assert_eq!(focus.get(), Some(Field::Password));
+
+    assert!(
+        app.clear_ui_focus(),
+        "expected clear_ui_focus to clear the active FocusState target"
+    );
+    assert_eq!(app.ui_focus(), None);
+    assert_eq!(focus.get(), None);
+    assert_eq!(app.tree().focus(), submit_id);
 }
