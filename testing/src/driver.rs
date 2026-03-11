@@ -6,6 +6,7 @@ use waterui::component::table::TableConfig;
 use waterui_core::view::Hook;
 use waterui_core::{AnyView, Environment, Native};
 
+use crate::semantics::NodeId;
 use crate::snapshot::{Snapshot, readback_texture_rgba8};
 
 pub(crate) trait A11yDriver {
@@ -21,6 +22,8 @@ pub(crate) trait A11yDriver {
     fn pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn pointer_up(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
+    fn clear_ui_focus(&mut self, env: &Environment) -> bool;
+    fn ui_focus(&self) -> Option<NodeId>;
 }
 
 #[derive(Debug)]
@@ -28,6 +31,7 @@ pub(crate) struct DriverPumpResult {
     pub(crate) rebuilt: bool,
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) snapshot: Option<Snapshot>,
+    pub(crate) ui_focus: Option<NodeId>,
 }
 
 #[derive(Debug)]
@@ -128,6 +132,7 @@ impl A11yDriver for HydrolysisA11yDriver {
             rebuilt: should_rebuild || animation_dirty,
             tree_update: self.renderer.take_accessibility_tree_update(),
             snapshot,
+            ui_focus: self.renderer.focused_ui_node().map(NodeId::from),
         }
     }
 
@@ -166,6 +171,15 @@ impl A11yDriver for HydrolysisA11yDriver {
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool {
         let changed = self.renderer.apply_magnification_gesture(x, y, factor, env);
         self.schedule_redraw_or_rebuild(changed)
+    }
+
+    fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
+        let changed = self.renderer.clear_ui_focus();
+        self.schedule_redraw_or_rebuild(changed)
+    }
+
+    fn ui_focus(&self) -> Option<NodeId> {
+        self.renderer.focused_ui_node().map(NodeId::from)
     }
 }
 
