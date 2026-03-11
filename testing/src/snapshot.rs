@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
 use waterui_core::{Environment, View};
 
@@ -32,6 +34,17 @@ impl Snapshot {
     pub fn changed_ratio(&self, other: &Self) -> f32 {
         let changed = self.changed_pixels(other);
         changed as f32 / (self.width * self.height).max(1) as f32
+    }
+
+    /// Saves the snapshot to a PNG file.
+    pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(image::ImageError::IoError)?;
+        }
+        let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
+            .expect("Snapshot::save_png: rgba buffer shape must match dimensions");
+        image.save(path)
     }
 }
 
@@ -166,7 +179,7 @@ pub(crate) fn readback_texture_rgba8(
         .expect("waterui-testing failed to map readback buffer");
 
     let mapped = slice.get_mapped_range();
-    let mut pixels = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
+    let mut pixels = vec![0_u8; (width * height * BYTES_PER_PIXEL) as usize];
     for row in 0..height as usize {
         let source_start = row * padded_bytes_per_row as usize;
         let source_end = source_start + unpadded_bytes_per_row as usize;
