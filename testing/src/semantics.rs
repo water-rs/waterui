@@ -21,6 +21,7 @@ impl Role {
     pub const CHECKBOX: Self = Self(AccessibilityRole::CheckBox);
     pub const SWITCH: Self = Self(AccessibilityRole::Switch);
     pub const SLIDER: Self = Self(AccessibilityRole::Slider);
+    pub const IMAGE: Self = Self(AccessibilityRole::Image);
     pub const LIST: Self = Self(AccessibilityRole::List);
     pub const LIST_ITEM: Self = Self(AccessibilityRole::ListItem);
     pub const COMBOBOX: Self = Self(AccessibilityRole::ComboBox);
