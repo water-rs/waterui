@@ -17,6 +17,7 @@ impl Role {
     pub const BUTTON: Self = Self(AccessibilityRole::Button);
     pub const LABEL: Self = Self(AccessibilityRole::Label);
     pub const TEXT_INPUT: Self = Self(AccessibilityRole::TextInput);
+    pub const PASSWORD_INPUT: Self = Self(AccessibilityRole::PasswordInput);
     pub const CHECKBOX: Self = Self(AccessibilityRole::CheckBox);
     pub const SWITCH: Self = Self(AccessibilityRole::Switch);
     pub const SLIDER: Self = Self(AccessibilityRole::Slider);

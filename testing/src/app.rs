@@ -68,6 +68,7 @@ impl UiTest {
             content: builder,
             driver: Box::new(HydrolysisA11yDriver::new(self.width, self.height)),
             tree: TreeSnapshot::empty(),
+            ui_focus: None,
             revision: 1,
         };
         let rebuilt = app.pump_once();
@@ -85,6 +86,7 @@ pub struct MountedApp {
     pub(crate) content: AnyViewBuilder<AnyView>,
     pub(crate) driver: Box<dyn A11yDriver>,
     pub(crate) tree: TreeSnapshot,
+    pub(crate) ui_focus: Option<NodeId>,
     pub(crate) revision: u64,
 }
 
@@ -102,6 +104,12 @@ impl MountedApp {
     #[must_use]
     pub fn tree(&self) -> &TreeSnapshot {
         &self.tree
+    }
+
+    /// Returns the latest UI focus target tracked by Hydrolysis.
+    #[must_use]
+    pub const fn ui_focus(&self) -> Option<NodeId> {
+        self.ui_focus
     }
 
     /// Captures the latest RGBA snapshot from the offscreen renderer.
@@ -135,6 +143,15 @@ impl MountedApp {
         assert!(
             !(count != 0),
             "waterui-testing assertion failed: selector expected to be absent but matched {count} nodes"
+        );
+    }
+
+    /// Asserts that the selector resolves to the current UI-focused element.
+    pub fn assert_ui_focus(&mut self, selector: Selector) {
+        let element = self.resolve_single(&selector);
+        assert!(
+            self.ui_focus == Some(element.id()),
+            "waterui-testing assertion failed: selector was not the current UI-focused element"
         );
     }
 
@@ -286,6 +303,42 @@ impl MountedApp {
         self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
     }
 
+    /// Waits until the selector resolves to the current UI-focused element.
+    pub fn wait_for_ui_focus(&mut self, selector: Selector, timeout: Duration) -> bool {
+        const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
+        const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
+
+        let deadline = Instant::now() + timeout;
+        let mut idle_backoff = Duration::ZERO;
+        loop {
+            if self.matches_ui_focus(&selector) {
+                return true;
+            }
+
+            if Instant::now() >= deadline {
+                return false;
+            }
+
+            let previous_revision = self.tree.revision();
+            let previous_ui_focus = self.ui_focus;
+            let rebuilt = self.pump_once();
+            let progressed =
+                rebuilt || self.tree.revision() != previous_revision || self.ui_focus != previous_ui_focus;
+            if progressed {
+                idle_backoff = Duration::ZERO;
+                continue;
+            }
+
+            let next_backoff = if idle_backoff.is_zero() {
+                MIN_IDLE_BACKOFF
+            } else {
+                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
+            };
+            idle_backoff = next_backoff;
+            std::thread::sleep(next_backoff.min(deadline.saturating_duration_since(Instant::now())));
+        }
+    }
+
     fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {
         match &expectation.kind {
             ExpectationKind::Exists(selector) => !self.matching_ids(selector).is_empty(),
@@ -341,6 +394,11 @@ impl MountedApp {
         self.settle_after_change(changed)
     }
 
+    pub fn clear_ui_focus(&mut self) -> bool {
+        let changed = self.driver.clear_ui_focus(&self.env);
+        self.settle_after_change(changed)
+    }
+
     pub(crate) fn hover_at(&mut self, x: f32, y: f32) -> bool {
         let changed = self.driver.hover_at(x, y, &self.env);
         self.settle_after_change(changed)
@@ -381,8 +439,10 @@ impl MountedApp {
         let mut idle_backoff = Duration::ZERO;
         loop {
             let previous_revision = self.tree.revision();
+            let previous_ui_focus = self.ui_focus;
             let rebuilt = self.pump_once();
-            let progressed = rebuilt || self.tree.revision() != previous_revision;
+            let progressed =
+                rebuilt || self.tree.revision() != previous_revision || self.ui_focus != previous_ui_focus;
             if progressed {
                 idle_backoff = Duration::ZERO;
                 if Instant::now() >= deadline {
@@ -406,6 +466,7 @@ impl MountedApp {
     }
 
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
+        self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
             self.tree = TreeSnapshot::from_update(self.revision, update);
             self.revision = self
@@ -427,11 +488,20 @@ impl MountedApp {
         let _ = self.apply_pump_result(outcome);
         rebuilt
     }
+
+    fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
+        let ids = self.matching_ids(selector);
+        ids.len() == 1 && self.ui_focus == Some(ids[0])
+    }
 }
 
 impl MountedApp {
     pub(crate) fn tap_node(&mut self, node_id: NodeId) -> bool {
         self.perform_action(node_id, AccessibilityAction::Click, None)
+    }
+
+    pub(crate) fn focus_node(&mut self, node_id: NodeId) -> bool {
+        self.perform_action(node_id, AccessibilityAction::Focus, None)
     }
 
     pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) -> bool {
