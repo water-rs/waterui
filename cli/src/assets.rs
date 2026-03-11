@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::project::Project;
 
-mod pipeline;
+mod unified;
 
 /// Built-in font registry mapping font names to download URLs.
 ///
@@ -709,7 +709,7 @@ pub async fn stage_project_assets_for_apple(
     project: &Project,
     dest_dir: &Path,
 ) -> eyre::Result<()> {
-    pipeline::stage_for_apple(project, dest_dir).await
+    unified::stage_for_apple(project, dest_dir).await
 }
 
 /// Stage project assets for Android packaging (res + assets/raw).
@@ -717,7 +717,7 @@ pub async fn stage_project_assets_for_android(
     project: &Project,
     backend_path: &Path,
 ) -> eyre::Result<()> {
-    pipeline::stage_for_android(project, backend_path).await
+    unified::stage_for_android(project, backend_path).await
 }
 
 /// Stage project assets for GTK4 packaging (resources + gresource bundle).
@@ -725,7 +725,11 @@ pub async fn stage_project_assets_for_gtk(
     project: &Project,
     resources_dir: &Path,
 ) -> eyre::Result<()> {
-    pipeline::stage_for_gtk(project, resources_dir).await
+    unified::stage_for_gtk(project, resources_dir).await
+}
+
+pub fn scan_project_font_assets(project: &Project) -> eyre::Result<Vec<ResolvedFont>> {
+    unified::scan_project_fonts(project)
 }
 
 /// Copies project assets to a destination directory.

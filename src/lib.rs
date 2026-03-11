@@ -97,7 +97,10 @@ pub mod prelude {
     pub use super::background::{Background, Material, Shader};
 
     // Asset types
-    pub use super::{AssetError, AssetKind, Data, LargeFile, asset};
+    pub use super::{
+        AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
+        LargeFile, LargeFileAsset, VideoAsset, asset,
+    };
 
     // Re-export macros
     pub use waterui_macros::*;
@@ -131,9 +134,13 @@ pub use waterui_webview as webview;
 
 // Asset types re-exported for convenience
 #[doc(inline)]
-pub use waterui_assets::{AssetError, AssetKind, Data, LargeFile};
+pub use waterui_assets::{
+    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
+    LargeFile, LargeFileAsset, VideoAsset,
+};
 #[doc(inline)]
-pub use waterui_assets_macros::asset;
+pub use waterui_assets_macros::{asset, assets, include_bundle};
+pub use waterui_media::Url;
 pub mod metadata;
 pub mod shape;
 pub mod style;
