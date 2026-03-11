@@ -5,12 +5,13 @@ use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
@@ -19,7 +20,7 @@ use accesskit::{
     Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
-use nami::Signal;
+use nami::{Binding, Signal};
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState,
@@ -47,7 +48,6 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
-    use crate::platform::PlatformWindow as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
@@ -260,6 +260,8 @@ pub struct HydrolysisRenderer {
     #[cfg(feature = "accessibility")]
     accessibility_focus: AccessibilityNodeId,
     #[cfg(feature = "accessibility")]
+    pending_text_input_accessibility_nodes: VecDeque<AccessibilityNodeId>,
+    #[cfg(feature = "accessibility")]
     accessibility_suppression_depth: usize,
     #[cfg(feature = "accessibility")]
     pending_accessibility_tree_update: Option<AccessibilityTreeUpdate>,
@@ -309,6 +311,9 @@ struct TextInputTarget {
     depth: usize,
     order: usize,
     action: TextInputAction,
+    focus_binding: Option<Binding<bool>>,
+    #[cfg(feature = "accessibility")]
+    accessibility_node_id: Option<AccessibilityNodeId>,
 }
 
 #[derive(Clone)]
@@ -1234,6 +1239,9 @@ impl core::fmt::Debug for HydrolysisRenderer {
 trait HydroNativeView: View + Sized + 'static {
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment);
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize;
+    fn accessibility_is_render_driven() -> bool {
+        false
+    }
     fn dimensions(
         state: &mut HydroState,
         view: &Self,
@@ -1256,23 +1264,28 @@ fn register_native_view<V: HydroNativeView>(
     dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
 ) {
     dispatcher.register::<V>(|state, ctx, view, env| {
+        let accessibility_is_render_driven = V::accessibility_is_render_driven();
         let hidden_from_accessibility = env
             .get::<AccessibilityHidden>()
             .is_some_and(AccessibilityHidden::is_hidden);
         if hidden_from_accessibility {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
-            V::accessibility(state, ctx, &view, env);
+            if !accessibility_is_render_driven {
+                V::accessibility(state, ctx, &view, env);
+            }
             V::render(state, ctx, view, env);
             let renderer = unsafe { ctx.renderer() };
             renderer.pop_accessibility_suppression();
             return;
         }
-        V::accessibility(state, ctx, &view, env);
+        if !accessibility_is_render_driven {
+            V::accessibility(state, ctx, &view, env);
+        }
         let suppress_descendants = env
             .get::<AccessibilityChildren>()
             .is_some_and(AccessibilityChildren::excludes_descendants);
-        if suppress_descendants {
+        if suppress_descendants && !accessibility_is_render_driven {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
             V::render(state, ctx, view, env);
@@ -3052,6 +3065,10 @@ impl HydroNativeView for Native<ProgressConfig> {
 }
 
 impl HydroNativeView for Native<TextFieldConfig> {
+    fn accessibility_is_render_driven() -> bool {
+        true
+    }
+
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
         HydrolysisRenderer::render_text_field(state, ctx, view, env);
     }
@@ -3059,98 +3076,19 @@ impl HydroNativeView for Native<TextFieldConfig> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env)
     }
-
-    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "accessibility")]
-        {
-            let text_field = view.as_inner();
-            let renderer = unsafe { ctx.renderer() };
-            let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                env,
-                if line_limit == Some(1) {
-                    AccessibilityNodeRole::TextInput
-                } else {
-                    AccessibilityNodeRole::MultilineTextInput
-                },
-            ));
-            let prompt_signal = text_field.prompt.content();
-            let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
-            let default_label = renderer
-                .accessibility_label_from_view(&text_field.label, env)
-                .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            if !prompt.is_empty() {
-                node.set_placeholder(prompt);
-            }
-            let value = renderer
-                .read_signal(&text_field.value)
-                .to_plain()
-                .to_string();
-            if !value.is_empty() {
-                node.set_value(value);
-            }
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::TextField {
-                    value: text_field.value.clone(),
-                    line_limit,
-                }),
-            );
-        }
-    }
 }
 
 impl HydroNativeView for Native<SecureFieldConfig> {
+    fn accessibility_is_render_driven() -> bool {
+        true
+    }
+
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
         HydrolysisRenderer::render_secure_field(state, ctx, view, env);
     }
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env)
-    }
-
-    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "accessibility")]
-        {
-            let secure_field = view.as_inner();
-            let renderer = unsafe { ctx.renderer() };
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
-            );
-            let default_label = renderer.accessibility_label_from_view(&secure_field.label, env);
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            let secure_len = renderer
-                .read_signal(&secure_field.value)
-                .expose()
-                .chars()
-                .count();
-            node.set_value("*".repeat(secure_len));
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::SecureField {
-                    value: secure_field.value.clone(),
-                }),
-            );
-        }
     }
 }
 
@@ -3833,6 +3771,8 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility_focus: ACCESSIBILITY_ROOT_NODE_ID,
             #[cfg(feature = "accessibility")]
+            pending_text_input_accessibility_nodes: VecDeque::new(),
+            #[cfg(feature = "accessibility")]
             accessibility_suppression_depth: 0,
             #[cfg(feature = "accessibility")]
             pending_accessibility_tree_update: None,
@@ -3961,7 +3901,19 @@ impl HydrolysisRenderer {
         if previous == focused {
             return false;
         }
+        let previous_binding = previous
+            .and_then(|index| self.text_input_targets.as_slice().get(index))
+            .and_then(|target| target.focus_binding.clone());
+        let next_binding = focused
+            .and_then(|index| self.text_input_targets.as_slice().get(index))
+            .and_then(|target| target.focus_binding.clone());
+        if let Some(binding) = previous_binding {
+            binding.set(false);
+        }
         self.focused_text_input.set(focused);
+        if let Some(binding) = next_binding {
+            binding.set(true);
+        }
         self.ime_preedit = None;
         if focused.is_some() {
             self.reset_text_caret_animation(Instant::now());
@@ -3995,59 +3947,18 @@ impl HydrolysisRenderer {
     }
 
     #[cfg(feature = "accessibility")]
-    fn accessibility_text_input_focus_node_at_point(
-        &self,
-        point: vello::kurbo::Point,
-    ) -> Option<AccessibilityNodeId> {
-        let mut focused = None;
-        for (node_id, node) in &self.accessibility_nodes {
-            let Some(bounds) = node.bounds() else {
-                continue;
-            };
-            if !accesskit_rect_to_kurbo_rect(bounds).contains(point) {
-                continue;
-            }
-            match node.role() {
-                AccessibilityNodeRole::TextInput
-                | AccessibilityNodeRole::MultilineTextInput
-                | AccessibilityNodeRole::PasswordInput => {
-                    focused = Some(*node_id);
-                }
-                _ => {}
-            }
-        }
-        focused
-    }
-
-    #[cfg(feature = "accessibility")]
     fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
         let index = self.focused_text_input.get()?;
         let target = self.text_input_targets.as_slice().get(index)?;
-        let center = accessibility_activation_point(target.bounds);
-        self.accessibility_text_input_focus_node_at_point(center)
+        target.accessibility_node_id
     }
 
     #[cfg(feature = "accessibility")]
     fn focus_text_input_for_accessibility_node(&mut self, node_id: AccessibilityNodeId) -> bool {
-        let node = self
-            .accessibility_nodes
-            .iter()
-            .find_map(|(id, node)| (*id == node_id).then_some(node))
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis accessibility focus target node {:?} is missing in current tree",
-                    node_id
-                )
-            });
-        let bounds = node.bounds().unwrap_or_else(|| {
-            panic!(
-                "hydrolysis accessibility focus target node {:?} is missing bounds",
-                node_id
-            )
-        });
-        let point = accessibility_activation_point(accesskit_rect_to_kurbo_rect(bounds));
         let focused = self
-            .topmost_text_input_index_at_point(point)
+            .text_input_targets
+            .iter()
+            .position(|target| target.accessibility_node_id == Some(node_id))
             .unwrap_or_else(|| {
                 panic!(
                     "hydrolysis accessibility focus target node {:?} has no matching text input target",
@@ -4310,14 +4221,29 @@ impl HydrolysisRenderer {
             let bounds = transformed_rect(ctx.hit_transform, target.bounds);
             self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
         }
+        #[cfg(feature = "accessibility")]
+        let accessibility_node_map =
+            self.replay_dynamic_accessibility_subtree(ctx.hit_transform, &subtree.accessibility);
         for target in &subtree.text_input_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            #[cfg(feature = "accessibility")]
+            let accessibility_node_id = target.accessibility_node_id.map(|node_id| {
+                *accessibility_node_map.get(&node_id).unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis dynamic text input accessibility node {:?} is missing remap entry",
+                        node_id
+                    )
+                })
+            });
             self.register_text_input_target_action(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 transformed_rect(ctx.hit_transform, target.cursor_area),
                 target.purpose,
                 Rc::clone(&target.action),
                 depth,
+                target.focus_binding.clone(),
+                #[cfg(feature = "accessibility")]
+                accessibility_node_id,
             );
         }
         for target in &subtree.scroll_targets {
@@ -4326,9 +4252,6 @@ impl HydrolysisRenderer {
                 Rc::clone(&target.action),
             );
         }
-
-        #[cfg(feature = "accessibility")]
-        self.replay_dynamic_accessibility_subtree(ctx.hit_transform, &subtree.accessibility);
     }
 
     #[cfg(feature = "accessibility")]
@@ -4346,9 +4269,9 @@ impl HydrolysisRenderer {
         &mut self,
         transform: vello::kurbo::Affine,
         subtree: &DynamicAccessibilitySubtree,
-    ) {
+    ) -> BTreeMap<AccessibilityNodeId, AccessibilityNodeId> {
         if self.accessibility_suppression_depth > 0 {
-            return;
+            return BTreeMap::new();
         }
 
         let mut id_map = BTreeMap::new();
@@ -4381,6 +4304,7 @@ impl HydrolysisRenderer {
                 );
             }
         }
+        id_map
     }
 
     fn watch_signal<S>(&mut self, signal: &S)
@@ -6384,6 +6308,60 @@ impl HydrolysisRenderer {
         let mut text_field = text_field.into_inner();
         text_field.label = normalize_layout_view(text_field.label, env);
         let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+        #[cfg(feature = "accessibility")]
+        {
+            let prompt = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .read_signal(&text_field.prompt.content())
+                    .to_plain()
+                    .to_string()
+            };
+            let value = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.read_signal(&text_field.value).to_plain().to_string()
+            };
+            let default_label = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .accessibility_label_from_view(&text_field.label, env)
+                    .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()))
+            };
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            if !prompt.is_empty() {
+                node.set_placeholder(prompt);
+            }
+            if !value.is_empty() {
+                node.set_value(value);
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            if let Some(node_id) = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::TextField {
+                    value: text_field.value.clone(),
+                    line_limit,
+                }),
+            ) {
+                renderer.push_pending_text_input_accessibility_node(node_id);
+            }
+        }
         let label_size = measure_view_intrinsic(&text_field.label, state, env);
         let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
             f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
@@ -6542,6 +6520,44 @@ impl HydrolysisRenderer {
     ) {
         let mut secure_field = secure_field.into_inner();
         secure_field.label = normalize_layout_view(secure_field.label, env);
+        #[cfg(feature = "accessibility")]
+        {
+            let default_label = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.accessibility_label_from_view(&secure_field.label, env)
+            };
+            let secure_len = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .read_signal(&secure_field.value)
+                    .expose()
+                    .chars()
+                    .count()
+            };
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
+            );
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            node.set_value("*".repeat(secure_len));
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            if let Some(node_id) = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::SecureField {
+                    value: secure_field.value.clone(),
+                }),
+            ) {
+                renderer.push_pending_text_input_accessibility_node(node_id);
+            }
+        }
         let label_size = measure_view_intrinsic(&secure_field.label, state, env);
         let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
             f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
@@ -7630,11 +7646,23 @@ impl HydrolysisRenderer {
         let start = renderer.text_input_targets.len();
         Self::dispatch_any(ctx, env, content);
         let end = renderer.text_input_targets.len();
+        let focus_target_count = end - start;
+        assert!(
+            focus_target_count == 1,
+            "hydrolysis .focused() requires exactly one TextField or SecureField in the wrapped subtree, found {focus_target_count}"
+        );
+        let target = renderer
+            .text_input_targets
+            .get_mut(start)
+            .expect("hydrolysis focused metadata missing registered text input target");
+        assert!(
+            target.focus_binding.is_none(),
+            "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+        );
+        target.focus_binding = Some(value.0.clone());
 
         if should_focus {
-            if start < end {
-                renderer.set_focused_text_input(Some(start));
-            }
+            renderer.set_focused_text_input(Some(start));
             return;
         }
 
@@ -7971,6 +7999,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "accessibility")]
         {
             self.pending_accessibility_tree_update = None;
+            self.pending_text_input_accessibility_nodes.clear();
         }
     }
 
@@ -8002,6 +8031,8 @@ impl HydrolysisRenderer {
             self.accessibility_nodes.clear();
             self.accessibility_root_children.clear();
             self.accessibility_actions.clear();
+            self.accessibility_next_node_id = 1;
+            self.pending_text_input_accessibility_nodes.clear();
             self.accessibility_suppression_depth = 0;
         }
     }
@@ -8223,6 +8254,16 @@ impl HydrolysisRenderer {
             height: target.cursor_area.height().max(1.0),
             purpose: target.purpose,
         })
+    }
+
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn focused_ui_node(&self) -> Option<AccessibilityNodeId> {
+        self.focused_text_input_accessibility_node()
+    }
+
+    pub fn clear_ui_focus(&mut self) -> bool {
+        self.set_focused_text_input(None)
     }
 
     #[must_use]
@@ -9285,9 +9326,8 @@ impl HydrolysisRenderer {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_engine.register_existing_target(
-            target.with_bounds_depth_and_group(bounds, depth, group_id),
-        );
+        self.gesture_engine
+            .register_existing_target(target.with_bounds_depth_and_group(bounds, depth, group_id));
     }
 
     fn allocate_gesture_group_id(&mut self) -> usize {
@@ -9374,12 +9414,17 @@ impl HydrolysisRenderer {
     ) where
         F: 'static + FnMut(TextInputCommand) -> bool,
     {
+        #[cfg(feature = "accessibility")]
+        let accessibility_node_id = self.take_pending_text_input_accessibility_node();
         self.register_text_input_target_action(
             bounds,
             cursor_area,
             purpose,
             Rc::new(RefCell::new(action)),
             self.render_depth,
+            None,
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id,
         );
     }
 
@@ -9390,6 +9435,8 @@ impl HydrolysisRenderer {
         purpose: TextInputPurpose,
         action: TextInputAction,
         depth: usize,
+        focus_binding: Option<Binding<bool>>,
+        #[cfg(feature = "accessibility")] accessibility_node_id: Option<AccessibilityNodeId>,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -9402,7 +9449,20 @@ impl HydrolysisRenderer {
             depth,
             order,
             action,
+            focus_binding,
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id,
         });
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn push_pending_text_input_accessibility_node(&mut self, node_id: AccessibilityNodeId) {
+        self.pending_text_input_accessibility_nodes.push_back(node_id);
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn take_pending_text_input_accessibility_node(&mut self) -> Option<AccessibilityNodeId> {
+        self.pending_text_input_accessibility_nodes.pop_front()
     }
 
     fn register_scroll_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
@@ -9594,9 +9654,6 @@ impl HydrolysisRenderer {
         let mut nodes = Vec::with_capacity(self.accessibility_nodes.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
         nodes.extend(self.accessibility_nodes.iter().cloned());
-        self.accessibility_focus = self
-            .focused_text_input_accessibility_node()
-            .unwrap_or(ACCESSIBILITY_ROOT_NODE_ID);
         if !self
             .accessibility_nodes
             .iter()
@@ -11114,11 +11171,8 @@ mod tests {
             }
         };
 
-        let mut platform = crate::platform::OffscreenWindow::new(
-            160,
-            160,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let mut platform =
+            crate::platform::OffscreenWindow::new(160, 160, wgpu::TextureFormat::Rgba8Unorm);
         let mut renderer = {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())

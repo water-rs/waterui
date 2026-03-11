@@ -86,6 +86,11 @@ impl<'a> Query<'a> {
         self.app.tap_node(element.id())
     }
 
+    pub fn focus(self) -> bool {
+        let element = self.app.resolve_single(&self.selector);
+        self.app.focus_node(element.id())
+    }
+
     pub fn set_text(self, value: impl Into<String>) -> bool {
         let element = self.app.resolve_single(&self.selector);
         self.app.set_text_node(element.id(), value)
