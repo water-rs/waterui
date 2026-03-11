@@ -1,59 +1,24 @@
 //! Procedural macros for WaterUI asset management.
 //!
-//! Provides the `asset!` macro for compile-time type inference and code generation.
+//! Provides `asset!`, `assets!`, and `include_bundle!`.
+
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
-use std::net::IpAddr;
 use syn::{
     Ident, LitBool, LitStr, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
-
-/// Asset type classification based on file extension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssetKind {
-    /// Image files (.png, .jpg, .jpeg, .gif, .webp, .avif)
-    Image,
-    /// Video files (.mp4, .mov, .webm, .avi)
-    Video,
-    /// Audio files (.mp3, .wav, .ogg, .flac, .aac)
-    Audio,
-    /// Large binary files (.onnx, .bin, .safetensors, .gguf)
-    LargeModel,
-    /// Small binary files (all other extensions)
-    Data,
-}
-
-impl AssetKind {
-    /// Infer asset kind from file extension.
-    fn from_extension(ext: &str) -> Self {
-        match ext.to_lowercase().as_str() {
-            // Image extensions
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "ico" => Self::Image,
-            // Video extensions
-            "mp4" | "mov" | "webm" | "avi" | "mkv" => Self::Video,
-            // Audio extensions
-            "mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a" => Self::Audio,
-            // Large model extensions (ML models, large binaries)
-            "onnx" | "safetensors" | "gguf" | "ggml" | "pt" | "pth" | "bin" => Self::LargeModel,
-            // Everything else is Data
-            _ => Self::Data,
-        }
-    }
-
-    /// Returns true if this asset kind supports embed mode.
-    fn supports_embed(&self) -> bool {
-        matches!(self, Self::Data)
-    }
-}
+use waterui_assets::AssetKind;
+use waterui_assets_plan::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
 
 /// Input to the `asset!` macro.
 struct AssetInput {
-    /// The asset path or URL.
     path: LitStr,
-    /// Whether to embed the asset at compile time.
     embed: bool,
 }
 
@@ -61,11 +26,8 @@ impl Parse for AssetInput {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
         let mut embed = false;
-
-        // Parse optional `embed = true`
         if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
-
             let key: Ident = input.parse()?;
             if key != "embed" {
                 return Err(syn::Error::new(
@@ -73,14 +35,38 @@ impl Parse for AssetInput {
                     format!("unknown option `{key}`, expected `embed`"),
                 ));
             }
-
             input.parse::<Token![=]>()?;
             let value: LitBool = input.parse()?;
             embed = value.value();
         }
-
         Ok(Self { path, embed })
     }
+}
+
+struct IncludeBundleInput {
+    path: LitStr,
+    mount: Ident,
+}
+
+impl Parse for IncludeBundleInput {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let path: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let as_ident: Ident = input.parse()?;
+        if as_ident != "as" {
+            return Err(syn::Error::new(as_ident.span(), "expected `as`"));
+        }
+        input.parse::<Token![=]>()?;
+        let mount: Ident = input.parse()?;
+        Ok(Self { path, mount })
+    }
+}
+
+#[derive(Default, Clone)]
+struct ModuleNode {
+    mount: Option<String>,
+    children: BTreeMap<String, ModuleNode>,
+    assets: Vec<PlannedAsset>,
 }
 
 /// Determine if a path is a remote URL.
@@ -119,198 +105,230 @@ fn is_loopback_host(host: &str) -> bool {
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Extract file extension from path.
 fn get_extension(path: &str) -> Option<&str> {
-    // Handle URLs by stripping query params
     let path_without_query = path.split('?').next().unwrap_or(path);
-
-    // Get the last path component
     let filename = path_without_query.rsplit('/').next()?;
-
-    // Get extension
     let dot_pos = filename.rfind('.')?;
     Some(&filename[dot_pos + 1..])
 }
 
-/// Load and type-infer assets at compile-time.
-///
-/// # Type Inference
-///
-/// The return type is automatically inferred based on file extension:
-///
-/// | Extension | Return Type |
-/// |-----------|-------------|
-/// | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.avif` | `Photo` |
-/// | `.mp4`, `.mov`, `.webm`, `.avi` | `Video` |
-/// | `.mp3`, `.wav`, `.ogg`, `.flac`, `.aac` | `Audio` |
-/// | `.onnx`, `.bin`, `.safetensors`, `.gguf` | `LargeFile` |
-/// | Others | `Data` |
-///
-/// # Sync vs Async
-///
-/// | Type | Local | Remote (https://) |
-/// |------|-------|-------------------|
-/// | `Photo` | Sync | Sync (URL-based) |
-/// | `Video` | Sync | Sync (URL-based) |
-/// | `Audio` | Sync | Sync (URL-based) |
-/// | `Data` | Sync | **Requires `.await`** |
-/// | `LargeFile` | **Requires `.await`** | **Requires `.await`** |
-///
-/// # Security
-///
-/// `http://` URLs are forbidden (except loopback hosts). Use `https://` for remote assets.
-///
-/// # Options
-///
-/// - `embed = true`: Embed the asset at compile time (only supported for `Data`).
-///
-/// # Examples
-///
-/// ```ignore
-/// // Images (Photo)
-/// let logo: Photo = asset!("assets/logo.png");
-/// let remote_img: Photo = asset!("https://example.com/image.jpg");
-///
-/// // Videos (Video)
-/// let intro: Video = asset!("assets/intro.mp4");
-///
-/// // Audio (Audio)
-/// let music: Audio = asset!("assets/music.mp3");
-///
-/// // Small binary data (Data)
-/// let config: Data = asset!("config.json");
-/// let remote_config: Data = asset!("https://api.example.com/config.json").await;
-///
-/// // Embedded data (compile-time)
-/// let shader: Data = asset!("shader.wgsl", embed = true);
-///
-/// // Large files (LargeFile) - always requires await
-/// let model: LargeFile = asset!("model.onnx").await;
-/// let remote_model: LargeFile = asset!("https://huggingface.co/model.onnx").await;
-/// ```
+fn compile_error(message: impl AsRef<str>, span: Span) -> TokenStream {
+    syn::Error::new(span, message.as_ref())
+        .to_compile_error()
+        .into()
+}
+
+fn crate_root() -> std::path::PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR must be set for WaterUI asset macros")
+}
+
+fn build_manifest() -> Result<BundleManifest, String> {
+    let crate_root = crate_root();
+    let assets_path = read_assets_path(&crate_root).map_err(|error| error.to_string())?;
+    plan_bundle(&crate_root, &assets_path).map_err(|error| error.to_string())
+}
+
+fn syn_ident(name: &str) -> syn::Ident {
+    syn::parse_str(name).unwrap_or_else(|error| panic!("invalid generated identifier '{name}': {error}"))
+}
+
+fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
+    let mut current = node;
+    let mut segments = asset.module_segments().into_iter().peekable();
+    let mount_ident = (!asset.mount.is_empty()).then(|| waterui_assets_plan::rust_identifier(&asset.mount));
+    while let Some(segment) = segments.next() {
+        let is_mount_root = mount_ident
+            .as_deref()
+            .is_some_and(|mount| mount == segment.as_str());
+        current = current.children.entry(segment).or_default();
+        if current.mount.is_none() && is_mount_root {
+            current.mount = Some(asset.mount.clone());
+        }
+    }
+    current.assets.push(asset);
+}
+
+fn bundle_tokens(mount: Option<&str>) -> proc_macro2::TokenStream {
+    match mount {
+        Some(mount_name) if !mount_name.is_empty() => quote! { ::waterui::Bundle::new(#mount_name) },
+        _ => quote! { ::waterui::Bundle::main() },
+    }
+}
+
+fn asset_type_tokens(kind: AssetKind) -> proc_macro2::TokenStream {
+    match kind {
+        AssetKind::Font => quote! { ::waterui::FontAsset },
+        AssetKind::Image => quote! { ::waterui::ImageAsset },
+        AssetKind::Video => quote! { ::waterui::VideoAsset },
+        AssetKind::Audio => quote! { ::waterui::AudioAsset },
+        AssetKind::LargeModel => quote! { ::waterui::LargeFileAsset },
+        AssetKind::Data => quote! { ::waterui::DataAsset },
+    }
+}
+
+fn asset_constructor_tokens(asset: &PlannedAsset) -> proc_macro2::TokenStream {
+    let bundle = bundle_tokens((!asset.mount.is_empty()).then_some(asset.mount.as_str()));
+    let relative = asset.relative_path.to_string_lossy().replace('\\', "/");
+    match asset.kind {
+        AssetKind::Font => quote! { ::waterui::FontAsset::new(#bundle, #relative) },
+        AssetKind::Image => quote! { ::waterui::ImageAsset::new(#bundle, #relative) },
+        AssetKind::Video => quote! { ::waterui::VideoAsset::new(#bundle, #relative) },
+        AssetKind::Audio => quote! { ::waterui::AudioAsset::new(#bundle, #relative) },
+        AssetKind::LargeModel => quote! { ::waterui::LargeFileAsset::new(#bundle, #relative) },
+        AssetKind::Data => quote! { ::waterui::DataAsset::new(#bundle, #relative) },
+    }
+}
+
+fn emit_module(node: &ModuleNode, current_mount: Option<&str>, root: bool) -> proc_macro2::TokenStream {
+    let bundle = bundle_tokens(node.mount.as_deref().or(current_mount));
+    let bundle_const = if root || node.mount.is_some() {
+        quote! { pub const BUNDLE: ::waterui::Bundle = #bundle; }
+    } else {
+        quote! {}
+    };
+
+    let mut child_tokens = Vec::new();
+    for (name, child) in &node.children {
+        let ident = syn_ident(name);
+        let body = emit_module(child, node.mount.as_deref().or(current_mount), false);
+        child_tokens.push(quote! {
+            pub mod #ident {
+                #body
+            }
+        });
+    }
+
+    let mut asset_tokens = Vec::new();
+    for asset in &node.assets {
+        let ident = syn_ident(&asset.item_name());
+        let ty = asset_type_tokens(asset.kind);
+        let ctor = asset_constructor_tokens(asset);
+        asset_tokens.push(quote! {
+            pub fn #ident() -> #ty {
+                #ctor
+            }
+        });
+    }
+
+    quote! {
+        #bundle_const
+        #(#child_tokens)*
+        #(#asset_tokens)*
+    }
+}
+
+#[proc_macro]
+pub fn assets(input: TokenStream) -> TokenStream {
+    if !proc_macro2::TokenStream::from(input).is_empty() {
+        return compile_error("assets!() does not accept arguments", Span::call_site());
+    }
+    let manifest = match build_manifest() {
+        Ok(manifest) => manifest,
+        Err(error) => return compile_error(error, Span::call_site()),
+    };
+    let mut root = ModuleNode::default();
+    for asset in manifest.assets {
+        insert_asset(&mut root, asset);
+    }
+    let body = emit_module(&root, None, true);
+    quote! {
+        pub mod assets {
+            #body
+        }
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn include_bundle(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as IncludeBundleInput);
+    let _ = input.path;
+    let _ = input.mount;
+    quote! { const _: () = (); }.into()
+}
+
 #[proc_macro]
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let path_str = input.path.value();
     let path_span = input.path.span();
 
-    // Check for http:// (not allowed except localhost)
     if path_str.starts_with("http://") && !is_loopback_http(&path_str) {
-        return syn::Error::new(
-            path_span,
+        return compile_error(
             "HTTP not allowed (use HTTPS). Only loopback hosts permit HTTP.",
-        )
-        .to_compile_error()
-        .into();
+            path_span,
+        );
     }
 
-    // Extract extension and infer type
     let extension = match get_extension(&path_str) {
         Some(ext) => ext,
-        None => {
-            return syn::Error::new(path_span, "Could not determine file extension")
-                .to_compile_error()
-                .into();
-        }
+        None => return compile_error("Could not determine file extension", path_span),
     };
 
     let kind = AssetKind::from_extension(extension);
     let is_remote = is_remote_url(&path_str);
-
-    // Check embed mode support
     if input.embed && !kind.supports_embed() {
         let type_name = match kind {
+            AssetKind::Font => "FontAsset",
             AssetKind::Image => "Photo",
             AssetKind::Video => "Video",
-            AssetKind::Audio => "Audio",
+            AssetKind::Audio => "AudioAsset",
             AssetKind::LargeModel => "LargeFile",
             AssetKind::Data => "Data",
         };
-        return syn::Error::new(
-            path_span,
+        return compile_error(
             format!("`embed = true` is not supported for {type_name}"),
-        )
-        .to_compile_error()
-        .into();
+            path_span,
+        );
     }
-
-    // Check embed mode with remote URL
     if input.embed && is_remote {
-        return syn::Error::new(path_span, "`embed = true` cannot be used with remote URLs")
-            .to_compile_error()
-            .into();
+        return compile_error("`embed = true` cannot be used with remote URLs", path_span);
     }
 
     let path_lit = &input.path;
-
-    // Generate code based on asset kind
     let output = match kind {
+        AssetKind::Font => quote! {
+            ::waterui::FontAsset::new(::waterui::Bundle::main(), #path_lit)
+        },
         AssetKind::Image => {
-            // Photo is always sync (URL-based)
             if is_remote {
-                quote! {
-                    ::waterui::Photo::new(#path_lit)
-                }
+                quote! { ::waterui::Photo::new(#path_lit) }
             } else {
-                // Local file: convert to file:// URL
-                // Note: The actual path resolution happens at runtime
-                quote! {
-                    ::waterui::Photo::from_path(#path_lit)
-                }
+                quote! { ::waterui::Photo::from_path(#path_lit) }
             }
         }
         AssetKind::Video => {
-            // Video is always sync (URL-based)
             if is_remote {
-                quote! {
-                    ::waterui::Video::new(#path_lit)
-                }
+                quote! { ::waterui::Video::new(#path_lit) }
             } else {
-                quote! {
-                    ::waterui::Video::from_path(#path_lit)
-                }
+                quote! { ::waterui::Video::new(::waterui::Url::from_file_path_str(#path_lit)) }
             }
         }
         AssetKind::Audio => {
-            // Audio is always sync (URL-based)
             if is_remote {
-                quote! {
-                    ::waterui::Audio::new(#path_lit)
-                }
-            } else {
-                quote! {
-                    ::waterui::Audio::from_path(#path_lit)
-                }
+                return compile_error(
+                    "Remote audio assets are not supported by `asset!()` yet; use your audio pipeline directly",
+                    path_span,
+                );
             }
+            quote! { ::waterui::AudioAsset::new(::waterui::Bundle::main(), #path_lit) }
         }
         AssetKind::Data => {
             if input.embed {
-                // Compile-time embedding
-                quote! {
-                    ::waterui::Data::from_static(include_bytes!(#path_lit))
-                }
+                quote! { ::waterui::Data::from_static(include_bytes!(#path_lit)) }
             } else if is_remote {
-                // Remote Data - returns a Future (needs .await)
-                quote! {
-                    ::waterui::Data::from_remote(#path_lit)
-                }
+                quote! { ::waterui::Data::from_remote(#path_lit) }
             } else {
-                // Local Data - sync
-                quote! {
-                    ::waterui::Data::from_local(#path_lit)
-                }
+                quote! { ::waterui::Data::from_local(#path_lit) }
             }
         }
         AssetKind::LargeModel => {
-            // LargeFile always requires async
             if is_remote {
-                quote! {
-                    ::waterui::LargeFile::from_remote(#path_lit)
-                }
+                quote! { ::waterui::LargeFile::from_remote(#path_lit) }
             } else {
-                quote! {
-                    ::waterui::LargeFile::from_local(#path_lit)
-                }
+                quote! { ::waterui::LargeFile::from_local(#path_lit) }
             }
         }
     };

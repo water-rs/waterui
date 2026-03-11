@@ -1,4 +1,5 @@
 #if os(iOS)
+import Darwin
 import UIKit
 import WaterUI
 
@@ -12,6 +13,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ) -> Bool {
         // Register custom fonts from dependencies
         WaterUIFonts.register()
+        if let assetsRoot = Bundle.main.resourceURL?.appendingPathComponent("waterui_assets").path {
+            setenv("WATERUI_ASSETS_ROOT", assetsRoot, 1)
+        }
 
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = WaterUIViewController()
@@ -21,6 +25,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 #elseif os(macOS)
+import Darwin
 import AppKit
 import WaterUI
 
@@ -63,6 +68,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register custom fonts from dependencies
         WaterUIFonts.register()
+        if let assetsRoot = Bundle.main.resourceURL?.appendingPathComponent("waterui_assets").path {
+            setenv("WATERUI_ASSETS_ROOT", assetsRoot, 1)
+        }
 
         if isAccessory {
             let context = WuiRootContext()
