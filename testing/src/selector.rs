@@ -162,6 +162,11 @@ impl ElementRef {
         app.perform_action(self.node_id, AccessibilityAction::Click, None)
     }
 
+    /// Requests accessibility focus on the element.
+    pub fn focus(&self, app: &mut MountedApp) -> bool {
+        app.perform_action(self.node_id, AccessibilityAction::Focus, None)
+    }
+
     /// Moves hover to the element center.
     pub fn hover(&self, app: &mut MountedApp) -> bool {
         let (x, y) = self.center();
