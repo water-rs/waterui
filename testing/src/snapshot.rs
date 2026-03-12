@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
+use waterui::graphics::SceneViewMergeToParent;
 use waterui_core::{Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
@@ -87,7 +88,7 @@ impl TestHost {
         renderer.set_frame_resources(surface.device(), surface.queue());
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
-        let env = self.env.clone();
+        let env = self.env.clone().extending(SceneViewMergeToParent);
         renderer.dispatch(view, &env, bounds);
         renderer.finish_rebuild_frame();
 

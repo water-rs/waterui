@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityRole;
-use waterui::component::vstack;
+use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
-use waterui::{View, ViewExt as _};
+use waterui::{Signal, SignalExt as _, View, ViewExt as _};
 use waterui_chart::{
     AreaData, AreaDatum, AreaSeries, BubblePoint, Candle, ChartAnchor, DataBounds, DataPoint,
     DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum,
@@ -11,7 +11,7 @@ use waterui_chart::{
 use waterui_testing::{MountedApp, Role, Selector, UiTest};
 
 pub const VIEWPORT_WIDTH: u32 = 320;
-pub const VIEWPORT_HEIGHT: u32 = 260;
+pub const VIEWPORT_HEIGHT: u32 = 320;
 pub const CHART_WIDTH: f32 = 240.0;
 pub const CHART_HEIGHT: f32 = 180.0;
 pub const SNAPSHOT_SUITE: &str = "semantic-selection";
@@ -131,11 +131,26 @@ pub fn semantic_chart_shell<V: View, F: View, S: View>(
 ) -> impl View {
     vstack((
         chart_surface(name, chart),
-        focused_readout.foreground(Srgb::WHITE).padding(),
-        selected_readout.foreground(Srgb::WHITE).padding(),
+        focused_readout.foreground(Srgb::WHITE).padding_with(6.0),
+        selected_readout.foreground(Srgb::WHITE).padding_with(6.0),
     ))
-    .spacing(8.0)
+    .spacing(6.0)
     .background(Srgb::BLACK)
+}
+
+pub fn readout_view<T, S>(
+    prefix: &'static str,
+    signal: S,
+    formatter: fn(&HitResult<T>) -> String,
+) -> impl View
+where
+    T: Clone + 'static,
+    S: Signal<Output = Option<HitResult<T>>> + 'static,
+    S::Guard: 'static,
+{
+    text(signal.map(move |hit| readout_text(prefix, hit, formatter)))
+        .caption()
+        .body()
 }
 
 pub fn image_selector(name: &str) -> Selector {
