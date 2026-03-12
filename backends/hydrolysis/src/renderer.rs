@@ -3881,8 +3881,13 @@ impl HydroNativeView for Native<Dynamic> {
         if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity) {
             return dimensions.size;
         }
-        let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| measure_view_dimensions(content, state, env))
+        let initial = dynamic.with_unconnected_view_mut(|slot| {
+            slot.take().map(|content| {
+                let normalized = normalize_layout_view(content, env);
+                let dimensions = measure_view_dimensions(&normalized, state, env);
+                *slot = Some(normalized);
+                dimensions
+            })
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node");
@@ -3910,9 +3915,18 @@ impl HydroNativeView for Native<Dynamic> {
             return dimensions.clone();
         }
 
-        let initial = dynamic.with_unconnected_view(|content| {
-            content
-                .map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
+        let initial = dynamic.with_unconnected_view_mut(|slot| {
+            slot.take().map(|content| {
+                let normalized = normalize_layout_view(content, env);
+                let dimensions = measure_view_dimensions_with_proposal(
+                    &normalized,
+                    proposal,
+                    state,
+                    env,
+                );
+                *slot = Some(normalized);
+                dimensions
+            })
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node");
@@ -8436,6 +8450,7 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
+            let content = normalize_layout_view(content, env);
             let dimensions = measure_view_dimensions(&content, state, env);
             state.dynamic_intrinsic_cache.insert(identity, dimensions);
             let local_ctx = RenderContext {
