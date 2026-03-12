@@ -5,6 +5,9 @@ use waterui_core::Environment;
 pub mod url;
 pub use url::Url;
 
+pub mod source;
+pub use source::{Delivery, MediaItem, SubtitleTrack};
+
 pub mod video;
 pub use video::{
     AspectRatio, Event, PlaybackPolicy, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume,
