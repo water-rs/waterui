@@ -27,8 +27,9 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_core::{IntoSignalF32, View, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
-    stack::Alignment,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    container::FixedContainer,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 // ============================================================================
@@ -76,16 +77,31 @@ impl UnitPoint {
 
 impl From<Alignment> for UnitPoint {
     fn from(alignment: Alignment) -> Self {
-        match alignment {
-            Alignment::TopLeading => Self::TOP_LEADING,
-            Alignment::Top => Self::TOP,
-            Alignment::TopTrailing => Self::TOP_TRAILING,
-            Alignment::Leading => Self::LEADING,
-            Alignment::Center => Self::CENTER,
-            Alignment::Trailing => Self::TRAILING,
-            Alignment::BottomLeading => Self::BOTTOM_LEADING,
-            Alignment::Bottom => Self::BOTTOM,
-            Alignment::BottomTrailing => Self::BOTTOM_TRAILING,
+        let horizontal = alignment.horizontal();
+        let vertical = alignment.vertical();
+        if horizontal == HorizontalAlignment::Leading && vertical == VerticalAlignment::Top {
+            Self::TOP_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing && vertical == VerticalAlignment::Top
+        {
+            Self::TOP_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading {
+            Self::LEADING
+        } else if horizontal == HorizontalAlignment::Trailing {
+            Self::TRAILING
+        } else if vertical == VerticalAlignment::Top {
+            Self::TOP
+        } else if vertical == VerticalAlignment::Bottom {
+            Self::BOTTOM
+        } else {
+            Self::CENTER
         }
     }
 }
@@ -281,7 +297,7 @@ impl Layout for PositionedLayout {
         children
             .iter()
             .map(|child| {
-                let intrinsic = child.size_that_fits(child_proposal);
+                let intrinsic = child.measure(child_proposal).size;
 
                 match &self.target {
                     PositionTarget::Absolute { x, y } => {
@@ -638,6 +654,7 @@ pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {
 mod tests {
     use super::*;
     use crate::StretchAxis;
+    use crate::ViewDimensions;
     use alloc::vec;
     use core::cell::Cell;
 
@@ -647,8 +664,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis
@@ -677,14 +694,14 @@ mod tests {
     }
 
     impl SubView for ProposalAwareView {
-        fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_width.set(proposal.width);
             self.last_height.set(proposal.height);
-            if proposal.width.is_some() || proposal.height.is_some() {
+            ViewDimensions::new(if proposal.width.is_some() || proposal.height.is_some() {
                 self.constrained
             } else {
                 self.intrinsic
-            }
+            })
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::Both

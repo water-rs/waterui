@@ -460,34 +460,46 @@ mod winit_impl {
 
     fn select_vello_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
         let preferred = preferred_surface_format(caps);
-        if supports_vello_surface_format(preferred) {
-            let linear = preferred.remove_srgb_suffix();
-            if preferred.is_srgb() && caps.formats.contains(&linear) {
-                return linear;
-            }
-            return preferred;
+        if supports_hydrolysis_surface_format(preferred) {
+            return normalize_surface_format(caps, preferred);
         }
 
         if let Some(format) = caps
             .formats
             .iter()
             .copied()
-            .find(|format| supports_vello_surface_format(*format))
+            .find(|format| supports_hydrolysis_surface_format(*format))
         {
-            return format.remove_srgb_suffix();
+            return normalize_surface_format(caps, format);
         }
 
         panic!(
-            "hydrolysis winit surface: Vello requires Rgba8/Bgra8 (linear or sRGB) surface formats, got {:?}",
+            "hydrolysis winit surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
             caps.formats
         );
     }
 
-    fn supports_vello_surface_format(format: wgpu::TextureFormat) -> bool {
+    fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
         matches!(
             format.remove_srgb_suffix(),
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+        ) || matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
         )
+    }
+
+    fn normalize_surface_format(
+        caps: &wgpu::SurfaceCapabilities,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::TextureFormat {
+        if format.is_srgb() {
+            let linear = format.remove_srgb_suffix();
+            if caps.formats.contains(&linear) {
+                return linear;
+            }
+        }
+        format
     }
 
     impl SurfaceProvider for WinitSurface {
@@ -579,11 +591,10 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                    if !scale_factor.is_finite() || *scale_factor <= 0.0 {
-                        panic!(
-                            "hydrolysis winit backend received invalid scale factor {scale_factor}"
-                        );
-                    }
+                    assert!(
+                        !(!scale_factor.is_finite() || *scale_factor <= 0.0),
+                        "hydrolysis winit backend received invalid scale factor {scale_factor}"
+                    );
                     let size = self.window.inner_size();
                     self.surface.resize(size.width, size.height);
                     self.pending_events.push(InputEvent::Resize {
@@ -734,17 +745,19 @@ mod winit_impl {
     }
 
     fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
-        if !scale_factor.is_finite() || scale_factor <= 0.0 {
-            panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
-        }
+        assert!(
+            !(!scale_factor.is_finite() || scale_factor <= 0.0),
+            "hydrolysis winit backend received invalid scale factor {scale_factor}"
+        );
         let logical = position.to_logical::<f64>(scale_factor);
         (logical.x as f32, logical.y as f32)
     }
 
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
-        if !scale_factor.is_finite() || scale_factor <= 0.0 {
-            panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
-        }
+        assert!(
+            !(!scale_factor.is_finite() || scale_factor <= 0.0),
+            "hydrolysis winit backend received invalid scale factor {scale_factor}"
+        );
         match delta {
             MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
             MouseScrollDelta::PixelDelta(delta) => {
@@ -820,9 +833,10 @@ mod winit_impl {
             };
             self.window.set_ime_purpose(purpose);
             let scale_factor = self.window.scale_factor();
-            if !scale_factor.is_finite() || scale_factor <= 0.0 {
-                panic!("hydrolysis winit backend received invalid scale factor {scale_factor}");
-            }
+            assert!(
+                !(!scale_factor.is_finite() || scale_factor <= 0.0),
+                "hydrolysis winit backend received invalid scale factor {scale_factor}"
+            );
             let cursor_origin =
                 LogicalPosition::new(state.x, state.y).to_physical::<f64>(scale_factor);
             let cursor_size = LogicalSize::new(state.width.max(1.0), state.height.max(1.0))

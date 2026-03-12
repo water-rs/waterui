@@ -1,10 +1,9 @@
 //! Area chart component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{draw_area, reactive_canvas};
+use crate::charts::canvas::{area_bounds, draw_area, interactive_cartesian_canvas};
 use crate::data::AreaData;
 
 /// Stacked area chart for cumulative data visualization.
@@ -42,10 +41,8 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 
 impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_area(ctx, &data);
-            })
+        interactive_cartesian_canvas(self.data, area_bounds, move |ctx, data, bounds| {
+            draw_area(ctx, data, bounds);
         })
     }
 }
