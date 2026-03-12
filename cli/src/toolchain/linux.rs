@@ -3,7 +3,7 @@
 use color_eyre::eyre;
 
 use crate::{
-    toolchain::{Installation, Toolchain, ToolchainError},
+    toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain},
     utils::{run_command, run_command_output_os, which},
 };
 
@@ -42,6 +42,30 @@ impl LinuxSystemPackagesInstallation {
     #[must_use]
     pub fn install_command_hint(&self) -> String {
         self.manager.install_hint(&self.missing_packages)
+    }
+
+    /// Build an installation plan for explicit package names using the detected manager.
+    ///
+    /// This reuses the existing Linux package-manager framework and is useful for
+    /// toolchains that discover missing capabilities via probes (for example,
+    /// pkg-config modules).
+    ///
+    /// # Errors
+    /// Returns an error when no supported package manager is available.
+    pub async fn from_packages(packages: Vec<String>) -> Result<Self, UnfixableToolchain> {
+        let Some(manager) = LinuxPackageManager::detect().await else {
+            return Err(UnfixableToolchain::new(
+                "Unable to detect Linux package manager",
+                unsupported_manager_hint(),
+            ));
+        };
+        if packages.is_empty() {
+            return Err(UnfixableToolchain::new(
+                "No packages were provided for automatic installation",
+                "Re-run `water doctor` and inspect diagnostics.",
+            ));
+        }
+        Ok(Self::new(manager, packages))
     }
 }
 
@@ -156,6 +180,8 @@ impl LinuxPackageManager {
         match self {
             Self::Apt => &[
                 "pkg-config",
+                "libgtk-4-dev",
+                "libpango1.0-dev",
                 "libwayland-dev",
                 "wayland-protocols",
                 "libasound2-dev",
@@ -163,9 +189,12 @@ impl LinuxPackageManager {
                 "libgbm-dev",
                 "libxcb1-dev",
                 "libclang-dev",
+                "libfontconfig-dev",
             ],
             Self::Dnf => &[
                 "pkgconf-pkg-config",
+                "gtk4-devel",
+                "pango-devel",
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-lib-devel",
@@ -173,9 +202,12 @@ impl LinuxPackageManager {
                 "mesa-libgbm-devel",
                 "libxcb-devel",
                 "clang-devel",
+                "fontconfig-devel",
             ],
             Self::Pacman => &[
                 "pkgconf",
+                "gtk4",
+                "pango",
                 "wayland",
                 "wayland-protocols",
                 "alsa-lib",
@@ -183,9 +215,12 @@ impl LinuxPackageManager {
                 "mesa",
                 "libxcb",
                 "clang",
+                "fontconfig",
             ],
             Self::Zypper => &[
                 "pkg-config",
+                "gtk4-devel",
+                "pango-devel",
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-devel",
@@ -193,9 +228,12 @@ impl LinuxPackageManager {
                 "Mesa-libgbm-devel",
                 "libxcb-devel",
                 "clang-devel",
+                "fontconfig-devel",
             ],
             Self::Apk => &[
                 "pkgconf",
+                "gtk4.0-dev",
+                "pango-dev",
                 "wayland-dev",
                 "wayland-protocols",
                 "alsa-lib-dev",
@@ -203,6 +241,7 @@ impl LinuxPackageManager {
                 "mesa-dev",
                 "libxcb-dev",
                 "clang-dev",
+                "fontconfig-dev",
             ],
         }
     }
@@ -230,6 +269,28 @@ impl LinuxPackageManager {
             Self::Apk => run_command_output_os("apk", ["info", "-e", package]).await?,
         };
         Ok(output.status.success())
+    }
+
+    fn package_for_gtk_pkg_config_probe(self, probe: &str) -> Option<&'static str> {
+        if probe.starts_with("gtk4") {
+            return Some(match self {
+                Self::Apt => "libgtk-4-dev",
+                Self::Dnf => "gtk4-devel",
+                Self::Pacman => "gtk4",
+                Self::Zypper => "gtk4-devel",
+                Self::Apk => "gtk4.0-dev",
+            });
+        }
+        if probe.starts_with("pango") {
+            return Some(match self {
+                Self::Apt => "libpango1.0-dev",
+                Self::Dnf => "pango-devel",
+                Self::Pacman => "pango",
+                Self::Zypper => "pango-devel",
+                Self::Apk => "pango-dev",
+            });
+        }
+        None
     }
 }
 
@@ -321,6 +382,88 @@ fn unsupported_manager_hint() -> String {
     )
 }
 
+/// Returns `true` when a supported Linux package manager is available.
+pub async fn has_supported_package_manager() -> bool {
+    LinuxPackageManager::detect().await.is_some()
+}
+
+/// Build an installation plan that repairs missing GTK pkg-config probes.
+///
+/// Supported probe names include `gtk4` and `pango>=1.50`.
+///
+/// # Errors
+/// Returns an error if no package manager is available or if a probe cannot be
+/// mapped to an installable system package.
+pub async fn gtk4_pkg_config_repair_installation(
+    missing_modules: &[String],
+) -> Result<LinuxSystemPackagesInstallation, UnfixableToolchain> {
+    let Some(manager) = LinuxPackageManager::detect().await else {
+        return Err(UnfixableToolchain::new(
+            "Unable to detect Linux package manager",
+            unsupported_manager_hint(),
+        ));
+    };
+
+    let mut packages = Vec::new();
+    for module in missing_modules {
+        let package = manager
+            .package_for_gtk_pkg_config_probe(module)
+            .ok_or_else(|| {
+                UnfixableToolchain::new(
+                    format!("No package mapping is defined for GTK probe `{module}`"),
+                    "Install a package that provides the missing module via pkg-config, then re-run `water doctor`.",
+                )
+            })?;
+        if !packages.iter().any(|existing| existing == package) {
+            packages.push(package.to_owned());
+        }
+    }
+
+    LinuxSystemPackagesInstallation::from_packages(packages).await
+}
+
+/// Install named packages with the detected Linux package manager.
+///
+/// # Errors
+/// Returns an error when no supported package manager is available, or when
+/// installation fails.
+pub async fn install_named_packages(packages: &[&'static str]) -> eyre::Result<()> {
+    let Some(manager) = LinuxPackageManager::detect().await else {
+        return Err(eyre::eyre!(
+            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
+        ));
+    };
+
+    let packages: Vec<String> = packages
+        .iter()
+        .map(|package| (*package).to_string())
+        .collect();
+    install_missing_packages(manager, &packages).await
+}
+
+/// Install a JDK package using the detected Linux package manager.
+///
+/// # Errors
+/// Returns an error when no supported package manager is available, or when
+/// installation fails.
+pub async fn install_java_jdk() -> eyre::Result<()> {
+    let Some(manager) = LinuxPackageManager::detect().await else {
+        return Err(eyre::eyre!(
+            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
+        ));
+    };
+
+    let packages: Vec<String> = match manager {
+        LinuxPackageManager::Apt => vec![String::from("openjdk-21-jdk")],
+        LinuxPackageManager::Dnf => vec![String::from("java-21-openjdk-devel")],
+        LinuxPackageManager::Pacman => vec![String::from("jdk-openjdk")],
+        LinuxPackageManager::Zypper => vec![String::from("java-21-openjdk-devel")],
+        LinuxPackageManager::Apk => vec![String::from("openjdk21-jdk")],
+    };
+
+    install_missing_packages(manager, &packages).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::LinuxPackageManager;
@@ -328,12 +471,15 @@ mod tests {
     #[test]
     fn dnf_packages_include_validated_core_deps() {
         let required = LinuxPackageManager::Dnf.required_packages();
+        assert!(required.contains(&"gtk4-devel"));
+        assert!(required.contains(&"pango-devel"));
         assert!(required.contains(&"wayland-devel"));
         assert!(required.contains(&"libva-devel"));
         assert!(required.contains(&"mesa-libgbm-devel"));
         assert!(required.contains(&"libxcb-devel"));
         assert!(required.contains(&"alsa-lib-devel"));
         assert!(required.contains(&"clang-devel"));
+        assert!(required.contains(&"fontconfig-devel"));
     }
 
     #[test]
@@ -344,9 +490,28 @@ mod tests {
     }
 
     #[test]
+    fn apt_required_packages_include_gtk4_dev() {
+        let required = LinuxPackageManager::Apt.required_packages();
+        assert!(required.contains(&"libgtk-4-dev"));
+        assert!(required.contains(&"libpango1.0-dev"));
+    }
+
+    #[test]
     fn pacman_hint_uses_needed_flag() {
         let hint = LinuxPackageManager::Pacman
             .install_hint(&[String::from("wayland"), String::from("libva")]);
         assert_eq!(hint, "sudo pacman -S --noconfirm --needed wayland libva");
+    }
+
+    #[test]
+    fn dnf_probe_mapping_covers_pango_and_gtk4() {
+        assert_eq!(
+            LinuxPackageManager::Dnf.package_for_gtk_pkg_config_probe("gtk4"),
+            Some("gtk4-devel")
+        );
+        assert_eq!(
+            LinuxPackageManager::Dnf.package_for_gtk_pkg_config_probe("pango>=1.50"),
+            Some("pango-devel")
+        );
     }
 }
