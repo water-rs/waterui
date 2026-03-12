@@ -371,6 +371,7 @@ async fn check_toolchain_for_backend(
             {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
+            toolchain_checks::check_hydrolysis().await?;
         }
     }
     Ok(())
