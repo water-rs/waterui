@@ -2,10 +2,13 @@
 //!
 //! This module provides two types of event handling:
 //! - [`LifeCycleHook`] - One-time handlers for lifecycle events (appear/disappear)
-//! - [`OnEvent`] - Repeatable handlers for interaction events (hover enter/exit)
+//! - [`OnEvent`] - Repeatable handlers for interaction events (hover enter/move/exit)
 
 use crate::{
-    handler::{BoxedAction, BoxedActionOnce, boxed_action, boxed_action_once},
+    handler::{
+        BoxedAction, BoxedActionOnce, boxed_action, boxed_action_once, boxed_action_with_env,
+    },
+    layout::Point,
     metadata::MetadataKey,
 };
 
@@ -72,12 +75,29 @@ impl core::fmt::Debug for LifeCycleHook {
     }
 }
 
+/// Pointer hover event carrying the current local pointer location.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HoverEvent {
+    /// Current local pointer location in logical points.
+    pub location: Point,
+}
+
+impl HoverEvent {
+    /// Creates a new hover event payload.
+    #[must_use]
+    pub const fn new(location: Point) -> Self {
+        Self { location }
+    }
+}
+
 /// Interaction events that can occur multiple times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Event {
     /// The event representing when the cursor enters a component's bounds.
     HoverEnter,
+    /// The event representing pointer motion within a component's bounds.
+    HoverMove,
     /// The event representing when the cursor exits a component's bounds.
     HoverExit,
 }
@@ -85,7 +105,7 @@ pub enum Event {
 /// An event handler for repeatable interaction events.
 ///
 /// This handler can be called multiple times, suitable for events like
-/// hover enter/exit that may occur repeatedly during user interaction.
+/// hover enter/move/exit that may occur repeatedly during user interaction.
 pub struct OnEvent {
     event: Event,
     handler: BoxedAction<()>,
@@ -105,6 +125,18 @@ impl OnEvent {
         Self {
             event,
             handler: boxed_action(handler),
+        }
+    }
+
+    /// Creates a new event handler that reads payload from the environment.
+    #[must_use]
+    pub fn new_with_env(
+        event: Event,
+        handler: impl FnMut(&crate::Environment) + 'static,
+    ) -> Self {
+        Self {
+            event,
+            handler: boxed_action_with_env(handler),
         }
     }
 
