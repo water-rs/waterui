@@ -117,6 +117,24 @@ pub(crate) struct CircleObstacleConfig {
     pub radius: f32,
 }
 
+/// Internal particle-particle interaction configuration.
+#[derive(Clone, Debug)]
+pub(crate) struct ParticleInteractionConfig {
+    pub enabled: bool,
+    pub radius: f32,
+    pub strength: f32,
+}
+
+impl Default for ParticleInteractionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            radius: 0.0,
+            strength: 0.0,
+        }
+    }
+}
+
 /// Internal collision configuration.
 #[derive(Clone, Debug)]
 pub(crate) struct CollisionConfig {
@@ -147,5 +165,6 @@ pub(crate) struct ParticleConfig {
     pub particle: ParticleProps,
     pub environment: EnvironmentConfig,
     pub collision: CollisionConfig,
+    pub interaction: ParticleInteractionConfig,
     pub blend_mode: BlendMode,
 }

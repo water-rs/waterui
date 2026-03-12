@@ -247,6 +247,7 @@ fn bounce_box() -> impl View {
         )
         .gravity(0.0, 1.6)
         .turbulence(0.25)
+        .collide_with_particles(0.01, 16.0)
         .collide_with_rect(0.08, 0.08, 0.84, 0.84)
         .collide_with_circle_obstacle(0.38, 0.34, 0.06)
         .collide_with_circle_obstacle(0.5, 0.36, 0.08)
