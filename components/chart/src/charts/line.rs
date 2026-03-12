@@ -9,6 +9,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{draw_line, interactive_signal_canvas, point_bounds, point_geometry};
+use crate::composition::ChartComposition;
 use crate::data::DataPoint;
 use crate::interaction::{HitResult, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
@@ -24,6 +25,7 @@ pub struct LineChart<S: Signal<Output = Vec<DataPoint>>> {
     show_fill: bool,
     fill_opacity: f32,
     selection: SelectionBindings<DataPoint>,
+    composition: ChartComposition<DataPoint>,
 }
 
 impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
@@ -36,8 +38,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
             show_fill: false,
             fill_opacity: 0.3,
             selection: SelectionBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(DataPoint);
 
     #[must_use]
     pub fn color(mut self, color: Srgb) -> Self {
@@ -98,6 +103,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
         let show_fill = self.show_fill;
         let fill_opacity = self.fill_opacity;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = point_bounds(data);
@@ -115,6 +121,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
                 );
             },
             self.selection,
+            self.composition,
         )
     }
 }

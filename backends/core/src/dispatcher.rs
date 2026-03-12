@@ -12,7 +12,7 @@ use core::{
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, LocalStateScope, View};
 
 /// Handler that accepts a stack-allocated view via `&mut dyn Any` (`Option<V>` slot).
 type RawHandlerFn<T, C, R> = Box<dyn Fn(&mut T, C, &mut dyn Any, &Environment) -> R>;
@@ -203,7 +203,10 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
         }
 
         // No handler found: expand body() and recurse — monomorphized, zero allocation
-        self.dispatch(view.body(env), env, context)
+        let body_env = env
+            .get::<LocalStateScope>()
+            .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+        self.dispatch(view.body(&body_env), &body_env, context)
     }
 
     /// Internal: dispatches an already-boxed `AnyView` by its inner `TypeId`.
@@ -218,7 +221,10 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             (entry.boxed)(&mut self.state, context, view, env)
         } else {
             // body() returns impl View which AnyView::new wraps back into AnyView
-            self.dispatch_boxed(AnyView::new(view.body(env)), env, context)
+            let body_env = env
+                .get::<LocalStateScope>()
+                .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+            self.dispatch_boxed(AnyView::new(view.body(&body_env)), &body_env, context)
         }
     }
 
