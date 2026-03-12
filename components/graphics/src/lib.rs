@@ -29,6 +29,12 @@ pub mod prewarm;
 /// Shared shader sources.
 pub mod shaders;
 
+/// Offscreen image generators.
+pub mod image_generator;
+
+/// Offscreen image analysis helpers.
+pub mod image_analysis;
+
 /// Engine-neutral 2D scene abstraction.
 pub mod scene2d;
 
@@ -43,6 +49,8 @@ pub mod view_effect;
 
 /// Filter-based view effects using the Filter trait system.
 pub mod filter_view;
+/// Multi-input filters (blend/mask/transition/displacement/depth/temporal).
+pub mod multi_input_filter;
 
 // Re-export key types for user convenience.
 pub use gpu_surface::{
@@ -64,9 +72,33 @@ pub use view_effect::{
 };
 
 pub use filter_view::{
-    AppliedFilter, Blur, Brightness, Contrast, FilterAdapter, FilterContext, FilterInput,
-    FilterOutput, FilterViewExt, Filtered, FilteredView, GpuFilter, Grayscale, HdrPolicy,
-    HueRotation, Invert, Saturation, Sepia, Sharpen, Vignette,
+    AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
+    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterContext, FilterInput, FilterOutput,
+    FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, GpuFilter, Grayscale,
+    HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, MirrorTile,
+    MotionBlur, PerspectiveCorrection, PerspectiveTransform, PinchDistortion, Pixellate,
+    Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
+    VortexDistortion, WhitePoint, ZoomBlur,
+};
+pub use multi_input_filter::{
+    BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
+    DepthAwareBlur, DepthAwareBlurFilter, DisplacementTransitionToImage,
+    DisplacementTransitionToImageFilter, DisplacementWarp, DisplacementWarpFilter, FilterImage,
+    GuidedSmooth, GuidedSmoothFilter, LutColorGrade, LutColorGradeFilter, LutImage, MaskedBlur,
+    MaskedBlurFilter, MultiInputFilter, RadialTransitionToImage, RadialTransitionToImageFilter,
+    SwipeTransitionToImage, SwipeTransitionToImageFilter, TemporalDenoise, TemporalDenoiseFilter,
+    ToneCurve, ToneCurveFilter, TransitionDirection, TransitionToImage, TransitionToImageFilter,
+    ZoomTransitionToImage, ZoomTransitionToImageFilter, background_replace_filter,
+    blend_with_image_filter, depth_aware_blur_filter, displacement_transition_to_image_filter,
+    displacement_warp_filter, guided_smooth_filter, lut_color_grade_filter, masked_blur_filter,
+    radial_transition_to_image_filter, swipe_transition_to_image_filter, temporal_denoise_filter,
+    tone_curve_filter, transition_to_image_filter, zoom_transition_to_image_filter,
+};
+
+pub use image_analysis::{DominantColor, Histogram, ImageAnalysis, MinMaxLuma};
+pub use image_generator::{
+    CheckerboardGenerator, DotGridGenerator, GeneratedImage, ImageGenerator,
+    LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};

@@ -3,7 +3,10 @@
 use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{Layout, Point, ProposalSize, Rect, Size, SubView, container::FixedContainer};
+use crate::{
+    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
+    VerticalAlignment, container::FixedContainer,
+};
 
 /// Layout that insets its single child by the configured edge values.
 #[derive(Debug, Clone)]
@@ -26,7 +29,7 @@ impl Layout for PaddingLayout {
         // Measure the child
         let child_size = children
             .first()
-            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
+            .map_or(Size::zero(), |c| c.measure(child_proposal).size);
 
         // Handle infinite dimensions
         let child_width = if child_size.width.is_infinite() {
@@ -65,6 +68,28 @@ impl Layout for PaddingLayout {
         );
 
         vec![Rect::new(child_origin, child_size)]
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_horizontal(alignment))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 }
 
@@ -183,14 +208,15 @@ impl View for Padding {
 mod tests {
     use super::*;
     use crate::StretchAxis;
+    use crate::ViewDimensions;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None

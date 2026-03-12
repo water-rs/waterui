@@ -5,11 +5,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_pie, reactive_canvas};
+use crate::charts::canvas::{draw_pie, signal_canvas};
 use crate::data::DataPoint;
 use crate::params::{ChartParamError, DonutInnerRadius};
 
@@ -89,11 +88,9 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> 
     fn body(self, _env: &Environment) -> impl View {
         let colors = self.colors;
         let inner_radius = self.inner_radius;
-        reactive_canvas(self.data, move |data| {
+        signal_canvas(self.data, move |ctx, data| {
             let colors = colors.clone();
-            Canvas::new(move |ctx| {
-                draw_pie(ctx, &data, &colors, inner_radius);
-            })
+            draw_pie(ctx, data, &colors, inner_radius);
         })
     }
 }

@@ -472,6 +472,7 @@ impl Project {
                 .map(|p| p.display().to_string()),
             permissions: HashMap::default(),
             app: None,
+            theme: None,
         };
 
         // Save Water.toml
@@ -785,6 +786,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use waterui_assets_plan::ThemeConfig;
 use smol::{fs::read_to_string, process::Command, unblock};
 
 use crate::{
@@ -816,6 +818,9 @@ pub struct Manifest {
     /// App-only configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<AppConfig>,
+    /// Cross-platform app theme slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeConfig>,
 }
 
 /// Permission entry for playground projects.
@@ -905,6 +910,7 @@ impl Manifest {
             waterui_path: None,
             permissions: HashMap::default(),
             app: None,
+            theme: None,
         }
     }
 }

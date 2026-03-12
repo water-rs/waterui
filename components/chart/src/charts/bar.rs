@@ -5,11 +5,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_bar, reactive_canvas};
+use crate::charts::canvas::{bar_bounds, draw_bar, interactive_cartesian_canvas};
 use crate::data::DataPoint;
 
 /// Bar chart visualization.
@@ -58,10 +57,12 @@ impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> {
     fn body(self, _env: &Environment) -> impl View {
         let color = self.color;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_bar(ctx, &data, color);
-            })
-        })
+        interactive_cartesian_canvas(
+            self.data,
+            |data: &Vec<DataPoint>| bar_bounds(data),
+            move |ctx, data, bounds| {
+                draw_bar(ctx, data, bounds, color);
+            },
+        )
     }
 }

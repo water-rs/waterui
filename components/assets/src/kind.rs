@@ -5,6 +5,10 @@
 /// Used by the `asset!` macro to determine the appropriate return type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
+    /// Font files (.ttf, .otf, .ttc, .otc, .woff, .woff2)
+    /// Returns: `FontAsset`
+    Font,
+
     /// Image files (.png, .jpg, .jpeg, .gif, .webp, .avif)
     /// Returns: `Photo`
     Image,
@@ -44,8 +48,10 @@ impl AssetKind {
         // Note: const fn cannot use match on &str directly in stable Rust,
         // so we use a helper approach
         match ext.as_bytes() {
+            // Font extensions
+            b"ttf" | b"otf" | b"ttc" | b"otc" | b"woff" | b"woff2" => Self::Font,
             // Image extensions
-            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" => Self::Image,
+            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" | b"svg" => Self::Image,
             // Video extensions
             b"mp4" | b"mov" | b"webm" | b"avi" | b"mkv" => Self::Video,
             // Audio extensions
@@ -76,6 +82,11 @@ impl AssetKind {
     pub const fn supports_embed(&self) -> bool {
         matches!(self, Self::Data)
     }
+
+    #[must_use]
+    pub const fn is_font(&self) -> bool {
+        matches!(self, Self::Font)
+    }
 }
 
 #[cfg(test)]
@@ -89,6 +100,7 @@ mod tests {
         assert_eq!(AssetKind::from_extension("jpeg"), AssetKind::Image);
         assert_eq!(AssetKind::from_extension("gif"), AssetKind::Image);
         assert_eq!(AssetKind::from_extension("webp"), AssetKind::Image);
+        assert_eq!(AssetKind::from_extension("svg"), AssetKind::Image);
     }
 
     #[test]
@@ -103,6 +115,13 @@ mod tests {
         assert_eq!(AssetKind::from_extension("mp3"), AssetKind::Audio);
         assert_eq!(AssetKind::from_extension("wav"), AssetKind::Audio);
         assert_eq!(AssetKind::from_extension("ogg"), AssetKind::Audio);
+    }
+
+    #[test]
+    fn test_font_extensions() {
+        assert_eq!(AssetKind::from_extension("ttf"), AssetKind::Font);
+        assert_eq!(AssetKind::from_extension("otf"), AssetKind::Font);
+        assert_eq!(AssetKind::from_extension("woff2"), AssetKind::Font);
     }
 
     #[test]

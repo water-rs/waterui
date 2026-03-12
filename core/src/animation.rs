@@ -472,12 +472,14 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
-        if !stiffness.is_finite() || stiffness <= 0.0 {
-            panic!("Animation::spring requires finite stiffness > 0");
-        }
-        if !damping.is_finite() || damping < 0.0 {
-            panic!("Animation::spring requires finite damping >= 0");
-        }
+        assert!(
+            !(!stiffness.is_finite() || stiffness <= 0.0),
+            "Animation::spring requires finite stiffness > 0"
+        );
+        assert!(
+            !(!damping.is_finite() || damping < 0.0),
+            "Animation::spring requires finite damping >= 0"
+        );
         Self::Spring { stiffness, damping }
     }
 
@@ -500,12 +502,14 @@ impl Animation {
     /// let animation = Animation::bezier(Duration::from_millis(400), 0.25, 0.1, 0.25, 1.0);
     /// ```
     pub const fn bezier(duration: Duration, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        if !x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite() {
-            panic!("Animation::bezier requires finite control points");
-        }
-        if x1 < 0.0 || x1 > 1.0 || x2 < 0.0 || x2 > 1.0 {
-            panic!("Animation::bezier requires x1/x2 in [0, 1]");
-        }
+        assert!(
+            !(!x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite()),
+            "Animation::bezier requires finite control points"
+        );
+        assert!(
+            !(x1 < 0.0 || x1 > 1.0 || x2 < 0.0 || x2 > 1.0),
+            "Animation::bezier requires x1/x2 in [0, 1]"
+        );
         Self::Bezier {
             duration,
             x1,
