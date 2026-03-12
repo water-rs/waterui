@@ -37,7 +37,7 @@ use waterui_core::{
     Binding, Computed, binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed,
 };
 
-use crate::Url;
+use crate::source::MediaItem;
 
 /// Aspect ratio mode for video playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -152,8 +152,8 @@ type OnEvent = Box<dyn Fn(Event) + 'static>;
 /// This is a raw video view that displays video content without any native controls.
 /// Use this when you want to build your own custom video UI.
 pub struct VideoConfig {
-    /// The URL of the video source.
-    pub source: Computed<Url>,
+    /// The media item to play.
+    pub source: Computed<MediaItem>,
     /// The volume of the video.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -201,7 +201,7 @@ configurable!(
 
 impl Video {
     /// Creates a new raw video view.
-    pub fn new(source: impl IntoComputed<Url>) -> Self {
+    pub fn new(source: impl IntoComputed<MediaItem>) -> Self {
         Self(VideoConfig {
             source: source.into_computed(),
             volume: binding(0.5),
@@ -296,8 +296,8 @@ impl Video {
 ///
 /// This configuration defines a full-featured video player with native controls.
 pub struct VideoPlayerConfig {
-    /// The URL of the video source.
-    pub source: Computed<Url>,
+    /// The media item to play.
+    pub source: Computed<MediaItem>,
     /// The volume of the video player.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -346,7 +346,7 @@ configurable!(
 
 impl VideoPlayer {
     /// Creates a new video player with native controls.
-    pub fn new(source: impl IntoComputed<Url>) -> Self {
+    pub fn new(source: impl IntoComputed<MediaItem>) -> Self {
         Self(VideoPlayerConfig {
             source: source.into_computed(),
             volume: binding(0.5),
