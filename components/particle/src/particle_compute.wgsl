@@ -16,10 +16,13 @@ struct CollisionUniforms {
     enabled: u32,
     restitution: f32,
     surface_friction: f32,
-    obstacle_enabled: u32,
+    circle_obstacle_count: u32,
     bounds: vec4<f32>,
-    obstacle_center: vec2<f32>,
-    obstacle_radius: f32,
+}
+
+struct CircleObstacle {
+    center: vec2<f32>,
+    radius: f32,
     _pad0: f32,
 }
 
@@ -52,6 +55,7 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(2) var<storage, read> circle_obstacles: array<CircleObstacle>;
 
 const TAU: f32 = 6.283185307179586;
 
@@ -117,13 +121,12 @@ fn apply_bounds_collision(particle: ptr<function, Particle>) {
     }
 }
 
-fn apply_circle_obstacle_collision(particle: ptr<function, Particle>) {
-    if (uniforms.collision.obstacle_enabled == 0u) {
-        return;
-    }
-
-    let combined_radius = uniforms.collision.obstacle_radius + (*particle).size;
-    let to_particle = (*particle).pos - uniforms.collision.obstacle_center;
+fn apply_circle_obstacle_collision(
+    particle: ptr<function, Particle>,
+    obstacle: CircleObstacle,
+) {
+    let combined_radius = obstacle.radius + (*particle).size;
+    let to_particle = (*particle).pos - obstacle.center;
     let distance_sq = dot(to_particle, to_particle);
     if (distance_sq >= combined_radius * combined_radius) {
         return;
@@ -137,7 +140,7 @@ fn apply_circle_obstacle_collision(particle: ptr<function, Particle>) {
         normal = normalize(-(*particle).vel);
     }
 
-    (*particle).pos = uniforms.collision.obstacle_center + normal * combined_radius;
+    (*particle).pos = obstacle.center + normal * combined_radius;
 
     let normal_velocity = dot((*particle).vel, normal);
     if (normal_velocity >= 0.0) {
@@ -147,6 +150,12 @@ fn apply_circle_obstacle_collision(particle: ptr<function, Particle>) {
     let tangent_velocity = (*particle).vel - normal * normal_velocity;
     (*particle).vel = tangent_velocity * uniforms.collision.surface_friction
         - normal * normal_velocity * uniforms.collision.restitution;
+}
+
+fn apply_circle_obstacle_collisions(particle: ptr<function, Particle>) {
+    for (var i = 0u; i < uniforms.collision.circle_obstacle_count; i += 1u) {
+        apply_circle_obstacle_collision(particle, circle_obstacles[i]);
+    }
 }
 
 @compute @workgroup_size(64)
@@ -171,7 +180,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         p.pos += p.vel * uniforms.dt;
         apply_bounds_collision(&p);
-        apply_circle_obstacle_collision(&p);
+        apply_circle_obstacle_collisions(&p);
         p.rotation += p.rot_speed * uniforms.dt;
         p.life -= uniforms.dt;
     } else {
