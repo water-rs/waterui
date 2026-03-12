@@ -292,7 +292,7 @@ impl Project {
         }
 
         // Clean GTK4 backend if configured
-        if self.gtk4_backend().is_some() || self.is_playground() {
+        if self.gtk4_backend().is_some() || (self.is_playground() && cfg!(target_os = "linux")) {
             clean_gtk4(self).await?;
         }
 
@@ -569,6 +569,12 @@ impl Project {
     /// Returns an error if scaffolding fails.
     pub async fn init_gtk4_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
         use crate::{backend::Backend, gtk4::backend::Gtk4Backend};
+
+        if !cfg!(target_os = "linux") {
+            return Err(crate::backend::FailToInitBackend::Io(
+                std::io::Error::other("GTK4 backend is only supported on Linux hosts"),
+            ));
+        }
 
         let backend = Gtk4Backend::init(self).await?;
         self.manifest.backends.set_gtk4(backend);

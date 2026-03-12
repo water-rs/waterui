@@ -6,6 +6,7 @@
 //! a `GpuSurface` rendered by hydrolysis.
 
 mod animation;
+mod env;
 mod gesture;
 mod gpu_view;
 mod platform;
