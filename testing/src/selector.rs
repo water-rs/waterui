@@ -157,9 +157,32 @@ impl ElementRef {
         self.bounds().center()
     }
 
+    #[must_use]
+    pub fn normalized_point(&self, normalized_x: f32, normalized_y: f32) -> (f32, f32) {
+        assert!(
+            normalized_x.is_finite() && normalized_y.is_finite(),
+            "waterui-testing normalized coordinates must be finite"
+        );
+        assert!(
+            (0.0..=1.0).contains(&normalized_x) && (0.0..=1.0).contains(&normalized_y),
+            "waterui-testing normalized coordinates must be within [0, 1]"
+        );
+        let bounds = self.bounds();
+        (
+            bounds.x() + bounds.width() * normalized_x,
+            bounds.y() + bounds.height() * normalized_y,
+        )
+    }
+
     /// Performs a click/tap action.
     pub fn tap(&self, app: &mut MountedApp) -> bool {
         app.perform_action(self.node_id, AccessibilityAction::Click, None)
+    }
+
+    /// Performs a pointer tap at the provided normalized coordinates.
+    pub fn tap_at(&self, app: &mut MountedApp, normalized_x: f32, normalized_y: f32) -> bool {
+        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        app.tap_at(x, y)
     }
 
     /// Requests accessibility focus on the element.
@@ -173,10 +196,30 @@ impl ElementRef {
         app.hover_at(x, y)
     }
 
+    /// Moves hover to the provided normalized coordinates within the element.
+    pub fn hover_at(&self, app: &mut MountedApp, normalized_x: f32, normalized_y: f32) -> bool {
+        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        app.hover_at(x, y)
+    }
+
     /// Drags from the element center by the provided delta.
     pub fn drag_by(&self, app: &mut MountedApp, dx: f32, dy: f32) -> bool {
         let (x, y) = self.center();
         app.drag_from_to(x, y, x + dx, y + dy)
+    }
+
+    /// Drags between two normalized coordinates within the element.
+    pub fn drag_between(
+        &self,
+        app: &mut MountedApp,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+    ) -> bool {
+        let (start_x, start_y) = self.normalized_point(from_x, from_y);
+        let (end_x, end_y) = self.normalized_point(to_x, to_y);
+        app.drag_from_to(start_x, start_y, end_x, end_y)
     }
 
     /// Applies a magnification gesture centered on the element.
