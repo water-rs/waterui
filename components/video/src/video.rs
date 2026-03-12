@@ -66,6 +66,18 @@ pub enum AspectRatio {
 /// - When unmuted, `-0.7` becomes `0.7` again
 pub type Volume = f32;
 
+/// Subtitle track selection policy for a player instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubtitleSelection {
+    /// Use the player's default choice.
+    #[default]
+    Auto,
+    /// Disable subtitle rendering.
+    Off,
+    /// Force a specific sidecar subtitle track by index in [`MediaItem::subtitle_tracks`].
+    Track(usize),
+}
+
 /// Playback strategy for network and realtime sources.
 ///
 /// `Video` / `VideoPlayer` use one policy object so apps can explicitly choose
@@ -154,6 +166,8 @@ type OnEvent = Box<dyn Fn(Event) + 'static>;
 pub struct VideoConfig {
     /// The media item to play.
     pub source: Computed<MediaItem>,
+    /// Sidecar subtitle selection policy.
+    pub subtitle_selection: Binding<SubtitleSelection>,
     /// The volume of the video.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -204,6 +218,7 @@ impl Video {
     pub fn new(source: impl IntoComputed<MediaItem>) -> Self {
         Self(VideoConfig {
             source: source.into_computed(),
+            subtitle_selection: binding(SubtitleSelection::Auto),
             volume: binding(0.5),
             playback_rate: binding(1.0),
             preserve_pitch: binding(true),
@@ -239,6 +254,13 @@ impl Video {
     #[must_use]
     pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
         self.0.on_event = Box::new(handler);
+        self
+    }
+
+    /// Sets subtitle selection binding for the video.
+    #[must_use]
+    pub fn subtitle_selection(mut self, subtitle_selection: &Binding<SubtitleSelection>) -> Self {
+        self.0.subtitle_selection = subtitle_selection.clone();
         self
     }
 
@@ -298,6 +320,8 @@ impl Video {
 pub struct VideoPlayerConfig {
     /// The media item to play.
     pub source: Computed<MediaItem>,
+    /// Sidecar subtitle selection policy.
+    pub subtitle_selection: Binding<SubtitleSelection>,
     /// The volume of the video player.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -349,6 +373,7 @@ impl VideoPlayer {
     pub fn new(source: impl IntoComputed<MediaItem>) -> Self {
         Self(VideoPlayerConfig {
             source: source.into_computed(),
+            subtitle_selection: binding(SubtitleSelection::Auto),
             volume: binding(0.5),
             playback_rate: binding(1.0),
             preserve_pitch: binding(true),
@@ -384,6 +409,13 @@ impl VideoPlayer {
     #[must_use]
     pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
         self.0.on_event = Box::new(handler);
+        self
+    }
+
+    /// Sets subtitle selection binding for the video player.
+    #[must_use]
+    pub fn subtitle_selection(mut self, subtitle_selection: &Binding<SubtitleSelection>) -> Self {
+        self.0.subtitle_selection = subtitle_selection.clone();
         self
     }
 
