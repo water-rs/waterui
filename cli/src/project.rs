@@ -201,6 +201,18 @@ impl Project {
         self.manifest.backends.path().join(B::DEFAULT_PATH)
     }
 
+    /// Get the full path to the managed native FFI companion crate.
+    #[must_use]
+    pub fn ffi_crate_path(&self) -> PathBuf {
+        self.root.join(self.ffi_crate_relative_path())
+    }
+
+    /// Get the relative path to the managed native FFI companion crate from project root.
+    #[must_use]
+    pub fn ffi_crate_relative_path(&self) -> PathBuf {
+        self.manifest.backends.path().join("ffi")
+    }
+
     /// Get the Android backend configuration if available.
     #[must_use]
     pub const fn android_backend(&self) -> Option<&AndroidBackend> {
@@ -299,6 +311,11 @@ impl Project {
         // Clean hydrolysis backend if configured
         if self.hydrolysis_backend().is_some() || self.is_playground() {
             clean_hydrolysis(self).await?;
+        }
+
+        let ffi_target_dir = self.ffi_crate_path().join("target");
+        if ffi_target_dir.exists() {
+            smol::fs::remove_dir_all(&ffi_target_dir).await?;
         }
 
         Ok(())
@@ -402,6 +419,39 @@ pub struct CreateOptions {
 }
 
 impl Project {
+    async fn scaffold_ffi_companion(&self) -> Result<(), crate::backend::FailToInitBackend> {
+        let manifest = self.manifest();
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            self.crate_name().to_string(),
+            app_name,
+        )
+        .with_backend_project_path(self.ffi_crate_relative_path());
+
+        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)
+    }
+
+    async fn remove_ffi_companion_if_unused(&self) -> eyre::Result<()> {
+        if self.apple_backend().is_some() || self.android_backend().is_some() {
+            return Ok(());
+        }
+
+        let ffi_path = self.ffi_crate_path();
+        if ffi_path.exists() {
+            smol::fs::remove_dir_all(&ffi_path).await?;
+        }
+
+        Ok(())
+    }
+
     /// Create a new `WaterUI` project at the specified path.
     ///
     /// This creates the project directory, scaffolds root files (Cargo.toml, src/lib.rs),
@@ -535,6 +585,7 @@ impl Project {
         use crate::backend::Backend;
 
         let backend = AppleBackend::init(self).await?;
+        self.scaffold_ffi_companion().await?;
         self.manifest.backends.set_apple(backend);
         self.manifest
             .save(&self.root)
@@ -553,6 +604,7 @@ impl Project {
         use crate::backend::Backend;
 
         let backend = AndroidBackend::init(self).await?;
+        self.scaffold_ffi_companion().await?;
         self.manifest.backends.set_android(backend);
         self.manifest
             .save(&self.root)
@@ -616,6 +668,7 @@ impl Project {
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_apple();
+        self.remove_ffi_companion_if_unused().await?;
         self.save_manifest().await
     }
 
@@ -629,6 +682,7 @@ impl Project {
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_android();
+        self.remove_ffi_companion_if_unused().await?;
         self.save_manifest().await
     }
 
@@ -742,6 +796,11 @@ impl Project {
                 .await
                 .map_err(FailToOpenProject::BackendInit)?;
             project.manifest.backends.set_android(android_backend);
+
+            project
+                .scaffold_ffi_companion()
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
         }
 
         Ok(project)

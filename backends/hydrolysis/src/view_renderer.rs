@@ -1,18 +1,19 @@
-use core::future::{Future, ready};
+use core::future::Future;
 use core::pin::Pin;
 use std::boxed::Box;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize};
-use waterui_graphics::SceneViewMergeToParent;
 use waterui_core::{AnyView, Environment};
+use waterui_graphics::SceneViewMergeToParent;
 
 use crate::platform::{OffscreenSurface, SurfaceProvider};
 use crate::renderer::HydrolysisRenderer;
 
 /// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
 pub struct HydrolysisViewRenderer {
-    surface: RefCell<Option<OffscreenSurface>>,
+    surface: Rc<RefCell<Option<OffscreenSurface>>>,
 }
 
 impl core::fmt::Debug for HydrolysisViewRenderer {
@@ -26,7 +27,7 @@ impl HydrolysisViewRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            surface: RefCell::new(None),
+            surface: Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -43,53 +44,65 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         view: AnyView,
         size: RenderSize,
     ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>> {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let width = size.width.max(1.0).round() as u32;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let height = size.height.max(1.0).round() as u32;
+        let surface = Rc::clone(&self.surface);
+        Box::pin(async move {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let width = size.width.max(1.0).round() as u32;
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let height = size.height.max(1.0).round() as u32;
 
-        let mut surface_guard = self.surface.borrow_mut();
-        let surface = surface_guard.get_or_insert_with(|| {
-            OffscreenSurface::new_blocking(1, 1, wgpu::TextureFormat::Rgba8Unorm)
-        });
-        surface.resize(width, height);
-        let frame = surface
-            .acquire()
-            .expect("hydrolysis view renderer failed to acquire offscreen frame");
+            if surface.borrow().is_none() {
+                let offscreen =
+                    OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm).await;
+                *surface.borrow_mut() = Some(offscreen);
+            }
 
-        let rgba_data = {
-            let device = surface.device();
-            let queue = surface.queue();
-            let mut renderer = HydrolysisRenderer::new(device);
-            renderer.set_frame_resources(device, queue);
-            renderer.reset_scene();
-            renderer.begin_rebuild_frame();
+            let mut surface = surface.borrow_mut();
+            let surface = surface
+                .as_mut()
+                .expect("hydrolysis view renderer surface must initialize before rendering");
+            surface.resize(width, height);
+            let frame = surface
+                .acquire()
+                .expect("hydrolysis view renderer failed to acquire offscreen frame");
 
-            let env = Environment::new().extending(SceneViewMergeToParent);
-            let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            renderer.dispatch(view, &env, bounds);
-            renderer.finish_rebuild_frame();
-            renderer.render_scene_to_texture(
-                device,
-                queue,
-                frame.view(),
-                surface.format(),
+            let rgba_data = {
+                let device = surface.device();
+                let queue = surface.queue();
+                let mut renderer = HydrolysisRenderer::new(device);
+                renderer.set_frame_resources(device, queue);
+                renderer.reset_scene();
+                renderer.begin_rebuild_frame();
+
+                let env = Environment::new().extending(SceneViewMergeToParent);
+                let view = crate::renderer::normalize_view_for_render(view, &env);
+                let bounds =
+                    vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                renderer.dispatch(view, &env, bounds);
+                renderer.finish_rebuild_frame();
+                renderer.render_scene_to_texture(
+                    device,
+                    queue,
+                    frame.view(),
+                    surface.format(),
+                    width,
+                    height,
+                    vello::peniko::Color::TRANSPARENT,
+                );
+                let rgba_data =
+                    readback_texture_rgba8(device, queue, frame.texture(), width, height);
+                renderer.clear_frame_resources();
+                rgba_data
+            };
+
+            surface.present(frame);
+
+            RenderResult {
+                rgba_data,
                 width,
                 height,
-                vello::peniko::Color::TRANSPARENT,
-            );
-            let rgba_data = readback_texture_rgba8(device, queue, frame.texture(), width, height);
-            renderer.clear_frame_resources();
-            rgba_data
-        };
-
-        surface.present(frame);
-
-        Box::pin(ready(RenderResult {
-            rgba_data,
-            width,
-            height,
-        }))
+            }
+        })
     }
 }
 

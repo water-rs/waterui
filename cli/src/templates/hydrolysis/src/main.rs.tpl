@@ -1,9 +1,18 @@
 //! Hydrolysis entry point for __APP_DISPLAY_NAME__.
 
-use hydrolysis::run;
-use waterui::env::Environment;
+#[cfg(feature = "waterui-preview-mode")]
+mod preview_symbol;
 
+#[cfg(feature = "waterui-preview-mode")]
+mod preview_runtime;
+
+#[cfg(feature = "waterui-preview-mode")]
 fn main() {
-    let app = __CRATE_NAME_IDENT__::app(Environment::new());
-    run(app);
+    preview_runtime::run();
+}
+
+#[cfg(not(feature = "waterui-preview-mode"))]
+fn main() {
+    let app = __CRATE_NAME_IDENT__::app(waterui::env::Environment::new());
+    hydrolysis::run(app);
 }

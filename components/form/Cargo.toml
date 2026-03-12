@@ -25,6 +25,9 @@ zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
 regex = "1.12.3"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+
 [features]
 default = ["std"]
 std = ["dep:waterkit-dialog"]
