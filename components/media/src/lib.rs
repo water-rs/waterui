@@ -80,7 +80,10 @@ pub use {
     image::Image,
     live::LivePhoto,
     photo::Photo,
-    video::{AspectRatio, Event, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
+    video::{
+        AspectRatio, Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig,
+        Volume,
+    },
     waterui_video::{Delivery, MediaItem, SubtitleTrack},
 };
 
