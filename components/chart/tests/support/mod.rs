@@ -1,0 +1,367 @@
+use std::time::Duration;
+
+use waterui::accessibility::AccessibilityRole;
+use waterui::component::vstack;
+use waterui::graphics::color::Srgb;
+use waterui::{View, ViewExt as _};
+use waterui_chart::{
+    AreaData, AreaDatum, AreaSeries, BubblePoint, Candle, ChartAnchor, DataBounds, DataPoint,
+    DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum,
+};
+use waterui_testing::{MountedApp, Role, Selector, UiTest};
+
+pub const VIEWPORT_WIDTH: u32 = 320;
+pub const VIEWPORT_HEIGHT: u32 = 260;
+pub const CHART_WIDTH: f32 = 240.0;
+pub const CHART_HEIGHT: f32 = 180.0;
+pub const SNAPSHOT_SUITE: &str = "semantic-selection";
+
+const CHART_PADDING_RATIO: f32 = 0.1;
+const PIE_PADDING_RATIO: f32 = 0.06;
+
+pub fn point_series() -> Vec<DataPoint> {
+    (0..24)
+        .map(|index| {
+            let x = index as f32;
+            let y = 24.0 + (x * 0.42).sin() * 9.0 + (x * 0.17).cos() * 5.0;
+            DataPoint::new(x, y)
+        })
+        .collect()
+}
+
+pub fn bubble_series() -> Vec<BubblePoint> {
+    (0..32)
+        .map(|index| {
+            let x = index as f32 * 0.75;
+            let y = 18.0 + (x * 0.28).sin() * 10.0 + (x * 0.09).cos() * 4.0;
+            let size = 4.0 + (index % 7) as f32 * 2.25;
+            BubblePoint::new(x, y, size)
+        })
+        .collect()
+}
+
+pub fn candle_series() -> Vec<Candle> {
+    let mut candles = Vec::with_capacity(32);
+    let mut price = 120.0_f32;
+    for index in 0..32 {
+        let timestamp = index as f32 * 60.0;
+        let drift = (index as f32 * 0.31).sin() * 4.5;
+        let open = price;
+        let close = open + drift;
+        let high = open.max(close) + 1.4 + (index % 4) as f32 * 0.25;
+        let low = open.min(close) - 1.1 - (index % 5) as f32 * 0.2;
+        let volume = 20_000.0 + index as f32 * 350.0;
+        candles.push(Candle::new(timestamp, open, high, low, close, volume));
+        price = close;
+    }
+    candles
+}
+
+pub fn depth_data() -> DepthData {
+    let mut bids = Vec::with_capacity(24);
+    let mut asks = Vec::with_capacity(24);
+    let mut bid_cumulative = 0.0_f32;
+    let mut ask_cumulative = 0.0_f32;
+    for index in 0..24 {
+        let bid_price = 99.8 - index as f32 * 0.08;
+        bid_cumulative += 6.0 + (index % 5) as f32 * 1.2;
+        bids.push(DepthLevel::new(bid_price, bid_cumulative));
+
+        let ask_price = 100.2 + index as f32 * 0.08;
+        ask_cumulative += 6.5 + (index % 4) as f32 * 1.1;
+        asks.push(DepthLevel::new(ask_price, ask_cumulative));
+    }
+    DepthData::new(bids, asks)
+}
+
+pub fn area_data() -> AreaData {
+    AreaData::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+        .series(
+            AreaSeries::new("North", vec![10.0, 14.0, 12.0, 18.0, 20.0, 22.0])
+                .color(0.23, 0.51, 0.96, 0.72),
+        )
+        .series(
+            AreaSeries::new("South", vec![6.0, 8.0, 9.0, 11.0, 12.0, 14.0])
+                .color(0.06, 0.72, 0.51, 0.64),
+        )
+        .series(
+            AreaSeries::new("West", vec![4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+                .color(0.98, 0.53, 0.12, 0.56),
+        )
+}
+
+pub fn pie_data() -> Vec<DataPoint> {
+    vec![
+        DataPoint::new(0.0, 30.0),
+        DataPoint::new(1.0, 45.0),
+        DataPoint::new(2.0, 25.0),
+    ]
+}
+
+pub fn chart_label(name: &str) -> String {
+    format!("chart-{name}")
+}
+
+pub fn snapshot_suite(name: &str) -> String {
+    format!("chart/{name}")
+}
+
+pub fn mount_view<V, F>(build: F) -> MountedApp
+where
+    V: View + 'static,
+    F: Fn() -> V + 'static,
+{
+    UiTest::new()
+        .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+        .mount(build)
+}
+
+pub fn chart_surface<V: View>(name: &str, chart: V) -> impl View {
+    chart
+        .size(CHART_WIDTH, CHART_HEIGHT)
+        .a11y_label(chart_label(name))
+        .a11y_role(AccessibilityRole::Image)
+}
+
+pub fn semantic_chart_shell<V: View, F: View, S: View>(
+    name: &str,
+    chart: V,
+    focused_readout: F,
+    selected_readout: S,
+) -> impl View {
+    vstack((
+        chart_surface(name, chart),
+        focused_readout.foreground(Srgb::WHITE).padding(),
+        selected_readout.foreground(Srgb::WHITE).padding(),
+    ))
+    .spacing(8.0)
+    .background(Srgb::BLACK)
+}
+
+pub fn image_selector(name: &str) -> Selector {
+    Selector::default()
+        .role(Role::IMAGE)
+        .label(chart_label(name))
+}
+
+pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> String {
+    let selector = image_selector(name);
+    assert!(
+        app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
+        "{name}: accessibility image element did not appear"
+    );
+    app.assert_exists(selector.clone());
+    let element = app.query().role(Role::IMAGE).label(chart_label(name)).single();
+    let bounds = element.bounds();
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "{name}: chart accessibility bounds must be non-zero"
+    );
+    chart_label(name)
+}
+
+pub fn assert_label_exists(app: &mut MountedApp, label: &str) {
+    let selector = Selector::default().role(Role::LABEL).label(label.to_owned());
+    assert!(
+        app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
+        "expected label to appear: {label}"
+    );
+    app.assert_exists(selector);
+}
+
+pub fn readout_text<T>(
+    prefix: &'static str,
+    hit: Option<HitResult<T>>,
+    formatter: fn(&HitResult<T>) -> String,
+) -> String {
+    match hit {
+        Some(hit) => format!("{prefix}:{}", formatter(&hit)),
+        None => format!("{prefix}:none"),
+    }
+}
+
+pub fn expected_readout<T: Clone>(
+    prefix: &'static str,
+    series: usize,
+    index: usize,
+    value: T,
+    formatter: fn(&HitResult<T>) -> String,
+) -> String {
+    readout_text(
+        prefix,
+        Some(HitResult::new(series, index, value, ChartAnchor::new(0.0, 0.0))),
+        formatter,
+    )
+}
+
+pub fn point_hit_label(hit: &HitResult<DataPoint>) -> String {
+    format!(
+        "series={} index={} x={:.2} y={:.2}",
+        hit.series, hit.index, hit.value.x, hit.value.y
+    )
+}
+
+pub fn bubble_hit_label(hit: &HitResult<BubblePoint>) -> String {
+    format!(
+        "series={} index={} x={:.2} y={:.2} size={:.2}",
+        hit.series, hit.index, hit.value.x, hit.value.y, hit.value.size
+    )
+}
+
+pub fn candle_hit_label(hit: &HitResult<Candle>) -> String {
+    format!(
+        "series={} index={} t={:.2} open={:.2} high={:.2} low={:.2} close={:.2}",
+        hit.series,
+        hit.index,
+        hit.value.timestamp,
+        hit.value.open,
+        hit.value.high,
+        hit.value.low,
+        hit.value.close
+    )
+}
+
+pub fn depth_hit_label(hit: &HitResult<DepthDatum>) -> String {
+    let side = match hit.value.side {
+        DepthSide::Bid => "bid",
+        DepthSide::Ask => "ask",
+    };
+    format!(
+        "series={} index={} side={} price={:.2} cumulative={:.2}",
+        hit.series, hit.index, side, hit.value.price, hit.value.cumulative_volume
+    )
+}
+
+pub fn area_hit_label(hit: &HitResult<AreaDatum>) -> String {
+    format!(
+        "series={} index={} x={:.2} y={:.2}",
+        hit.series, hit.index, hit.value.x, hit.value.y
+    )
+}
+
+pub fn slice_hit_label(hit: &HitResult<SliceDatum>) -> String {
+    format!(
+        "series={} index={} value={:.2} start={:.3} end={:.3}",
+        hit.series, hit.index, hit.value.value, hit.value.start_angle, hit.value.end_angle
+    )
+}
+
+fn normalize_bounds(mut bounds: DataBounds) -> DataBounds {
+    if bounds.max_x <= bounds.min_x {
+        bounds.max_x = bounds.min_x + 1.0;
+    }
+    if bounds.max_y <= bounds.min_y {
+        bounds.max_y = bounds.min_y + 1.0;
+    }
+    bounds
+}
+
+fn normalized_plot_point(bounds: DataBounds, x: f32, y: f32) -> (f32, f32) {
+    let nx = (x - bounds.min_x) / (bounds.max_x - bounds.min_x);
+    let ny = (y - bounds.min_y) / (bounds.max_y - bounds.min_y);
+    (
+        CHART_PADDING_RATIO + nx * (1.0 - CHART_PADDING_RATIO * 2.0),
+        CHART_PADDING_RATIO + (1.0 - ny) * (1.0 - CHART_PADDING_RATIO * 2.0),
+    )
+}
+
+pub fn point_hit_location(data: &[DataPoint], index: usize) -> (f32, f32) {
+    let bounds = normalize_bounds(DataBounds::from_points(data).with_padding(0.1));
+    let point = data[index];
+    normalized_plot_point(bounds, point.x, point.y)
+}
+
+pub fn bar_hit_location(data: &[DataPoint], index: usize) -> (f32, f32) {
+    let source = DataBounds::from_points(data);
+    let bounds = normalize_bounds(DataBounds::new(
+        source.min_x,
+        source.max_x,
+        source.min_y.min(0.0),
+        source.max_y.max(0.0),
+    ));
+    let point = data[index];
+    normalized_plot_point(bounds, point.x, point.y * 0.5)
+}
+
+pub fn bubble_hit_location(data: &[BubblePoint], index: usize) -> (f32, f32) {
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_y = f32::MAX;
+    let mut max_y = f32::MIN;
+    for point in data {
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+    let bounds = normalize_bounds(DataBounds::new(min_x, max_x, min_y, max_y).with_padding(0.1));
+    let point = data[index];
+    normalized_plot_point(bounds, point.x, point.y)
+}
+
+pub fn candlestick_hit_location(data: &[Candle], index: usize) -> (f32, f32) {
+    let bounds = normalize_bounds(DataBounds::from_candles(data).with_padding(0.05));
+    let candle = data[index];
+    normalized_plot_point(
+        bounds,
+        candle.timestamp,
+        (candle.open + candle.close) * 0.5,
+    )
+}
+
+pub fn depth_hit_location(data: &DepthData, side: DepthSide, index: usize) -> (f32, f32) {
+    let bounds = normalize_bounds(data.bounds().with_padding(0.04));
+    let level = match side {
+        DepthSide::Bid => data.bids[index],
+        DepthSide::Ask => data.asks[index],
+    };
+    normalized_plot_point(bounds, level.price, level.cumulative_volume)
+}
+
+pub fn area_hit_location(data: &AreaData, series: usize, index: usize) -> (f32, f32) {
+    let bounds = normalize_bounds(data.bounds().with_padding(0.05));
+    let x = data.x_values[index];
+    let y = data.series[series].values[index];
+    normalized_plot_point(bounds, x, y)
+}
+
+pub fn pie_hit_location(data: &[DataPoint], index: usize, inner_radius: f32) -> (f32, f32) {
+    let total: f32 = data.iter().map(|point| point.y.max(0.0)).sum();
+    let plot_width = CHART_WIDTH * (1.0 - PIE_PADDING_RATIO * 2.0);
+    let plot_height = CHART_HEIGHT * (1.0 - PIE_PADDING_RATIO * 2.0);
+    let outer_radius = plot_width.min(plot_height) * 0.45;
+    let inner_radius = outer_radius * inner_radius;
+    let mid_radius = (inner_radius + outer_radius) * 0.5;
+    let center_x = CHART_WIDTH * 0.5;
+    let center_y = CHART_HEIGHT * 0.5;
+
+    let mut start_angle = -core::f32::consts::FRAC_PI_2;
+    for (current_index, point) in data.iter().enumerate() {
+        let value = point.y.max(0.0);
+        let sweep = core::f32::consts::TAU * (value / total.max(f32::EPSILON));
+        let end_angle = start_angle + sweep;
+        if current_index == index {
+            let mid_angle = start_angle + sweep * 0.5;
+            let x = center_x + mid_angle.cos() * mid_radius;
+            let y = center_y + mid_angle.sin() * mid_radius;
+            return (x / CHART_WIDTH, y / CHART_HEIGHT);
+        }
+        start_angle = end_angle;
+    }
+    panic!("pie_hit_location: slice index {index} is out of range")
+}
+
+pub fn pie_slice_datum(data: &[DataPoint], index: usize) -> SliceDatum {
+    let total: f32 = data.iter().map(|point| point.y.max(0.0)).sum();
+    let mut start_angle = -core::f32::consts::FRAC_PI_2;
+    for (current_index, point) in data.iter().enumerate() {
+        let value = point.y.max(0.0);
+        let sweep = core::f32::consts::TAU * (value / total.max(f32::EPSILON));
+        let end_angle = start_angle + sweep;
+        if current_index == index {
+            return SliceDatum::new(index, point.y, start_angle, end_angle);
+        }
+        start_angle = end_angle;
+    }
+    panic!("pie_slice_datum: slice index {index} is out of range")
+}

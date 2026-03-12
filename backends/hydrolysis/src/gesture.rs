@@ -132,14 +132,14 @@ impl GestureBinding {
         }
     }
 
-    fn input(&mut self, input: GestureInput, env: &Environment) -> bool {
+    fn input(&mut self, input: GestureInput, env: &Environment, bounds: vello::kurbo::Rect) -> bool {
         let detection = self.detector.input(input);
         let Some(payload) = detection.recognized else {
             return false;
         };
         let mut local_env = env.clone();
         local_env.insert(self.gesture.clone());
-        match payload {
+        match localize_gesture_payload(payload, bounds) {
             GesturePayload::None => {}
             GesturePayload::Tap(event) => local_env.insert(event),
             GesturePayload::LongPress(event) => local_env.insert(event),
@@ -155,10 +155,39 @@ impl GestureBinding {
     }
 }
 
+fn local_gesture_point(point: GesturePoint, bounds: vello::kurbo::Rect) -> GesturePoint {
+    GesturePoint::new(point.x - bounds.x0 as f32, point.y - bounds.y0 as f32)
+}
+
+fn localize_gesture_payload(
+    payload: GesturePayload,
+    bounds: vello::kurbo::Rect,
+) -> GesturePayload {
+    match payload {
+        GesturePayload::None => GesturePayload::None,
+        GesturePayload::Tap(mut event) => {
+            event.location = local_gesture_point(event.location, bounds);
+            GesturePayload::Tap(event)
+        }
+        GesturePayload::LongPress(mut event) => {
+            event.location = local_gesture_point(event.location, bounds);
+            GesturePayload::LongPress(event)
+        }
+        GesturePayload::Drag(mut event) => {
+            event.location = local_gesture_point(event.location, bounds);
+            GesturePayload::Drag(event)
+        }
+        GesturePayload::Magnification(mut event) => {
+            event.center = local_gesture_point(event.center, bounds);
+            GesturePayload::Magnification(event)
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct GestureEngine {
     targets: Vec<GestureTarget>,
-    active_recognizers: Vec<GestureRecognizerHandle>,
+    active_recognizers: Vec<GestureTarget>,
 }
 
 impl GestureEngine {
@@ -328,7 +357,7 @@ impl GestureEngine {
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.active_recognizers
             .iter()
-            .filter_map(|recognizer| recognizer.borrow().next_deadline())
+            .filter_map(|recognizer| recognizer.recognizer.borrow().next_deadline())
             .min()
     }
 
@@ -353,13 +382,16 @@ impl GestureEngine {
     }
 
     fn dispatch_to_recognizers(
-        recognizers: &[GestureRecognizerHandle],
+        recognizers: &[GestureTarget],
         input: GestureInput,
         env: &Environment,
     ) -> bool {
         let mut changed = false;
-        for recognizer in recognizers {
-            changed |= recognizer.borrow_mut().input(input, env);
+        for target in recognizers {
+            changed |= target
+                .recognizer
+                .borrow_mut()
+                .input(input, env, target.bounds);
         }
         changed
     }
@@ -368,7 +400,7 @@ impl GestureEngine {
         (target.depth, target.order, index)
     }
 
-    fn recognizers_at(&self, point: vello::kurbo::Point) -> Vec<GestureRecognizerHandle> {
+    fn recognizers_at(&self, point: vello::kurbo::Point) -> Vec<GestureTarget> {
         let Some(group_id) = self.top_group_id_at(point) else {
             return Vec::new();
         };
@@ -384,7 +416,7 @@ impl GestureEngine {
         });
         let mut recognizers = Vec::with_capacity(targets.len());
         for (_, target) in targets {
-            Self::push_unique_recognizer(&mut recognizers, &target.recognizer);
+            Self::push_unique_recognizer(&mut recognizers, target);
         }
         recognizers
     }
@@ -413,23 +445,23 @@ impl GestureEngine {
         }
     }
 
-    fn is_recognizer_live(&self, recognizer: &GestureRecognizerHandle) -> bool {
+    fn is_recognizer_live(&self, recognizer: &GestureTarget) -> bool {
         self.targets
             .iter()
-            .any(|target| Rc::ptr_eq(&target.recognizer, recognizer))
+            .any(|target| Rc::ptr_eq(&target.recognizer, &recognizer.recognizer))
     }
 
     fn push_unique_recognizer(
-        recognizers: &mut Vec<GestureRecognizerHandle>,
-        candidate: &GestureRecognizerHandle,
+        recognizers: &mut Vec<GestureTarget>,
+        candidate: &GestureTarget,
     ) {
         if recognizers
             .iter()
-            .any(|recognizer| Rc::ptr_eq(recognizer, candidate))
+            .any(|recognizer| Rc::ptr_eq(&recognizer.recognizer, &candidate.recognizer))
         {
             return;
         }
-        recognizers.push(Rc::clone(candidate));
+        recognizers.push(candidate.clone());
     }
 
     #[cfg(test)]

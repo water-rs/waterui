@@ -145,7 +145,7 @@ impl A11yDriver for HydrolysisA11yDriver {
     }
 
     fn hover_at(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let changed = self.renderer.sync_pointer_hover_state(x, y, env);
+        let changed = self.renderer.handle_pointer_move(x, y, env);
         self.schedule_redraw_or_rebuild(changed)
     }
 

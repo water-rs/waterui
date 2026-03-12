@@ -11,9 +11,10 @@ use nami::{Binding, Signal, SignalExt as _};
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
     Metadata,
+    event::{Event, HoverEvent, OnEvent},
     gesture::{
-        DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
-        TapGesture,
+        DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, MagnificationEvent,
+        MagnificationGesture, TapEvent, TapGesture,
     },
     layout::{Point, Rect, Size},
 };
@@ -25,7 +26,10 @@ use crate::{
         AreaData, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataBounds,
         DataPoint, DepthData, GaugeData, HeatmapData, RadarData,
     },
-    interaction::{ChartViewport, ZoomPanState},
+    interaction::{
+        AreaDatum, ChartViewport, DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum,
+        RegionDatum, SelectionBindings, SliceDatum, ZoomPanState,
+    },
 };
 
 const PLOT_PADDING_RATIO: f32 = 0.1;
@@ -82,6 +86,237 @@ impl<D> ChartTransitionState<D> {
     }
 }
 
+#[derive(Debug, Clone)]
+enum HitShape {
+    Circle {
+        center: Point,
+        radius: f32,
+    },
+    Rect {
+        rect: Rect,
+    },
+    Sector {
+        center: Point,
+        inner_radius: f32,
+        outer_radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+    },
+    Polygon {
+        vertices: Vec<Point>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct HitTarget<T> {
+    result: HitResult<T>,
+    shape: HitShape,
+}
+
+impl<T> HitTarget<T> {
+    fn contains(&self, point: Point) -> bool {
+        match &self.shape {
+            HitShape::Circle { center, radius } => {
+                distance_squared(*center, point) <= radius * radius
+            }
+            HitShape::Rect { rect } => rect_contains(*rect, point),
+            HitShape::Sector {
+                center,
+                inner_radius,
+                outer_radius,
+                start_angle,
+                end_angle,
+            } => sector_contains(
+                *center,
+                point,
+                *inner_radius,
+                *outer_radius,
+                *start_angle,
+                *end_angle,
+            ),
+            HitShape::Polygon { vertices } => polygon_contains(vertices, point),
+        }
+    }
+
+    fn score(&self, point: Point) -> Option<f32> {
+        self.contains(point)
+            .then_some(distance_squared(self.result.anchor.as_point(), point))
+    }
+}
+
+pub(crate) trait HitGeometry<T: Clone>: Clone + 'static {
+    fn hit_test(&self, point: Point) -> Option<HitResult<T>>;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HitTargets<T> {
+    targets: Vec<HitTarget<T>>,
+}
+
+impl<T> Default for HitTargets<T> {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+        }
+    }
+}
+
+impl<T> HitTargets<T> {
+    fn push_circle(&mut self, result: HitResult<T>, center: Point, radius: f32) {
+        self.targets.push(HitTarget {
+            result,
+            shape: HitShape::Circle {
+                center,
+                radius: radius.max(1.0),
+            },
+        });
+    }
+
+    fn push_rect(&mut self, result: HitResult<T>, rect: Rect) {
+        self.targets.push(HitTarget {
+            result,
+            shape: HitShape::Rect { rect },
+        });
+    }
+
+    fn push_sector(
+        &mut self,
+        result: HitResult<T>,
+        center: Point,
+        inner_radius: f32,
+        outer_radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+    ) {
+        self.targets.push(HitTarget {
+            result,
+            shape: HitShape::Sector {
+                center,
+                inner_radius,
+                outer_radius,
+                start_angle,
+                end_angle,
+            },
+        });
+    }
+
+    fn push_polygon(&mut self, result: HitResult<T>, vertices: Vec<Point>) {
+        self.targets.push(HitTarget {
+            result,
+            shape: HitShape::Polygon { vertices },
+        });
+    }
+}
+
+impl<T: Clone + 'static> HitGeometry<T> for HitTargets<T> {
+    fn hit_test(&self, point: Point) -> Option<HitResult<T>> {
+        let mut best: Option<(f32, &HitTarget<T>)> = None;
+        for target in &self.targets {
+            let Some(score) = target.score(point) else {
+                continue;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|(best_score, _)| score < *best_score)
+            {
+                best = Some((score, target));
+            }
+        }
+        best.map(|(_, target)| target.result.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CartesianGeometry<T> {
+    pub bounds: DataBounds,
+    targets: HitTargets<T>,
+}
+
+impl<T> CartesianGeometry<T> {
+    fn new(bounds: DataBounds, targets: HitTargets<T>) -> Self {
+        Self { bounds, targets }
+    }
+}
+
+impl<T: Clone + 'static> HitGeometry<T> for CartesianGeometry<T> {
+    fn hit_test(&self, point: Point) -> Option<HitResult<T>> {
+        self.targets.hit_test(point)
+    }
+}
+
+fn gesture_point_to_point(point: &GesturePoint) -> Point {
+    Point::new(point.x, point.y)
+}
+
+fn distance_squared(a: Point, b: Point) -> f32 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy
+}
+
+fn rect_contains(rect: Rect, point: Point) -> bool {
+    point.x >= rect.min_x()
+        && point.x <= rect.max_x()
+        && point.y >= rect.min_y()
+        && point.y <= rect.max_y()
+}
+
+fn normalize_angle(angle: f32) -> f32 {
+    angle.rem_euclid(TAU)
+}
+
+fn angle_in_sweep(angle: f32, start: f32, end: f32) -> bool {
+    let angle = normalize_angle(angle);
+    let start = normalize_angle(start);
+    let end = normalize_angle(end);
+    if start <= end {
+        angle >= start && angle <= end
+    } else {
+        angle >= start || angle <= end
+    }
+}
+
+fn sector_contains(
+    center: Point,
+    point: Point,
+    inner_radius: f32,
+    outer_radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+) -> bool {
+    let dx = point.x - center.x;
+    let dy = point.y - center.y;
+    let distance = (dx * dx + dy * dy).sqrt();
+    if distance < inner_radius || distance > outer_radius {
+        return false;
+    }
+    let angle = dy.atan2(dx);
+    angle_in_sweep(angle, start_angle, end_angle)
+}
+
+fn polygon_contains(vertices: &[Point], point: Point) -> bool {
+    if vertices.len() < 3 {
+        return false;
+    }
+
+    let mut inside = false;
+    let mut previous = *vertices
+        .last()
+        .expect("polygon_contains requires non-empty vertices");
+    for &current in vertices {
+        let crosses = (current.y > point.y) != (previous.y > point.y)
+            && point.x
+                < (previous.x - current.x) * (point.y - current.y)
+                    / ((previous.y - current.y).abs().max(f32::EPSILON))
+                    + current.x;
+        if crosses {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
 pub(crate) fn signal_canvas<S, D, F>(signal: S, mut draw: F) -> Canvas
 where
     S: Signal<Output = D> + 'static,
@@ -107,6 +342,123 @@ where
     })
 }
 
+pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
+    signal: S,
+    build_geometry: B,
+    mut draw: F,
+    selection: SelectionBindings<T>,
+) -> impl waterui_core::View
+where
+    S: Signal<Output = D> + 'static,
+    S::Guard: 'static,
+    D: Clone + PartialEq + 'static,
+    G: HitGeometry<T>,
+    T: Clone + PartialEq + 'static,
+    B: Fn(&DrawingContext<'_>, &D) -> G + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D, &G) + 'static,
+{
+    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
+    let geometry = Rc::new(RefCell::new(None::<G>));
+    let canvas = {
+        let transition = Rc::clone(&transition);
+        let geometry = Rc::clone(&geometry);
+        Canvas::with_signal(signal, move |ctx, data| {
+            let built_geometry = build_geometry(ctx, &data);
+            *geometry.borrow_mut() = Some(built_geometry.clone());
+            let (progress, animating) = {
+                let mut transition = transition.borrow_mut();
+                let progress = transition.progress_for(&data);
+                let animating = transition.is_animating();
+                (progress, animating)
+            };
+            if animating {
+                ctx.request_next_frame();
+            }
+            ctx.save();
+            ctx.set_global_alpha(progress);
+            draw(ctx, &data, &built_geometry);
+            ctx.restore();
+        })
+    };
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(TapGesture::new()).action_with_env({
+            let geometry = Rc::clone(&geometry);
+            let selection = selection.clone();
+            move |env| {
+                if !selection.is_active() {
+                    return;
+                }
+                let tap = env
+                    .get::<TapEvent>()
+                    .expect("interactive_signal_canvas: TapEvent missing from gesture environment");
+                let hit = geometry
+                    .borrow()
+                    .as_ref()
+                    .and_then(|geometry| geometry.hit_test(gesture_point_to_point(&tap.location)));
+                selection.set_focus(hit.clone());
+                selection.set_selected(hit);
+            }
+        }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(DragGesture::new(0.0)).action_with_env({
+            let geometry = Rc::clone(&geometry);
+            let selection = selection.clone();
+            move |env| {
+                if !selection.is_active() {
+                    return;
+                }
+                let drag = env.get::<DragEvent>().expect(
+                    "interactive_signal_canvas: DragEvent missing from gesture environment",
+                );
+                match drag.phase {
+                    GesturePhase::Started | GesturePhase::Updated => {
+                        let hit = geometry.borrow().as_ref().and_then(|geometry| {
+                            geometry.hit_test(gesture_point_to_point(&drag.location))
+                        });
+                        selection.set_focus(hit);
+                    }
+                    GesturePhase::Ended => {
+                        let hit = geometry.borrow().as_ref().and_then(|geometry| {
+                            geometry.hit_test(gesture_point_to_point(&drag.location))
+                        });
+                        selection.set_selected(hit);
+                        selection.clear_focus();
+                    }
+                    GesturePhase::Cancelled => selection.clear_focus(),
+                }
+            }
+        }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        OnEvent::new_with_env(Event::HoverMove, {
+            let geometry = Rc::clone(&geometry);
+            let selection = selection.clone();
+            move |env| {
+                if !selection.is_active() {
+                    return;
+                }
+                let hover = env.get::<HoverEvent>().expect(
+                    "interactive_signal_canvas: HoverEvent missing from event environment",
+                );
+                let hit = geometry
+                    .borrow()
+                    .as_ref()
+                    .and_then(|geometry| geometry.hit_test(hover.location));
+                selection.set_focus(hit);
+            }
+        }),
+    );
+    Metadata::new(
+        canvas,
+        OnEvent::new(Event::HoverExit, move || selection.clear_focus()),
+    )
+}
+
+#[allow(dead_code)]
 pub(crate) fn interactive_cartesian_canvas<S, D, B, F>(
     data: S,
     bounds_of: B,
@@ -295,6 +647,362 @@ fn map_xy(plot: Rect, bounds: DataBounds, x: f32, y: f32) -> Point {
     )
 }
 
+pub(crate) fn point_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &[DataPoint],
+    bounds: DataBounds,
+    radius: f32,
+) -> CartesianGeometry<DataPoint> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let mut targets = HitTargets::default();
+    for (index, point) in data.iter().enumerate() {
+        let anchor = map_xy(plot, bounds, point.x, point.y);
+        targets.push_circle(HitResult::new(0, index, *point, anchor), anchor, radius);
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn bar_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &[DataPoint],
+    bounds: DataBounds,
+) -> CartesianGeometry<DataPoint> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let bar_width = if data.is_empty() {
+        1.0
+    } else {
+        (plot.width() / data.len() as f32 * 0.7).max(1.0)
+    };
+    let baseline_y = map_xy(plot, bounds, bounds.min_x, 0.0).y;
+    let mut targets = HitTargets::default();
+    for (index, point) in data.iter().enumerate() {
+        let center = map_xy(plot, bounds, point.x, point.y);
+        let top = center.y.min(baseline_y);
+        let bottom = center.y.max(baseline_y);
+        let rect = Rect::new(
+            Point::new(center.x - bar_width * 0.5, top),
+            Size::new(bar_width, (bottom - top).max(1.0)),
+        );
+        let anchor = Point::new(center.x, top);
+        targets.push_rect(HitResult::new(0, index, *point, anchor), rect);
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn bubble_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &[BubblePoint],
+    bounds: DataBounds,
+    min_radius: f32,
+    max_radius: f32,
+) -> CartesianGeometry<BubblePoint> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let mut min_size = f32::MAX;
+    let mut max_size = f32::MIN;
+    for point in data {
+        min_size = min_size.min(point.size);
+        max_size = max_size.max(point.size);
+    }
+    let size_span = (max_size - min_size).max(1.0);
+    let mut targets = HitTargets::default();
+    for (index, point) in data.iter().enumerate() {
+        let anchor = map_xy(plot, bounds, point.x, point.y);
+        let t = (point.size - min_size) / size_span;
+        let radius = min_radius + (max_radius - min_radius) * t;
+        targets.push_circle(
+            HitResult::new(0, index, *point, anchor),
+            anchor,
+            radius.max(6.0),
+        );
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn candlestick_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &[Candle],
+    bounds: DataBounds,
+) -> CartesianGeometry<Candle> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let candle_width = if data.is_empty() {
+        1.0
+    } else {
+        (plot.width() / data.len() as f32 * 0.65).max(1.0)
+    };
+    let mut targets = HitTargets::default();
+    for (index, candle) in data.iter().enumerate() {
+        let x = map_xy(plot, bounds, candle.timestamp, candle.close).x;
+        let high = map_xy(plot, bounds, candle.timestamp, candle.high).y;
+        let low = map_xy(plot, bounds, candle.timestamp, candle.low).y;
+        let open_y = map_xy(plot, bounds, candle.timestamp, candle.open).y;
+        let close_y = map_xy(plot, bounds, candle.timestamp, candle.close).y;
+        let top = open_y.min(close_y);
+        let bottom = open_y.max(close_y);
+        let rect = Rect::new(
+            Point::new(x - candle_width * 0.5, top.min(high)),
+            Size::new(
+                candle_width.max(4.0),
+                (bottom.max(low) - top.min(high)).max(4.0),
+            ),
+        );
+        let anchor = Point::new(x, (top + bottom) * 0.5);
+        targets.push_rect(HitResult::new(0, index, *candle, anchor), rect);
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn depth_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &DepthData,
+    bounds: DataBounds,
+) -> CartesianGeometry<DepthDatum> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let mut targets = HitTargets::default();
+    for (index, level) in data.bids.iter().enumerate() {
+        let anchor = map_xy(plot, bounds, level.price, level.cumulative_volume);
+        let value = DepthDatum::new(DepthSide::Bid, level.price, level.cumulative_volume);
+        targets.push_circle(HitResult::new(0, index, value, anchor), anchor, 10.0);
+    }
+    for (index, level) in data.asks.iter().enumerate() {
+        let anchor = map_xy(plot, bounds, level.price, level.cumulative_volume);
+        let value = DepthDatum::new(DepthSide::Ask, level.price, level.cumulative_volume);
+        targets.push_circle(HitResult::new(1, index, value, anchor), anchor, 10.0);
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn area_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &AreaData,
+    bounds: DataBounds,
+) -> CartesianGeometry<AreaDatum> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let point_count = data.x_values.len();
+    let mut cumulative = vec![0.0f32; point_count];
+    let mut targets = HitTargets::default();
+    for (series_index, series) in data.series.iter().enumerate() {
+        if series.values.is_empty() {
+            continue;
+        }
+        for index in 0..point_count.min(series.values.len()) {
+            let y = if data.stacked {
+                cumulative[index] + series.values[index]
+            } else {
+                series.values[index]
+            };
+            let anchor = map_xy(plot, bounds, data.x_values[index], y);
+            let value = AreaDatum::new(series_index, data.x_values[index], y);
+            targets.push_circle(
+                HitResult::new(series_index, index, value, anchor),
+                anchor,
+                10.0,
+            );
+            if data.stacked {
+                cumulative[index] = y;
+            }
+        }
+    }
+    CartesianGeometry::new(bounds, targets)
+}
+
+pub(crate) fn pie_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &[DataPoint],
+    inner_radius: f32,
+) -> HitTargets<SliceDatum> {
+    let total: f32 = data.iter().map(|point| point.y.max(0.0)).sum();
+    let plot = plot_rect(ctx, 0.06);
+    let center = plot.center();
+    let outer_r = plot.width().min(plot.height()) * 0.45;
+    let inner_r = outer_r * inner_radius;
+    let mid_r = (inner_r + outer_r) * 0.5;
+    let mut angle = -FRAC_PI_2;
+    let mut targets = HitTargets::default();
+    if total <= 0.0 {
+        return targets;
+    }
+    for (index, point) in data.iter().enumerate() {
+        let value = point.y.max(0.0);
+        if value <= 0.0 {
+            continue;
+        }
+        let sweep = TAU * (value / total);
+        let end = angle + sweep;
+        let mid = angle + sweep * 0.5;
+        let anchor = Point::new(center.x + mid.cos() * mid_r, center.y + mid.sin() * mid_r);
+        let datum = SliceDatum::new(index, point.y, angle, end);
+        targets.push_sector(
+            HitResult::new(0, index, datum, anchor),
+            center,
+            inner_r,
+            outer_r,
+            angle,
+            end,
+        );
+        angle = end;
+    }
+    targets
+}
+
+pub(crate) fn gauge_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &GaugeData,
+    start_angle: f32,
+    end_angle: f32,
+    inner_radius: f32,
+    outer_radius: f32,
+) -> HitTargets<SliceDatum> {
+    let area = plot_rect(ctx, 0.02);
+    let center = area.center();
+    let min_dim = area.width().min(area.height());
+    let outer_r = (min_dim * outer_radius).max(1.0);
+    let inner_r = (min_dim * inner_radius).max(0.5);
+    let normalized = data.normalized_value();
+    let value_end = start_angle + (end_angle - start_angle) * normalized;
+    let mid = start_angle + (value_end - start_angle) * 0.5;
+    let anchor = Point::new(
+        center.x + mid.cos() * ((inner_r + outer_r) * 0.5),
+        center.y + mid.sin() * ((inner_r + outer_r) * 0.5),
+    );
+    let mut targets = HitTargets::default();
+    let datum = SliceDatum::new(0, data.value, start_angle, value_end);
+    targets.push_sector(
+        HitResult::new(0, 0, datum, anchor),
+        center,
+        inner_r,
+        outer_r,
+        start_angle,
+        value_end,
+    );
+    targets
+}
+
+pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitTargets<RadarDatum> {
+    let plot = plot_rect(ctx, 0.08);
+    let center = plot.center();
+    let radius = plot.width().min(plot.height()) * 0.45;
+    let axis_count = data.axis_count as usize;
+    let max_value = data.max_value.max(1.0);
+    let mut targets = HitTargets::default();
+    for (series_index, series) in data.series.iter().enumerate() {
+        if series.values.len() < axis_count {
+            continue;
+        }
+        for axis in 0..axis_count {
+            let ratio = (series.values[axis] / max_value).clamp(0.0, 1.0);
+            let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
+            let anchor = Point::new(
+                center.x + angle.cos() * radius * ratio,
+                center.y + angle.sin() * radius * ratio,
+            );
+            let label = data.labels.as_slice().get(axis).cloned();
+            let datum = RadarDatum::new(axis, label, series.values[axis]);
+            targets.push_circle(
+                HitResult::new(series_index, axis, datum, anchor),
+                anchor,
+                10.0,
+            );
+        }
+    }
+    targets
+}
+
+pub(crate) fn heatmap_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &HeatmapData,
+) -> HitTargets<GridDatum> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let cell_w = plot.width() / data.cols.max(1) as f32;
+    let cell_h = plot.height() / data.rows.max(1) as f32;
+    let mut targets = HitTargets::default();
+    for row in 0..data.rows as usize {
+        for col in 0..data.cols as usize {
+            let idx = row * data.cols as usize + col;
+            let rect = Rect::new(
+                Point::new(
+                    plot.min_x() + col as f32 * cell_w,
+                    plot.min_y() + row as f32 * cell_h,
+                ),
+                Size::new(cell_w.max(1.0), cell_h.max(1.0)),
+            );
+            let datum = GridDatum::new(row, col, data.values[idx]);
+            targets.push_rect(HitResult::new(0, idx, datum, rect.center()), rect);
+        }
+    }
+    targets
+}
+
+pub(crate) fn contour_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &ContourData,
+) -> HitTargets<GridDatum> {
+    let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
+    let cell_w = plot.width() / (data.cols.saturating_sub(1)).max(1) as f32;
+    let cell_h = plot.height() / (data.rows.saturating_sub(1)).max(1) as f32;
+    let mut targets = HitTargets::default();
+    if data.rows < 2 || data.cols < 2 {
+        return targets;
+    }
+    for row in 0..(data.rows as usize - 1) {
+        for col in 0..(data.cols as usize - 1) {
+            let i00 = row * data.cols as usize + col;
+            let i10 = i00 + 1;
+            let i01 = (row + 1) * data.cols as usize + col;
+            let i11 = i01 + 1;
+            let average =
+                (data.values[i00] + data.values[i10] + data.values[i01] + data.values[i11]) * 0.25;
+            let rect = Rect::new(
+                Point::new(
+                    plot.min_x() + col as f32 * cell_w,
+                    plot.min_y() + row as f32 * cell_h,
+                ),
+                Size::new(cell_w.max(1.0), cell_h.max(1.0)),
+            );
+            let datum = GridDatum::new(row, col, average);
+            targets.push_rect(HitResult::new(0, i00, datum, rect.center()), rect);
+        }
+    }
+    targets
+}
+
+pub(crate) fn choropleth_geometry(
+    ctx: &DrawingContext<'_>,
+    data: &ChoroplethData,
+) -> HitTargets<RegionDatum> {
+    let plot = plot_rect(ctx, 0.04);
+    let [min_x, min_y, max_x, max_y] = data.bounds();
+    let width = (max_x - min_x).max(1.0);
+    let height = (max_y - min_y).max(1.0);
+    let scale = (plot.width() / width).min(plot.height() / height);
+    let content_w = width * scale;
+    let content_h = height * scale;
+    let offset_x = plot.min_x() + (plot.width() - content_w) * 0.5;
+    let offset_y = plot.min_y() + (plot.height() - content_h) * 0.5;
+    let mut targets = HitTargets::default();
+    for (index, polygon) in data.polygons.iter().enumerate() {
+        if polygon.vertices.len() < 3 {
+            continue;
+        }
+        let vertices: Vec<Point> = polygon
+            .vertices
+            .iter()
+            .map(|vertex| {
+                let x = offset_x + (vertex[0] - min_x) * scale;
+                let y = offset_y + (max_y - vertex[1]) * scale;
+                Point::new(x, y)
+            })
+            .collect();
+        let [px_min, py_min, px_max, py_max] = polygon.bounds();
+        let anchor = Point::new(
+            offset_x + ((px_min + px_max) * 0.5 - min_x) * scale,
+            offset_y + (max_y - (py_min + py_max) * 0.5) * scale,
+        );
+        let datum = RegionDatum::new(index, polygon.id, polygon.value);
+        targets.push_polygon(HitResult::new(0, index, datum, anchor), vertices);
+    }
+    targets
+}
+
 #[inline]
 fn color_from_scale(scale: &ColorScale, value: f32, min: f32, max: f32) -> Srgb {
     if scale.stops.is_empty() {
@@ -348,7 +1056,6 @@ fn viridis(value: f32, min: f32, max: f32) -> Srgb {
 
     previous.1
 }
-
 pub(crate) fn draw_line(
     ctx: &mut DrawingContext<'_>,
     data: &[DataPoint],

@@ -8,6 +8,7 @@ use hydrolysis::HydrolysisViewRenderer;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
+use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
     A11yDriver, DriverPumpResult, HydrolysisA11yDriver, install_native_component_hooks,
 };
@@ -119,6 +120,23 @@ impl MountedApp {
             .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
     }
 
+    /// Creates a canonical artifact helper rooted at the provided suite.
+    #[must_use]
+    pub fn artifacts(&self, suite: impl AsRef<str>) -> TestArtifacts {
+        TestArtifacts::new(suite.as_ref())
+    }
+
+    /// Captures a snapshot and stores it in WaterUI's canonical artifact layout.
+    pub fn capture_snapshot(
+        &mut self,
+        suite: impl AsRef<str>,
+        case: impl AsRef<str>,
+        stage: impl AsRef<str>,
+    ) -> CapturedSnapshot {
+        let artifacts = self.artifacts(suite);
+        artifacts.capture_snapshot(case, stage, self.snapshot())
+    }
+
     /// Starts a chainable semantic query.
     #[must_use]
     pub fn query(&mut self) -> Query<'_> {
@@ -152,6 +170,19 @@ impl MountedApp {
         assert!(
             self.ui_focus == Some(element.id()),
             "waterui-testing assertion failed: selector was not the current UI-focused element"
+        );
+    }
+
+    /// Asserts that the selector resolves to exactly one node with the expected value.
+    pub fn assert_value_eq(&mut self, selector: Selector, value: impl Into<String>) {
+        let expected = value.into();
+        let element = self.resolve_single(&selector);
+        let actual = element.node().value();
+        assert!(
+            actual == Some(expected.as_str()),
+            "waterui-testing assertion failed: selector value mismatch (expected {:?}, got {:?})",
+            expected,
+            actual
         );
     }
 
@@ -322,8 +353,9 @@ impl MountedApp {
             let previous_revision = self.tree.revision();
             let previous_ui_focus = self.ui_focus;
             let rebuilt = self.pump_once();
-            let progressed =
-                rebuilt || self.tree.revision() != previous_revision || self.ui_focus != previous_ui_focus;
+            let progressed = rebuilt
+                || self.tree.revision() != previous_revision
+                || self.ui_focus != previous_ui_focus;
             if progressed {
                 idle_backoff = Duration::ZERO;
                 continue;
@@ -335,7 +367,9 @@ impl MountedApp {
                 idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
             };
             idle_backoff = next_backoff;
-            std::thread::sleep(next_backoff.min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(
+                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -404,6 +438,12 @@ impl MountedApp {
         self.settle_after_change(changed)
     }
 
+    pub(crate) fn tap_at(&mut self, x: f32, y: f32) -> bool {
+        let mut changed = self.driver.pointer_down(x, y, &self.env);
+        changed |= self.driver.pointer_up(x, y, &self.env);
+        self.settle_after_change(changed)
+    }
+
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> bool {
         const STEPS: usize = 6;
 
@@ -441,8 +481,9 @@ impl MountedApp {
             let previous_revision = self.tree.revision();
             let previous_ui_focus = self.ui_focus;
             let rebuilt = self.pump_once();
-            let progressed =
-                rebuilt || self.tree.revision() != previous_revision || self.ui_focus != previous_ui_focus;
+            let progressed = rebuilt
+                || self.tree.revision() != previous_revision
+                || self.ui_focus != previous_ui_focus;
             if progressed {
                 idle_backoff = Duration::ZERO;
                 if Instant::now() >= deadline {
