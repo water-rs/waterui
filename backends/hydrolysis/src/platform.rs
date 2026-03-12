@@ -80,6 +80,10 @@ pub enum InputEvent {
         y: f32,
     },
     PointerCancel,
+    Moved {
+        x: f32,
+        y: f32,
+    },
     Scroll {
         x: f32,
         y: f32,
@@ -98,6 +102,9 @@ pub enum InputEvent {
         y: f32,
         delta: f32,
         phase: TouchPhase,
+    },
+    TextInput {
+        text: String,
     },
     Key {
         key: KeyCode,
@@ -205,6 +212,181 @@ pub struct OffscreenSurface {
     last_presented: Option<wgpu::Texture>,
 }
 
+fn should_force_fallback_adapter() -> bool {
+    std::env::var_os("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER").is_some()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AdapterPreference {
+    backend_rank: u8,
+    device_type_rank: u8,
+}
+
+impl AdapterPreference {
+    fn for_info(info: &wgpu::AdapterInfo) -> Self {
+        Self {
+            backend_rank: backend_rank(info.backend),
+            device_type_rank: device_type_rank(info.device_type),
+        }
+    }
+}
+
+const fn backend_rank(backend: wgpu::Backend) -> u8 {
+    if cfg!(target_os = "windows") {
+        match backend {
+            wgpu::Backend::Dx12 => 0,
+            wgpu::Backend::Vulkan => 1,
+            wgpu::Backend::Metal => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    } else if cfg!(target_os = "macos") {
+        match backend {
+            wgpu::Backend::Metal => 0,
+            wgpu::Backend::Vulkan => 1,
+            wgpu::Backend::Dx12 => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    } else {
+        match backend {
+            wgpu::Backend::Vulkan => 0,
+            wgpu::Backend::Metal => 1,
+            wgpu::Backend::Dx12 => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    }
+}
+
+const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::VirtualGpu => 2,
+        wgpu::DeviceType::Other => 3,
+        wgpu::DeviceType::Cpu => 4,
+    }
+}
+
+fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let limits = adapter.limits();
+    downlevel_caps
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroups_per_dimension > 0
+}
+
+async fn request_hydrolysis_adapter(
+    instance: &wgpu::Instance,
+    compatible_surface: Option<&wgpu::Surface<'_>>,
+    context: &str,
+) -> wgpu::Adapter {
+    if should_force_fallback_adapter() {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface,
+                force_fallback_adapter: true,
+            })
+            .await
+            .expect("hydrolysis adapter selection: failed to find fallback adapter");
+        log_selected_adapter(context, &adapter);
+        return adapter;
+    }
+
+    let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all());
+    let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
+    let mut inspected_adapters: Vec<String> = Vec::new();
+
+    for adapter in instance.enumerate_adapters(backends) {
+        let info = adapter.get_info();
+        let surface_supported = compatible_surface
+            .as_ref()
+            .is_none_or(|surface| adapter.is_surface_supported(surface));
+        let limits = adapter.limits();
+        let compute_capable = is_compute_capable_adapter(&adapter);
+
+        tracing::info!(
+            target: "hydrolysis::gpu",
+            context,
+            adapter = ?info,
+            surface_supported,
+            compute_capable,
+            max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
+            "hydrolysis adapter candidate"
+        );
+
+        if !surface_supported {
+            continue;
+        }
+
+        inspected_adapters.push(format!(
+            "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
+            info.name,
+            info.backend,
+            info.device_type,
+            compute_capable,
+            limits.max_compute_workgroups_per_dimension
+        ));
+
+        if info.device_type == wgpu::DeviceType::Cpu || info.backend == wgpu::Backend::Noop {
+            tracing::info!(
+                target: "hydrolysis::gpu",
+                context,
+                adapter = ?info,
+                "skipping software/noop adapter because fallback adapter was not requested"
+            );
+            continue;
+        }
+
+        if !compute_capable {
+            continue;
+        }
+
+        let preference = AdapterPreference::for_info(&info);
+        match &best_candidate {
+            Some((best_preference, _)) if *best_preference <= preference => {}
+            _ => best_candidate = Some((preference, adapter)),
+        }
+    }
+
+    let (_, adapter) = best_candidate.unwrap_or_else(|| {
+        if inspected_adapters.is_empty() {
+            panic!(
+                "{context}: failed to find a surface-compatible wgpu adapter for requested backends {:?}. \
+Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.",
+                backends
+            );
+        }
+
+        panic!(
+            "{context}: failed to find a compute-capable modern adapter. \
+Surface-compatible adapters inspected: {}. \
+Set WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 to explicitly allow software fallback adapters for diagnostics.",
+            inspected_adapters.join("; ")
+        );
+    });
+
+    log_selected_adapter(context, &adapter);
+    adapter
+}
+
+fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
+    let info = adapter.get_info();
+    tracing::info!(
+        target: "hydrolysis::gpu",
+        context,
+        force_fallback_adapter = should_force_fallback_adapter(),
+        adapter = ?info,
+        "selected wgpu adapter"
+    );
+}
+
 impl core::fmt::Debug for OffscreenSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OffscreenSurface")
@@ -218,19 +400,23 @@ impl core::fmt::Debug for OffscreenSurface {
 impl OffscreenSurface {
     pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("hydrolysis offscreen surface: failed to find wgpu adapter");
+        let adapter =
+            request_hydrolysis_adapter(&instance, None, "hydrolysis offscreen surface").await;
 
+        ensure_compute_capable_adapter(
+            &adapter,
+            "hydrolysis offscreen surface",
+            "failed to find compute-capable wgpu adapter",
+        );
+        let required_limits = required_device_limits(&adapter);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
-                ..Default::default()
+                required_features: wgpu::Features::empty(),
+                required_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
             })
             .await
             .expect("hydrolysis offscreen surface: failed to request wgpu device");
@@ -254,6 +440,49 @@ impl OffscreenSurface {
     pub fn last_presented(&self) -> Option<&wgpu::Texture> {
         self.last_presented.as_ref()
     }
+}
+
+fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let adapter_limits = adapter.limits();
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let base_limits = if downlevel_caps.is_webgpu_compliant() {
+        wgpu::Limits::default()
+    } else if downlevel_caps
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    {
+        wgpu::Limits::downlevel_defaults()
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    };
+
+    base_limits
+        .using_resolution(adapter_limits.clone())
+        .using_alignment(adapter_limits)
+}
+
+fn ensure_compute_capable_adapter(
+    adapter: &wgpu::Adapter,
+    context: &str,
+    no_compute_message: &str,
+) {
+    let limits = adapter.limits();
+    if is_compute_capable_adapter(adapter) {
+        return;
+    }
+
+    let info = adapter.get_info();
+    let fallback_hint = if cfg!(target_os = "windows") {
+        " On Windows, try forcing DX12 WARP: set WGPU_BACKEND=dx12 and WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1."
+    } else {
+        ""
+    };
+    panic!(
+        "{context}: {no_compute_message}. Selected adapter '{}' ({:?}) reports max_compute_workgroups_per_dimension = {}. \
+Hydrolysis requires compute shader support. On virtual machines, enable hardware 3D acceleration and update VM graphics tools/driver, \
+or run on a host with a compute-capable GPU.{fallback_hint}",
+        info.name, info.backend, limits.max_compute_workgroups_per_dimension
+    );
 }
 
 impl SurfaceProvider for OffscreenSurface {
@@ -376,8 +605,8 @@ mod winit_impl {
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::{
-            ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase,
-            WindowEvent,
+            ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta,
+            TouchPhase as WinitTouchPhase, WindowEvent,
         },
         keyboard::{Key, ModifiersState},
         window::{
@@ -413,19 +642,27 @@ mod winit_impl {
             let surface = instance
                 .create_surface(window.clone())
                 .expect("hydrolysis winit surface: failed to create surface");
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                })
-                .await
-                .expect("hydrolysis winit surface: failed to find adapter");
+            let adapter = super::request_hydrolysis_adapter(
+                &instance,
+                Some(&surface),
+                "hydrolysis winit surface",
+            )
+            .await;
 
+            super::ensure_compute_capable_adapter(
+                &adapter,
+                "hydrolysis winit surface",
+                "failed to find compute-capable wgpu adapter",
+            );
+            let required_limits = super::required_device_limits(&adapter);
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("hydrolysis-winit-device"),
-                    ..Default::default()
+                    required_features: wgpu::Features::empty(),
+                    required_limits,
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
+                    trace: wgpu::Trace::default(),
                 })
                 .await
                 .expect("hydrolysis winit surface: failed to request device");
@@ -599,6 +836,13 @@ mod winit_impl {
                         height: size.height.max(1),
                     });
                 }
+                WindowEvent::Moved(position) => {
+                    let logical = position.to_logical::<f64>(self.window.scale_factor());
+                    self.pending_events.push(InputEvent::Moved {
+                        x: logical.x as f32,
+                        y: logical.y as f32,
+                    });
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer_position =
                         map_cursor_position(position, self.window.scale_factor());
@@ -677,6 +921,17 @@ mod winit_impl {
                     self.modifiers = modifiers.state().into();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    if event.state == ElementState::Pressed {
+                        if let Some(text) = keyboard_text_payload(event) {
+                            tracing::trace!(
+                                target: "waterui::hydrolysis::input_raw",
+                                event = "keyboard_text",
+                                text = text.as_str(),
+                                "winit raw input event"
+                            );
+                            self.pending_events.push(InputEvent::TextInput { text });
+                        }
+                    }
                     tracing::trace!(
                         target: "waterui::hydrolysis::input_raw",
                         event = "keyboard_input",
@@ -686,7 +941,7 @@ mod winit_impl {
                         "winit raw input event"
                     );
                     self.pending_events.push(InputEvent::Key {
-                        key: map_key(&event.logical_key),
+                        key: map_key_event(event),
                         state: match event.state {
                             ElementState::Pressed => KeyState::Pressed,
                             ElementState::Released => KeyState::Released,
@@ -761,7 +1016,23 @@ mod winit_impl {
         fn apply_properties(&mut self, window: &waterui::window::Window) {
             self.window.set_title(window.title.get().as_str());
             self.window.set_resizable(window.resizable);
+            self.window.set_decorations(!matches!(
+                window.style,
+                waterui::window::WindowStyle::Borderless
+            ));
             let frame = window.frame.get();
+            let target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            let current_position = self
+                .window
+                .outer_position()
+                .ok()
+                .map(|value| value.to_logical::<f64>(self.window.scale_factor()));
+            if current_position.is_none_or(|current| {
+                (current.x - target_position.x).abs() > 0.5
+                    || (current.y - target_position.y).abs() > 0.5
+            }) {
+                self.window.set_outer_position(target_position);
+            }
             let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
             let current_size = self
                 .window
@@ -888,6 +1159,22 @@ mod winit_impl {
             Key::Named(value) => KeyCode::Named(format!("{value:?}")),
             _ => KeyCode::Unidentified,
         }
+    }
+
+    fn map_key_event(event: &KeyEvent) -> KeyCode {
+        if keyboard_text_payload(event).is_some() && matches!(event.logical_key, Key::Character(_))
+        {
+            return KeyCode::Unidentified;
+        }
+        map_key(&event.logical_key)
+    }
+
+    fn keyboard_text_payload(event: &KeyEvent) -> Option<String> {
+        let text = event.text.as_ref()?;
+        if text.is_empty() || text.chars().all(char::is_control) {
+            return None;
+        }
+        Some(text.to_string())
     }
 
     fn map_cursor_style(style: CursorStyle) -> CursorIcon {

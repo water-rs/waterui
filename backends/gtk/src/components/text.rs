@@ -122,7 +122,7 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
     let mut attrs = String::new();
     let resolved_font: ResolvedFont = style.font.resolve(env).get();
     let font_size = resolved_font.size.max(1.0);
-    let _ = write!(attrs, " size_points=\"{font_size:.2}\"");
+    let _ = write!(attrs, " size=\"{font_size:.2}pt\"");
     let _ = write!(
         attrs,
         " weight=\"{}\"",

@@ -15,6 +15,7 @@ use crate::{
     macos_bundle::package_binary_as_app,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::{command, run_command_os},
 };
 
@@ -22,8 +23,10 @@ use crate::{
 const HYDROLYSIS_INIT_HINT: &str = "water run --platform macos --backend hydrolysis";
 #[cfg(target_os = "linux")]
 const HYDROLYSIS_INIT_HINT: &str = "water run --platform linux --backend hydrolysis";
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const HYDROLYSIS_INIT_HINT: &str = "initialize hydrolysis backend on macOS or Linux";
+#[cfg(target_os = "windows")]
+const HYDROLYSIS_INIT_HINT: &str = "water run --platform windows --backend hydrolysis";
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+const HYDROLYSIS_INIT_HINT: &str = "initialize hydrolysis backend on macOS, Linux, or Windows";
 
 /// Build hydrolysis binary for the host platform.
 pub async fn build_hydrolysis(
@@ -32,7 +35,7 @@ pub async fn build_hydrolysis(
     options: BuildOptions,
 ) -> eyre::Result<PathBuf> {
     if !is_hydrolysis_platform(platform) {
-        bail!("Hydrolysis backend is only supported on macOS and Linux");
+        bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
     }
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
@@ -56,6 +59,20 @@ pub async fn build_hydrolysis(
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     cargo.arg("--target-dir").arg(&backend_target_dir);
+    let llvm_envs = WindowsArm64LlvmToolchain
+        .cargo_envs()
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })?;
+    for (key, value) in llvm_envs {
+        cargo.env(key, value);
+    }
     if options.is_release() {
         cargo.arg("--release");
     }
@@ -102,7 +119,7 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 
 /// Package a hydrolysis app.
 ///
-/// Linux returns a binary artifact path.
+/// Linux/Windows return a binary artifact path.
 /// macOS returns a `.app` bundle path.
 pub async fn package_hydrolysis(
     project: &Project,
@@ -110,7 +127,7 @@ pub async fn package_hydrolysis(
     options: PackageOptions,
 ) -> eyre::Result<Artifact> {
     if !is_hydrolysis_platform(platform) {
-        bail!("Hydrolysis backend is only supported on macOS and Linux");
+        bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
     }
 
     let profile = if options.is_debug() {
@@ -123,12 +140,21 @@ pub async fn package_hydrolysis(
 
     let target_dir = project.backend_target_dir("hydrolysis").join(profile);
     let binary_name = project.hydrolysis_backend_crate_name();
-    let binary_path = target_dir.join(&binary_name);
+    let binary_path = if cfg!(windows) {
+        target_dir.join(format!("{binary_name}.exe"))
+    } else {
+        target_dir.join(&binary_name)
+    };
 
     let final_binary_path = if binary_path.exists() {
         binary_path
     } else {
-        let alt = target_dir.join(binary_name.replace('-', "_"));
+        let alt_binary_name = binary_name.replace('-', "_");
+        let alt = if cfg!(windows) {
+            target_dir.join(format!("{alt_binary_name}.exe"))
+        } else {
+            target_dir.join(alt_binary_name)
+        };
         if alt.exists() {
             alt
         } else {
@@ -176,7 +202,10 @@ pub async fn package_hydrolysis(
 
 /// Check if a platform is supported by the hydrolysis backend.
 pub const fn is_hydrolysis_platform(platform: TargetPlatform) -> bool {
-    matches!(platform, TargetPlatform::Linux | TargetPlatform::MacOS)
+    matches!(
+        platform,
+        TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows
+    )
 }
 
 async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {

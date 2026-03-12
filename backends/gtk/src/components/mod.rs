@@ -2,7 +2,9 @@
 
 pub mod button;
 pub mod color;
+pub mod color_picker;
 pub mod container;
+pub mod date_picker;
 pub mod divider;
 pub mod dynamic;
 pub mod fixed_container_widget;
@@ -10,6 +12,7 @@ pub mod gpu_surface;
 pub mod gradient;
 pub mod lazy_container;
 pub mod list;
+pub mod menu;
 pub mod navigation;
 pub mod picker;
 pub mod progress;
@@ -19,6 +22,7 @@ pub mod shape;
 pub mod slider;
 pub mod spacer;
 pub mod stepper;
+pub mod system_icon;
 pub mod tabs;
 pub mod text;
 pub mod text_field;
