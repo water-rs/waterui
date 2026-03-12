@@ -2,7 +2,7 @@
 
 use crate::{
     EmitterShape,
-    config::{BlendMode, ParticleConfig},
+    config::{BlendMode, CircleObstacleConfig, ParticleConfig},
     renderer::{ParticleRenderer, ResolvedParticleConfig},
 };
 use core::{num::NonZeroU32, ops::Range};
@@ -141,9 +141,13 @@ impl ParticleSystem {
     /// Add a circular obstacle collider in normalized coordinates.
     #[must_use]
     pub fn collide_with_circle_obstacle(mut self, x: f32, y: f32, radius: f32) -> Self {
-        self.config.collision.obstacle_enabled = true;
-        self.config.collision.obstacle_center = [x, y];
-        self.config.collision.obstacle_radius = radius;
+        self.config
+            .collision
+            .circle_obstacles
+            .push(CircleObstacleConfig {
+                center: [x, y],
+                radius,
+            });
         self
     }
 
@@ -230,9 +234,13 @@ impl ParticleSystem {
             collision_bounds: self.config.collision.bounds,
             collision_restitution: self.config.collision.restitution,
             collision_surface_friction: self.config.collision.surface_friction,
-            collision_obstacle_enabled: self.config.collision.obstacle_enabled,
-            collision_obstacle_center: self.config.collision.obstacle_center,
-            collision_obstacle_radius: self.config.collision.obstacle_radius,
+            collision_circle_obstacles: self
+                .config
+                .collision
+                .circle_obstacles
+                .into_iter()
+                .map(|obstacle| [obstacle.center[0], obstacle.center[1], obstacle.radius])
+                .collect(),
             life_range: [
                 self.config.particle.life.start,
                 self.config.particle.life.end,

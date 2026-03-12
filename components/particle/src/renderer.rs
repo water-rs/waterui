@@ -3,7 +3,7 @@
 use crate::{
     EmitterShape,
     config::{BlendMode, ParticleShape},
-    gpu::{CollisionUniforms, GpuParticle, Uniforms},
+    gpu::{CollisionUniforms, GpuCircleObstacle, GpuParticle, Uniforms},
     shaders::{COMPUTE_SHADER, RENDER_SHADER},
 };
 use encase::{ShaderSize, UniformBuffer};
@@ -30,9 +30,7 @@ pub struct ResolvedParticleConfig {
     pub collision_bounds: [f32; 4],
     pub collision_restitution: f32,
     pub collision_surface_friction: f32,
-    pub collision_obstacle_enabled: bool,
-    pub collision_obstacle_center: [f32; 2],
-    pub collision_obstacle_radius: f32,
+    pub collision_circle_obstacles: Vec<[f32; 3]>,
     pub life_range: [f32; 2],
     pub speed_range: [f32; 2],
     pub angle_range: [f32; 2],
@@ -147,6 +145,7 @@ pub struct ParticleRenderer {
     compute_pipeline: Option<wgpu::ComputePipeline>,
     render_pipeline: Option<wgpu::RenderPipeline>,
     particle_buffer: Option<wgpu::Buffer>,
+    collision_buffer: Option<wgpu::Buffer>,
     uniform_buffer: Option<wgpu::Buffer>,
     compute_bind_group: Option<wgpu::BindGroup>,
     render_bind_group: Option<wgpu::BindGroup>,
@@ -160,6 +159,7 @@ impl ParticleRenderer {
             compute_pipeline: None,
             render_pipeline: None,
             particle_buffer: None,
+            collision_buffer: None,
             uniform_buffer: None,
             compute_bind_group: None,
             render_bind_group: None,
@@ -201,9 +201,7 @@ impl ParticleRenderer {
                     self.config.collision_restitution,
                     self.config.collision_surface_friction,
                     glam::Vec4::from_array(self.config.collision_bounds),
-                    self.config.collision_obstacle_enabled,
-                    glam::Vec2::from_array(self.config.collision_obstacle_center),
-                    self.config.collision_obstacle_radius,
+                    self.config.collision_circle_obstacles.len() as u32,
                 ),
                 life_range: glam::Vec2::from_array(self.config.life_range),
                 speed_range: glam::Vec2::from_array(self.config.speed_range),
@@ -231,6 +229,8 @@ impl GpuView for ParticleRenderer {
         let device = ctx.device;
         let particle_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64;
         let buffer_size = particle_size * u64::from(self.config.max_particles);
+        let collision_stride = <GpuCircleObstacle as ShaderSize>::SHADER_SIZE.get() as u64;
+        let collision_count = self.config.collision_circle_obstacles.len().max(1);
 
         let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particle Buffer"),
@@ -251,6 +251,32 @@ impl GpuView for ParticleRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let collision_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle Collision Obstacles"),
+            size: collision_stride * collision_count as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: true,
+        });
+        {
+            let mut mapped = collision_buffer.slice(..).get_mapped_range_mut();
+            let obstacle_data = if self.config.collision_circle_obstacles.is_empty() {
+                vec![GpuCircleObstacle::default()]
+            } else {
+                self.config
+                    .collision_circle_obstacles
+                    .iter()
+                    .map(|obstacle| {
+                        GpuCircleObstacle::new(
+                            glam::Vec2::new(obstacle[0], obstacle[1]),
+                            obstacle[2],
+                        )
+                    })
+                    .collect()
+            };
+            let bytes = bytemuck::cast_slice(&obstacle_data);
+            mapped[..bytes.len()].copy_from_slice(bytes);
+        }
+        collision_buffer.unmap();
 
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Particle Compute Shader"),
@@ -275,6 +301,16 @@ impl GpuView for ParticleRenderer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -313,6 +349,10 @@ impl GpuView for ParticleRenderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: particle_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: collision_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -391,6 +431,7 @@ impl GpuView for ParticleRenderer {
         });
 
         self.particle_buffer = Some(particle_buffer);
+        self.collision_buffer = Some(collision_buffer);
         self.uniform_buffer = Some(uniform_buffer);
         self.compute_pipeline = Some(compute_pipeline);
         self.render_pipeline = Some(render_pipeline);
@@ -500,9 +541,7 @@ mod tests {
             collision_bounds: [0.0, 0.0, 1.0, 1.0],
             collision_restitution: 1.0,
             collision_surface_friction: 1.0,
-            collision_obstacle_enabled: false,
-            collision_obstacle_center: [0.5, 0.5],
-            collision_obstacle_radius: 0.0,
+            collision_circle_obstacles: Vec::new(),
             life_range: [1.0, 1.0],
             speed_range: [0.0, 0.0],
             angle_range: [0.0, 0.0],
@@ -585,8 +624,9 @@ mod tests {
     #[test]
     fn compute_shader_contains_circle_obstacle_collision_response() {
         assert!(COMPUTE_SHADER.contains("fn apply_circle_obstacle_collision"));
-        assert!(COMPUTE_SHADER.contains("uniforms.collision.obstacle_enabled == 0u"));
-        assert!(COMPUTE_SHADER.contains("uniforms.collision.obstacle_center"));
+        assert!(COMPUTE_SHADER.contains("fn apply_circle_obstacle_collisions"));
+        assert!(COMPUTE_SHADER.contains("uniforms.collision.circle_obstacle_count"));
+        assert!(COMPUTE_SHADER.contains("circle_obstacles[i]"));
     }
 
     #[test]
@@ -864,9 +904,7 @@ mod tests {
                 0.5,
                 0.25,
                 glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
-                false,
-                glam::Vec2::ZERO,
-                0.0,
+                0,
             ),
             size_range: glam::Vec2::new(0.1, 0.1),
             color_start: glam::Vec4::ONE,
@@ -970,9 +1008,7 @@ mod tests {
         use waterui_graphics::{GpuContext, gpu_surface::RedrawHandle, pollster, shared_context};
 
         let mut renderer = ParticleRenderer::new(ResolvedParticleConfig {
-            collision_obstacle_enabled: true,
-            collision_obstacle_center: [0.5, 0.5],
-            collision_obstacle_radius: 0.2,
+            collision_circle_obstacles: vec![[0.3, 0.4, 0.08], [0.8, 0.5, 0.05]],
             collision_restitution: 0.5,
             collision_surface_friction: 0.25,
             ..particle_test_config(1)
@@ -994,7 +1030,7 @@ mod tests {
         pollster::block_on(renderer.setup(&ctx, &mut env));
 
         let mut particle = GpuParticle::default();
-        particle.pos = glam::Vec2::new(0.6, 0.5);
+        particle.pos = glam::Vec2::new(0.86, 0.5);
         particle.vel = glam::Vec2::new(-1.0, 0.4);
         particle.life = 1.0;
         particle.max_life = 1.0;
@@ -1022,9 +1058,7 @@ mod tests {
                 0.5,
                 0.25,
                 glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
-                true,
-                glam::Vec2::new(0.5, 0.5),
-                0.2,
+                2,
             ),
             size_range: glam::Vec2::new(0.05, 0.05),
             color_start: glam::Vec4::ONE,
@@ -1103,8 +1137,8 @@ mod tests {
         let mapped = slice.get_mapped_range();
         let updated = bytemuck::pod_read_unaligned::<GpuParticle>(&mapped[..buffer_size as usize]);
         assert!(
-            (updated.pos.x - 0.75).abs() < 0.0001,
-            "particle should clamp against the obstacle surface, got {}",
+            (updated.pos.x - 0.9).abs() < 0.0001,
+            "particle should clamp against the second obstacle surface, got {}",
             updated.pos.x
         );
         assert!(
