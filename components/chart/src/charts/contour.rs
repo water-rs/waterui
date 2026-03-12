@@ -4,6 +4,7 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 
 use crate::charts::canvas::{contour_geometry, draw_contour, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::ContourData;
 use crate::interaction::{GridDatum, HitResult, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32};
@@ -13,6 +14,7 @@ pub struct ContourChart<S: Signal<Output = ContourData>> {
     data: S,
     line_width: f32,
     selection: SelectionBindings<GridDatum>,
+    composition: ChartComposition<GridDatum>,
 }
 
 impl<S: Signal<Output = ContourData>> ContourChart<S> {
@@ -22,8 +24,11 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
             data,
             line_width: 2.0,
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(GridDatum);
 
     #[must_use]
     pub fn line_width(self, width: f32) -> Self {
@@ -58,12 +63,14 @@ impl<S: Signal<Output = ContourData> + Clone + 'static> View for ContourChart<S>
     fn body(self, _env: &Environment) -> impl View {
         let line_width = self.line_width;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| contour_geometry(ctx, data),
             move |ctx, data, _geometry| {
                 draw_contour(ctx, data, line_width);
             },
             self.selection,
+            self.composition,
         )
     }
 }
