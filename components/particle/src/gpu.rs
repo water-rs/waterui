@@ -40,14 +40,18 @@ pub struct CollisionUniforms {
     pub restitution: f32,
     /// Velocity preserved tangent to the collision surface.
     pub surface_friction: f32,
-    /// Whether the circular obstacle collider is active.
-    pub obstacle_enabled: u32,
+    /// Number of circular obstacle colliders in the storage buffer.
+    pub circle_obstacle_count: u32,
     /// Collision bounds encoded as min_x, min_y, max_x, max_y.
     pub bounds: glam::Vec4,
-    /// Circular obstacle center in normalized coordinates.
-    pub obstacle_center: glam::Vec2,
-    /// Circular obstacle radius.
-    pub obstacle_radius: f32,
+}
+
+/// GPU representation of a circular obstacle collider.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuCircleObstacle {
+    pub center: glam::Vec2,
+    pub radius: f32,
     _pad0: f32,
 }
 
@@ -58,18 +62,24 @@ impl CollisionUniforms {
         restitution: f32,
         surface_friction: f32,
         bounds: glam::Vec4,
-        obstacle_enabled: bool,
-        obstacle_center: glam::Vec2,
-        obstacle_radius: f32,
+        circle_obstacle_count: u32,
     ) -> Self {
         Self {
             enabled: u32::from(enabled),
             restitution,
             surface_friction,
-            obstacle_enabled: u32::from(obstacle_enabled),
+            circle_obstacle_count,
             bounds,
-            obstacle_center,
-            obstacle_radius,
+        }
+    }
+}
+
+impl GpuCircleObstacle {
+    #[must_use]
+    pub const fn new(center: glam::Vec2, radius: f32) -> Self {
+        Self {
+            center,
+            radius,
             _pad0: 0.0,
         }
     }
