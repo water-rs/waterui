@@ -110,11 +110,39 @@ impl Default for EnvironmentConfig {
     }
 }
 
+/// Internal collision configuration.
+#[derive(Clone, Debug)]
+pub(crate) struct CollisionConfig {
+    pub enabled: bool,
+    /// Bounds encoded as min_x, min_y, max_x, max_y in normalized coordinates.
+    pub bounds: [f32; 4],
+    pub restitution: f32,
+    pub surface_friction: f32,
+    pub obstacle_enabled: bool,
+    pub obstacle_center: [f32; 2],
+    pub obstacle_radius: f32,
+}
+
+impl Default for CollisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bounds: [0.0, 0.0, 1.0, 1.0],
+            restitution: 1.0,
+            surface_friction: 1.0,
+            obstacle_enabled: false,
+            obstacle_center: [0.5, 0.5],
+            obstacle_radius: 0.0,
+        }
+    }
+}
+
 /// Full internal configuration (built by modifier chain).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ParticleConfig {
     pub emitter: EmitterConfig,
     pub particle: ParticleProps,
     pub environment: EnvironmentConfig,
+    pub collision: CollisionConfig,
     pub blend_mode: BlendMode,
 }

@@ -22,6 +22,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::pin::Pin;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
@@ -32,7 +33,14 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
 
-use crate::gpu_surface::SetupFuture;
+/// Boxed future for filter setup.
+pub type FilterSetupFuture<'a> = Pin<Box<dyn Future<Output = FilterSetupResult> + 'a>>;
+
+/// Result returned by filter setup.
+pub type FilterSetupResult = Result<(), &'static str>;
+
+/// Result returned by one filter render pass.
+pub type FilterRenderResult = Result<bool, &'static str>;
 
 /// GPU resources provided to the filter during setup.
 ///
@@ -125,25 +133,36 @@ impl core::fmt::Debug for FilterOutput<'_> {
 ///
 /// The `setup` method returns a future, allowing async initialization.
 /// For sync filters, return `async {}` after doing sync work.
+/// The future is awaited on the same render thread that created it.
 ///
 /// # Animation Support
 ///
-/// The `render` method returns a boolean indicating whether another frame
-/// is needed (for animations). Return `true` if an animation is in progress.
+/// The `render` method returns a [`FilterRenderResult`]. Return `Ok(true)`
+/// while animation is in progress, `Ok(false)` for a completed frame, and
+/// `Err(...)` for an explicit render failure.
 pub trait GpuFilter: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, bind groups, samplers, and other
     /// GPU resources that persist across frames.
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()>;
+    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult>;
 
     /// Called each frame to apply the filter.
     ///
     /// Read from `input.texture`/`input.view` and write to `output.texture`/`output.view`.
     /// Input and output may have different dimensions.
     ///
-    /// Returns `true` if another frame is needed (animation in progress).
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+    /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
+
+    /// Resolve the output dimensions from the current snapped filter state.
+    ///
+    /// Implementations that depend on reactive inputs must snapshot those values
+    /// in [`GpuFilter::sync_targets`] and only read the snapped state here.
+    #[must_use]
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        (input_width, input_height)
+    }
 
     /// Snapshot reactive target values before render dispatch.
     ///
@@ -162,19 +181,24 @@ pub trait GpuFilter: 'static {
 
 /// Object-safe trait for type-erased GPU filters.
 pub(crate) trait GpuFilterImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a>;
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool;
+    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a>;
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     fn sync_targets(&mut self);
     fn redraw_hint(&self) -> bool;
 }
 
 impl<T: GpuFilter> GpuFilterImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a> {
+    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
         Box::pin(GpuFilter::setup(self, ctx))
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         GpuFilter::render(self, input, output)
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        GpuFilter::output_size(self, input_width, input_height)
     }
 
     fn sync_targets(&mut self) {
@@ -211,15 +235,21 @@ impl AppliedFilter {
     }
 
     /// Calls `setup` on the filter, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> SetupFuture<'a> {
+    pub fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
         self.filter.setup(ctx)
     }
 
     /// Calls `render` on the filter.
     ///
-    /// Returns `true` if another frame is needed (animation in progress).
-    pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         self.filter.render(input, output)
+    }
+
+    /// Resolve the current output dimensions from snapped filter state.
+    #[must_use]
+    pub fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        self.filter.output_size(input_width, input_height)
     }
 
     /// Snapshot reactive target values before render dispatch.
@@ -508,20 +538,7 @@ struct CompiledPass {
     binding_plan: PassBindingPlan,
     uniform_buffer: wgpu::Buffer,
     last_uniform_data: Option<[f32; FILTER_UNIFORM_WORDS]>,
-    cached_bind_group_key: Option<BindGroupCacheKey>,
     cached_bind_group: Option<wgpu::BindGroup>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BindGroupCacheKey {
-    Static,
-    Input {
-        input_texture: usize,
-    },
-    InputOutput {
-        input_texture: usize,
-        output_texture: usize,
-    },
 }
 
 struct FinalSpatialOutputPipeline {
@@ -534,6 +551,12 @@ struct FinalSpatialOutputPipeline {
 trait FilterGraph: Filter {
     /// Collect atomic stages in source order.
     fn collect_stages(&self, out: &mut Vec<AtomicStage>);
+
+    /// Resolve this filter graph's output size from the current snapped parameters.
+    #[must_use]
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        (input_width, input_height)
+    }
 
     /// Install animation watchers for all reactive parameters.
     fn bind_animation_watchers(
@@ -625,13 +648,405 @@ macro_rules! impl_filter_graph_one_param {
     };
 }
 
+macro_rules! impl_filter_graph_two_params {
+    ($ty:ident, color) => {
+        impl<A, B> FilterGraph for filtrate_core::filters::$ty<A, B>
+        where
+            A: Signal<Output = f32> + 'static,
+            B: Signal<Output = f32> + 'static,
+            A::Guard: 'static,
+            B::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, self.fragments(), 2);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
+                bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
+            }
+        }
+    };
+    ($ty:ident, spatial) => {
+        impl<A, B> FilterGraph for filtrate_core::filters::$ty<A, B>
+        where
+            A: Signal<Output = f32> + 'static,
+            B: Signal<Output = f32> + 'static,
+            A::Guard: 'static,
+            B::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 2);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
+                bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_four_params {
+    ($ty:ident, color) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, self.fragments(), 4);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+        }
+    };
+    ($ty:ident, spatial) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 4);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+
+            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+                (input_width, input_height)
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_array_two_params {
+    ($ty:ident, color) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, self.fragments(), 2);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+        }
+    };
+    ($ty:ident, spatial) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 2);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+
+            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+                (input_width, input_height)
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_array_three_params {
+    ($ty:ident, spatial) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 3);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+
+            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+                (input_width, input_height)
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_eight_params {
+    ($ty:ident, spatial) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 8);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+
+            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+                (input_width, input_height)
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_twelve_params {
+    ($ty:ident, color) => {
+        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        where
+            S: Signal<Output = f32> + Clone + 'static,
+            S::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, self.fragments(), 12);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                for (index, signal) in self.0.iter().enumerate() {
+                    bind_param_watcher(
+                        signal,
+                        param_base + index,
+                        animation_events.clone(),
+                        guards,
+                    );
+                }
+            }
+        }
+    };
+}
+
+macro_rules! impl_filter_graph_three_params {
+    ($ty:ident, color) => {
+        impl<A, B, C> FilterGraph for filtrate_core::filters::$ty<A, B, C>
+        where
+            A: Signal<Output = f32> + 'static,
+            B: Signal<Output = f32> + 'static,
+            C: Signal<Output = f32> + 'static,
+            A::Guard: 'static,
+            B::Guard: 'static,
+            C::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_color_stage(out, self.fragments(), 3);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
+                bind_param_watcher(&self.1, param_base + 1, animation_events.clone(), guards);
+                bind_param_watcher(&self.2, param_base + 2, animation_events, guards);
+            }
+        }
+    };
+    ($ty:ident, spatial) => {
+        impl<A, B, C> FilterGraph for filtrate_core::filters::$ty<A, B, C>
+        where
+            A: Signal<Output = f32> + 'static,
+            B: Signal<Output = f32> + 'static,
+            C: Signal<Output = f32> + 'static,
+            A::Guard: 'static,
+            B::Guard: 'static,
+            C::Guard: 'static,
+        {
+            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+                push_spatial_stage(out, self.fragments(), 3);
+            }
+
+            fn bind_animation_watchers(
+                &self,
+                param_base: usize,
+                animation_events: Sender<ParamAnimationEvent>,
+                guards: &mut Vec<Box<dyn core::any::Any>>,
+            ) {
+                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
+                bind_param_watcher(&self.1, param_base + 1, animation_events.clone(), guards);
+                bind_param_watcher(&self.2, param_base + 2, animation_events, guards);
+            }
+        }
+    };
+}
+
 impl_filter_graph_one_param!(Brightness, color);
+impl_filter_graph_one_param!(Exposure, color);
+impl_filter_graph_one_param!(Gamma, color);
 impl_filter_graph_one_param!(Contrast, color);
 impl_filter_graph_one_param!(Saturation, color);
 impl_filter_graph_one_param!(Grayscale, color);
+impl_filter_graph_one_param!(Vibrance, color);
+impl_filter_graph_three_params!(WhitePoint, color);
 impl_filter_graph_one_param!(HueRotation, color);
 impl_filter_graph_one_param!(Sepia, color);
 impl_filter_graph_one_param!(Sharpen, spatial);
+impl_filter_graph_two_params!(TemperatureTint, color);
+impl_filter_graph_two_params!(HighlightsShadows, color);
+impl_filter_graph_two_params!(MotionBlur, spatial);
+impl_filter_graph_three_params!(ZoomBlur, spatial);
+impl_filter_graph_twelve_params!(ColorMatrix, color);
+impl<S> FilterGraph for filtrate_core::filters::GaussianBlur<S>
+where
+    S: Signal<Output = f32> + 'static,
+    S::Guard: 'static,
+{
+    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_horizontal.wgsl"),
+            1,
+        );
+        push_spatial_stage(
+            out,
+            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_vertical.wgsl"),
+            1,
+        );
+    }
+
+    fn bind_animation_watchers(
+        &self,
+        param_base: usize,
+        animation_events: Sender<ParamAnimationEvent>,
+        guards: &mut Vec<Box<dyn core::any::Any>>,
+    ) {
+        let guard = self.0.watch(move |context| {
+            let Some(animation) = context.metadata().try_get::<Animation>() else {
+                return;
+            };
+            let target = context.into_value();
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base,
+                target_value: target,
+                animation: animation.clone(),
+            });
+            let _ = animation_events.send(ParamAnimationEvent {
+                param_index: param_base + 1,
+                target_value: target,
+                animation,
+            });
+        });
+        guards.push(Box::new(guard));
+    }
+}
+impl_filter_graph_array_three_params!(Bloom, spatial);
+impl_filter_graph_array_three_params!(Gloom, spatial);
+impl_filter_graph_array_two_params!(UnsharpMask, spatial);
+impl_filter_graph_four_params!(BumpDistortion, spatial);
+impl_filter_graph_four_params!(PinchDistortion, spatial);
+impl_filter_graph_four_params!(TwirlDistortion, spatial);
+impl_filter_graph_four_params!(VortexDistortion, spatial);
+impl_filter_graph_eight_params!(PerspectiveTransform, spatial);
+impl_filter_graph_eight_params!(PerspectiveCorrection, spatial);
+impl_filter_graph_one_param!(Pixellate, spatial);
+impl_filter_graph_one_param!(Crystallize, spatial);
+impl_filter_graph_array_two_params!(EdgeWork, spatial);
+impl_filter_graph_four_params!(DotHalftone, spatial);
+impl_filter_graph_four_params!(LineHalftone, spatial);
+impl_filter_graph_four_params!(Kaleidoscope, spatial);
+impl_filter_graph_array_two_params!(MirrorTile, spatial);
 
 impl<S> FilterGraph for filtrate_core::filters::Blur<S>
 where
@@ -729,6 +1144,11 @@ where
             animation_events,
             guards,
         );
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        let (mid_width, mid_height) = self.first.output_size(input_width, input_height);
+        self.second.output_size(mid_width, mid_height)
     }
 }
 
@@ -1130,6 +1550,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         }
     }
 
+    #[cfg(test)]
     fn has_setup_error(&self) -> bool {
         self.setup_error.is_some()
     }
@@ -1139,44 +1560,113 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         self.last_render_used_direct_output
     }
 
-    fn ensure_scratch_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    #[cfg(test)]
+    fn allocated_scratch_slots(&self) -> [bool; 2] {
+        [
+            self.scratch_views[0].is_some(),
+            self.scratch_views[1].is_some(),
+        ]
+    }
+
+    fn required_scratch_slots_for_frame(
+        &self,
+        direct_output_pass_index: Option<usize>,
+    ) -> [bool; 2] {
+        let mut required = [false; 2];
+
+        for (pass_index, pass) in self.passes.iter().enumerate() {
+            match pass.binding_plan {
+                PassBindingPlan::Color { source, target } => {
+                    if let PassTextureSource::Scratch(slot) = source {
+                        required[slot] = true;
+                    }
+                    if let ColorTarget::Scratch(slot) = target {
+                        required[slot] = true;
+                    }
+                }
+                PassBindingPlan::Spatial {
+                    source,
+                    target_scratch,
+                } => {
+                    if let PassTextureSource::Scratch(slot) = source {
+                        required[slot] = true;
+                    }
+                    if direct_output_pass_index != Some(pass_index) {
+                        required[target_scratch] = true;
+                    }
+                }
+            }
+        }
+
+        if direct_output_pass_index.is_none()
+            && let Some(blit_slot) = self.blit_source_scratch_slot
+        {
+            required[blit_slot] = true;
+        }
+
+        required
+    }
+
+    fn ensure_scratch_textures(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        required_slots: [bool; 2],
+    ) {
         if !self.requires_scratch {
             return;
         }
-        if self.scratch_size == (width, height)
-            && self.scratch_views[0].is_some()
-            && self.scratch_views[1].is_some()
-        {
-            return;
-        }
 
-        for pass in &mut self.passes {
-            pass.cached_bind_group = None;
-            pass.cached_bind_group_key = None;
-        }
-        self.blit_bind_group = None;
+        let size_changed = self.scratch_size != (width, height);
+        let mut bindings_invalidated = false;
 
         for slot in 0..2 {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("filter scratch texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.scratch_format,
-                usage: scratch_texture_usage(),
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.scratch_textures[slot] = Some(texture);
-            self.scratch_views[slot] = Some(view);
+            if !required_slots[slot] {
+                if self.scratch_textures[slot].is_some() || self.scratch_views[slot].is_some() {
+                    self.scratch_textures[slot] = None;
+                    self.scratch_views[slot] = None;
+                    bindings_invalidated = true;
+                }
+                continue;
+            }
+
+            let missing =
+                self.scratch_textures[slot].is_none() || self.scratch_views[slot].is_none();
+            if size_changed || missing {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("filter scratch texture"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.scratch_format,
+                    usage: scratch_texture_usage(),
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.scratch_textures[slot] = Some(texture);
+                self.scratch_views[slot] = Some(view);
+                bindings_invalidated = true;
+            }
         }
 
-        self.scratch_size = (width, height);
+        if bindings_invalidated {
+            for pass in &mut self.passes {
+                pass.cached_bind_group = None;
+            }
+            self.blit_bind_group = None;
+        }
+
+        self.scratch_size = if required_slots.iter().any(|required| *required) {
+            (width, height)
+        } else {
+            (0, 0)
+        };
     }
 
     fn take_validation_error(device: &wgpu::Device) -> Option<wgpu::Error> {
@@ -1252,7 +1742,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                             "filter color uniform buffer",
                         ),
                         last_uniform_data: None,
-                        cached_bind_group_key: None,
                         cached_bind_group: None,
                     });
                 }
@@ -1282,7 +1771,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                             "filter spatial uniform buffer",
                         ),
                         last_uniform_data: None,
-                        cached_bind_group_key: None,
                         cached_bind_group: None,
                     });
                 }
@@ -1350,11 +1838,12 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
 }
 
 impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = ()> {
+    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult> {
         let param_count = <F::Params as ParamArray>::LEN;
         if param_count > MAX_FILTER_PARAMS {
-            self.set_setup_error("filter chain exceeds 64 params (uniform limit)");
-            return core::future::ready(());
+            let err = "filter chain exceeds 64 params (uniform limit)";
+            self.set_setup_error(err);
+            return core::future::ready(Err(err));
         }
 
         // Create shared sampler
@@ -1376,7 +1865,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             Ok(passes) => passes,
             Err(err) => {
                 self.set_setup_error(err);
-                return core::future::ready(());
+                return core::future::ready(Err(err));
             }
         };
 
@@ -1431,53 +1920,34 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         }
 
         if !build_ok {
-            self.set_setup_error(match (self.hdr_policy, last_err) {
+            let err = match (self.hdr_policy, last_err) {
                 (HdrPolicy::RequireHdr, Some(_)) => {
                     "HDR is required by policy but unavailable for this filter pipeline"
                 }
                 (_, Some(err)) => err,
                 (_, None) => "filter setup produced no executable passes",
-            });
-            return core::future::ready(());
+            };
+            self.set_setup_error(err);
+            return core::future::ready(Err(err));
         }
 
         // Initialize current values from the latest snapped targets.
         self.apply_target_params_to_current_values();
 
-        core::future::ready(())
+        core::future::ready(Ok(()))
     }
 
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
+    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         #[cfg(test)]
         {
             self.last_render_used_direct_output = false;
         }
-        if self.has_setup_error() || self.passes.is_empty() {
-            return false;
+        if let Some(err) = self.setup_error {
+            return Err(err);
         }
-
-        if self.requires_scratch {
-            self.ensure_scratch_textures(input.device, output.width, output.height);
-            if self.scratch_views[0].is_none() || self.scratch_views[1].is_none() {
-                return false;
-            }
+        if self.passes.is_empty() {
+            return Err("filter render called before a compiled pass graph exists");
         }
-
-        let needs_redraw = self.update_interpolated_params();
-        let current_values = &self.animation_state.current_values;
-        if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
-            return false;
-        }
-
-        let Some(sampler) = &self.sampler else {
-            return false;
-        };
-
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("filter pass encoder"),
-            });
 
         let direct_output_runtime = self
             .final_spatial_output
@@ -1497,8 +1967,41 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     None
                 }
             });
-        let output_texture_key = (output.texture as *const wgpu::Texture) as usize;
 
+        if self.requires_scratch {
+            let direct_output_pass_index = direct_output_runtime
+                .as_ref()
+                .map(|(pass_index, _, _)| *pass_index);
+            let required_scratch_slots =
+                self.required_scratch_slots_for_frame(direct_output_pass_index);
+            self.ensure_scratch_textures(
+                input.device,
+                output.width,
+                output.height,
+                required_scratch_slots,
+            );
+            for (slot, required) in required_scratch_slots.into_iter().enumerate() {
+                if required && self.scratch_views[slot].is_none() {
+                    return Err("required scratch texture view was not allocated");
+                }
+            }
+        }
+
+        let needs_redraw = self.update_interpolated_params();
+        let current_values = &self.animation_state.current_values;
+        if current_values.is_empty() && <F::Params as ParamArray>::LEN > 0 {
+            return Err("filter render missing current parameter values");
+        }
+
+        let Some(sampler) = &self.sampler else {
+            return Err("filter sampler missing after setup");
+        };
+
+        let mut encoder = input
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("filter pass encoder"),
+            });
         let mut used_direct_spatial_output = false;
         let mut source_width = input.width;
         let mut source_height = input.height;
@@ -1519,7 +2022,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         PassTextureSource::Input => &input.view,
                         PassTextureSource::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("color pass source scratch view missing");
                             };
                             view
                         }
@@ -1528,7 +2031,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         ColorTarget::Output => &output.view,
                         ColorTarget::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("color pass target scratch view missing");
                             };
                             view
                         }
@@ -1543,19 +2046,11 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         uniform_data,
                     );
 
-                    let desired_key = if matches!(source, PassTextureSource::Input) {
-                        BindGroupCacheKey::Input {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                        }
-                    } else {
-                        BindGroupCacheKey::Static
-                    };
-                    if pass.cached_bind_group.is_none()
-                        || pass.cached_bind_group_key != Some(desired_key)
-                    {
-                        pass.cached_bind_group =
-                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter color bind group"),
+                    let transient_bind_group;
+                    let bind_group = if matches!(source, PassTextureSource::Input) {
+                        transient_bind_group =
+                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter color dynamic bind group"),
                                 layout: bind_group_layout,
                                 entries: &[
                                     wgpu::BindGroupEntry {
@@ -1571,11 +2066,36 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                         resource: pass.uniform_buffer.as_entire_binding(),
                                     },
                                 ],
-                            }));
-                        pass.cached_bind_group_key = Some(desired_key);
-                    }
-                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                        return false;
+                            });
+                        &transient_bind_group
+                    } else {
+                        if pass.cached_bind_group.is_none() {
+                            pass.cached_bind_group =
+                                Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter color static bind group"),
+                                    layout: bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                source_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(sampler),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: pass.uniform_buffer.as_entire_binding(),
+                                        },
+                                    ],
+                                }));
+                        }
+                        let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                            return Err("color pass bind group cache missing after creation");
+                        };
+                        bind_group
                     };
 
                     {
@@ -1619,7 +2139,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         PassTextureSource::Input => &input.view,
                         PassTextureSource::Scratch(slot) => {
                             let Some(view) = self.scratch_views[slot].as_ref() else {
-                                return false;
+                                return Err("spatial pass source scratch view missing");
                             };
                             view
                         }
@@ -1641,13 +2161,13 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         } else {
                             let Some(target_view) = self.scratch_views[target_scratch].as_ref()
                             else {
-                                return false;
+                                return Err("spatial pass target scratch view missing");
                             };
                             (target_view, pipeline, bind_group_layout)
                         }
                     } else {
                         let Some(target_view) = self.scratch_views[target_scratch].as_ref() else {
-                            return false;
+                            return Err("spatial pass target scratch view missing");
                         };
                         (target_view, pipeline, bind_group_layout)
                     };
@@ -1668,24 +2188,13 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         uniform_data,
                     );
 
-                    let desired_key = if writes_output_directly {
-                        BindGroupCacheKey::InputOutput {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                            output_texture: output_texture_key,
-                        }
-                    } else if matches!(source, PassTextureSource::Input) {
-                        BindGroupCacheKey::Input {
-                            input_texture: (input.texture as *const wgpu::Texture) as usize,
-                        }
-                    } else {
-                        BindGroupCacheKey::Static
-                    };
-                    if pass.cached_bind_group.is_none()
-                        || pass.cached_bind_group_key != Some(desired_key)
+                    let transient_bind_group;
+                    let bind_group = if writes_output_directly
+                        || matches!(source, PassTextureSource::Input)
                     {
-                        pass.cached_bind_group =
-                            Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter spatial bind group"),
+                        transient_bind_group =
+                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("filter spatial dynamic bind group"),
                                 layout: dispatch_bind_group_layout,
                                 entries: &[
                                     wgpu::BindGroupEntry {
@@ -1701,11 +2210,38 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                                         resource: pass.uniform_buffer.as_entire_binding(),
                                     },
                                 ],
-                            }));
-                        pass.cached_bind_group_key = Some(desired_key);
-                    }
-                    let Some(bind_group) = pass.cached_bind_group.as_ref() else {
-                        return false;
+                            });
+                        &transient_bind_group
+                    } else {
+                        if pass.cached_bind_group.is_none() {
+                            pass.cached_bind_group =
+                                Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter spatial static bind group"),
+                                    layout: dispatch_bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                source_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                target_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: pass.uniform_buffer.as_entire_binding(),
+                                        },
+                                    ],
+                                }));
+                        }
+                        let Some(bind_group) = pass.cached_bind_group.as_ref() else {
+                            return Err("spatial pass bind group cache missing after creation");
+                        };
+                        bind_group
                     };
 
                     {
@@ -1728,20 +2264,24 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     source_width = target_width;
                     source_height = target_height;
                 }
-                _ => return false,
+                _ => {
+                    return Err(
+                        "compiled filter pass kind does not match its runtime binding plan",
+                    );
+                }
             }
         }
 
         if !used_direct_spatial_output {
             if let Some(blit_source_slot) = self.blit_source_scratch_slot {
                 let Some(blit_pipeline) = &self.blit_pipeline else {
-                    return false;
+                    return Err("final blit pipeline missing after setup");
                 };
                 let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
-                    return false;
+                    return Err("final blit bind group layout missing after setup");
                 };
                 let Some(blit_source_view) = self.scratch_views[blit_source_slot].as_ref() else {
-                    return false;
+                    return Err("final blit source scratch view missing");
                 };
 
                 if self.blit_bind_group.is_none() {
@@ -1762,7 +2302,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         }));
                 }
                 let Some(blit_bind_group) = self.blit_bind_group.as_ref() else {
-                    return false;
+                    return Err("final blit bind group missing after creation");
                 };
 
                 {
@@ -1794,7 +2334,11 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         {
             self.last_render_used_direct_output = used_direct_spatial_output;
         }
-        needs_redraw
+        Ok(needs_redraw)
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        self.filter.output_size(input_width, input_height)
     }
 
     fn sync_targets(&mut self) {
@@ -2316,6 +2860,80 @@ mod tests {
         data
     }
 
+    fn create_solid_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for chunk in data.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&rgba);
+        }
+        data
+    }
+
+    fn create_horizontal_gradient_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let t = (x as f32 / (width.saturating_sub(1)).max(1) as f32 * 255.0) as u8;
+                data[idx] = t;
+                data[idx + 1] = t;
+                data[idx + 2] = t;
+                data[idx + 3] = 255;
+            }
+        }
+        data
+    }
+
+    fn create_center_peak_displacement_rg(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        let cx = width as f32 * 0.5;
+        let cy = height as f32 * 0.5;
+        let inv_radius = 1.0 / (width.min(height).max(1) as f32 * 0.5);
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let r = (dx * dx + dy * dy).sqrt() * inv_radius;
+                let strength = (1.0 - r).clamp(0.0, 1.0);
+                let disp_x = (0.5 + dx.signum() * 0.5 * strength).clamp(0.0, 1.0);
+                let disp_y = (0.5 + dy.signum() * 0.5 * strength).clamp(0.0, 1.0);
+                data[idx] = (disp_x * 255.0) as u8;
+                data[idx + 1] = (disp_y * 255.0) as u8;
+                data[idx + 2] = 128;
+                data[idx + 3] = 255;
+            }
+        }
+        data
+    }
+
+    fn create_test_lut_strip_rgba(size: u32) -> Vec<u8> {
+        assert!(size >= 2, "test lut size must be >= 2");
+        let width = size * size;
+        let height = size;
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        let denom = (size - 1) as f32;
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    let x = b * size + r;
+                    let y = g;
+                    let idx = ((y * width + x) * 4) as usize;
+                    let rf = r as f32 / denom;
+                    let gf = g as f32 / denom;
+                    let bf = b as f32 / denom;
+                    let out_r = (rf.powf(0.8)).clamp(0.0, 1.0);
+                    let out_g = (gf * 0.9).clamp(0.0, 1.0);
+                    let out_b = (bf * 1.1).clamp(0.0, 1.0);
+                    data[idx] = (out_r * 255.0) as u8;
+                    data[idx + 1] = (out_g * 255.0) as u8;
+                    data[idx + 2] = (out_b * 255.0) as u8;
+                    data[idx + 3] = 255;
+                }
+            }
+        }
+        data
+    }
+
     fn run_filter_and_readback<G: GpuFilter>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2783,7 +3401,7 @@ mod tests {
         };
 
         let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
-        assert!(!needs_redraw);
+        assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, width, height);
         assert!(pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0);
@@ -2901,7 +3519,7 @@ mod tests {
         };
 
         let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
-        assert!(!needs_redraw);
+        assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, out_width, out_height);
         assert!(
@@ -3016,6 +3634,19 @@ mod tests {
             adapter.last_render_used_direct_output(),
             expected_direct_output
         );
+        if expected_direct_output {
+            assert_eq!(
+                adapter.allocated_scratch_slots(),
+                [true, false],
+                "direct output path should avoid allocating the final scratch slot"
+            );
+        } else {
+            assert_eq!(
+                adapter.allocated_scratch_slots(),
+                [true, true],
+                "fallback path should preserve both blur scratch slots"
+            );
+        }
     }
 
     #[test]
@@ -3118,6 +3749,1096 @@ mod tests {
 
         let _ = GpuFilter::render(&mut adapter, &input, &output);
         assert!(!adapter.last_render_used_direct_output());
+        assert_eq!(
+            adapter.allocated_scratch_slots(),
+            [true, true],
+            "non-storage output must keep both blur scratch slots for fallback blit"
+        );
+    }
+
+    #[test]
+    fn gpu_extended_color_filters_execute_and_write_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("extended color filter input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Exposure(0.35f32))
+                .then(filtrate_core::filters::Gamma(1.6f32))
+                .then(filtrate_core::filters::Vibrance(0.5f32))
+                .then(filtrate_core::filters::TemperatureTint(0.3f32, -0.2f32))
+                .then(filtrate_core::filters::HighlightsShadows(0.4f32, 0.35f32)),
+        )
+        .expect("extended color filter output");
+
+        let changed_pixels = output
+            .chunks_exact(4)
+            .zip(input_rgba.chunks_exact(4))
+            .filter(|(lhs, rhs)| lhs != rhs)
+            .count();
+        assert!(
+            changed_pixels > 0,
+            "extended color filters should alter output pixels"
+        );
+    }
+
+    #[test]
+    fn gpu_white_point_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("white point input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::WhitePoint(1.08f32, 1.0f32, 0.92f32)),
+        )
+        .expect("white point output");
+
+        let changed_pixels = output
+            .chunks_exact(4)
+            .zip(input_rgba.chunks_exact(4))
+            .filter(|(lhs, rhs)| lhs != rhs)
+            .count();
+        assert!(changed_pixels > 0, "white point should alter output pixels");
+    }
+
+    #[test]
+    fn gpu_zoom_blur_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("zoom blur input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::ZoomBlur(0.25f32, 0.5f32, 0.5f32)),
+        )
+        .expect("zoom blur output");
+
+        let changed_pixels = output
+            .chunks_exact(4)
+            .zip(input_rgba.chunks_exact(4))
+            .filter(|(lhs, rhs)| lhs != rhs)
+            .count();
+        assert!(changed_pixels > 0, "zoom blur should alter output pixels");
+    }
+
+    #[test]
+    fn gpu_motion_blur_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("motion blur input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let output = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::MotionBlur(6.0f32, 32.0f32)),
+        )
+        .expect("motion blur output");
+
+        let changed_pixels = output
+            .chunks_exact(4)
+            .zip(input_rgba.chunks_exact(4))
+            .filter(|(lhs, rhs)| lhs != rhs)
+            .count();
+        assert!(changed_pixels > 0, "motion blur should alter output pixels");
+    }
+
+    #[test]
+    fn gpu_looks_family_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let input_rgba = create_test_input_rgba(width, height);
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("looks family input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let gaussian = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::GaussianBlur(2.4f32)),
+        )
+        .expect("gaussian output");
+        let bloom = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Bloom([3.0f32, 0.7f32, 0.55f32])),
+        )
+        .expect("bloom output");
+        let gloom = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Gloom([3.0f32, 0.35f32, 0.55f32])),
+        )
+        .expect("gloom output");
+        let unsharp = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::UnsharpMask([2.0f32, 1.2f32])),
+        )
+        .expect("unsharp output");
+        let matrix = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::ColorMatrix([
+                1.08f32, 0.0, 0.0, 0.02, 0.0, 0.96, 0.0, 0.0, 0.0, 0.0, 0.92, 0.0,
+            ])),
+        )
+        .expect("matrix output");
+
+        let changed = |output: &[u8]| {
+            output
+                .chunks_exact(4)
+                .zip(input_rgba.chunks_exact(4))
+                .filter(|(lhs, rhs)| lhs != rhs)
+                .count()
+        };
+        assert!(
+            changed(&gaussian) > 0,
+            "gaussian blur should alter output pixels"
+        );
+        assert!(changed(&bloom) > 0, "bloom should alter output pixels");
+        assert!(changed(&gloom) > 0, "gloom should alter output pixels");
+        assert!(
+            changed(&unsharp) > 0,
+            "unsharp mask should alter output pixels"
+        );
+        assert!(
+            changed(&matrix) > 0,
+            "color matrix should alter output pixels"
+        );
+    }
+
+    #[test]
+    fn gpu_geometry_family_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let input_rgba = create_test_input_rgba(width, height);
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("geometry family input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let bump = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::BumpDistortion([
+                0.5f32, 0.5f32, 0.35f32, 0.8f32,
+            ])),
+        )
+        .expect("bump output");
+        let pinch = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::PinchDistortion([
+                0.5f32, 0.5f32, 0.4f32, 0.6f32,
+            ])),
+        )
+        .expect("pinch output");
+        let twirl = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::TwirlDistortion([
+                0.5f32, 0.5f32, 0.45f32, 120.0f32,
+            ])),
+        )
+        .expect("twirl output");
+        let vortex = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::VortexDistortion([
+                0.5f32, 0.5f32, 0.45f32, 200.0f32,
+            ])),
+        )
+        .expect("vortex output");
+        let perspective = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::PerspectiveTransform([
+                0.1f32, 0.08f32, 0.9f32, 0.02f32, 0.82f32, 0.92f32, 0.18f32, 0.88f32,
+            ])),
+        )
+        .expect("perspective transform output");
+        let correction = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::PerspectiveCorrection([
+                0.15f32, 0.12f32, 0.88f32, 0.08f32, 0.85f32, 0.9f32, 0.12f32, 0.92f32,
+            ])),
+        )
+        .expect("perspective correction output");
+
+        let changed = |output: &[u8]| {
+            output
+                .chunks_exact(4)
+                .zip(input_rgba.chunks_exact(4))
+                .filter(|(lhs, rhs)| lhs != rhs)
+                .count()
+        };
+        assert!(
+            changed(&bump) > 0,
+            "bump distortion should alter output pixels"
+        );
+        assert!(
+            changed(&pinch) > 0,
+            "pinch distortion should alter output pixels"
+        );
+        assert!(
+            changed(&twirl) > 0,
+            "twirl distortion should alter output pixels"
+        );
+        assert!(
+            changed(&vortex) > 0,
+            "vortex distortion should alter output pixels"
+        );
+        assert!(
+            changed(&perspective) > 0,
+            "perspective transform should alter output pixels"
+        );
+        assert!(
+            changed(&correction) > 0,
+            "perspective correction should alter output pixels"
+        );
+    }
+
+    #[test]
+    fn gpu_stylize_family_executes_and_writes_output() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 128;
+        let height = 96;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let input_rgba = create_test_input_rgba(width, height);
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stylize family input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let pixellate = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Pixellate(6.0f32)),
+        )
+        .expect("pixellate output");
+        let crystallize = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Crystallize(8.0f32)),
+        )
+        .expect("crystallize output");
+        let edge = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::EdgeWork([1.0f32, 2.0f32])),
+        )
+        .expect("edge work output");
+        let halftone = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::DotHalftone([
+                8.0f32, 15.0f32, 0.5f32, 0.5f32,
+            ])),
+        )
+        .expect("dot halftone output");
+        let line_halftone = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::LineHalftone([
+                8.0f32, 0.0f32, 0.5f32, 0.5f32,
+            ])),
+        )
+        .expect("line halftone output");
+        let kaleidoscope = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::Kaleidoscope([
+                8.0f32, 0.0f32, 0.5f32, 0.5f32,
+            ])),
+        )
+        .expect("kaleidoscope output");
+        let mirror = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate_core::filters::MirrorTile([3.0f32, 2.0f32])),
+        )
+        .expect("mirror tile output");
+
+        let changed = |output: &[u8]| {
+            output
+                .chunks_exact(4)
+                .zip(input_rgba.chunks_exact(4))
+                .filter(|(lhs, rhs)| lhs != rhs)
+                .count()
+        };
+        assert!(
+            changed(&pixellate) > 0,
+            "pixellate should alter output pixels"
+        );
+        assert!(
+            changed(&crystallize) > 0,
+            "crystallize should alter output pixels"
+        );
+        assert!(changed(&edge) > 0, "edge work should alter output pixels");
+        assert!(
+            changed(&halftone) > 0,
+            "dot halftone should alter output pixels"
+        );
+        assert!(
+            changed(&line_halftone) > 0,
+            "line halftone should alter output pixels"
+        );
+        assert!(
+            changed(&kaleidoscope) > 0,
+            "kaleidoscope should alter output pixels"
+        );
+        assert!(
+            changed(&mirror) > 0,
+            "mirror tile should alter output pixels"
+        );
+    }
+
+    #[test]
+    fn gpu_multi_input_filters_execute_all_capabilities() {
+        let Some(gpu) = create_test_device() else {
+            eprintln!("Skipping GPU test: no compatible adapter/device");
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let width = 32;
+        let height = 32;
+
+        let input_rgba = create_test_input_rgba(width, height);
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("multi-input filter test input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let overlay = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [220, 40, 40, 255]),
+        );
+        let mask = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let transition_target = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [20, 220, 240, 255]),
+        );
+        let displacement_map = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_center_peak_displacement_rg(width, height),
+        );
+        let guide = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let depth = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let history = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [10, 220, 20, 255]),
+        );
+        let motion = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [128, 128, 0, 255]),
+        );
+        let background = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_solid_rgba(width, height, [15, 25, 200, 255]),
+        );
+        let matte = crate::multi_input_filter::FilterImage::from_rgba8(
+            width,
+            height,
+            create_horizontal_gradient_rgba(width, height),
+        );
+        let lut =
+            crate::multi_input_filter::LutImage::from_rgba8(16, create_test_lut_strip_rgba(16));
+
+        let blend = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::blend_with_image_filter(
+                overlay.clone(),
+                0.6,
+                crate::multi_input_filter::BlendMode::Overlay,
+            ),
+        )
+        .expect("blend filter output");
+        let masked_blur = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::masked_blur_filter(mask.clone(), 3.0, 1.0),
+        )
+        .expect("masked blur output");
+        let transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::transition_to_image_filter(
+                transition_target.clone(),
+                0.5,
+                0.08,
+            ),
+        )
+        .expect("transition output");
+        let swipe_transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::swipe_transition_to_image_filter(
+                overlay.clone(),
+                0.45,
+                0.08,
+                crate::multi_input_filter::TransitionDirection::RightToLeft,
+            ),
+        )
+        .expect("swipe transition output");
+        let radial_transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::radial_transition_to_image_filter(
+                overlay.clone(),
+                0.35,
+                0.08,
+                0.5,
+                0.5,
+            ),
+        )
+        .expect("radial transition output");
+        let zoom_transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::zoom_transition_to_image_filter(
+                overlay.clone(),
+                0.55,
+                0.35,
+                0.5,
+                0.5,
+            ),
+        )
+        .expect("zoom transition output");
+        let displacement_transition = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::displacement_transition_to_image_filter(
+                overlay.clone(),
+                displacement_map.clone(),
+                0.5,
+                18.0,
+            ),
+        )
+        .expect("displacement transition output");
+        let displacement = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::displacement_warp_filter(displacement_map.clone(), 3.0, 3.0),
+        )
+        .expect("displacement output");
+        let guided = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::guided_smooth_filter(guide.clone(), 2.0, 0.08, 1.0),
+        )
+        .expect("guided smooth output");
+        let depth_blur = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::depth_aware_blur_filter(depth.clone(), 0.4, 2.0, 5.0),
+        )
+        .expect("depth blur output");
+        let temporal = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::temporal_denoise_filter(
+                history.clone(),
+                motion.clone(),
+                0.8,
+            ),
+        )
+        .expect("temporal output");
+        let replace_bg = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::background_replace_filter(
+                matte.clone(),
+                background.clone(),
+                0.12,
+            ),
+        )
+        .expect("background replace output");
+        let lut_grade = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::lut_color_grade_filter(lut.clone(), 1.0),
+        )
+        .expect("lut output");
+        let tone_curve = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            crate::multi_input_filter::tone_curve_filter(0.15, 0.08, -0.06, 1.1, 1.0),
+        )
+        .expect("tone curve output");
+
+        let changed_pixels = |output: &[u8]| -> usize {
+            output
+                .chunks_exact(4)
+                .zip(input_rgba.chunks_exact(4))
+                .filter(|(lhs, rhs)| lhs != rhs)
+                .count()
+        };
+
+        assert!(
+            changed_pixels(&blend) > 0,
+            "blend output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&masked_blur) > 0,
+            "masked blur output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&transition) > 0,
+            "transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&swipe_transition) > 0,
+            "swipe transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&radial_transition) > 0,
+            "radial transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&zoom_transition) > 0,
+            "zoom transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&displacement_transition) > 0,
+            "displacement transition output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&displacement) > 0,
+            "displacement output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&guided) > 0,
+            "guided smooth output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&depth_blur) > 0,
+            "depth blur output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&temporal) > 0,
+            "temporal output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&replace_bg) > 0,
+            "background replace output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&lut_grade) > 0,
+            "lut output should differ from baseline"
+        );
+        assert!(
+            changed_pixels(&tone_curve) > 0,
+            "tone curve output should differ from baseline"
+        );
     }
 
     #[test]
@@ -3274,13 +4995,44 @@ mod tests {
 pub type Blur = FilterAdapter<filtrate_core::filters::Blur<Computed<f32>>>;
 pub type Brightness = FilterAdapter<filtrate_core::filters::Brightness<Computed<f32>>>;
 pub type Contrast = FilterAdapter<filtrate_core::filters::Contrast<Computed<f32>>>;
+pub type Exposure = FilterAdapter<filtrate_core::filters::Exposure<Computed<f32>>>;
+pub type ColorMatrix = FilterAdapter<filtrate_core::filters::ColorMatrix<f32>>;
+pub type Gamma = FilterAdapter<filtrate_core::filters::Gamma<Computed<f32>>>;
+pub type GaussianBlur = FilterAdapter<filtrate_core::filters::GaussianBlur<Computed<f32>>>;
 pub type Saturation = FilterAdapter<filtrate_core::filters::Saturation<Computed<f32>>>;
+pub type TemperatureTint =
+    FilterAdapter<filtrate_core::filters::TemperatureTint<Computed<f32>, Computed<f32>>>;
 pub type Grayscale = FilterAdapter<filtrate_core::filters::Grayscale<Computed<f32>>>;
+pub type Bloom = FilterAdapter<filtrate_core::filters::Bloom<Computed<f32>>>;
+pub type Gloom = FilterAdapter<filtrate_core::filters::Gloom<Computed<f32>>>;
+pub type HighlightsShadows =
+    FilterAdapter<filtrate_core::filters::HighlightsShadows<Computed<f32>, Computed<f32>>>;
 pub type HueRotation = FilterAdapter<filtrate_core::filters::HueRotation<Computed<f32>>>;
 pub type Invert = FilterAdapter<filtrate_core::filters::Invert>;
+pub type MotionBlur =
+    FilterAdapter<filtrate_core::filters::MotionBlur<Computed<f32>, Computed<f32>>>;
+pub type BumpDistortion = FilterAdapter<filtrate_core::filters::BumpDistortion<Computed<f32>>>;
+pub type PinchDistortion = FilterAdapter<filtrate_core::filters::PinchDistortion<Computed<f32>>>;
+pub type TwirlDistortion = FilterAdapter<filtrate_core::filters::TwirlDistortion<Computed<f32>>>;
+pub type VortexDistortion = FilterAdapter<filtrate_core::filters::VortexDistortion<Computed<f32>>>;
+pub type PerspectiveTransform = FilterAdapter<filtrate_core::filters::PerspectiveTransform<f32>>;
+pub type PerspectiveCorrection = FilterAdapter<filtrate_core::filters::PerspectiveCorrection<f32>>;
 pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
+pub type Vibrance = FilterAdapter<filtrate_core::filters::Vibrance<Computed<f32>>>;
+pub type Pixellate = FilterAdapter<filtrate_core::filters::Pixellate<Computed<f32>>>;
+pub type Crystallize = FilterAdapter<filtrate_core::filters::Crystallize<Computed<f32>>>;
+pub type EdgeWork = FilterAdapter<filtrate_core::filters::EdgeWork<Computed<f32>>>;
+pub type DotHalftone = FilterAdapter<filtrate_core::filters::DotHalftone<Computed<f32>>>;
+pub type LineHalftone = FilterAdapter<filtrate_core::filters::LineHalftone<Computed<f32>>>;
+pub type Kaleidoscope = FilterAdapter<filtrate_core::filters::Kaleidoscope<Computed<f32>>>;
+pub type MirrorTile = FilterAdapter<filtrate_core::filters::MirrorTile<Computed<f32>>>;
+pub type UnsharpMask = FilterAdapter<filtrate_core::filters::UnsharpMask<Computed<f32>>>;
 pub type Sharpen = FilterAdapter<filtrate_core::filters::Sharpen<Computed<f32>>>;
 pub type Vignette = FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
+pub type WhitePoint =
+    FilterAdapter<filtrate_core::filters::WhitePoint<Computed<f32>, Computed<f32>, Computed<f32>>>;
+pub type ZoomBlur =
+    FilterAdapter<filtrate_core::filters::ZoomBlur<Computed<f32>, Computed<f32>, Computed<f32>>>;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
@@ -3343,6 +5095,26 @@ pub trait FilterViewExt: View + Sized {
         )
     }
 
+    /// Apply an exposure filter in photographic stops.
+    fn exposure<T: IntoSignalF32>(self, ev: T) -> Filtered<Self, Exposure> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Exposure(
+                ev.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply a gamma adjustment filter.
+    fn gamma<T: IntoSignalF32>(self, gamma: T) -> Filtered<Self, Gamma> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Gamma(
+                gamma.into_signal_f32().computed(),
+            )),
+        )
+    }
+
     /// Apply a contrast filter.
     fn contrast<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Contrast> {
         Filtered::new(
@@ -3358,6 +5130,16 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate_core::filters::Saturation(
+                amount.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply a vibrance filter.
+    fn vibrance<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Vibrance> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Vibrance(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -3408,6 +5190,51 @@ pub trait FilterViewExt: View + Sized {
         )
     }
 
+    /// Apply a temperature/tint white-balance adjustment.
+    fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        temperature: T,
+        tint: U,
+    ) -> Filtered<Self, TemperatureTint> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::TemperatureTint(
+                temperature.into_signal_f32().computed(),
+                tint.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Recover highlights while lifting shadows.
+    fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
+        self,
+        highlights: H,
+        shadows: S,
+    ) -> Filtered<Self, HighlightsShadows> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::HighlightsShadows(
+                highlights.into_signal_f32().computed(),
+                shadows.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply directional motion blur.
+    fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
+        self,
+        radius: R,
+        angle: A,
+    ) -> Filtered<Self, MotionBlur> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::MotionBlur(
+                radius.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+            )),
+        )
+    }
+
     /// Apply a vignette filter.
     fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
         self,
@@ -3420,6 +5247,534 @@ pub trait FilterViewExt: View + Sized {
                 radius.into_signal_f32().computed(),
                 softness.into_signal_f32().computed(),
             )),
+        )
+    }
+
+    /// Adjust color balance using an explicit white point triplet.
+    fn white_point<R: IntoSignalF32, G: IntoSignalF32, B: IntoSignalF32>(
+        self,
+        red: R,
+        green: G,
+        blue: B,
+    ) -> Filtered<Self, WhitePoint> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::WhitePoint(
+                red.into_signal_f32().computed(),
+                green.into_signal_f32().computed(),
+                blue.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply radial zoom blur around a focal point.
+    fn zoom_blur<A: IntoSignalF32, X: IntoSignalF32, Y: IntoSignalF32>(
+        self,
+        amount: A,
+        center_x: X,
+        center_y: Y,
+    ) -> Filtered<Self, ZoomBlur> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::ZoomBlur(
+                amount.into_signal_f32().computed(),
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply a gaussian blur filter.
+    fn gaussian_blur<T: IntoSignalF32>(self, sigma: T) -> Filtered<Self, GaussianBlur> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::GaussianBlur(
+                sigma.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply a 3x4 color matrix transform.
+    fn color_matrix(self, matrix: [[f32; 4]; 3]) -> Filtered<Self, ColorMatrix> {
+        let params = [
+            matrix[0][0],
+            matrix[0][1],
+            matrix[0][2],
+            matrix[0][3],
+            matrix[1][0],
+            matrix[1][1],
+            matrix[1][2],
+            matrix[1][3],
+            matrix[2][0],
+            matrix[2][1],
+            matrix[2][2],
+            matrix[2][3],
+        ];
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::ColorMatrix(params)),
+        )
+    }
+
+    /// Apply bloom around bright regions.
+    fn bloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
+        self,
+        radius: T,
+        intensity: U,
+        threshold: V,
+    ) -> Filtered<Self, Bloom> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Bloom([
+                radius.into_signal_f32().computed(),
+                intensity.into_signal_f32().computed(),
+                threshold.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply gloom around bright regions.
+    fn gloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
+        self,
+        radius: T,
+        intensity: U,
+        threshold: V,
+    ) -> Filtered<Self, Gloom> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Gloom([
+                radius.into_signal_f32().computed(),
+                intensity.into_signal_f32().computed(),
+                threshold.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply an unsharp mask.
+    fn unsharp_mask<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        radius: T,
+        amount: U,
+    ) -> Filtered<Self, UnsharpMask> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::UnsharpMask([
+                radius.into_signal_f32().computed(),
+                amount.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply bump distortion around a center.
+    fn bump_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        scale: W,
+    ) -> Filtered<Self, BumpDistortion> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::BumpDistortion([
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+                radius.into_signal_f32().computed(),
+                scale.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply pinch distortion around a center.
+    fn pinch_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        scale: W,
+    ) -> Filtered<Self, PinchDistortion> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::PinchDistortion([
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+                radius.into_signal_f32().computed(),
+                scale.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply twirl distortion around a center.
+    fn twirl_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        angle: W,
+    ) -> Filtered<Self, TwirlDistortion> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::TwirlDistortion([
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+                radius.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply vortex distortion around a center.
+    fn vortex_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        center_x: T,
+        center_y: U,
+        radius: V,
+        angle: W,
+    ) -> Filtered<Self, VortexDistortion> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::VortexDistortion([
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+                radius.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Warp a source quadrilateral into the output rectangle.
+    fn perspective_transform(self, quad: [[f32; 2]; 4]) -> Filtered<Self, PerspectiveTransform> {
+        let params = [
+            quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
+            quad[3][1],
+        ];
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::PerspectiveTransform(params)),
+        )
+    }
+
+    /// Correct a perspective-skewed quadrilateral back to a rectangle.
+    fn perspective_correction(self, quad: [[f32; 2]; 4]) -> Filtered<Self, PerspectiveCorrection> {
+        let params = [
+            quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
+            quad[3][1],
+        ];
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::PerspectiveCorrection(params)),
+        )
+    }
+
+    /// Apply a pixellate effect.
+    fn pixellate<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Pixellate> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Pixellate(
+                size.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply a crystallize effect.
+    fn crystallize<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Crystallize> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Crystallize(
+                size.into_signal_f32().computed(),
+            )),
+        )
+    }
+
+    /// Apply an edge-work effect.
+    fn edge_work<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        radius: T,
+        amount: U,
+    ) -> Filtered<Self, EdgeWork> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::EdgeWork([
+                radius.into_signal_f32().computed(),
+                amount.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply a dot halftone effect.
+    fn dot_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        scale: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> Filtered<Self, DotHalftone> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::DotHalftone([
+                scale.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply a line halftone effect.
+    fn line_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        scale: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> Filtered<Self, LineHalftone> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::LineHalftone([
+                scale.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply a kaleidoscope effect.
+    fn kaleidoscope<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+        self,
+        segments: T,
+        angle: U,
+        center_x: V,
+        center_y: W,
+    ) -> Filtered<Self, Kaleidoscope> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::Kaleidoscope([
+                segments.into_signal_f32().computed(),
+                angle.into_signal_f32().computed(),
+                center_x.into_signal_f32().computed(),
+                center_y.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Apply mirrored tiling.
+    fn mirror_tile<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        repeat_x: T,
+        repeat_y: U,
+    ) -> Filtered<Self, MirrorTile> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate_core::filters::MirrorTile([
+                repeat_x.into_signal_f32().computed(),
+                repeat_y.into_signal_f32().computed(),
+            ])),
+        )
+    }
+
+    /// Blend the current content with an auxiliary image.
+    fn blend_with_image(
+        self,
+        image: crate::multi_input_filter::FilterImage,
+        amount: f32,
+        mode: crate::multi_input_filter::BlendMode,
+    ) -> Filtered<Self, crate::multi_input_filter::BlendWithImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::blend_with_image_filter(image, amount, mode),
+        )
+    }
+
+    /// Apply masked blur using an auxiliary mask image.
+    fn masked_blur(
+        self,
+        mask: crate::multi_input_filter::FilterImage,
+        radius: f32,
+        strength: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::MaskedBlurFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::masked_blur_filter(mask, radius, strength),
+        )
+    }
+
+    /// Transition to another image.
+    fn transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::TransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::transition_to_image_filter(target, progress, softness),
+        )
+    }
+
+    /// Transition to another image with a directional swipe.
+    fn swipe_transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+        direction: crate::multi_input_filter::TransitionDirection,
+    ) -> Filtered<Self, crate::multi_input_filter::SwipeTransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::swipe_transition_to_image_filter(
+                target, progress, softness, direction,
+            ),
+        )
+    }
+
+    /// Transition to another image from a radial reveal center.
+    fn radial_transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        softness: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::RadialTransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::radial_transition_to_image_filter(
+                target, progress, softness, center_x, center_y,
+            ),
+        )
+    }
+
+    /// Transition to another image with a zooming blend.
+    fn zoom_transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        amount: f32,
+        center_x: f32,
+        center_y: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::ZoomTransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::zoom_transition_to_image_filter(
+                target, progress, amount, center_x, center_y,
+            ),
+        )
+    }
+
+    /// Transition to another image driven by a displacement map.
+    fn displacement_transition_to_image(
+        self,
+        target: crate::multi_input_filter::FilterImage,
+        map: crate::multi_input_filter::FilterImage,
+        progress: f32,
+        scale: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::DisplacementTransitionToImageFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::displacement_transition_to_image_filter(
+                target, map, progress, scale,
+            ),
+        )
+    }
+
+    /// Warp with an auxiliary displacement map.
+    fn displacement_warp(
+        self,
+        map: crate::multi_input_filter::FilterImage,
+        scale_x: f32,
+        scale_y: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::DisplacementWarpFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::displacement_warp_filter(map, scale_x, scale_y),
+        )
+    }
+
+    /// Apply guide-image-aware smoothing.
+    fn guided_smooth(
+        self,
+        guide: crate::multi_input_filter::FilterImage,
+        radius: f32,
+        range_sigma: f32,
+        amount: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::GuidedSmoothFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::guided_smooth_filter(guide, radius, range_sigma, amount),
+        )
+    }
+
+    /// Apply depth-aware blur using a depth map.
+    fn depth_aware_blur(
+        self,
+        depth: crate::multi_input_filter::FilterImage,
+        focus_depth: f32,
+        aperture: f32,
+        max_radius: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::DepthAwareBlurFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::depth_aware_blur_filter(
+                depth,
+                focus_depth,
+                aperture,
+                max_radius,
+            ),
+        )
+    }
+
+    /// Temporal denoise/stabilize using history and motion maps.
+    fn temporal_denoise(
+        self,
+        history: crate::multi_input_filter::FilterImage,
+        motion: crate::multi_input_filter::FilterImage,
+        history_weight: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::TemporalDenoiseFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::temporal_denoise_filter(history, motion, history_weight),
+        )
+    }
+
+    /// Replace background using matte and background images.
+    fn replace_background(
+        self,
+        matte: crate::multi_input_filter::FilterImage,
+        background: crate::multi_input_filter::FilterImage,
+        edge_softness: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::BackgroundReplaceFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::background_replace_filter(matte, background, edge_softness),
+        )
+    }
+
+    /// Apply a 3D LUT color transform encoded as a 2D strip (`size*size x size`).
+    fn lut_color_grade(
+        self,
+        lut: crate::multi_input_filter::LutImage,
+        intensity: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::LutColorGradeFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::lut_color_grade_filter(lut, intensity),
+        )
+    }
+
+    /// Apply a simple master tone curve.
+    fn tone_curve(
+        self,
+        shadows: f32,
+        midtones: f32,
+        highlights: f32,
+        gamma: f32,
+        amount: f32,
+    ) -> Filtered<Self, crate::multi_input_filter::ToneCurveFilter> {
+        Filtered::new(
+            self,
+            crate::multi_input_filter::tone_curve_filter(
+                shadows, midtones, highlights, gamma, amount,
+            ),
         )
     }
 }

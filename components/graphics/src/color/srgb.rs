@@ -13,7 +13,7 @@ use super::{
 ///
 /// sRGB is the standard RGB color space used in most displays and web content.
 /// Component values are in the range 0.0 to 1.0.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Srgb {
     /// Red component (0.0 to 1.0)
     pub red: f32,

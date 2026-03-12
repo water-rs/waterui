@@ -5,10 +5,13 @@ use crate::{
     config::{BlendMode, ParticleConfig},
     renderer::{ParticleRenderer, ResolvedParticleConfig},
 };
-use core::ops::Range;
+use core::{num::NonZeroU32, ops::Range};
 use waterui_core::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::{GpuSurface, color::Color};
+use waterui_graphics::{
+    GpuSurface, OffscreenRenderConfig, OffscreenRenderError, OffscreenRenderOutput,
+    OffscreenRenderOutputHdr, color::Color,
+};
 
 /// High-performance GPU particle system.
 ///
@@ -33,8 +36,6 @@ impl ParticleSystem {
             },
         }
     }
-
-    // --- Flat Modifier API ---
 
     /// Set emission rate (particles per second).
     #[must_use]
@@ -121,12 +122,52 @@ impl ParticleSystem {
         self
     }
 
+    /// Keep particles inside the normalized viewport `[0, 0]..[1, 1]`.
+    #[must_use]
+    pub fn collide_with_viewport(mut self) -> Self {
+        self.config.collision.enabled = true;
+        self.config.collision.bounds = [0.0, 0.0, 1.0, 1.0];
+        self
+    }
+
+    /// Keep particles inside a normalized rectangle.
+    #[must_use]
+    pub fn collide_with_rect(mut self, x: f32, y: f32, width: f32, height: f32) -> Self {
+        self.config.collision.enabled = true;
+        self.config.collision.bounds = [x, y, x + width, y + height];
+        self
+    }
+
+    /// Add a circular obstacle collider in normalized coordinates.
+    #[must_use]
+    pub fn collide_with_circle_obstacle(mut self, x: f32, y: f32, radius: f32) -> Self {
+        self.config.collision.obstacle_enabled = true;
+        self.config.collision.obstacle_center = [x, y];
+        self.config.collision.obstacle_radius = radius;
+        self
+    }
+
+    /// Set the fraction of normal velocity preserved after a collision.
+    #[must_use]
+    pub fn bounce(mut self, restitution: f32) -> Self {
+        self.config.collision.restitution = restitution;
+        self
+    }
+
+    /// Set the fraction of tangential velocity preserved after a collision.
+    #[must_use]
+    pub fn surface_friction(mut self, value: f32) -> Self {
+        self.config.collision.surface_friction = value;
+        self
+    }
+
     /// Set additive blending mode.
     #[must_use]
     pub fn additive(mut self) -> Self {
         self.config.blend_mode = BlendMode::Additive;
         self
     }
+
     /// Set edge softness (0.0=hard, 1.0=soft).
     #[must_use]
     pub fn softness(mut self, value: f32) -> Self {
@@ -141,16 +182,17 @@ impl ParticleSystem {
         self
     }
 
-    /// Set velocity damping factor.
+    /// Set velocity damping factor normalized to a 60 FPS baseline.
     ///
-    /// `1.0` keeps velocity unchanged, lower values damp motion each frame.
+    /// `1.0` keeps velocity unchanged, lower values damp motion over time
+    /// without changing behavior across frame rates.
     #[must_use]
     pub fn drag(mut self, value: f32) -> Self {
         self.config.environment.drag = value;
         self
     }
 
-    /// Set emitter as a circle.
+    /// Set emitter as a disk with the given radius.
     #[must_use]
     pub fn emit_from_circle(mut self, radius: f32) -> Self {
         self.config.emitter.shape = EmitterShape::Circle { radius };
@@ -165,20 +207,17 @@ impl ParticleSystem {
     }
 
     /// Set initial particle spin speed (radians/sec).
+    #[must_use]
     pub fn spin(mut self, range: Range<f32>) -> Self {
         self.config.particle.spin = range;
         self
     }
-}
 
-impl View for ParticleSystem {
-    fn body(self, env: &Environment) -> impl View {
-        // Resolve colors using the Environment
+    fn resolved_config(self, env: &Environment) -> ResolvedParticleConfig {
         let color_start = self.config.particle.color_start.resolve(env).get();
         let color_end = self.config.particle.color_end.resolve(env).get();
 
-        // Build resolved config for the renderer
-        let resolved = ResolvedParticleConfig {
+        ResolvedParticleConfig {
             max_particles: self.max_particles,
             emitter_pos: self.config.emitter.position,
             emitter_shape: self.config.emitter.shape,
@@ -187,6 +226,13 @@ impl View for ParticleSystem {
             wind: self.config.environment.wind,
             turbulence: self.config.environment.turbulence,
             drag: self.config.environment.drag,
+            collision_enabled: self.config.collision.enabled,
+            collision_bounds: self.config.collision.bounds,
+            collision_restitution: self.config.collision.restitution,
+            collision_surface_friction: self.config.collision.surface_friction,
+            collision_obstacle_enabled: self.config.collision.obstacle_enabled,
+            collision_obstacle_center: self.config.collision.obstacle_center,
+            collision_obstacle_radius: self.config.collision.obstacle_radius,
             life_range: [
                 self.config.particle.life.start,
                 self.config.particle.life.end,
@@ -213,9 +259,60 @@ impl View for ParticleSystem {
             blend_mode: self.config.blend_mode,
             softness: self.config.particle.softness,
             shape: self.config.particle.shape,
-        };
+        }
+    }
 
-        // Return a GpuSurface wrapping the renderer
-        GpuSurface::new(ParticleRenderer::new(resolved))
+    /// Render the particle system to an offscreen RGBA8 target via `GpuSurface`.
+    pub fn render_offscreen(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        self.render_offscreen_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Render the particle system to an offscreen RGBA8 target for `frame_count` frames via `GpuSurface`.
+    pub fn render_offscreen_frames(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+        frame_count: NonZeroU32,
+    ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        let resolved = self.resolved_config(env);
+        GpuSurface::new(ParticleRenderer::new(resolved)).render_offscreen_frames(
+            config,
+            env,
+            frame_count,
+        )
+    }
+
+    /// Render the particle system to an HDR offscreen target via `GpuSurface`.
+    pub fn render_offscreen_hdr(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        self.render_offscreen_hdr_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+    }
+
+    /// Render the particle system to an HDR offscreen target for `frame_count` frames via `GpuSurface`.
+    pub fn render_offscreen_hdr_frames(
+        self,
+        config: OffscreenRenderConfig,
+        env: &mut Environment,
+        frame_count: NonZeroU32,
+    ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        let resolved = self.resolved_config(env);
+        GpuSurface::new(ParticleRenderer::new(resolved)).render_offscreen_hdr_frames(
+            config,
+            env,
+            frame_count,
+        )
+    }
+}
+
+impl View for ParticleSystem {
+    fn body(self, env: &Environment) -> impl View {
+        GpuSurface::new(ParticleRenderer::new(self.resolved_config(env)))
     }
 }

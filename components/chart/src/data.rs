@@ -627,7 +627,7 @@ impl RadarData {
 }
 
 /// Geographic polygon for choropleth maps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GeoPolygon {
     /// Unique identifier.
     pub id: u32,
@@ -696,7 +696,7 @@ impl GeoPolygon {
 ///
 /// Displays regions colored by data values using a color scale.
 /// Supports multiple polygons with tessellated geometry.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChoroplethData {
     /// Geographic polygons to render.
     pub polygons: Vec<GeoPolygon>,
@@ -859,7 +859,7 @@ impl<T> Series<T> {
 }
 
 /// Color scale for continuous data mapping.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorScale {
     /// Color stops as (value_ratio, srgb_color) pairs.
     /// value_ratio is 0.0 to 1.0 representing min to max.

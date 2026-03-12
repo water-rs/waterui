@@ -77,7 +77,7 @@ The `FormBuilder` trait is the foundation of the form system. It maps Rust types
 | `i32` | `Stepper` | Integer stepper with +/- buttons |
 | `f32`, `f64` | `Slider` | Numeric slider (0.0-1.0 range by default) |
 | `Color` | `ColorPicker` | Platform-native color selection |
-| `Date` | `DatePicker` | Date/time selection (requires `time` crate types) |
+| `Date`, `Time`, `PrimitiveDateTime` | `DatePicker` | Typed date/time selection |
 | `BTreeSet<Date>` | `MultiDatePicker` | Multiple date selection |
 | `Secure` | `SecureField` | Masked password input with memory zeroing |
 
@@ -240,23 +240,34 @@ Built-in validators:
 
 ### Date Picker
 
-Use `DatePicker` for date and time selection:
+Use the constructor that matches your binding type:
 
 ```rust
 use waterui::prelude::*;
 use waterui_form::picker::{DatePicker, DatePickerType};
-use time::Date;
+use time::{Date, Month, PrimitiveDateTime, Time};
 
 fn event_form() -> impl View {
-    let event_date = Binding::new(Date::MIN);
+    let event_date = binding(Date::from_calendar_date(2025, Month::June, 15).unwrap());
+    let event_time = binding(Time::from_hms(14, 30, 0).unwrap());
+    let event_datetime = binding(PrimitiveDateTime::new(
+        Date::from_calendar_date(2025, Month::June, 15).unwrap(),
+        Time::from_hms(14, 30, 45).unwrap(),
+    ));
 
     vstack((
         DatePicker::new(&event_date)
-            .label("Event Date")
-            .ty(DatePickerType::DateHourAndMinute),
-        DatePicker::new(&event_date)
             .label("Date Only")
-            .ty(DatePickerType::Date),
+            .range(
+                Date::from_calendar_date(2025, Month::January, 1).unwrap()
+                    ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+            ),
+        DatePicker::time(&event_time)
+            .label("Time Only")
+            .ty(DatePickerType::HourMinuteAndSecond),
+        DatePicker::datetime(&event_datetime)
+            .label("Date & Time")
+            .ty(DatePickerType::DateHourMinuteAndSecond),
     ))
 }
 ```
@@ -295,15 +306,19 @@ Use `MultiDatePicker` for selecting multiple dates:
 ```rust
 use waterui::prelude::*;
 use waterui_form::picker::multi_date::MultiDatePicker;
-use alloc::collections::BTreeSet;
-use time::Date;
+use std::collections::BTreeSet;
+use time::{Date, Month};
 
 fn availability_calendar() -> impl View {
-    let available_dates = Binding::new(BTreeSet::<Date>::new());
+    let available_dates = binding(BTreeSet::<Date>::new());
 
     vstack((
         MultiDatePicker::new(&available_dates)
-            .label("Select Available Dates"),
+            .label("Select Available Dates")
+            .range(
+                Date::from_calendar_date(2025, Month::January, 1).unwrap()
+                    ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+            ),
         text(available_dates.map(|dates| {
             format!("Selected {} dates", dates.len())
         })),

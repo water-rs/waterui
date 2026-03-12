@@ -412,6 +412,7 @@ text!("{status}")
 ```
 
 **No `watch()` when reactive API exists** - pass binding directly:
+IMPORTANT: `watch` would rebuild the entire subtree on every change and lost internal state, only a few scenarios require `watch`, always check if the API accepts `impl Signal` first
 ```rust
 // WRONG - unnecessary watch
 watch(blur.clone(), |b| Photo::new(url).blur(b))

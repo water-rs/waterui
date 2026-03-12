@@ -15,17 +15,17 @@
 use core::any::type_name;
 
 use alloc::{rc::Rc, vec::Vec};
-use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
+use nami::{impl_constant, signal::IntoSignal, Computed, Signal, SignalExt};
 use waterui_core::{
+    id::SelfId,
     view::{ConfigurableView, Hook, ViewConfiguration},
     views::{ForEach, SharedAnyViews},
+    Native, NativeView,
 };
 use waterui_text::Text;
 
-use crate::{AnyView, Environment, View, views::Views};
+use crate::{views::Views, AnyView, Environment, View};
 
-use waterui_core::NativeView;
-use waterui_core::id::SelfId;
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -77,18 +77,21 @@ impl ViewConfiguration for TableConfig {
     }
 }
 
+fn render_table_config(config: TableConfig, env: &Environment) -> AnyView {
+    if let Some(hook) = env.get::<Hook<TableConfig>>() {
+        return AnyView::new(hook.apply(env, config));
+    }
+
+    let fallback = DefaultTableView::new(config.columns.clone());
+    AnyView::new(Native::new(config).with_fallback(fallback))
+}
+
 impl<Col> View for Table<Col>
 where
     Col: Signal<Output = Vec<TableColumn>> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = ConfigurableView::config(self);
-        // User customization via Hook takes precedence
-        if let Some(hook) = env.get::<Hook<TableConfig>>() {
-            return AnyView::new(hook.apply(env, config));
-        }
-        // Default to virtualized rows through List so all backends share the same lazy behavior.
-        AnyView::new(DefaultTableView::new(config.columns))
+        render_table_config(ConfigurableView::config(self), env)
     }
 }
 
@@ -165,13 +168,13 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
 // Default Table View Implementation
 // ============================================================================
 
-use crate::ViewExt;
 use crate::component::list::{List as UiList, ListItem};
+use crate::ViewExt;
 use nami::collection::List as ReactiveList;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use waterui_core::dynamic::watch;
 use waterui_graphics::color::Grey;
-use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
+use waterui_layout::stack::{hstack, vstack, HorizontalAlignment};
 
 #[derive(Clone)]
 struct TableRowCountSignal {
