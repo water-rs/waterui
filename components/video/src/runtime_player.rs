@@ -19,19 +19,21 @@ use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
-    AnyView, Binding, Environment, View,
+    AnyView, Binding, Environment, View, binding,
     dynamic::Dynamic,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
+use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
 use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
 };
 use waterui_text::text;
 
+use crate::Url;
+use crate::source::{MediaItem, SubtitleTrack};
+use crate::subtitles::{SubtitleCue, active_subtitle_text, parse_subtitles_from_path};
 use crate::video::{AspectRatio, Event, PlaybackPolicy, VideoConfig, VideoPlayerConfig, Volume};
-use crate::{Url, source::MediaItem};
 
 const SEEK_EPSILON: f64 = 0.005;
 const SEEK_RESTART_THROTTLE: Duration = Duration::from_millis(40);
@@ -456,6 +458,11 @@ impl PlayerBindings {
     }
 }
 
+#[derive(Clone)]
+struct SubtitleBindings {
+    text: Binding<String>,
+}
+
 #[derive(Debug)]
 enum UiUpdate {
     Event(Event),
@@ -464,9 +471,15 @@ enum UiUpdate {
     Position(f64),
     Buffering(bool),
     Playing(bool),
+    Subtitle(String),
 }
 
-fn apply_ui_update(on_event: &OnEvent, player: Option<&PlayerBindings>, update: UiUpdate) {
+fn apply_ui_update(
+    on_event: &OnEvent,
+    player: Option<&PlayerBindings>,
+    subtitle: Option<&SubtitleBindings>,
+    update: UiUpdate,
+) {
     match update {
         UiUpdate::Event(event) => (on_event)(event),
         UiUpdate::Progress(value) => {
@@ -494,6 +507,11 @@ fn apply_ui_update(on_event: &OnEvent, player: Option<&PlayerBindings>, update: 
                 player.is_playing.set(value);
             }
         }
+        UiUpdate::Subtitle(value) => {
+            if let Some(subtitle) = subtitle {
+                subtitle.text.set(value);
+            }
+        }
     }
 }
 
@@ -501,6 +519,7 @@ fn start_ui_update_pump(
     receiver: Receiver<UiUpdate>,
     on_event: OnEvent,
     player: Option<PlayerBindings>,
+    subtitle: Option<SubtitleBindings>,
 ) {
     spawn_local(async move {
         loop {
@@ -508,7 +527,9 @@ fn start_ui_update_pump(
 
             loop {
                 match receiver.try_recv() {
-                    Ok(update) => apply_ui_update(&on_event, player.as_ref(), update),
+                    Ok(update) => {
+                        apply_ui_update(&on_event, player.as_ref(), subtitle.as_ref(), update)
+                    }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         disconnected = true;
@@ -537,7 +558,7 @@ struct VertexLayoutKey {
 }
 
 #[derive(Debug)]
-enum SourceAssetState {
+enum FileAssetState {
     Unresolved,
     Downloading {
         path: PathBuf,
@@ -574,10 +595,14 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
         let on_event: OnEvent = Rc::from(on_event);
         AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
+            let subtitle = SubtitleBindings {
+                text: binding(String::new()),
+            };
             let (ui_updates, ui_receiver) = mpsc::channel();
-            start_ui_update_pump(ui_receiver, on_event.clone(), None);
-            AnyView::new(VideoSurface::new(
+            start_ui_update_pump(ui_receiver, on_event.clone(), None, Some(subtitle.clone()));
+            let surface = VideoSurface::new(
                 item.source,
+                select_default_subtitle_track(&item.subtitle_tracks),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -586,7 +611,10 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 playback_policy,
                 ui_updates,
                 None,
-            ))
+            );
+            AnyView::new(
+                overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom),
+            )
         }))
     });
 
@@ -614,11 +642,20 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 playback_rate: playback_rate.clone(),
                 preserve_pitch: preserve_pitch.clone(),
             };
+            let subtitle = SubtitleBindings {
+                text: binding(String::new()),
+            };
             let (ui_updates, ui_receiver) = mpsc::channel();
-            start_ui_update_pump(ui_receiver, on_event.clone(), Some(player.clone()));
+            start_ui_update_pump(
+                ui_receiver,
+                on_event.clone(),
+                Some(player.clone()),
+                Some(subtitle.clone()),
+            );
 
             let surface = VideoSurface::new(
                 item.source,
+                select_default_subtitle_track(&item.subtitle_tracks),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -641,12 +678,39 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                     player.preserve_pitch.clone(),
                     volume.clone(),
                 );
-                AnyView::new(overlay(surface, controls).alignment(Alignment::Bottom))
+                let bottom_cluster =
+                    vstack((subtitle_banner(subtitle.text.clone()), controls)).spacing(12.0);
+                AnyView::new(overlay(surface, bottom_cluster).alignment(Alignment::Bottom))
             } else {
-                AnyView::new(surface)
+                AnyView::new(
+                    overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom),
+                )
             }
         }))
     });
+}
+
+fn select_default_subtitle_track(tracks: &[SubtitleTrack]) -> Option<SubtitleTrack> {
+    tracks
+        .iter()
+        .find(|track| track.forced)
+        .cloned()
+        .or_else(|| tracks.first().cloned())
+}
+
+fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
+    Dynamic::watch(subtitle_text, |current| {
+        if current.trim().is_empty() {
+            AnyView::new(())
+        } else {
+            AnyView::new(
+                text(current)
+                    .footnote()
+                    .color(Color::srgb(255, 255, 255))
+                    .background_color(Color::srgb(0, 0, 0)),
+            )
+        }
+    })
 }
 
 fn player_controls(
@@ -813,6 +877,7 @@ struct VideoSurface {
 impl VideoSurface {
     fn new(
         source: Url,
+        subtitle_track: Option<SubtitleTrack>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -825,6 +890,7 @@ impl VideoSurface {
         Self {
             renderer: VideoRenderer::new(
                 source,
+                subtitle_track,
                 volume,
                 playback_rate,
                 preserve_pitch,
@@ -1000,6 +1066,7 @@ impl Drop for DecoderWorker {
 
 struct VideoRenderer {
     source: Url,
+    subtitle_track: Option<SubtitleTrack>,
     volume: Binding<Volume>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
@@ -1048,8 +1115,12 @@ struct VideoRenderer {
     pending_seek_request: Option<f64>,
     seek_inflight: bool,
     last_seek_restart_at: Option<Instant>,
-    source_asset: SourceAssetState,
+    source_asset: FileAssetState,
     source_error_reported: bool,
+    subtitle_asset: Option<FileAssetState>,
+    subtitle_error_reported: bool,
+    subtitle_cues: Vec<SubtitleCue>,
+    last_subtitle_text: Option<String>,
     download_retry_at: Option<Instant>,
     downloaded_bytes: usize,
     download_total_bytes: Option<usize>,
@@ -1067,6 +1138,7 @@ impl core::fmt::Debug for VideoRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VideoRenderer")
             .field("source", &self.source)
+            .field("has_subtitle_track", &self.subtitle_track.is_some())
             .field("loops", &self.loops)
             .field("aspect_ratio", &self.aspect_ratio)
             .field("source_asset", &self.source_asset)
@@ -1079,6 +1151,7 @@ impl core::fmt::Debug for VideoRenderer {
 impl VideoRenderer {
     fn new(
         source: Url,
+        subtitle_track: Option<SubtitleTrack>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -1093,6 +1166,7 @@ impl VideoRenderer {
 
         Self {
             source,
+            subtitle_track: subtitle_track.clone(),
             volume,
             playback_rate,
             preserve_pitch,
@@ -1141,8 +1215,12 @@ impl VideoRenderer {
             pending_seek_request: None,
             seek_inflight: false,
             last_seek_restart_at: None,
-            source_asset: SourceAssetState::Unresolved,
+            source_asset: FileAssetState::Unresolved,
             source_error_reported: false,
+            subtitle_asset: subtitle_track.map(|_| FileAssetState::Unresolved),
+            subtitle_error_reported: false,
+            subtitle_cues: Vec::new(),
+            last_subtitle_text: None,
             download_retry_at: None,
             downloaded_bytes: 0,
             download_total_bytes: None,
@@ -1355,12 +1433,12 @@ impl VideoRenderer {
     fn should_poll_source(&self) -> bool {
         matches!(
             self.source_asset,
-            SourceAssetState::Unresolved | SourceAssetState::Downloading { .. }
+            FileAssetState::Unresolved | FileAssetState::Downloading { .. }
         )
     }
 
     fn is_source_downloading(&self) -> bool {
-        matches!(self.source_asset, SourceAssetState::Downloading { .. })
+        matches!(self.source_asset, FileAssetState::Downloading { .. })
     }
 
     fn poll_source_download_updates(&mut self) {
@@ -1382,7 +1460,7 @@ impl VideoRenderer {
     fn resolve_source_path(&mut self) -> Result<Option<PathBuf>, String> {
         loop {
             match &mut self.source_asset {
-                SourceAssetState::Unresolved => {
+                FileAssetState::Unresolved => {
                     if is_remote_url(&self.source) {
                         let cache_path = cached_video_path(&self.source);
                         if cache_path.exists() {
@@ -1390,7 +1468,7 @@ impl VideoRenderer {
                                 "[VideoFallback] using cached source: {}",
                                 cache_path.display()
                             );
-                            self.source_asset = SourceAssetState::Ready(cache_path.clone());
+                            self.source_asset = FileAssetState::Ready(cache_path.clone());
                             self.downloaded_bytes = fs::metadata(&cache_path)
                                 .ok()
                                 .map_or(0, |meta| meta.len() as usize);
@@ -1404,9 +1482,9 @@ impl VideoRenderer {
                         );
                         self.downloaded_bytes = 0;
                         self.download_total_bytes = None;
-                        self.source_asset = SourceAssetState::Downloading {
+                        self.source_asset = FileAssetState::Downloading {
                             path: cache_path.clone(),
-                            receiver: start_video_download(
+                            receiver: start_asset_download(
                                 self.source.as_str().to_owned(),
                                 cache_path,
                             ),
@@ -1416,14 +1494,14 @@ impl VideoRenderer {
                     }
 
                     let local_path = local_source_path(&self.source);
-                    self.source_asset = SourceAssetState::Ready(local_path.clone());
+                    self.source_asset = FileAssetState::Ready(local_path.clone());
                     self.downloaded_bytes = fs::metadata(&local_path)
                         .ok()
                         .map_or(0, |meta| meta.len() as usize);
                     self.download_total_bytes = Some(self.downloaded_bytes);
                     return Ok(Some(local_path));
                 }
-                SourceAssetState::Downloading {
+                FileAssetState::Downloading {
                     path,
                     receiver,
                     ready,
@@ -1454,12 +1532,12 @@ impl VideoRenderer {
                             .map_or(0, |meta| meta.len() as usize);
                         self.download_total_bytes = Some(self.downloaded_bytes);
                         let resolved = path.clone();
-                        self.source_asset = SourceAssetState::Ready(resolved.clone());
+                        self.source_asset = FileAssetState::Ready(resolved.clone());
                         return Ok(Some(resolved));
                     }
                     Ok(DownloadUpdate::Failed(message)) => {
                         tracing::warn!("[VideoFallback] download failed: {message}");
-                        self.source_asset = SourceAssetState::Failed(message.clone());
+                        self.source_asset = FileAssetState::Failed(message.clone());
                         return Err(message);
                     }
                     Err(TryRecvError::Empty) => {
@@ -1476,19 +1554,105 @@ impl VideoRenderer {
                                 .map_or(0, |meta| meta.len() as usize);
                             self.download_total_bytes = Some(self.downloaded_bytes);
                             let resolved = path.clone();
-                            self.source_asset = SourceAssetState::Ready(resolved.clone());
+                            self.source_asset = FileAssetState::Ready(resolved.clone());
                             Ok(Some(resolved))
                         } else {
                             let message = String::from("Video download channel disconnected");
-                            self.source_asset = SourceAssetState::Failed(message.clone());
+                            self.source_asset = FileAssetState::Failed(message.clone());
                             Err(message)
                         };
                     }
                 },
-                SourceAssetState::Ready(path) => return Ok(Some(path.clone())),
-                SourceAssetState::Failed(message) => return Err(message.clone()),
+                FileAssetState::Ready(path) => return Ok(Some(path.clone())),
+                FileAssetState::Failed(message) => return Err(message.clone()),
             }
         }
+    }
+
+    fn set_subtitle_text(&mut self, next: Option<String>) {
+        if self.last_subtitle_text == next {
+            return;
+        }
+
+        let update = next.clone().unwrap_or_default();
+        self.last_subtitle_text = next;
+        self.push_ui_update(UiUpdate::Subtitle(update));
+    }
+
+    fn ensure_subtitle_cues(&mut self) -> Result<(), String> {
+        let Some(subtitle_source) = self
+            .subtitle_track
+            .as_ref()
+            .map(|track| track.source.clone())
+        else {
+            self.set_subtitle_text(None);
+            return Ok(());
+        };
+        if !self.subtitle_cues.is_empty() {
+            return Ok(());
+        }
+
+        let Some(asset) = self.subtitle_asset.as_mut() else {
+            return Ok(());
+        };
+
+        loop {
+            match asset {
+                FileAssetState::Unresolved => {
+                    if is_remote_url(&subtitle_source) {
+                        let cache_path = cached_subtitle_path(&subtitle_source);
+                        if cache_path.exists() {
+                            self.subtitle_cues = parse_subtitles_from_path(&cache_path)?;
+                            *asset = FileAssetState::Ready(cache_path);
+                            return Ok(());
+                        }
+
+                        *asset = FileAssetState::Downloading {
+                            path: cache_path.clone(),
+                            receiver: start_asset_download(
+                                subtitle_source.as_str().to_owned(),
+                                cache_path,
+                            ),
+                            ready: false,
+                        };
+                        return Ok(());
+                    }
+
+                    let local_path = local_source_path(&subtitle_source);
+                    self.subtitle_cues = parse_subtitles_from_path(&local_path)?;
+                    *asset = FileAssetState::Ready(local_path);
+                    return Ok(());
+                }
+                FileAssetState::Downloading { path, receiver, .. } => match receiver.try_recv() {
+                    Ok(DownloadUpdate::Progress { .. } | DownloadUpdate::Ready) => continue,
+                    Ok(DownloadUpdate::Finished) => {
+                        self.subtitle_cues = parse_subtitles_from_path(path)?;
+                        *asset = FileAssetState::Ready(path.clone());
+                        return Ok(());
+                    }
+                    Ok(DownloadUpdate::Failed(message)) => {
+                        let message = format!("subtitle download failed: {message}");
+                        *asset = FileAssetState::Failed(message.clone());
+                        return Err(message);
+                    }
+                    Err(TryRecvError::Empty) => return Ok(()),
+                    Err(TryRecvError::Disconnected) => {
+                        self.subtitle_cues = parse_subtitles_from_path(path)?;
+                        *asset = FileAssetState::Ready(path.clone());
+                        return Ok(());
+                    }
+                },
+                FileAssetState::Ready(_) => return Ok(()),
+                FileAssetState::Failed(message) => return Err(message.clone()),
+            }
+        }
+    }
+
+    fn sync_subtitle_text(&mut self, now: Instant) {
+        let next = active_subtitle_text(&self.subtitle_cues, self.playback_position(now))
+            .map(ToOwned::to_owned)
+            .filter(|text| !text.trim().is_empty());
+        self.set_subtitle_text(next);
     }
 
     fn stop_decode_worker(&mut self) {
@@ -1622,9 +1786,9 @@ impl VideoRenderer {
         }
 
         let source_ready = match &self.source_asset {
-            SourceAssetState::Ready(_) => true,
-            SourceAssetState::Downloading { ready, .. } => *ready,
-            SourceAssetState::Unresolved | SourceAssetState::Failed(_) => false,
+            FileAssetState::Ready(_) => true,
+            FileAssetState::Downloading { ready, .. } => *ready,
+            FileAssetState::Unresolved | FileAssetState::Failed(_) => false,
         };
         if !source_ready {
             return;
@@ -1781,7 +1945,7 @@ impl VideoRenderer {
             return frame.pts.saturating_sub(playback);
         }
 
-        if matches!(self.source_asset, SourceAssetState::Ready(_)) {
+        if matches!(self.source_asset, FileAssetState::Ready(_)) {
             return self.duration.saturating_sub(playback);
         }
 
@@ -2459,6 +2623,15 @@ impl VideoRenderer {
 
     fn step_decoder_if_needed(&mut self, frame: &GpuFrame) {
         self.poll_source_download_updates();
+        if let Err(message) = self.ensure_subtitle_cues() {
+            self.set_subtitle_text(None);
+            if !self.subtitle_error_reported {
+                self.emit_event(Event::Error {
+                    message: message.clone(),
+                });
+                self.subtitle_error_reported = true;
+            }
+        }
 
         if self.decode_worker.is_none() {
             self.open_decode_state();
@@ -2474,6 +2647,7 @@ impl VideoRenderer {
         self.maybe_seek_from_ui(should_play);
         self.drain_decoder_outputs(should_play);
         let now = Instant::now();
+        self.sync_subtitle_text(now);
         self.maybe_emit_buffer_level(now);
         self.maybe_emit_playback_metrics(now);
 
@@ -2526,6 +2700,7 @@ impl VideoRenderer {
             self.first_frame_presented = true;
         }
         self.set_playback_position(decoded.pts, should_play);
+        self.sync_subtitle_text(Instant::now());
         self.set_buffering(false);
 
         if self.player.is_some() {
@@ -2900,7 +3075,7 @@ fn local_source_path(url: &Url) -> PathBuf {
     PathBuf::from(url.as_str())
 }
 
-fn cached_video_path(url: &Url) -> PathBuf {
+fn cached_remote_asset_path(url: &Url, default_extension: &str) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     url.as_str().hash(&mut hasher);
     let hash = hasher.finish();
@@ -2913,7 +3088,7 @@ fn cached_video_path(url: &Url) -> PathBuf {
             .take_while(|ch| ch.is_ascii_alphanumeric())
             .collect::<String>();
         if clean.is_empty() {
-            String::from("mp4")
+            String::from(default_extension)
         } else {
             clean
         }
@@ -2921,6 +3096,14 @@ fn cached_video_path(url: &Url) -> PathBuf {
 
     let cache_dir = std::env::temp_dir().join("waterui_video_cache");
     cache_dir.join(format!("{hash:016x}.{extension}"))
+}
+
+fn cached_video_path(url: &Url) -> PathBuf {
+    cached_remote_asset_path(url, "mp4")
+}
+
+fn cached_subtitle_path(url: &Url) -> PathBuf {
+    cached_remote_asset_path(url, "vtt")
 }
 
 fn preferred_surface_hdr_for_source(source: &Url) -> Option<bool> {
@@ -2941,11 +3124,11 @@ fn preferred_surface_hdr_for_source(source: &Url) -> Option<bool> {
     Some(probe_video_color_profile(&probe_path, None).hdr)
 }
 
-fn start_video_download(url: String, destination: PathBuf) -> Receiver<DownloadUpdate> {
+fn start_asset_download(url: String, destination: PathBuf) -> Receiver<DownloadUpdate> {
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
-        if let Err(message) = download_video_to_path(&url, &destination, &sender) {
+        if let Err(message) = download_asset_to_path(&url, &destination, &sender) {
             let _ = sender.send(DownloadUpdate::Failed(message));
         }
     });
@@ -2953,7 +3136,7 @@ fn start_video_download(url: String, destination: PathBuf) -> Receiver<DownloadU
     receiver
 }
 
-fn download_video_to_path(
+fn download_asset_to_path(
     url: &str,
     destination: &Path,
     updates: &Sender<DownloadUpdate>,
@@ -3137,9 +3320,11 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PlaybackPolicy, ShaderTargetMode, preferred_surface_hdr_for_source, shader_target_mode,
-        should_enter_vod_stall_buffering, should_wait_for_vod_buffering,
+        PlaybackPolicy, ShaderTargetMode, preferred_surface_hdr_for_source,
+        select_default_subtitle_track, shader_target_mode, should_enter_vod_stall_buffering,
+        should_wait_for_vod_buffering,
     };
+    use crate::SubtitleTrack;
     use std::{fs, path::PathBuf, time::SystemTime};
     use waterui_graphics::wgpu;
     use waterui_url::Url;
@@ -3240,5 +3425,21 @@ mod tests {
         assert!(!should_enter_vod_stall_buffering(
             policy, true, true, true, 0
         ));
+    }
+
+    #[test]
+    fn default_subtitle_track_prefers_forced_track() {
+        let tracks = vec![
+            SubtitleTrack::new("https://example.com/subs/en.vtt").language("en"),
+            SubtitleTrack::new("https://example.com/subs/forced.vtt")
+                .language("en")
+                .forced(true),
+        ];
+
+        let selected = select_default_subtitle_track(&tracks).expect("track must be selected");
+        assert_eq!(
+            selected.source.as_str(),
+            "https://example.com/subs/forced.vtt"
+        );
     }
 }
