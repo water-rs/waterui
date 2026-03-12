@@ -120,6 +120,8 @@ pub enum TargetPlatform {
     Macos,
     /// Linux (native desktop).
     Linux,
+    /// Windows (native desktop).
+    Windows,
 }
 
 /// Target backend for running (how the app is built and rendered).
@@ -129,7 +131,7 @@ pub enum TargetBackend {
     Apple,
     /// Android backend (Android Views).
     Android,
-    /// GTK4 backend (Linux/macOS/Windows).
+    /// GTK4 backend (Linux only).
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
     Hydrolysis,
@@ -139,11 +141,12 @@ pub enum TargetBackend {
 #[derive(ClapArgs, Debug)]
 pub struct Args {
     /// Target platform to run on.
+    /// Defaults to the host platform when omitted.
     #[arg(short, long, value_enum)]
-    platform: TargetPlatform,
+    platform: Option<TargetPlatform>,
 
     /// Backend to use (overrides default for platform).
-    /// E.g., `--platform macos --backend gtk4` runs macOS app with GTK4 rendering.
+    /// Example: `--platform linux --backend hydrolysis`.
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
 
@@ -206,6 +209,7 @@ fn resolve_backend(
         TargetPlatform::Macos => TargetBackend::Apple,
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
+        TargetPlatform::Windows => TargetBackend::Hydrolysis,
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -217,12 +221,12 @@ fn resolve_backend(
         (TargetPlatform::Macos, TargetBackend::Apple) => true,
         // Android backend: Android
         (TargetPlatform::Android, TargetBackend::Android) => true,
-        // GTK4 backend: macOS, Linux
-        (TargetPlatform::Macos, TargetBackend::Gtk4) => true,
+        // GTK4 backend: Linux
         (TargetPlatform::Linux, TargetBackend::Gtk4) => true,
-        // Hydrolysis backend: macOS, Linux
+        // Hydrolysis backend: macOS, Linux, Windows
         (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
         (TargetPlatform::Linux, TargetBackend::Hydrolysis) => true,
+        (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
         // All other combinations are invalid
         _ => false,
     };
@@ -232,15 +236,89 @@ fn resolve_backend(
             "Backend {:?} does not support platform {:?}.\n\
              Valid combinations:\n  \
              - iOS: apple\n  \
-             - macOS: apple, gtk4, hydrolysis\n  \
+             - macOS: apple, hydrolysis\n  \
              - Android: android\n  \
-             - Linux: gtk4, hydrolysis",
+             - Linux: gtk4, hydrolysis\n  \
+             - Windows: hydrolysis",
             backend,
             platform
         );
     }
 
     Ok(backend)
+}
+
+fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetBackend] {
+    match platform {
+        TargetPlatform::Ios => &[TargetBackend::Apple],
+        TargetPlatform::Android => &[TargetBackend::Android],
+        TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
+        TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
+        TargetPlatform::Windows => &[TargetBackend::Hydrolysis],
+    }
+}
+
+const fn has_configured_backend(
+    backend: TargetBackend,
+    has_apple: bool,
+    has_android: bool,
+    has_gtk4: bool,
+    has_hydrolysis: bool,
+) -> bool {
+    match backend {
+        TargetBackend::Apple => has_apple,
+        TargetBackend::Android => has_android,
+        TargetBackend::Gtk4 => has_gtk4,
+        TargetBackend::Hydrolysis => has_hydrolysis,
+    }
+}
+
+fn resolve_default_backend_for_project(
+    platform: TargetPlatform,
+    project_is_playground: bool,
+    has_apple: bool,
+    has_android: bool,
+    has_gtk4: bool,
+    has_hydrolysis: bool,
+) -> TargetBackend {
+    let backends = default_backend_priority(platform);
+    if project_is_playground {
+        return backends[0];
+    }
+
+    for backend in backends {
+        if has_configured_backend(*backend, has_apple, has_android, has_gtk4, has_hydrolysis) {
+            return *backend;
+        }
+    }
+
+    backends[0]
+}
+
+fn resolve_platform(platform_override: Option<TargetPlatform>) -> Result<TargetPlatform> {
+    if let Some(platform) = platform_override {
+        return Ok(platform);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(TargetPlatform::Macos);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(TargetPlatform::Linux);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(TargetPlatform::Windows);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        bail!(
+            "`water run` could not determine a default platform for this host. Please pass --platform explicitly."
+        );
+    }
 }
 
 fn sccache_allowed() -> bool {
@@ -261,22 +339,36 @@ fn sccache_allowed() -> bool {
 pub async fn run(args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let mut project = Project::open(&project_path).await?;
+    let platform = resolve_platform(args.platform)?;
 
     // Resolve the backend to use
-    let backend = resolve_backend(args.platform, args.backend)?;
-    validate_desktop_backend_platform_on_host(args.platform, backend)?;
+    let backend = match args.backend {
+        Some(backend_override) => resolve_backend(platform, Some(backend_override))?,
+        None => {
+            let selected = resolve_default_backend_for_project(
+                platform,
+                project.is_playground(),
+                project.apple_backend().is_some(),
+                project.android_backend().is_some(),
+                project.gtk4_backend().is_some(),
+                project.hydrolysis_backend().is_some(),
+            );
+            resolve_backend(platform, Some(selected))?
+        }
+    };
+    validate_desktop_backend_platform_on_host(platform, backend)?;
     validate_device_arg(backend, args.device.as_deref())?;
 
     header!(
         "Running {} on {} ({})",
         project.crate_name(),
-        platform_name(args.platform),
+        platform_name(platform),
         backend_name(backend)
     );
 
     // Step 1: Check toolchain
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(args.platform, backend).await?;
+    check_toolchain_for_backend(platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -337,7 +429,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Step 2: Find device
     let spinner = shell::spinner("Scanning for devices...");
-    let device = find_device(args.platform, backend, args.device.as_deref()).await?;
+    let device = find_device(platform, backend, args.device.as_deref()).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -374,7 +466,7 @@ pub async fn run(args: Args) -> Result<()> {
     };
 
     #[cfg(target_os = "macos")]
-    let mut crash_ctx = match CrashReportContext::try_new(&project, args.platform, backend) {
+    let mut crash_ctx = match CrashReportContext::try_new(&project, platform, backend) {
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("Crash report augmentation disabled: {e}");
@@ -384,7 +476,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     let running = display_output(build_and_run(
         &project,
-        args.platform,
+        platform,
         backend,
         device,
         needs_launch,
@@ -476,6 +568,7 @@ async fn build_and_run(
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Android => LibTargetPlatform::Android,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
+        TargetPlatform::Windows => LibTargetPlatform::Windows,
     };
 
     let android_abi = match (backend, &device) {
@@ -501,7 +594,7 @@ async fn build_and_run(
     });
 
     // Build and package while device launches in background
-    shell::status("▶", "Building...");
+    shell::status(">", "Building...");
     let mut build_options = BuildOptions::new(false);
     if let Some(ref sccache) = sccache_path {
         build_options = build_options.with_sccache(sccache.clone());
@@ -529,7 +622,7 @@ async fn build_and_run(
         }
     }
 
-    shell::status("▶", "Packaging...");
+    shell::status(">", "Packaging...");
     let package_options = PackageOptions::new(false, true);
 
     // Package based on backend, not platform
@@ -549,11 +642,11 @@ async fn build_and_run(
 
     // Wait for device to be ready
     if needs_launch {
-        shell::status("▶", "Waiting for device...");
+        shell::status(">", "Waiting for device...");
     }
     let device = launch_task.await?;
 
-    shell::status("▶", "Running...");
+    shell::status(">", "Running...");
     let running = run_with_options(device, artifact, log_level, native_logs).await?;
 
     Ok(running)
@@ -586,7 +679,7 @@ async fn run_with_options(
 /// A device that can be selected for running.
 enum SelectedDevice {
     AppleSimulator(AppleSimulator),
-    /// Local machine - used for macOS (Apple backend) and any platform with GTK4 backend
+    /// Local machine - used for desktop backends and macOS Apple backend.
     Local(Local),
     AndroidDevice(AndroidDevice),
     AndroidEmulator(AndroidEmulator),
@@ -612,7 +705,7 @@ async fn check_toolchain_for_backend(
             let sdk = match platform {
                 TargetPlatform::Ios => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android | TargetPlatform::Linux => {
+                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -622,18 +715,22 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android().await?;
+            toolchain_checks::check_android_run().await?;
         }
         TargetBackend::Gtk4 => {
-            if platform != TargetPlatform::Macos && platform != TargetPlatform::Linux {
+            if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
             toolchain_checks::check_gtk4().await?;
         }
         TargetBackend::Hydrolysis => {
-            if platform != TargetPlatform::Macos && platform != TargetPlatform::Linux {
+            if platform != TargetPlatform::Macos
+                && platform != TargetPlatform::Linux
+                && platform != TargetPlatform::Windows
+            {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
+            toolchain_checks::check_hydrolysis().await?;
         }
     }
     Ok(())
@@ -704,7 +801,7 @@ async fn find_device(
             let avds = AndroidPlatform::list_avds().await?;
             let avd_name = avds.into_iter().next().ok_or_else(|| {
                 color_eyre::eyre::eyre!(
-                    "No Android devices connected and no emulators available. Create an emulator in Android Studio or connect a device."
+                    "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
                 )
             })?;
 
@@ -714,6 +811,10 @@ async fn find_device(
         }
         TargetPlatform::Linux => {
             // Linux runs on the local machine
+            Ok(SelectedDevice::Local(Local))
+        }
+        TargetPlatform::Windows => {
+            // Windows runs on the local machine
             Ok(SelectedDevice::Local(Local))
         }
     }
@@ -734,6 +835,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
+        TargetPlatform::Windows => "Windows",
     }
 }
 
@@ -759,22 +861,45 @@ fn validate_desktop_backend_platform_on_host(
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<()> {
-    if !matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) {
-        return Ok(());
-    }
+    match backend {
+        TargetBackend::Gtk4 => {
+            #[cfg(target_os = "linux")]
+            {
+                if platform != TargetPlatform::Linux {
+                    bail!("GTK4 backend on Linux host requires --platform linux");
+                }
+            }
 
-    #[cfg(target_os = "macos")]
-    if platform != TargetPlatform::Macos {
-        bail!("Desktop backends on macOS host require --platform macos");
-    }
+            #[cfg(not(target_os = "linux"))]
+            {
+                bail!("GTK4 backend is only supported on Linux hosts");
+            }
+        }
+        TargetBackend::Hydrolysis => {
+            #[cfg(target_os = "macos")]
+            if platform != TargetPlatform::Macos {
+                bail!("Hydrolysis backend on macOS host requires --platform macos");
+            }
 
-    #[cfg(target_os = "linux")]
-    if platform != TargetPlatform::Linux {
-        bail!("Desktop backends on Linux host require --platform linux");
-    }
+            #[cfg(target_os = "linux")]
+            if platform != TargetPlatform::Linux {
+                bail!("Hydrolysis backend on Linux host requires --platform linux");
+            }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    bail!("Desktop backends are only supported on macOS or Linux hosts");
+            #[cfg(target_os = "windows")]
+            if platform != TargetPlatform::Windows {
+                bail!("Hydrolysis backend on Windows host requires --platform windows");
+            }
+
+            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+            bail!("Hydrolysis backend is only supported on macOS, Linux, or Windows hosts");
+        }
+        TargetBackend::Apple => {
+            #[cfg(not(target_os = "macos"))]
+            bail!("Apple backend requires a macOS host");
+        }
+        TargetBackend::Android => {}
+    }
 
     Ok(())
 }
@@ -785,11 +910,11 @@ fn validate_desktop_backend_platform_on_host(
 fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool {
     match event {
         Some(DeviceEvent::Started) => {
-            shell::status("●", "Application started");
+            shell::status("*", "Application started");
             false
         }
         Some(DeviceEvent::Stopped) => {
-            shell::status("○", "Application stopped");
+            shell::status("o", "Application stopped");
             true
         }
         Some(DeviceEvent::Stdout { message }) => {
@@ -824,8 +949,8 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{
-        TargetBackend, TargetPlatform, validate_desktop_backend_platform_on_host,
-        validate_device_arg,
+        TargetBackend, TargetPlatform, resolve_backend, resolve_default_backend_for_project,
+        resolve_platform, validate_desktop_backend_platform_on_host, validate_device_arg,
     };
 
     #[test]
@@ -843,12 +968,122 @@ mod tests {
         assert!(validate_device_arg(TargetBackend::Apple, Some("sim-1")).is_ok());
     }
 
+    #[test]
+    fn resolve_backend_defaults_match_platforms() {
+        assert_eq!(
+            resolve_backend(TargetPlatform::Ios, None).expect("ios backend"),
+            TargetBackend::Apple
+        );
+        assert_eq!(
+            resolve_backend(TargetPlatform::Android, None).expect("android backend"),
+            TargetBackend::Android
+        );
+        assert_eq!(
+            resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
+            TargetBackend::Gtk4
+        );
+        assert_eq!(
+            resolve_backend(TargetPlatform::Windows, None).expect("windows backend"),
+            TargetBackend::Hydrolysis
+        );
+    }
+
+    #[test]
+    fn default_backend_prefers_native_then_hydrolysis_for_app_projects() {
+        assert_eq!(
+            resolve_default_backend_for_project(
+                TargetPlatform::Linux,
+                false,
+                false,
+                false,
+                false,
+                true
+            ),
+            TargetBackend::Hydrolysis
+        );
+        assert_eq!(
+            resolve_default_backend_for_project(
+                TargetPlatform::Macos,
+                false,
+                false,
+                false,
+                false,
+                true
+            ),
+            TargetBackend::Hydrolysis
+        );
+        assert_eq!(
+            resolve_default_backend_for_project(
+                TargetPlatform::Linux,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            TargetBackend::Gtk4
+        );
+    }
+
+    #[test]
+    fn playground_defaults_use_platform_native_backend() {
+        assert_eq!(
+            resolve_default_backend_for_project(
+                TargetPlatform::Macos,
+                true,
+                false,
+                false,
+                false,
+                true
+            ),
+            TargetBackend::Apple
+        );
+        assert_eq!(
+            resolve_default_backend_for_project(
+                TargetPlatform::Linux,
+                true,
+                false,
+                false,
+                false,
+                true
+            ),
+            TargetBackend::Gtk4
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_platform_defaults_to_host_on_macos() {
+        assert_eq!(
+            resolve_platform(None).expect("default platform"),
+            TargetPlatform::Macos
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_platform_defaults_to_host_on_linux() {
+        assert_eq!(
+            resolve_platform(None).expect("default platform"),
+            TargetPlatform::Linux
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolve_platform_defaults_to_host_on_windows() {
+        assert_eq!(
+            resolve_platform(None).expect("default platform"),
+            TargetPlatform::Windows
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn desktop_backend_platform_must_match_macos_host() {
         assert!(
             validate_desktop_backend_platform_on_host(TargetPlatform::Macos, TargetBackend::Gtk4)
-                .is_ok()
+                .is_err()
         );
         assert!(
             validate_desktop_backend_platform_on_host(
@@ -886,6 +1121,29 @@ mod tests {
         );
         assert!(
             validate_desktop_backend_platform_on_host(TargetPlatform::Macos, TargetBackend::Gtk4)
+                .is_err()
+        );
+        assert!(
+            validate_desktop_backend_platform_on_host(
+                TargetPlatform::Macos,
+                TargetBackend::Hydrolysis
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_backend_platform_must_match_windows_host() {
+        assert!(
+            validate_desktop_backend_platform_on_host(
+                TargetPlatform::Windows,
+                TargetBackend::Hydrolysis
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_desktop_backend_platform_on_host(TargetPlatform::Windows, TargetBackend::Gtk4)
                 .is_err()
         );
         assert!(

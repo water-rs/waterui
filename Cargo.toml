@@ -104,6 +104,7 @@ waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 waterkit-screen = { version = "0.1.0", path = "kit/screen" }
 waterkit-audio = { version = "0.1.0", path = "kit/audio" }
+waterkit-clipboard = { version = "0.1.0", path = "kit/clipboard" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
 waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
 waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
