@@ -501,6 +501,8 @@ struct EmbeddedGpuSurfaceRuntime {
     output_texture: Option<wgpu::Texture>,
     output_view: Option<wgpu::TextureView>,
     redraw_handle: RedrawHandle,
+    start_time: Instant,
+    last_frame_time: Instant,
 }
 
 #[derive(Clone)]
@@ -805,6 +807,7 @@ impl GpuSurfaceCompositorState {
 
 impl EmbeddedGpuSurfaceRuntime {
     fn new(surface: GpuSurface, env: &Environment) -> Self {
+        let now = Instant::now();
         Self {
             surface,
             env: env.clone(),
@@ -814,10 +817,13 @@ impl EmbeddedGpuSurfaceRuntime {
             output_texture: None,
             output_view: None,
             redraw_handle: RedrawHandle::new(),
+            start_time: now,
+            last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
         }
     }
 
     fn replace_surface(&mut self, surface: GpuSurface, env: &Environment) {
+        let now = Instant::now();
         self.surface = surface;
         self.env = env.clone();
         self.setup_complete = false;
@@ -826,6 +832,8 @@ impl EmbeddedGpuSurfaceRuntime {
         self.output_texture = None;
         self.output_view = None;
         self.redraw_handle = RedrawHandle::new();
+        self.start_time = now;
+        self.last_frame_time = now - Duration::from_secs_f32(1.0 / 60.0);
     }
 
     fn take_external_redraw_request(&self) -> bool {
@@ -865,6 +873,12 @@ impl EmbeddedGpuSurfaceRuntime {
             .as_ref()
             .expect("hydrolysis embedded GpuSurface missing output view")
             .clone();
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.start_time);
+        let delta = now
+            .duration_since(self.last_frame_time)
+            .min(Duration::from_millis(100));
+        self.last_frame_time = now;
         let mut frame = GpuFrame::new(
             device,
             queue,
@@ -875,6 +889,8 @@ impl EmbeddedGpuSurfaceRuntime {
             layer_height,
             PointerState::default(),
             GestureState::new(),
+            elapsed,
+            delta,
         );
         self.surface.render(&mut frame);
         let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
