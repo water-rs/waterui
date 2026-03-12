@@ -200,3 +200,50 @@ fn chart_overlay_reactive_layer_is_initially_hidden_without_selection() {
         "reactive chart_overlay should stay hidden before selection"
     );
 }
+
+#[test]
+fn selected_tooltip_stacks_with_existing_overlay_layers() {
+    let data = point_series();
+    let index = 10;
+    let location = point_hit_location(&data, index);
+
+    let mut app = mount_view(move || {
+        chart_surface(
+            "composition-line-tooltip",
+            LineChart::new(Binding::container(data.clone()))
+                .chart_overlay(|_proxy| {
+                    absolute((
+                        Srgb::WHITE.size(12.0, 12.0).position(18.0, 18.0),
+                    ))
+                })
+                .selected_tooltip(|hit| {
+                    waterui_chart::Tooltip::new(
+                        waterui_chart::TooltipContent::new()
+                            .title("Selected")
+                            .value("Series", hit.series.to_string())
+                            .value("Index", hit.index.to_string()),
+                    )
+                }),
+        )
+        .background(Srgb::BLACK)
+    });
+
+    let chart_label = assert_chart_accessibility_ready(&mut app, "composition-line-tooltip");
+    let base = app.snapshot();
+    assert!(
+        app.query()
+            .role(Role::IMAGE)
+            .label(chart_label)
+            .tap_at(location.0, location.1),
+        "composition-line-tooltip: tap should drive tooltip selection"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("Selected")
+        .assert_exists();
+    let selected = app.snapshot();
+    assert!(
+        base.changed_pixels(&selected) > 0,
+        "selected_tooltip should render on top of an existing chart_overlay layer"
+    );
+}
