@@ -10,6 +10,7 @@ pub mod linux;
 pub mod meson;
 pub mod rust;
 pub mod sccache;
+pub mod windows_arm64_llvm;
 pub mod winget;
 /// A toolchain that cannot be fixed automatically.
 #[derive(Debug, Clone, thiserror::Error)]
