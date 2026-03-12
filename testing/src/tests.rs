@@ -530,12 +530,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         app.query().role(Role::BUTTON).label("Submit").focus(),
         "expected button accessibility focus action to succeed"
     );
-    let submit_id = app
-        .query()
-        .role(Role::BUTTON)
-        .label("Submit")
-        .single()
-        .id();
+    let submit_id = app.query().role(Role::BUTTON).label("Submit").single().id();
     assert_eq!(submit_id, app.tree().focus());
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));

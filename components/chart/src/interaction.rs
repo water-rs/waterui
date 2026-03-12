@@ -1,33 +1,188 @@
-//! Hit-testing and interaction system for charts.
+//! Hit-testing and interaction types for charts.
 
+use nami::Binding;
 use waterui_core::{
     gesture::{DragEvent, GesturePhase, MagnificationEvent},
     layout::Point,
 };
 
-/// Result of a hit test on chart data.
-#[derive(Debug, Clone)]
+/// Stable screen-space anchor for chart readouts and overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ChartAnchor {
+    /// Horizontal coordinate in the chart view's local coordinate space.
+    pub x: f32,
+    /// Vertical coordinate in the chart view's local coordinate space.
+    pub y: f32,
+}
+
+impl ChartAnchor {
+    /// Creates a new screen-space anchor.
+    #[must_use]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    #[must_use]
+    pub const fn as_point(self) -> Point {
+        Point::new(self.x, self.y)
+    }
+}
+
+impl From<Point> for ChartAnchor {
+    fn from(value: Point) -> Self {
+        Self::new(value.x, value.y)
+    }
+}
+
+/// Result of a chart hit test.
+#[derive(Debug, Clone, PartialEq)]
 pub struct HitResult<T> {
-    /// Series index (for multi-series charts).
+    /// Series index for multi-series charts.
     pub series: usize,
     /// Data point index within the series.
     pub index: usize,
-    /// The data value that was hit.
+    /// Strongly-typed chart payload for the hit datum.
     pub value: T,
-    /// Screen position of the hit.
-    pub screen_position: Point,
+    /// Screen-space anchor for tooltip/readout composition.
+    pub anchor: ChartAnchor,
 }
 
 impl<T> HitResult<T> {
     /// Creates a new hit result.
     #[must_use]
-    pub const fn new(series: usize, index: usize, value: T, screen_position: Point) -> Self {
+    pub fn new(series: usize, index: usize, value: T, anchor: impl Into<ChartAnchor>) -> Self {
         Self {
             series,
             index,
             value,
-            screen_position,
+            anchor: anchor.into(),
         }
+    }
+}
+
+/// Selected/focused value for depth charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthSide {
+    Bid,
+    Ask,
+}
+
+/// Payload for area chart focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaDatum {
+    /// Series index.
+    pub series: usize,
+    /// Shared x value.
+    pub x: f32,
+    /// Sampled y value for the selected series.
+    pub y: f32,
+}
+
+impl AreaDatum {
+    #[must_use]
+    pub const fn new(series: usize, x: f32, y: f32) -> Self {
+        Self { series, x, y }
+    }
+}
+
+/// Payload for depth chart focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DepthDatum {
+    /// Bid or ask side.
+    pub side: DepthSide,
+    /// Price level.
+    pub price: f32,
+    /// Cumulative volume at this level.
+    pub cumulative_volume: f32,
+}
+
+impl DepthDatum {
+    #[must_use]
+    pub const fn new(side: DepthSide, price: f32, cumulative_volume: f32) -> Self {
+        Self {
+            side,
+            price,
+            cumulative_volume,
+        }
+    }
+}
+
+/// Payload for pie/gauge focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliceDatum {
+    /// Slice or sector index.
+    pub index: usize,
+    /// Underlying scalar value.
+    pub value: f32,
+    /// Start angle in radians.
+    pub start_angle: f32,
+    /// End angle in radians.
+    pub end_angle: f32,
+}
+
+impl SliceDatum {
+    #[must_use]
+    pub const fn new(index: usize, value: f32, start_angle: f32, end_angle: f32) -> Self {
+        Self {
+            index,
+            value,
+            start_angle,
+            end_angle,
+        }
+    }
+}
+
+/// Payload for radar chart focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadarDatum {
+    /// Axis index.
+    pub axis: usize,
+    /// Optional axis label.
+    pub label: Option<String>,
+    /// Value at the selected axis.
+    pub value: f32,
+}
+
+impl RadarDatum {
+    #[must_use]
+    pub fn new(axis: usize, label: Option<String>, value: f32) -> Self {
+        Self { axis, label, value }
+    }
+}
+
+/// Payload for heatmap/contour focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridDatum {
+    /// Zero-based row index.
+    pub row: usize,
+    /// Zero-based column index.
+    pub column: usize,
+    /// Scalar value at the selected cell.
+    pub value: f32,
+}
+
+impl GridDatum {
+    #[must_use]
+    pub const fn new(row: usize, column: usize, value: f32) -> Self {
+        Self { row, column, value }
+    }
+}
+
+/// Payload for choropleth focus/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionDatum {
+    /// Polygon index within the data set.
+    pub index: usize,
+    /// Stable region id from the source data.
+    pub id: u32,
+    /// Data value for the region.
+    pub value: f32,
+}
+
+impl RegionDatum {
+    #[must_use]
+    pub const fn new(index: usize, id: u32, value: f32) -> Self {
+        Self { index, id, value }
     }
 }
 
@@ -92,7 +247,7 @@ impl ChartViewport {
         bounds: &crate::data::DataBounds,
     ) -> Point {
         let norm_x = (data_x - bounds.min_x) / bounds.width();
-        let norm_y = 1.0 - (data_y - bounds.min_y) / bounds.height(); // Flip Y
+        let norm_y = 1.0 - (data_y - bounds.min_y) / bounds.height();
         self.normalized_to_screen(norm_x, norm_y)
     }
 
@@ -105,63 +260,18 @@ impl ChartViewport {
     ) -> Option<(f32, f32)> {
         let (norm_x, norm_y) = self.screen_to_normalized(point)?;
         let data_x = bounds.min_x + norm_x * bounds.width();
-        let data_y = bounds.min_y + (1.0 - norm_y) * bounds.height(); // Flip Y
+        let data_y = bounds.min_y + (1.0 - norm_y) * bounds.height();
         Some((data_x, data_y))
     }
 }
 
-/// Selection state for charts.
-#[derive(Debug, Clone, Default)]
-pub struct SelectionState {
-    /// Currently selected series index.
-    pub series: Option<usize>,
-    /// Currently selected point index.
-    pub index: Option<usize>,
-    /// Hover position (for crosshair).
-    pub hover: Option<Point>,
-}
-
-impl SelectionState {
-    /// Clears the selection.
-    pub fn clear(&mut self) {
-        self.series = None;
-        self.index = None;
-    }
-
-    /// Sets the selection.
-    pub fn select(&mut self, series: usize, index: usize) {
-        self.series = Some(series);
-        self.index = Some(index);
-    }
-
-    /// Returns true if anything is selected.
-    #[must_use]
-    pub fn has_selection(&self) -> bool {
-        self.series.is_some() && self.index.is_some()
-    }
-}
-
-/// Zoom and pan state for interactive chart navigation.
-///
-/// Tracks cumulative zoom scale and pan offset to transform data bounds.
-/// Supports pinch-to-zoom, drag-to-pan, and double-tap-to-reset gestures.
-///
-/// # Coordinate System
-///
-/// - Zoom scale > 1.0 means zoomed in (seeing less data)
-/// - Pan offset is in normalized coordinates (0.0-1.0 relative to data bounds)
-/// - Both zoom and pan are centered around the gesture focal point
+/// Legacy internal zoom/pan state kept only for backend interaction smoke coverage.
 #[derive(Debug, Clone, Copy)]
-pub struct ZoomPanState {
-    /// Cumulative zoom scale (1.0 = no zoom, 2.0 = 2x zoom in).
+pub(crate) struct ZoomPanState {
     pub scale: f32,
-    /// Pan offset in normalized data coordinates.
     pub offset: Point,
-    /// Whether a gesture is currently active.
     gesture_active: bool,
-    /// Scale when gesture started (for delta calculation).
     gesture_start_scale: f32,
-    /// Offset when gesture started.
     gesture_start_offset: Point,
 }
 
@@ -178,7 +288,6 @@ impl Default for ZoomPanState {
 }
 
 impl ZoomPanState {
-    /// Creates a new zoom/pan state with no transformation.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -190,7 +299,6 @@ impl ZoomPanState {
         }
     }
 
-    /// Updates zoom/pan state from a drag gesture event.
     pub fn apply_drag_event(&mut self, event: &DragEvent, viewport: ChartViewport) {
         if viewport.width <= 0.0 || viewport.height <= 0.0 {
             return;
@@ -218,7 +326,6 @@ impl ZoomPanState {
         self.clamp_offset();
     }
 
-    /// Updates zoom/pan state from a magnification gesture event.
     pub fn apply_magnification_event(
         &mut self,
         event: &MagnificationEvent,
@@ -255,30 +362,21 @@ impl ZoomPanState {
         self.clamp_offset();
     }
 
-    /// Resets zoom/pan in response to a double tap.
     pub fn apply_double_tap(&mut self) {
         self.reset();
     }
 
-    /// Resets zoom and pan to default state.
     pub fn reset(&mut self) {
         self.scale = 1.0;
         self.offset = Point::new(0.0, 0.0);
     }
 
-    /// Transforms data bounds according to current zoom/pan state.
-    ///
-    /// Returns the visible portion of the data bounds.
     #[must_use]
     pub fn transform_bounds(&self, bounds: &crate::data::DataBounds) -> crate::data::DataBounds {
         let data_width = bounds.width();
         let data_height = bounds.height();
-
-        // Visible width/height is inversely proportional to scale
         let visible_width = data_width / self.scale;
         let visible_height = data_height / self.scale;
-
-        // Center of visible region in data coordinates
         let center_x = bounds.min_x + data_width * (0.5 - self.offset.x);
         let center_y = bounds.min_y + data_height * (0.5 - self.offset.y);
 
@@ -290,7 +388,6 @@ impl ZoomPanState {
         }
     }
 
-    /// Returns true if there's any zoom or pan applied.
     #[must_use]
     pub fn is_transformed(&self) -> bool {
         (self.scale - 1.0).abs() > 0.001
@@ -298,11 +395,72 @@ impl ZoomPanState {
             || self.offset.y.abs() > 0.001
     }
 
-    /// Clamps offset to keep data visible.
     fn clamp_offset(&mut self) {
-        // At higher zoom levels, allow more offset
         let max_offset = (0.5 - 0.5 / self.scale).max(0.0);
         self.offset.x = self.offset.x.clamp(-max_offset, max_offset);
         self.offset.y = self.offset.y.clamp(-max_offset, max_offset);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SelectionBindings<T: Clone + PartialEq + 'static> {
+    focused: Option<Binding<Option<HitResult<T>>>>,
+    selected: Option<Binding<Option<HitResult<T>>>>,
+}
+
+impl<T: Clone + PartialEq + 'static> Default for SelectionBindings<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            focused: None,
+            selected: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.focused.is_some() || self.selected.is_some()
+    }
+
+    #[must_use]
+    pub fn with_focused(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
+        self.focused = Some(binding.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_selected(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
+        self.selected = Some(binding.clone());
+        self
+    }
+
+    pub fn set_focus(&self, value: Option<HitResult<T>>) {
+        if let Some(binding) = &self.focused
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
+    }
+
+    pub fn clear_focus(&self) {
+        if let Some(binding) = &self.focused
+            && binding.get().is_some()
+        {
+            binding.set(None);
+        }
+    }
+
+    pub fn set_selected(&self, value: Option<HitResult<T>>) {
+        if let Some(binding) = &self.selected
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
     }
 }
