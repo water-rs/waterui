@@ -10,7 +10,7 @@ mod snapshot;
 mod wait;
 
 pub use app::{MountedApp, UiTest};
-pub use artifacts::{TestArtifacts, artifact_root};
+pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use query::Query;
 pub use selector::{ElementRef, ElementSet, Selector};
 pub use semantics::{NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};

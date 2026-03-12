@@ -2,6 +2,35 @@ use std::path::{Path, PathBuf};
 
 use crate::Snapshot;
 
+/// Snapshot captured to WaterUI's canonical test artifact layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedSnapshot {
+    snapshot: Snapshot,
+    path: PathBuf,
+}
+
+impl CapturedSnapshot {
+    #[must_use]
+    pub fn new(snapshot: Snapshot, path: PathBuf) -> Self {
+        Self { snapshot, path }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (Snapshot, PathBuf) {
+        (self.snapshot, self.path)
+    }
+}
+
 /// Centralized artifact output helper for WaterUI tests.
 #[derive(Debug, Clone)]
 pub struct TestArtifacts {
@@ -34,6 +63,20 @@ impl TestArtifacts {
         self.case_dir(case).join(format!("{}.png", stage.as_ref()))
     }
 
+    /// Saves one snapshot and returns both the pixels and canonical artifact path.
+    pub fn capture_snapshot(
+        &self,
+        case: impl AsRef<str>,
+        stage: impl AsRef<str>,
+        snapshot: Snapshot,
+    ) -> CapturedSnapshot {
+        let path = self.snapshot_path(case, stage);
+        snapshot
+            .save_png(&path)
+            .expect("TestArtifacts::capture_snapshot: snapshot PNG should be writable");
+        CapturedSnapshot::new(snapshot, path)
+    }
+
     /// Saves one snapshot using WaterUI's canonical artifact layout.
     pub fn save_snapshot(
         &self,
@@ -41,11 +84,9 @@ impl TestArtifacts {
         stage: impl AsRef<str>,
         snapshot: &Snapshot,
     ) -> PathBuf {
-        let path = self.snapshot_path(case, stage);
-        snapshot
-            .save_png(&path)
-            .expect("TestArtifacts::save_snapshot: snapshot PNG should be writable");
-        path
+        self.capture_snapshot(case, stage, snapshot.clone())
+            .into_parts()
+            .1
     }
 }
 

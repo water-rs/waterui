@@ -3,6 +3,8 @@ use std::path::Path;
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
 use waterui_core::{Environment, View};
 
+use crate::artifacts::{CapturedSnapshot, TestArtifacts};
+
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -116,6 +118,34 @@ impl TestHost {
             height: self.height.max(1),
             rgba8,
         }
+    }
+
+    /// Renders a view, stores the PNG in the canonical artifact layout, and returns both.
+    pub fn capture_snapshot_with<V: View>(
+        &self,
+        view: V,
+        artifacts: &TestArtifacts,
+        case: impl AsRef<str>,
+        stage: impl AsRef<str>,
+    ) -> CapturedSnapshot {
+        artifacts.capture_snapshot(case, stage, self.render(view))
+    }
+    /// Creates a canonical artifact helper rooted at the provided suite.
+    #[must_use]
+    pub fn artifacts(&self, suite: impl AsRef<str>) -> TestArtifacts {
+        TestArtifacts::new(suite.as_ref())
+    }
+
+    /// Renders a view and stores the resulting snapshot in WaterUI's canonical artifact layout.
+    pub fn capture_snapshot<V: View>(
+        &self,
+        view: V,
+        suite: impl AsRef<str>,
+        case: impl AsRef<str>,
+        stage: impl AsRef<str>,
+    ) -> CapturedSnapshot {
+        let artifacts = self.artifacts(suite);
+        artifacts.capture_snapshot(case, stage, self.render(view))
     }
 }
 
