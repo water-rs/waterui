@@ -77,6 +77,8 @@ struct GpuState {
     gesture: GestureState,
     pan_active: bool,
     last_pinch_update: Option<Instant>,
+    start_time: Instant,
+    last_frame_time: Instant,
     redraw_handle: RedrawHandle,
     env: Environment,
 
@@ -88,6 +90,8 @@ impl GpuState {
     fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
         let msaa_max_samples = gpu_surface.get_msaa_max_samples().get();
         Self {
+            start_time: Instant::now(),
+            last_frame_time: Instant::now() - Duration::from_secs_f32(1.0 / 60.0),
             gpu_surface: Some(gpu_surface),
             msaa_max_samples,
             wgpu_instance: None,
@@ -606,6 +610,8 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         mut gpu_surface,
         pointer,
         gesture,
+        elapsed,
+        delta,
         glow,
         redraw_handle,
     ) = {
@@ -642,6 +648,13 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             return false;
         };
 
+        let now = Instant::now();
+        let elapsed = now.duration_since(st.start_time);
+        let delta = now
+            .duration_since(st.last_frame_time)
+            .min(Duration::from_millis(100));
+        st.last_frame_time = now;
+
         (
             device,
             queue,
@@ -650,6 +663,8 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             gpu_surface,
             st.pointer,
             st.gesture,
+            elapsed,
+            delta,
             glow,
             st.redraw_handle.clone(),
         )
@@ -716,6 +731,8 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         size.height,
         pointer,
         gesture,
+        elapsed,
+        delta,
     );
 
     // Let the WaterUI renderer submit work.
