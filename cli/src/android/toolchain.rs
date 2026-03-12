@@ -18,7 +18,7 @@ use crate::{
         linux::{has_supported_package_manager, install_java_jdk},
         winget::{WingetInstallError, ensure_package_installed},
     },
-    utils::{command, run_command, which},
+    utils::{command, run_command, run_command_output_os, which},
 };
 
 /// Complete Android toolchain including SDK, platforms, NDK, Rust targets, platform-tools, Java, and CMake.
@@ -64,6 +64,17 @@ pub struct Java;
 /// Kotlin toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
 pub struct Kotlin;
+
+const fn is_linux_arm_host() -> bool {
+    cfg!(target_os = "linux")
+        && (cfg!(target_arch = "aarch64")
+            || cfg!(target_arch = "arm")
+            || cfg!(target_arch = "arm64ec"))
+}
+
+fn android_linux_arm_manual_suggestion() -> &'static str {
+    "Automatic Android SDK/NDK installation is disabled on ARM Linux hosts. Provide compatible Android tools manually, or use an x86_64 Linux/macOS/Windows host for Android builds."
+}
 
 /// Host-specific Android Studio installation guidance.
 #[must_use]
@@ -1048,11 +1059,20 @@ impl Toolchain for AndroidPlatformTools {
     type Installation = AndroidPlatformToolsInstallation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if AndroidSdk::adb_path().is_some() {
-            return Ok(());
+        if let Some(adb_path) = AndroidSdk::adb_path() {
+            return verify_android_platform_tools_executable(&adb_path).await;
         }
 
-        if AndroidSdk::sdkmanager_path().await.is_some() {
+        if is_linux_arm_host() {
+            Err(ToolchainError::unfixable(
+                "Android Platform-Tools (`adb`) is missing on this ARM Linux host",
+                format!(
+                    "{} {}",
+                    android_platform_tools_suggestion(),
+                    android_linux_arm_manual_suggestion()
+                ),
+            ))
+        } else if AndroidSdk::sdkmanager_path().await.is_some() {
             Err(ToolchainError::fixable(AndroidPlatformToolsInstallation))
         } else {
             Err(ToolchainError::unfixable(
@@ -1346,6 +1366,169 @@ fn detect_windows_jdk_java_path() -> Option<PathBuf> {
         .collect::<Vec<_>>();
     matches.sort();
     matches.pop()
+}
+
+async fn verify_android_platform_tools_executable(
+    adb_path: &Path,
+) -> Result<(), ToolchainError<AndroidPlatformToolsInstallation>> {
+    let output = run_command_output_os(adb_path, ["version"]).await.map_err(|error| {
+        ToolchainError::unfixable(
+            format!(
+                "Android Platform-Tools (`adb`) exists but failed to spawn on this host: {error}"
+            ),
+            format!(
+                "Ensure the Android Platform-Tools binary at `{}` can start on this host, then retry `water doctor`.",
+                adb_path.display()
+            ),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_owned()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_owned()
+    } else {
+        format!("exit status {}", output.status)
+    };
+    let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
+        String::from(
+            "This host cannot execute the downloaded Android Platform-Tools binary. Install a compatible ARM Linux adb manually, or use an x86_64 Linux/macOS/Windows host for Android run/package workflows.",
+        )
+    } else {
+        format!(
+            "Ensure the Android Platform-Tools binary at `{}` can execute on this host, then retry `water doctor`.",
+            adb_path.display()
+        )
+    };
+    Err(ToolchainError::unfixable(
+        format!(
+            "Android Platform-Tools (`adb`) exists but failed to execute on this host: {detail}"
+        ),
+        suggestion,
+    ))
+}
+
+async fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+    let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
+    let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    for candidate in candidates {
+        let clang = candidate.join("bin").join(if cfg!(target_os = "windows") {
+            "aarch64-linux-android24-clang.cmd"
+        } else {
+            "aarch64-linux-android24-clang"
+        });
+        if clang.exists() {
+            return Some(clang);
+        }
+    }
+
+    None
+}
+
+async fn verify_ndk_host_toolchain_executable(
+    ndk_path: &Path,
+) -> Result<(), ToolchainError<AndroidNdkInstallation>> {
+    let clang_path = ndk_host_clang_path(ndk_path).await.ok_or_else(|| {
+        ToolchainError::unfixable(
+            "Android NDK toolchain is incomplete (`clang` was not found under toolchains/llvm/prebuilt).",
+            android_ndk_install_suggestion(),
+        )
+    })?;
+
+    let probe_source = std::env::temp_dir().join("waterui_android_ndk_probe.c");
+    {
+        let probe_source_for_write = probe_source.clone();
+        smol::unblock(move || {
+            std::fs::write(&probe_source_for_write, b"int main(void) { return 0; }
+")
+        })
+        .await
+        .map_err(|error| {
+            ToolchainError::unfixable(
+                format!(
+                    "Failed to create Android NDK probe source at {}: {error}",
+                    probe_source.display()
+                ),
+                "Ensure the temporary directory is writable, then retry `water doctor`.",
+            )
+        })?;
+    }
+
+    let probe_output = if cfg!(target_os = "windows") {
+        PathBuf::from("NUL")
+    } else {
+        PathBuf::from("/dev/null")
+    };
+    let result = run_command_output_os(
+        &clang_path,
+        [
+            OsString::from("-x"),
+            OsString::from("c"),
+            OsString::from("-c"),
+            probe_source.clone().into_os_string(),
+            OsString::from("-o"),
+            probe_output.into_os_string(),
+        ],
+    )
+    .await;
+    {
+        let probe_source = probe_source.clone();
+        let _ = smol::unblock(move || std::fs::remove_file(&probe_source)).await;
+    }
+    let output = result.map_err(|error| {
+        ToolchainError::unfixable(
+            format!(
+                "Android NDK toolchain exists but failed to spawn on this host: {error}"
+            ),
+            format!(
+                "Ensure the Android NDK toolchain binary `{}` can start on this host, then retry packaging.",
+                clang_path.display()
+            ),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_owned()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_owned()
+    } else {
+        format!("exit status {}", output.status)
+    };
+    let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
+        String::from(
+            "This host cannot execute the NDK's x86_64 Linux toolchain binaries. Use an x86_64 Linux machine/VM, or install x86_64 userland emulation/runtime support so the Android clang executable can run.",
+        )
+    } else {
+        format!(
+            "Ensure the Android NDK toolchain binaries under `{}` can execute on this host, then retry packaging.",
+            clang_path.display()
+        )
+    };
+    Err(ToolchainError::unfixable(
+        format!(
+            "Android NDK toolchain exists but failed to execute on this host: {detail}"
+        ),
+        suggestion,
+    ))
 }
 
 impl Java {
@@ -1719,7 +1902,7 @@ impl Toolchain for AndroidNdk {
         if let Some(ndk_path) = Self::detect_path() {
             let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
             if llvm_dir.exists() {
-                return Ok(());
+                return verify_ndk_host_toolchain_executable(&ndk_path).await;
             }
 
             if AndroidSdk::sdkmanager_path().await.is_some() {
@@ -1732,7 +1915,16 @@ impl Toolchain for AndroidNdk {
             ));
         }
 
-        if AndroidSdk::sdkmanager_path().await.is_some() {
+        if is_linux_arm_host() {
+            Err(ToolchainError::unfixable(
+                "Android NDK is missing on this ARM Linux host",
+                format!(
+                    "{} {}",
+                    android_ndk_install_suggestion(),
+                    android_linux_arm_manual_suggestion()
+                ),
+            ))
+        } else if AndroidSdk::sdkmanager_path().await.is_some() {
             Err(ToolchainError::fixable(AndroidNdkInstallation))
         } else {
             Err(ToolchainError::unfixable(
