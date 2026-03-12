@@ -11,7 +11,7 @@ use crate::renderer::HydrolysisRenderer;
 
 /// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
 pub struct HydrolysisViewRenderer {
-    surface: RefCell<OffscreenSurface>,
+    surface: RefCell<Option<OffscreenSurface>>,
 }
 
 impl core::fmt::Debug for HydrolysisViewRenderer {
@@ -25,11 +25,7 @@ impl HydrolysisViewRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            surface: RefCell::new(OffscreenSurface::new_blocking(
-                1,
-                1,
-                wgpu::TextureFormat::Rgba8Unorm,
-            )),
+            surface: RefCell::new(None),
         }
     }
 }
@@ -51,7 +47,10 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let height = size.height.max(1.0).round() as u32;
 
-        let mut surface = self.surface.borrow_mut();
+        let mut surface_guard = self.surface.borrow_mut();
+        let surface = surface_guard.get_or_insert_with(|| {
+            OffscreenSurface::new_blocking(1, 1, wgpu::TextureFormat::Rgba8Unorm)
+        });
         surface.resize(width, height);
         let frame = surface
             .acquire()
