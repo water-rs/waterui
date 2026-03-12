@@ -5,7 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, env::with, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Layout, LazyContainer, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    ViewDimensions,
     container::FixedContainer,
     stack::{Axis, VerticalAlignment},
 };
@@ -66,11 +67,19 @@ impl Default for HStackLayout {
 
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
-    size: Size,
+    dimensions: ViewDimensions,
     stretch_axis: StretchAxis,
 }
 
 impl ChildMeasurement {
+    const fn size(&self) -> Size {
+        self.dimensions.size
+    }
+
+    fn vertical_guide(&self, alignment: VerticalAlignment) -> f32 {
+        self.dimensions.vertical(alignment)
+    }
+
     /// Returns true if this child stretches horizontally (for `HStack` width distribution).
     /// In `HStack` context:
     /// - `MainAxis` means horizontal (`HStack`'s main axis)
@@ -90,6 +99,41 @@ impl ChildMeasurement {
             self.stretch_axis,
             StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
         )
+    }
+}
+
+fn hstack_intrinsic_cross_metrics(
+    measurements: &[ChildMeasurement],
+    alignment: VerticalAlignment,
+) -> (f32, f32) {
+    let mut max_above = 0.0_f32;
+    let mut max_below = 0.0_f32;
+
+    for measurement in measurements.iter().filter(|m| !m.stretches_cross_axis()) {
+        let size = measurement.size();
+        let guide = measurement
+            .vertical_guide(alignment)
+            .clamp(0.0, size.height);
+        max_above = max_above.max(guide);
+        max_below = max_below.max((size.height - guide).max(0.0));
+    }
+
+    (max_above, max_below)
+}
+
+fn hstack_container_guide_offset(
+    bounds: Rect,
+    alignment: VerticalAlignment,
+    intrinsic_above: f32,
+) -> f32 {
+    if alignment == VerticalAlignment::Top {
+        0.0
+    } else if alignment == VerticalAlignment::Bottom {
+        bounds.height()
+    } else if alignment == VerticalAlignment::Center {
+        bounds.height() * 0.5
+    } else {
+        intrinsic_above
     }
 }
 
@@ -117,7 +161,7 @@ impl Layout for HStackLayout {
         let mut measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(intrinsic_proposal),
+                dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -135,16 +179,12 @@ impl Layout for HStackLayout {
         let main_axis_stretch_count = main_axis_stretch_indices.len();
 
         let intrinsic_width_all: f32 =
-            measurements.iter().map(|m| m.size.width).sum::<f32>() + total_spacing;
+            measurements.iter().map(|m| m.size().width).sum::<f32>() + total_spacing;
 
         if is_min_size_query {
-            let max_height = measurements
-                .iter()
-                .filter(|m| !m.stretches_cross_axis())
-                .map(|m| m.size.height)
-                .max_by(f32::total_cmp)
-                .unwrap_or(0.0);
-            return Size::new(intrinsic_width_all, max_height);
+            let (max_above, max_below) =
+                hstack_intrinsic_cross_metrics(&measurements, self.alignment);
+            return Size::new(intrinsic_width_all, max_above + max_below);
         }
 
         // Intrinsic width used when the parent doesn't constrain width.
@@ -178,7 +218,7 @@ impl Layout for HStackLayout {
 
         let fixed_width: f32 = fixed_indices
             .iter()
-            .map(|&idx| measurements[idx].size.width)
+            .map(|&idx| measurements[idx].size().width)
             .sum();
 
         if proposal.width.is_some()
@@ -193,9 +233,9 @@ impl Layout for HStackLayout {
             let mut compress_indices = fixed_indices;
             compress_indices.sort_by(|&a, &b| {
                 measurements[b]
-                    .size
+                    .size()
                     .width
-                    .total_cmp(&measurements[a].size.width)
+                    .total_cmp(&measurements[a].size().width)
             });
 
             // Compress largest children first until we fit
@@ -205,7 +245,7 @@ impl Layout for HStackLayout {
                     break;
                 }
 
-                let current_width = measurements[idx].size.width;
+                let current_width = measurements[idx].size().width;
                 // Don't compress below a minimum (e.g., 20px for very small labels)
                 let min_width = 20.0_f32.min(current_width);
                 let max_reduction = current_width - min_width;
@@ -214,7 +254,7 @@ impl Layout for HStackLayout {
                 if reduction > 0.0 {
                     let new_width = current_width - reduction;
                     let constrained_proposal = ProposalSize::new(Some(new_width), proposal.height);
-                    measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
+                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
                     remaining_overflow -= reduction;
                 }
             }
@@ -227,7 +267,7 @@ impl Layout for HStackLayout {
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| !m.stretches_main_axis())
-                .map(|(_, m)| m.size.width)
+                .map(|(_, m)| m.size().width)
                 .sum();
 
             let remaining_width = (available_for_children - fixed_width).max(0.0);
@@ -235,20 +275,17 @@ impl Layout for HStackLayout {
 
             for idx in main_axis_stretch_indices {
                 let constrained_proposal = ProposalSize::new(Some(stretch_width), proposal.height);
-                measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
-                measurements[idx].size.width = measurements[idx].size.width.min(stretch_width);
+                measurements[idx].dimensions = children[idx].measure(constrained_proposal);
+                measurements[idx].dimensions.size.width =
+                    measurements[idx].size().width.min(stretch_width);
             }
         }
 
         // Height: max of all children (after re-measurement for proper wrapped height)
         // Important: Do NOT cap height to proposal - if text wraps, we need the full height
         // Note: cross-axis-stretching children don't contribute to intrinsic height
-        let max_height = measurements
-            .iter()
-            .filter(|m| !m.stretches_cross_axis())
-            .map(|m| m.size.height)
-            .max_by(f32::total_cmp)
-            .unwrap_or(0.0);
+        let (max_above, max_below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let max_height = max_above + max_below;
 
         Size::new(final_width, max_height)
     }
@@ -272,7 +309,7 @@ impl Layout for HStackLayout {
         let mut measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(intrinsic_proposal),
+                dimensions: child.measure(intrinsic_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -299,7 +336,7 @@ impl Layout for HStackLayout {
 
         let fixed_width: f32 = fixed_indices
             .iter()
-            .map(|&idx| measurements[idx].size.width)
+            .map(|&idx| measurements[idx].size().width)
             .sum();
 
         // Check if we need to compress children (when fixed children don't fit)
@@ -313,9 +350,9 @@ impl Layout for HStackLayout {
             let mut compress_indices = fixed_indices;
             compress_indices.sort_by(|&a, &b| {
                 measurements[b]
-                    .size
+                    .size()
                     .width
-                    .total_cmp(&measurements[a].size.width)
+                    .total_cmp(&measurements[a].size().width)
             });
 
             // Compress largest children first until we fit
@@ -325,7 +362,7 @@ impl Layout for HStackLayout {
                     break;
                 }
 
-                let current_width = measurements[idx].size.width;
+                let current_width = measurements[idx].size().width;
                 // Don't compress below a minimum (keep small labels readable)
                 let min_width = 20.0_f32.min(current_width);
                 let max_reduction = current_width - min_width;
@@ -335,8 +372,9 @@ impl Layout for HStackLayout {
                     let new_width = current_width - reduction;
                     let constrained_proposal =
                         ProposalSize::new(Some(new_width), Some(bounds.height()));
-                    measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
-                    measurements[idx].size.width = measurements[idx].size.width.min(new_width);
+                    measurements[idx].dimensions = children[idx].measure(constrained_proposal);
+                    measurements[idx].dimensions.size.width =
+                        measurements[idx].size().width.min(new_width);
                     remaining_overflow -= reduction;
                 }
             }
@@ -347,7 +385,7 @@ impl Layout for HStackLayout {
             .iter()
             .enumerate()
             .filter(|(_, m)| !m.stretches_main_axis())
-            .map(|(_, m)| m.size.width)
+            .map(|(_, m)| m.size().width)
             .sum();
 
         let remaining_width = (available_width - actual_fixed_width).max(0.0);
@@ -362,10 +400,16 @@ impl Layout for HStackLayout {
             for idx in &main_axis_stretch_indices {
                 let constrained_proposal =
                     ProposalSize::new(Some(stretch_width), Some(bounds.height()));
-                measurements[*idx].size = children[*idx].size_that_fits(constrained_proposal);
-                measurements[*idx].size.width = measurements[*idx].size.width.min(stretch_width);
+                measurements[*idx].dimensions = children[*idx].measure(constrained_proposal);
+                measurements[*idx].dimensions.size.width =
+                    measurements[*idx].size().width.min(stretch_width);
             }
         }
+
+        let (intrinsic_above, _intrinsic_below) =
+            hstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let guide_line =
+            bounds.y() + hstack_container_guide_offset(bounds, self.alignment, intrinsic_above);
 
         // Place children
         let mut rects = Vec::with_capacity(children.len());
@@ -380,22 +424,32 @@ impl Layout for HStackLayout {
             let child_height = if measurement.stretches_cross_axis() {
                 // CrossAxis in HStack means expand vertically to full bounds height
                 bounds.height()
-            } else if measurement.size.height.is_infinite() {
+            } else if measurement.size().height.is_infinite() {
                 bounds.height()
             } else {
-                measurement.size.height.min(bounds.height())
+                measurement.size().height.min(bounds.height())
             };
 
             let child_width = if measurement.stretches_main_axis() {
                 stretch_width
             } else {
-                measurement.size.width
+                measurement.size().width
             };
 
-            let y = match self.alignment {
-                VerticalAlignment::Top => bounds.y(),
-                VerticalAlignment::Center => bounds.y() + (bounds.height() - child_height) / 2.0,
-                VerticalAlignment::Bottom => bounds.y() + bounds.height() - child_height,
+            let mut adjusted_dimensions = measurement.dimensions.clone();
+            adjusted_dimensions.size = Size::new(child_width, child_height);
+
+            let y = if measurement.stretches_cross_axis() {
+                bounds.y()
+            } else if self.alignment == VerticalAlignment::Top {
+                bounds.y()
+            } else if self.alignment == VerticalAlignment::Bottom {
+                bounds.y() + bounds.height() - child_height
+            } else {
+                let guide = adjusted_dimensions
+                    .vertical(self.alignment)
+                    .clamp(0.0, child_height);
+                guide_line - guide
             };
 
             let rect = Rect::new(
@@ -408,6 +462,29 @@ impl Layout for HStackLayout {
         }
 
         rects
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == VerticalAlignment::LastBaseline {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .max_by(f32::total_cmp);
+        }
+
+        if alignment == VerticalAlignment::FirstBaseline || alignment == self.alignment {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_vertical(alignment))
+                .min_by(f32::total_cmp);
+        }
+
+        None
     }
 }
 
@@ -489,8 +566,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis
@@ -508,14 +585,14 @@ mod tests {
     }
 
     impl SubView for ResponsiveSubView {
-        fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-            match proposal.width {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(match proposal.width {
                 Some(width) if width <= self.wrap_at_or_below => {
                     Size::new(width, self.wrapped_height)
                 }
                 Some(width) => Size::new(width, self.intrinsic.height),
                 None => self.intrinsic,
-            }
+            })
         }
 
         fn stretch_axis(&self) -> StretchAxis {

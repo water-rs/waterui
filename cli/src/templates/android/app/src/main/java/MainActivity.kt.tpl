@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import dev.waterui.android.runtime.WaterUiRootView
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
+import java.io.File
 import java.lang.Runtime
 
 class MainActivity : AppCompatActivity() {
@@ -113,6 +114,46 @@ class MainActivity : AppCompatActivity() {
                 System.loadLibrary(name)
             }
         }
+
+        private fun syncBundledAssets(activity: AppCompatActivity): File {
+            val assetRoot = File(activity.filesDir, "waterui_assets")
+            val stampAsset = "waterui_assets/.waterui-sync-stamp"
+            val bundledStamp = try {
+                activity.assets.open(stampAsset).bufferedReader().use { it.readText() }
+            } catch (_: Exception) {
+                assetRoot.mkdirs()
+                return assetRoot
+            }
+
+            val localStamp = File(assetRoot, ".waterui-sync-stamp")
+                .takeIf { it.exists() }
+                ?.readText()
+            if (localStamp == bundledStamp) {
+                return assetRoot
+            }
+
+            assetRoot.deleteRecursively()
+            assetRoot.mkdirs()
+            copyAssetTree(activity, "waterui_assets", assetRoot)
+            File(assetRoot, ".waterui-sync-stamp").writeText(bundledStamp)
+            return assetRoot
+        }
+
+        private fun copyAssetTree(activity: AppCompatActivity, assetPath: String, dest: File) {
+            val children = activity.assets.list(assetPath)?.filter { it.isNotEmpty() }.orEmpty()
+            if (children.isEmpty()) {
+                dest.parentFile?.mkdirs()
+                activity.assets.open(assetPath).use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                return
+            }
+
+            dest.mkdirs()
+            for (child in children) {
+                copyAssetTree(activity, "$assetPath/$child", File(dest, child))
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -120,6 +161,9 @@ class MainActivity : AppCompatActivity() {
 
         // Register custom fonts from dependencies
         WaterUIFonts.register(this)
+
+        val assetsRoot = syncBundledAssets(this)
+        Os.setenv("WATERUI_ASSETS_ROOT", assetsRoot.absolutePath, true)
 
         setupEnvironmentFromIntent(intent)
         setupEnvironmentFromProperties()

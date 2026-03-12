@@ -6,10 +6,19 @@ pub mod url;
 pub use url::Url;
 
 pub mod video;
-pub use video::{AspectRatio, Event, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume};
+pub use video::{
+    AspectRatio, Event, PlaybackPolicy, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume,
+};
 
-#[cfg(target_os = "android")]
 mod runtime_player;
+
+/// Installs the Rust/GPU video player hooks into the provided environment.
+///
+/// This forces `Video` / `VideoPlayer` to render through the WaterUI
+/// `GpuSurface` playback pipeline.
+pub fn install_rust_player_hooks(env: &mut Environment) {
+    runtime_player::install_platform_hooks(env);
+}
 
 /// Installs platform video hooks into the provided environment.
 ///
@@ -18,11 +27,13 @@ mod runtime_player;
 pub fn install_platform_hooks(env: &mut Environment) {
     #[cfg(target_os = "android")]
     {
-        runtime_player::install_platform_hooks(env);
+        install_rust_player_hooks(env);
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = env;
+        if std::env::var_os("WATERUI_VIDEO_FORCE_RUST_PLAYER").is_some() {
+            install_rust_player_hooks(env);
+        }
     }
 }

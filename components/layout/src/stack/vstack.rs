@@ -5,9 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, env::with, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Layout, LazyContainer, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    container::FixedContainer,
-    stack::{Axis, HorizontalAlignment},
+    HorizontalAlignment, Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, ViewDimensions, container::FixedContainer, stack::Axis,
 };
 
 /// Layout engine shared by the public [`VStack`] view.
@@ -21,11 +20,19 @@ pub struct VStackLayout {
 
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
-    size: Size,
+    dimensions: ViewDimensions,
     stretch_axis: StretchAxis,
 }
 
 impl ChildMeasurement {
+    const fn size(&self) -> Size {
+        self.dimensions.size
+    }
+
+    fn horizontal_guide(&self, alignment: HorizontalAlignment) -> f32 {
+        self.dimensions.horizontal(alignment)
+    }
+
     /// Returns true if this child stretches vertically (for `VStack` height distribution).
     /// In `VStack` context:
     /// - `MainAxis` means vertical (`VStack`'s main axis)
@@ -48,6 +55,45 @@ impl ChildMeasurement {
     }
 }
 
+fn vstack_intrinsic_cross_metrics(
+    measurements: &[ChildMeasurement],
+    alignment: HorizontalAlignment,
+    include_cross_axis_stretch: bool,
+) -> (f32, f32) {
+    let mut max_leading = 0.0_f32;
+    let mut max_trailing = 0.0_f32;
+
+    for measurement in measurements
+        .iter()
+        .filter(|m| include_cross_axis_stretch || !m.stretches_cross_axis())
+    {
+        let size = measurement.size();
+        let guide = measurement
+            .horizontal_guide(alignment)
+            .clamp(0.0, size.width);
+        max_leading = max_leading.max(guide);
+        max_trailing = max_trailing.max((size.width - guide).max(0.0));
+    }
+
+    (max_leading, max_trailing)
+}
+
+fn vstack_container_guide_offset(
+    bounds: Rect,
+    alignment: HorizontalAlignment,
+    intrinsic_leading: f32,
+) -> f32 {
+    if alignment == HorizontalAlignment::Leading {
+        0.0
+    } else if alignment == HorizontalAlignment::Trailing {
+        bounds.width()
+    } else if alignment == HorizontalAlignment::Center {
+        bounds.width() * 0.5
+    } else {
+        intrinsic_leading
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -61,7 +107,7 @@ impl Layout for VStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(child_proposal),
+                dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -76,7 +122,7 @@ impl Layout for VStackLayout {
         let non_stretch_height: f32 = measurements
             .iter()
             .filter(|m| !m.stretches_main_axis())
-            .map(|m| m.size.height)
+            .map(|m| m.size().height)
             .sum();
 
         let total_spacing = if children.len() > 1 {
@@ -96,12 +142,9 @@ impl Layout for VStackLayout {
         // to ensure container can't shrink below any child's minimum.
         // Otherwise, exclude cross-axis stretching children from intrinsic width calculation.
         let is_min_size_query = proposal.width == Some(0.0);
-        let max_width = measurements
-            .iter()
-            .filter(|m| is_min_size_query || !m.stretches_cross_axis())
-            .map(|m| m.size.width)
-            .max_by(f32::total_cmp)
-            .unwrap_or(0.0);
+        let (max_leading, max_trailing) =
+            vstack_intrinsic_cross_metrics(&measurements, self.alignment, is_min_size_query);
+        let max_width = max_leading + max_trailing;
 
         // VStack stretches horizontally (cross-axis), so use proposed width when available
         // (unless it's a min-size query where we want the minimum required width)
@@ -125,7 +168,7 @@ impl Layout for VStackLayout {
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                size: child.size_that_fits(child_proposal),
+                dimensions: child.measure(child_proposal),
                 stretch_axis: child.stretch_axis(),
             })
             .collect();
@@ -138,7 +181,7 @@ impl Layout for VStackLayout {
         let non_stretch_height: f32 = measurements
             .iter()
             .filter(|m| !m.stretches_main_axis())
-            .map(|m| m.size.height)
+            .map(|m| m.size().height)
             .sum();
 
         let total_spacing = if children.len() > 1 {
@@ -154,6 +197,11 @@ impl Layout for VStackLayout {
             0.0
         };
 
+        let (intrinsic_leading, _intrinsic_trailing) =
+            vstack_intrinsic_cross_metrics(&measurements, self.alignment, false);
+        let guide_line =
+            bounds.x() + vstack_container_guide_offset(bounds, self.alignment, intrinsic_leading);
+
         // Place children
         let mut rects = Vec::with_capacity(children.len());
         let mut current_y = bounds.y();
@@ -167,23 +215,33 @@ impl Layout for VStackLayout {
             let child_width = if measurement.stretches_cross_axis() {
                 // CrossAxis in VStack means expand horizontally to full bounds width
                 bounds.width()
-            } else if measurement.size.width.is_infinite() {
+            } else if measurement.size().width.is_infinite() {
                 bounds.width()
             } else {
                 // Clamp child width to bounds - child can't be wider than container
-                measurement.size.width.min(bounds.width())
+                measurement.size().width.min(bounds.width())
             };
 
             let child_height = if measurement.stretches_main_axis() {
                 stretch_height
             } else {
-                measurement.size.height
+                measurement.size().height
             };
 
-            let x = match self.alignment {
-                HorizontalAlignment::Leading => bounds.x(),
-                HorizontalAlignment::Center => bounds.x() + (bounds.width() - child_width) / 2.0,
-                HorizontalAlignment::Trailing => bounds.x() + bounds.width() - child_width,
+            let mut adjusted_dimensions = measurement.dimensions.clone();
+            adjusted_dimensions.size = Size::new(child_width, child_height);
+
+            let x = if measurement.stretches_cross_axis() {
+                bounds.x()
+            } else if self.alignment == HorizontalAlignment::Leading {
+                bounds.x()
+            } else if self.alignment == HorizontalAlignment::Trailing {
+                bounds.x() + bounds.width() - child_width
+            } else {
+                let guide = adjusted_dimensions
+                    .horizontal(self.alignment)
+                    .clamp(0.0, child_width);
+                guide_line - guide
             };
 
             rects.push(Rect::new(
@@ -195,6 +253,22 @@ impl Layout for VStackLayout {
         }
 
         rects
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        if alignment == self.alignment {
+            return children
+                .iter()
+                .filter_map(|child| child.explicit_horizontal(alignment))
+                .min_by(f32::total_cmp);
+        }
+
+        None
     }
 
     /// `VStack` stretches horizontally to fill available width (cross-axis).
@@ -334,8 +408,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             self.stretch_axis

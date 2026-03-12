@@ -46,9 +46,10 @@ fn token_fade_animation(stream_cps: i32, enabled: bool) -> Option<Animation> {
 
 fn normalized_document_index(index: i32) -> usize {
     let count = MARKDOWN_DOCUMENTS.len();
-    if count == 0 {
-        panic!("flow-markdown-e2e requires at least one markdown document");
-    }
+    assert!(
+        !(count == 0),
+        "flow-markdown-e2e requires at least one markdown document"
+    );
 
     index.rem_euclid(count as i32) as usize
 }
@@ -110,9 +111,10 @@ fn start_character_stream(
         .char_indices()
         .map(|(start, ch)| start + ch.len_utf8())
         .collect();
-    if char_end_offsets.is_empty() {
-        panic!("flow-markdown-e2e markdown document must not be empty");
-    }
+    assert!(
+        !(char_end_offsets.is_empty()),
+        "flow-markdown-e2e markdown document must not be empty"
+    );
 
     spawn_local(async move {
         for (index, end_offset) in char_end_offsets.into_iter().enumerate() {

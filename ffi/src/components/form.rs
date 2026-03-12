@@ -16,7 +16,7 @@ use waterui::{
 };
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
-use waterui_form::picker::date::{Date, DatePickerConfig, DatePickerType, Month};
+use waterui_form::picker::date::{Date, DatePickerConfig, DatePickerType, Month, PrimitiveDateTime, Time};
 use waterui_form::picker::{PickerConfig, PickerItem, PickerStyle};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
@@ -182,6 +182,24 @@ pub struct WuiDate {
     pub day: u8,
 }
 
+/// C-compatible date-time representation with second precision.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiDateTime {
+    /// Year (e.g., 2024)
+    pub year: i32,
+    /// Month (1-12)
+    pub month: u8,
+    /// Day of month (1-31)
+    pub day: u8,
+    /// Hour of day (0-23)
+    pub hour: u8,
+    /// Minute of hour (0-59)
+    pub minute: u8,
+    /// Second of minute (0-59)
+    pub second: u8,
+}
+
 impl IntoFFI for Date {
     type FFI = WuiDate;
     fn into_ffi(self) -> Self::FFI {
@@ -189,6 +207,20 @@ impl IntoFFI for Date {
             year: self.year(),
             month: self.month() as u8,
             day: self.day(),
+        }
+    }
+}
+
+impl IntoFFI for PrimitiveDateTime {
+    type FFI = WuiDateTime;
+    fn into_ffi(self) -> Self::FFI {
+        WuiDateTime {
+            year: self.year(),
+            month: self.month() as u8,
+            day: self.day(),
+            hour: self.hour(),
+            minute: self.minute(),
+            second: self.second(),
         }
     }
 }
@@ -207,8 +239,39 @@ impl crate::IntoRust for WuiDate {
     }
 }
 
+impl crate::IntoRust for WuiDateTime {
+    type Rust = PrimitiveDateTime;
+    unsafe fn into_rust(self) -> Self::Rust {
+        let month = Month::try_from(self.month)
+            .expect("invalid month received from native DatePicker FFI bridge");
+        let date = Date::from_calendar_date(self.year, month, self.day).unwrap_or_else(|_| {
+            panic!(
+                "invalid date received from native DatePicker FFI bridge: year={}, month={}, day={}",
+                self.year, self.month, self.day
+            )
+        });
+        let time = Time::from_hms(self.hour, self.minute, self.second).unwrap_or_else(|_| {
+            panic!(
+                "invalid time received from native DatePicker FFI bridge: hour={}, minute={}, second={}",
+                self.hour, self.minute, self.second
+            )
+        });
+        PrimitiveDateTime::new(date, time)
+    }
+}
+
 impl IntoFFI for core::ops::RangeInclusive<Date> {
     type FFI = WuiRange<WuiDate>;
+    fn into_ffi(self) -> Self::FFI {
+        WuiRange {
+            start: (*self.start()).into_ffi(),
+            end: (*self.end()).into_ffi(),
+        }
+    }
+}
+
+impl IntoFFI for core::ops::RangeInclusive<PrimitiveDateTime> {
+    type FFI = WuiRange<WuiDateTime>;
     fn into_ffi(self) -> Self::FFI {
         WuiRange {
             start: (*self.start()).into_ffi(),
@@ -228,8 +291,8 @@ into_ffi! {DatePickerType, pub enum WuiDatePickerType {
 into_ffi! {DatePickerConfig,
     pub struct WuiDatePicker {
         label: *mut WuiAnyView,
-        value: *mut WuiBinding<Date>,
-        range: WuiRange<WuiDate>,
+        value: *mut WuiBinding<PrimitiveDateTime>,
+        range: WuiRange<WuiDateTime>,
         ty: WuiDatePickerType,
     }
 }

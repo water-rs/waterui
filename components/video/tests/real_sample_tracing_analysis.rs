@@ -187,9 +187,10 @@ fn build_arrival_timeline(
     if timeline.is_empty() {
         return Vec::new();
     }
-    if !(throughput_ratio.is_finite() && throughput_ratio > 0.0) {
-        panic!("throughput_ratio must be finite and positive");
-    }
+    assert!(
+        !(!(throughput_ratio.is_finite() && throughput_ratio > 0.0)),
+        "throughput_ratio must be finite and positive"
+    );
 
     let mut arrivals = Vec::with_capacity(timeline.len());
     let mut network_clock = Duration::from_millis(base_latency_ms);
@@ -198,11 +199,10 @@ fn build_arrival_timeline(
     for index in 1..timeline.len() {
         let prev = timeline[index - 1].pts;
         let current = timeline[index].pts;
-        if current < prev {
-            panic!(
-                "timeline PTS must be monotonic: frame={index}, prev={prev:?}, current={current:?}"
-            );
-        }
+        assert!(
+            !(current < prev),
+            "timeline PTS must be monotonic: frame={index}, prev={prev:?}, current={current:?}"
+        );
 
         let delta_pts = current - prev;
         let transfer_time = delta_pts.mul_f64(1.0 / throughput_ratio);
@@ -215,13 +215,12 @@ fn build_arrival_timeline(
             network_clock = network_clock.saturating_add(Duration::from_millis(spike_ms));
         }
 
-        if network_clock < arrivals[index - 1] {
-            panic!(
-                "network arrival timeline regressed at frame={index}: previous={:?}, current={:?}",
-                arrivals[index - 1],
-                network_clock
-            );
-        }
+        assert!(
+            !(network_clock < arrivals[index - 1]),
+            "network arrival timeline regressed at frame={index}: previous={:?}, current={:?}",
+            arrivals[index - 1],
+            network_clock
+        );
 
         arrivals.push(network_clock);
     }
@@ -234,13 +233,12 @@ fn start_wall_with_buffer(
     arrivals: &[Duration],
     startup_buffer: Duration,
 ) -> Duration {
-    if timeline.len() != arrivals.len() {
-        panic!(
-            "timeline/arrival length mismatch: timeline={}, arrivals={}",
-            timeline.len(),
-            arrivals.len()
-        );
-    }
+    assert!(
+        !(timeline.len() != arrivals.len()),
+        "timeline/arrival length mismatch: timeline={}, arrivals={}",
+        timeline.len(),
+        arrivals.len()
+    );
     if timeline.is_empty() {
         return Duration::ZERO;
     }
