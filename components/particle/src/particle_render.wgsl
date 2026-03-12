@@ -1,3 +1,14 @@
+struct CollisionUniforms {
+    enabled: u32,
+    restitution: f32,
+    surface_friction: f32,
+    obstacle_enabled: u32,
+    bounds: vec4<f32>,
+    obstacle_center: vec2<f32>,
+    obstacle_radius: f32,
+    _pad0: f32,
+}
+
 struct Uniforms {
     time: f32,
     dt: f32,
@@ -12,6 +23,7 @@ struct Uniforms {
     drag: f32,
     stretch_factor: f32,
     softness: f32,
+    collision: CollisionUniforms,
     life_range: vec2<f32>,
     speed_range: vec2<f32>,
     angle_range: vec2<f32>,

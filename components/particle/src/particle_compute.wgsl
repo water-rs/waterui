@@ -12,6 +12,17 @@ struct Particle {
     color: vec4<f32>,
 }
 
+struct CollisionUniforms {
+    enabled: u32,
+    restitution: f32,
+    surface_friction: f32,
+    obstacle_enabled: u32,
+    bounds: vec4<f32>,
+    obstacle_center: vec2<f32>,
+    obstacle_radius: f32,
+    _pad0: f32,
+}
+
 struct Uniforms {
     time: f32,
     dt: f32,
@@ -26,6 +37,7 @@ struct Uniforms {
     drag: f32,
     stretch_factor: f32,
     softness: f32,
+    collision: CollisionUniforms,
     life_range: vec2<f32>,
     speed_range: vec2<f32>,
     angle_range: vec2<f32>,
@@ -75,6 +87,68 @@ fn sample_emitter_offset(seed: ptr<function, u32>) -> vec2<f32> {
     return vec2<f32>(cos(angle), sin(angle)) * radius;
 }
 
+fn apply_bounds_collision(particle: ptr<function, Particle>) {
+    if (uniforms.collision.enabled == 0u) {
+        return;
+    }
+
+    let extent = (*particle).size;
+    let min_bound = uniforms.collision.bounds.xy + vec2<f32>(extent, extent);
+    let max_bound = uniforms.collision.bounds.zw - vec2<f32>(extent, extent);
+
+    if ((*particle).pos.x < min_bound.x) {
+        (*particle).pos.x = min_bound.x;
+        (*particle).vel.x = abs((*particle).vel.x) * uniforms.collision.restitution;
+        (*particle).vel.y *= uniforms.collision.surface_friction;
+    } else if ((*particle).pos.x > max_bound.x) {
+        (*particle).pos.x = max_bound.x;
+        (*particle).vel.x = -abs((*particle).vel.x) * uniforms.collision.restitution;
+        (*particle).vel.y *= uniforms.collision.surface_friction;
+    }
+
+    if ((*particle).pos.y < min_bound.y) {
+        (*particle).pos.y = min_bound.y;
+        (*particle).vel.y = abs((*particle).vel.y) * uniforms.collision.restitution;
+        (*particle).vel.x *= uniforms.collision.surface_friction;
+    } else if ((*particle).pos.y > max_bound.y) {
+        (*particle).pos.y = max_bound.y;
+        (*particle).vel.y = -abs((*particle).vel.y) * uniforms.collision.restitution;
+        (*particle).vel.x *= uniforms.collision.surface_friction;
+    }
+}
+
+fn apply_circle_obstacle_collision(particle: ptr<function, Particle>) {
+    if (uniforms.collision.obstacle_enabled == 0u) {
+        return;
+    }
+
+    let combined_radius = uniforms.collision.obstacle_radius + (*particle).size;
+    let to_particle = (*particle).pos - uniforms.collision.obstacle_center;
+    let distance_sq = dot(to_particle, to_particle);
+    if (distance_sq >= combined_radius * combined_radius) {
+        return;
+    }
+
+    let speed = length((*particle).vel);
+    var normal = vec2<f32>(0.0, -1.0);
+    if (distance_sq > 0.000001) {
+        normal = normalize(to_particle);
+    } else if (speed > 0.0001) {
+        normal = normalize(-(*particle).vel);
+    }
+
+    (*particle).pos = uniforms.collision.obstacle_center + normal * combined_radius;
+
+    let normal_velocity = dot((*particle).vel, normal);
+    if (normal_velocity >= 0.0) {
+        return;
+    }
+
+    let tangent_velocity = (*particle).vel - normal * normal_velocity;
+    (*particle).vel = tangent_velocity * uniforms.collision.surface_friction
+        - normal * normal_velocity * uniforms.collision.restitution;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
@@ -96,6 +170,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         p.pos += p.vel * uniforms.dt;
+        apply_bounds_collision(&p);
+        apply_circle_obstacle_collision(&p);
         p.rotation += p.rot_speed * uniforms.dt;
         p.life -= uniforms.dt;
     } else {

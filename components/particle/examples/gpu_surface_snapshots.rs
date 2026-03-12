@@ -70,6 +70,28 @@ fn explosion_scene() -> ParticleSystem {
         .softness(0.0)
 }
 
+fn bounce_box_scene() -> ParticleSystem {
+    ParticleSystem::new(6_000)
+        .emit_from_circle(0.02)
+        .at(0.5, 0.18)
+        .rate(90_000.0)
+        .life(4.0..6.0)
+        .speed(0.5..1.4)
+        .angle(0.0..PI * 2.0)
+        .size(0.006..0.014)
+        .color(
+            Color::srgb_hex("#85DBFF").with_opacity(0.95),
+            Color::srgb_hex("#2EA4FF").with_opacity(0.2),
+        )
+        .gravity(0.0, 1.4)
+        .turbulence(0.2)
+        .collide_with_rect(0.08, 0.08, 0.84, 0.84)
+        .collide_with_circle_obstacle(0.5, 0.34, 0.08)
+        .bounce(0.82)
+        .surface_friction(0.9)
+        .softness(0.25)
+}
+
 fn composite_over_opaque_background(
     output: &OffscreenRenderOutput,
     background: [u8; 3],
@@ -158,6 +180,13 @@ fn main() {
             height: 600,
             background: [0x00, 0x00, 0x00],
             system: explosion_scene(),
+        },
+        SnapshotSpec {
+            name: "bounce_box",
+            width: 600,
+            height: 600,
+            background: [0x06, 0x14, 0x1F],
+            system: bounce_box_scene(),
         },
     ];
 
