@@ -170,6 +170,20 @@ impl Dynamic {
             DynamicHandlerState::Connected(_) => None,
         }
     }
+
+    /// Mutates the current pre-connection view snapshot before the dynamic node connects.
+    ///
+    /// Returns `None` when the node is already connected to a backend receiver.
+    pub fn with_unconnected_view_mut<R>(
+        &self,
+        f: impl FnOnce(&mut Option<AnyView>) -> R,
+    ) -> Option<R> {
+        let mut state = self.0.0.borrow_mut();
+        match &mut *state {
+            DynamicHandlerState::Unconnected(view) => Some(f(view)),
+            DynamicHandlerState::Connected(_) => None,
+        }
+    }
 }
 
 /// Creates a view that watches a reactive value.

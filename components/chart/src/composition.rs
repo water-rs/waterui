@@ -74,15 +74,15 @@ impl<T: Clone + PartialEq + 'static> ChartProxy<T> {
 
 #[derive(Clone)]
 pub(crate) struct ChartComposition<T: Clone + PartialEq + 'static> {
-    background: Option<ChartLayerBuilder<T>>,
-    overlay: Option<ChartLayerBuilder<T>>,
+    background: alloc::vec::Vec<ChartLayerBuilder<T>>,
+    overlay: alloc::vec::Vec<ChartLayerBuilder<T>>,
 }
 
 impl<T: Clone + PartialEq + 'static> Default for ChartComposition<T> {
     fn default() -> Self {
         Self {
-            background: None,
-            overlay: None,
+            background: alloc::vec::Vec::new(),
+            overlay: alloc::vec::Vec::new(),
         }
     }
 }
@@ -90,18 +90,18 @@ impl<T: Clone + PartialEq + 'static> Default for ChartComposition<T> {
 impl<T: Clone + PartialEq + 'static> ChartComposition<T> {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.background.is_none() && self.overlay.is_none()
+        self.background.is_empty() && self.overlay.is_empty()
     }
 
     #[must_use]
     pub fn with_background(mut self, builder: impl Fn(ChartProxy<T>) -> AnyView + 'static) -> Self {
-        self.background = Some(Rc::new(builder));
+        self.background.push(Rc::new(builder));
         self
     }
 
     #[must_use]
     pub fn with_overlay(mut self, builder: impl Fn(ChartProxy<T>) -> AnyView + 'static) -> Self {
-        self.overlay = Some(Rc::new(builder));
+        self.overlay.push(Rc::new(builder));
         self
     }
 
@@ -124,11 +124,11 @@ impl<T: Clone + PartialEq + 'static> ChartComposition<T> {
             selection.selected_signal(),
         );
         let mut content = AnyView::new(chart);
-        if let Some(background_builder) = &self.background {
+        for background_builder in &self.background {
             content = AnyView::new(background(content, background_builder(proxy.clone())));
         }
-        if let Some(overlay_builder) = &self.overlay {
-            content = AnyView::new(Overlay::new(content, overlay_builder(proxy)));
+        for overlay_builder in &self.overlay {
+            content = AnyView::new(Overlay::new(content, overlay_builder(proxy.clone())));
         }
         content
     }
@@ -159,6 +159,44 @@ macro_rules! chart_composition_methods {
             self.composition = self
                 .composition
                 .with_overlay(move |proxy| waterui_core::AnyView::new(build(proxy)));
+            self
+        }
+
+        /// Displays a tooltip for the currently focused datum.
+        #[must_use]
+        pub fn focused_tooltip<V, F>(mut self, build: F) -> Self
+        where
+            V: waterui_core::View + 'static,
+            F: Fn(crate::HitResult<$datum>) -> V + 'static,
+        {
+            let build = alloc::rc::Rc::new(move |hit| waterui_core::AnyView::new(build(hit)));
+            self.composition = self.composition.with_overlay(move |proxy| {
+                let build = alloc::rc::Rc::clone(&build);
+                waterui_core::AnyView::new(crate::tooltip::chart_tooltip_overlay(
+                    proxy.focused(),
+                    proxy.chart_frame(),
+                    move |hit| build(hit),
+                ))
+            });
+            self
+        }
+
+        /// Displays a tooltip for the currently selected datum.
+        #[must_use]
+        pub fn selected_tooltip<V, F>(mut self, build: F) -> Self
+        where
+            V: waterui_core::View + 'static,
+            F: Fn(crate::HitResult<$datum>) -> V + 'static,
+        {
+            let build = alloc::rc::Rc::new(move |hit| waterui_core::AnyView::new(build(hit)));
+            self.composition = self.composition.with_overlay(move |proxy| {
+                let build = alloc::rc::Rc::clone(&build);
+                waterui_core::AnyView::new(crate::tooltip::chart_tooltip_overlay(
+                    proxy.selected(),
+                    proxy.chart_frame(),
+                    move |hit| build(hit),
+                ))
+            });
             self
         }
     };
