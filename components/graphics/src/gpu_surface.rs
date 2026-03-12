@@ -11,6 +11,7 @@ use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
@@ -308,6 +309,10 @@ pub struct GpuFrame<'a> {
     /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
     /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
+    /// Elapsed animation time since the surface started rendering.
+    elapsed: Duration,
+    /// Time advanced since the previous frame.
+    delta: Duration,
     /// Internal: set to true when `request_redraw()` is called.
     redraw_requested: bool,
 }
@@ -337,6 +342,8 @@ impl<'a> GpuFrame<'a> {
         height: u32,
         pointer: PointerState,
         gesture: GestureState,
+        elapsed: Duration,
+        delta: Duration,
     ) -> Self {
         Self {
             device,
@@ -348,6 +355,8 @@ impl<'a> GpuFrame<'a> {
             height,
             pointer,
             gesture,
+            elapsed,
+            delta,
             redraw_requested: false,
         }
     }
@@ -372,6 +381,18 @@ impl<'a> GpuFrame<'a> {
     #[must_use]
     pub const fn is_hovering(&self) -> bool {
         self.pointer.is_hovering()
+    }
+
+    /// Returns accumulated animation time for the surface.
+    #[must_use]
+    pub const fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Returns the frame-to-frame time step.
+    #[must_use]
+    pub const fn delta(&self) -> Duration {
+        self.delta
     }
 
     /// Request that `render()` be called again on the next frame.
@@ -1043,6 +1064,7 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
         let mut frame = GpuFrame {
             device,
             queue,
@@ -1053,9 +1075,13 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            elapsed: frame_delta,
+            delta: frame_delta,
             redraw_requested: false,
         };
-        for _ in 0..frame_count.get() {
+        for frame_index in 0..frame_count.get() {
+            frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
+            frame.delta = frame_delta;
             self.render(&mut frame);
         }
 
@@ -1147,6 +1173,7 @@ impl GpuSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
         let mut frame = GpuFrame {
             device,
             queue,
@@ -1157,9 +1184,13 @@ impl GpuSurface {
             height,
             pointer: config.pointer,
             gesture: config.gesture,
+            elapsed: frame_delta,
+            delta: frame_delta,
             redraw_requested: false,
         };
-        for _ in 0..frame_count.get() {
+        for frame_index in 0..frame_count.get() {
+            frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
+            frame.delta = frame_delta;
             self.render(&mut frame);
         }
 
@@ -1695,6 +1726,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::RefCell, num::NonZeroU32, rc::Rc, time::Duration};
 
     fn rgba16f_pixel_le(r: u16, g: u16, b: u16, a: u16) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(8);
@@ -1733,5 +1765,81 @@ mod tests {
             .to_sdr_rgba8()
             .expect("hdr tone mapping should succeed");
         assert_eq!(rgba8, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn offscreen_frames_advance_elapsed_and_delta() {
+        fn assert_duration_near(actual: Duration, expected: Duration, label: &str) {
+            let diff = actual.abs_diff(expected);
+            assert!(
+                diff <= Duration::from_nanos(10),
+                "{label} mismatch: got {actual:?}, expected {expected:?}, diff {diff:?}"
+            );
+        }
+
+        #[derive(Clone)]
+        struct FrameProbe {
+            records: Rc<RefCell<Vec<(Duration, Duration)>>>,
+        }
+
+        impl GpuView for FrameProbe {
+            async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+            }
+
+            fn render(&mut self, frame: &mut GpuFrame) {
+                self.records
+                    .borrow_mut()
+                    .push((frame.elapsed(), frame.delta()));
+            }
+        }
+
+        crate::impl_gpu_subview!(FrameProbe);
+
+        let records = Rc::new(RefCell::new(Vec::new()));
+        let size = OffscreenSize::try_from_pixels(4, 4).expect("probe size must be valid");
+        let config = OffscreenRenderConfig::new(size);
+        let mut env = waterui_core::Environment::new();
+        GpuSurface::new(FrameProbe {
+            records: Rc::clone(&records),
+        })
+        .render_offscreen_frames(
+            config,
+            &mut env,
+            NonZeroU32::new(3).expect("non-zero literal"),
+        )
+        .expect("offscreen frame probe should render");
+
+        let records = records.borrow();
+        assert_eq!(records.len(), 3, "expected one record per offscreen frame");
+        assert_duration_near(
+            records[0].0,
+            Duration::from_secs_f32(1.0 / 60.0),
+            "frame 1 elapsed",
+        );
+        assert_duration_near(
+            records[0].1,
+            Duration::from_secs_f32(1.0 / 60.0),
+            "frame 1 delta",
+        );
+        assert_duration_near(
+            records[1].0,
+            Duration::from_secs_f32(2.0 / 60.0),
+            "frame 2 elapsed",
+        );
+        assert_duration_near(
+            records[1].1,
+            Duration::from_secs_f32(1.0 / 60.0),
+            "frame 2 delta",
+        );
+        assert_duration_near(
+            records[2].0,
+            Duration::from_secs_f32(3.0 / 60.0),
+            "frame 3 elapsed",
+        );
+        assert_duration_near(
+            records[2].1,
+            Duration::from_secs_f32(1.0 / 60.0),
+            "frame 3 delta",
+        );
     }
 }
