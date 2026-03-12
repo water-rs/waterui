@@ -6,7 +6,10 @@ use waterui_cli::{
     android::toolchain::{AndroidNdk, AndroidPlatformTools, AndroidSdk, Java},
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
-    toolchain::{Installation, Toolchain, ToolchainError, cmake::Cmake},
+    toolchain::{
+        Installation, Toolchain, ToolchainError, cmake::Cmake,
+        windows_arm64_llvm::WindowsArm64LlvmToolchain,
+    },
 };
 
 fn toolchain_check_message<I: Installation>(component: &str, error: ToolchainError<I>) -> String {
@@ -64,6 +67,17 @@ pub async fn check_gtk4() -> Result<()> {
     let toolchain = Gtk4Toolchain;
     if let Err(e) = toolchain.check().await {
         bail!("{}", toolchain_check_message("GTK4", e));
+    }
+    Ok(())
+}
+
+pub async fn check_hydrolysis() -> Result<()> {
+    let llvm = WindowsArm64LlvmToolchain;
+    if let Err(e) = llvm.check().await {
+        bail!(
+            "{}",
+            toolchain_check_message("Windows ARM64 LLVM toolchain", e)
+        );
     }
     Ok(())
 }
