@@ -1,10 +1,9 @@
 //! Contour chart component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{draw_contour, reactive_canvas};
+use crate::charts::canvas::{draw_contour, signal_canvas};
 use crate::data::ContourData;
 use crate::params::{ChartParamError, PositiveF32};
 
@@ -70,10 +69,8 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
 impl<S: Signal<Output = ContourData> + Clone + 'static> View for ContourChart<S> {
     fn body(self, _env: &Environment) -> impl View {
         let line_width = self.line_width;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_contour(ctx, &data, line_width);
-            })
+        signal_canvas(self.data, move |ctx, data| {
+            draw_contour(ctx, data, line_width);
         })
     }
 }

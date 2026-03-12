@@ -3,11 +3,10 @@
 use core::f32::consts::PI;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_gauge, reactive_canvas};
+use crate::charts::canvas::{draw_gauge, signal_canvas};
 use crate::data::GaugeData;
 use crate::params::{ArcAngles, ChartParamError, GaugeRadii};
 
@@ -144,20 +143,18 @@ impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
         let background_color = self.background_color;
         let value_color = self.value_color;
         let needle_color = self.needle_color;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_gauge(
-                    ctx,
-                    &data,
-                    start_angle,
-                    end_angle,
-                    inner_radius,
-                    outer_radius,
-                    background_color,
-                    value_color,
-                    needle_color,
-                );
-            })
+        signal_canvas(self.data, move |ctx, data| {
+            draw_gauge(
+                ctx,
+                data,
+                start_angle,
+                end_angle,
+                inner_radius,
+                outer_radius,
+                background_color,
+                value_color,
+                needle_color,
+            );
         })
     }
 }

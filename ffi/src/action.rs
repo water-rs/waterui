@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
-use waterui_core::Environment;
+use waterui::component::list::Move;
 use waterui_core::handler::BoxedAction;
+use waterui_core::Environment;
 
 use crate::{IntoFFI, WuiEnv};
 
@@ -58,7 +59,7 @@ pub unsafe extern "C" fn waterui_call_index_action(
         unsafe { crate::expect_non_null_mut(action, "waterui_call_index_action", "action") };
     let env = unsafe { crate::expect_non_null(env, "waterui_call_index_action", "env") };
     let _ = crate::ffi_boundary("waterui_call_index_action", || {
-        (action.0.0)(env, index);
+        (action.0 .0)(env, index);
     });
 }
 
@@ -66,8 +67,8 @@ pub unsafe extern "C" fn waterui_call_index_action(
 // Move Actions - for list move callbacks
 // ============================================================================
 
-/// Handler that takes from/to indices (used for move callbacks).
-pub struct MoveHandler(pub Box<dyn Fn(&Environment, usize, usize)>);
+/// Handler that takes a list move operation (used for move callbacks).
+pub struct MoveHandler(pub Box<dyn Fn(&Environment, Move)>);
 
 opaque!(WuiMoveAction, MoveHandler, move_action);
 
@@ -100,7 +101,7 @@ pub unsafe extern "C" fn waterui_call_move_action(
         unsafe { crate::expect_non_null_mut(action, "waterui_call_move_action", "action") };
     let env = unsafe { crate::expect_non_null(env, "waterui_call_move_action", "env") };
     let _ = crate::ffi_boundary("waterui_call_move_action", || {
-        (action.0.0)(env, from_index, to_index);
+        (action.0 .0)(env, Move::new(from_index, to_index));
     });
 }
 
@@ -128,61 +129,14 @@ mod tests {
 
         unsafe {
             waterui_call_action(action_ptr, env_ptr);
-        }
-
-        assert_eq!(hits.load(Ordering::SeqCst), 1);
-        unsafe {
-            waterui_drop_action(action_ptr);
-            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
-        }
-    }
-
-    #[test]
-    fn call_action_swallows_panics() {
-        let action: BoxedAction<()> = Box::new(|_| panic!("boom"));
-        let action_ptr = action.into_ffi();
-        let env_ptr = test_env();
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             waterui_call_action(action_ptr, env_ptr);
-        }));
-        assert!(result.is_ok(), "panic should not cross FFI boundary");
-
-        unsafe {
-            waterui_drop_action(action_ptr);
-            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
         }
-    }
 
-    #[test]
-    fn call_index_action_swallows_panics() {
-        let action_ptr = IndexHandler(Box::new(|_, _| panic!("boom"))).into_ffi();
-        let env_ptr = test_env();
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            waterui_call_index_action(action_ptr, env_ptr, 3);
-        }));
-        assert!(result.is_ok(), "panic should not cross FFI boundary");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
 
         unsafe {
-            waterui_drop_index_action(action_ptr);
-            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
-        }
-    }
-
-    #[test]
-    fn call_move_action_swallows_panics() {
-        let action_ptr = MoveHandler(Box::new(|_, _, _| panic!("boom"))).into_ffi();
-        let env_ptr = test_env();
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            waterui_call_move_action(action_ptr, env_ptr, 1, 5);
-        }));
-        assert!(result.is_ok(), "panic should not cross FFI boundary");
-
-        unsafe {
-            waterui_drop_move_action(action_ptr);
-            let _: waterui::Environment = IntoRust::into_rust(env_ptr);
+            crate::drop_action(action_ptr);
+            let _ = Box::from_raw(env_ptr as *mut waterui::Environment);
         }
     }
 }

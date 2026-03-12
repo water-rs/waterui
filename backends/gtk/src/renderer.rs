@@ -1,7 +1,9 @@
 //! View renderer that dispatches `WaterUI` views to GTK widgets.
 
+use glib::object::ObjectExt;
 use gtk4::Widget;
 use gtk4::prelude::*;
+use nami::{Signal, watcher::BoxWatcherGuard};
 use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::prelude::Divider;
@@ -11,6 +13,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_core::Binding;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Native, View};
@@ -30,6 +33,150 @@ use waterui_text::TextConfig;
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
+
+const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
+const FOCUS_METADATA_GUARDS_DATA_KEY: &str = "waterui_focus_metadata_guards";
+const FOCUS_REQUEST_PENDING_DATA_KEY: &str = "waterui_focus_request_pending";
+const FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY: &str = "waterui_focus_map_handler_installed";
+
+#[derive(Debug)]
+pub(crate) struct FocusAnchorMarker;
+
+#[derive(Debug)]
+struct PendingFocusRequest;
+
+#[derive(Debug)]
+struct FocusMapHandlerInstalled;
+
+pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
+    unsafe {
+        widget
+            .as_ref()
+            .set_data(FOCUS_ANCHOR_DATA_KEY, FocusAnchorMarker)
+    }
+}
+
+fn attach_focus_metadata(widget: Widget, binding: Binding<bool>) -> Widget {
+    let anchor = resolve_single_focus_anchor(&widget);
+
+    anchor.connect_has_focus_notify({
+        let binding = binding.clone();
+        move |anchor| {
+            let has_focus = anchor.has_focus();
+            if binding.get() != has_focus {
+                binding.set(has_focus);
+            }
+        }
+    });
+
+    if binding.get() {
+        request_focus(&anchor);
+    }
+
+    let guard = binding.watch({
+        let anchor = anchor.clone();
+        move |ctx| {
+            if ctx.into_value() {
+                request_focus(&anchor);
+            } else {
+                clear_focus(&anchor);
+            }
+        }
+    });
+    store_focus_metadata_guard(&widget, guard);
+
+    widget
+}
+
+fn resolve_single_focus_anchor(widget: &Widget) -> Widget {
+    let mut anchors = Vec::new();
+    collect_focus_anchors(widget, &mut anchors);
+    assert!(
+        anchors.len() == 1,
+        "GTK Focused metadata requires exactly one TextField or SecureField anchor in its subtree, found {}",
+        anchors.len()
+    );
+    anchors
+        .pop()
+        .expect("focus anchor count was asserted to be exactly one")
+}
+
+fn collect_focus_anchors(widget: &Widget, anchors: &mut Vec<Widget>) {
+    if unsafe { widget.data::<FocusAnchorMarker>(FOCUS_ANCHOR_DATA_KEY) }.is_some() {
+        anchors.push(widget.clone());
+    }
+
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        collect_focus_anchors(&current, anchors);
+        child = current.next_sibling();
+    }
+}
+
+fn request_focus(anchor: &Widget) {
+    if anchor.has_focus() {
+        return;
+    }
+
+    if anchor.is_mapped() {
+        assert!(
+            anchor.grab_focus(),
+            "GTK Focused metadata failed to focus its resolved TextField/SecureField anchor"
+        );
+        return;
+    }
+
+    if unsafe { anchor.data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }.is_some() {
+        return;
+    }
+
+    unsafe { anchor.set_data(FOCUS_REQUEST_PENDING_DATA_KEY, PendingFocusRequest) };
+    if unsafe {
+        anchor
+            .data::<FocusMapHandlerInstalled>(FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY)
+            .is_none()
+    } {
+        unsafe {
+            anchor.set_data(
+                FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY,
+                FocusMapHandlerInstalled,
+            )
+        };
+        anchor.connect_map(|widget| {
+            if unsafe { widget.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }
+                .is_none()
+            {
+                return;
+            }
+
+            assert!(
+                widget.grab_focus(),
+                "GTK Focused metadata failed to focus its resolved TextField/SecureField anchor when it was mapped"
+            );
+        });
+    }
+}
+
+fn clear_focus(anchor: &Widget) {
+    let _ = unsafe { anchor.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) };
+
+    if !anchor.has_focus() {
+        return;
+    }
+
+    let Some(root) = anchor.root() else {
+        panic!("focused anchor lost its GTK root while still holding focus");
+    };
+    root.set_focus(None::<&Widget>);
+}
+
+fn store_focus_metadata_guard(widget: &Widget, guard: BoxWatcherGuard) {
+    let mut guards =
+        unsafe { widget.steal_data::<Vec<BoxWatcherGuard>>(FOCUS_METADATA_GUARDS_DATA_KEY) }
+            .unwrap_or_default();
+    guards.push(guard);
+    unsafe { widget.set_data(FOCUS_METADATA_GUARDS_DATA_KEY, guards) };
+}
 
 /// Context passed to component renderers.
 #[derive(Debug, Clone)]
@@ -234,8 +381,7 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Focused>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
-            // TODO: Set up focus handling
-            widget
+            attach_focus_metadata(widget, metadata.value.0)
         });
 
         // Metadata<Secure> - mark content as secure (e.g., password fields)

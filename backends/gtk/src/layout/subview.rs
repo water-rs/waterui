@@ -2,7 +2,9 @@
 
 use gtk4::Widget;
 use gtk4::prelude::*;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::layout::{
+    ProposalSize, Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
+};
 
 use crate::components::fixed_container_widget::WuiFixedContainer;
 
@@ -50,7 +52,7 @@ impl GtkSubView {
 }
 
 impl SubView for GtkSubView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         if let Some(container) = self.widget.downcast_ref::<WuiFixedContainer>() {
             let margin_h = (self.widget.margin_start() + self.widget.margin_end()) as f32;
             let margin_v = (self.widget.margin_top() + self.widget.margin_bottom()) as f32;
@@ -58,22 +60,32 @@ impl SubView for GtkSubView {
                 proposal.width.map(|w| (w - margin_h).max(0.0)),
                 proposal.height.map(|h| (h - margin_v).max(0.0)),
             );
-            let inner_size = container.layout_size_that_fits(inner_proposal);
-            let size = Size::new(inner_size.width + margin_h, inner_size.height + margin_v);
+            let inner_dimensions = container.layout_measure(inner_proposal);
+            let size = Size::new(
+                inner_dimensions.size.width + margin_h,
+                inner_dimensions.size.height + margin_v,
+            );
             if layout_debug_enabled() {
                 eprintln!(
                     "[gtk-layout] subview.measure type={} proposal=({:?},{:?}) container-inner=({},{}) margins=({margin_h},{margin_v}) -> ({},{}) stretch={:?}",
                     self.widget.type_().name(),
                     proposal.width,
                     proposal.height,
-                    inner_size.width,
-                    inner_size.height,
+                    inner_dimensions.size.width,
+                    inner_dimensions.size.height,
                     size.width,
                     size.height,
                     self.stretch_axis
                 );
             }
-            return size;
+            let mut dimensions = ViewDimensions::new(size);
+            for (alignment, value) in inner_dimensions.explicit_horizontal_guides() {
+                dimensions.set_horizontal(alignment, value + self.widget.margin_start() as f32);
+            }
+            for (alignment, value) in inner_dimensions.explicit_vertical_guides() {
+                dimensions.set_vertical(alignment, value + self.widget.margin_top() as f32);
+            }
+            return dimensions;
         }
 
         // Use GTK's measurement API
@@ -89,7 +101,7 @@ impl SubView for GtkSubView {
             .measure(gtk4::Orientation::Horizontal, for_height);
 
         // Measure vertical (height)
-        let (_min_height, natural_height, _min_baseline2, _nat_baseline2) =
+        let (_min_height, natural_height, _min_baseline, nat_baseline) =
             self.widget.measure(gtk4::Orientation::Vertical, for_width);
 
         // Default behavior: intrinsic size clamped by proposal.
@@ -141,7 +153,14 @@ impl SubView for GtkSubView {
             );
         }
 
-        Size { width, height }
+        let mut dimensions = ViewDimensions::new(Size { width, height });
+        if min_baseline >= 0 {
+            dimensions.set_vertical(VerticalAlignment::FirstBaseline, min_baseline as f32);
+        }
+        if nat_baseline >= 0 {
+            dimensions.set_vertical(VerticalAlignment::LastBaseline, nat_baseline as f32);
+        }
+        dimensions
     }
 
     fn stretch_axis(&self) -> StretchAxis {

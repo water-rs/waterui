@@ -1,11 +1,10 @@
 //! Depth (order book) chart component.
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_depth, reactive_canvas};
+use crate::charts::canvas::{depth_bounds, draw_depth, interactive_cartesian_canvas};
 use crate::data::DepthData;
 
 /// Depth chart for order book visualization.
@@ -79,10 +78,8 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
     fn body(self, _env: &Environment) -> impl View {
         let bid_color = self.bid_color;
         let ask_color = self.ask_color;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_depth(ctx, &data, bid_color, ask_color);
-            })
+        interactive_cartesian_canvas(self.data, depth_bounds, move |ctx, data, bounds| {
+            draw_depth(ctx, data, bounds, bid_color, ask_color);
         })
     }
 }

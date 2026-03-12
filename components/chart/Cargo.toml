@@ -25,6 +25,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 waterui-testing.workspace = true
+waterui.workspace = true
 
 [lints]
 workspace = true

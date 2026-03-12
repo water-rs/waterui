@@ -1,14 +1,17 @@
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
@@ -17,7 +20,7 @@ use accesskit::{
     Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
-use nami::Signal;
+use nami::{Binding, Signal};
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState,
@@ -26,7 +29,7 @@ use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
-use waterui::component::list::{ListConfig, ListItem};
+use waterui::component::list::{ListConfig, ListItem, Move};
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
@@ -54,7 +57,8 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
-    Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView,
+    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect as LayoutRect,
+    Size as LayoutSize, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
@@ -62,10 +66,11 @@ use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Re
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
-    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuSurface, GradientType,
-    OffscreenRenderConfig, OffscreenSize, ResolvedGradient, ResolvedGradientStop, SceneView,
+    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuContext, GpuFrame, GpuSurface,
+    GradientType, PointerState, RedrawHandle, ResolvedGradient, ResolvedGradientStop, SceneView,
     VelloScene2D,
 };
 use waterui_icon::SystemIcon;
@@ -74,9 +79,7 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_layout::stack::{
-    Axis as StackAxis, HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment,
-};
+use waterui_layout::stack::{Axis as StackAxis, HStackLayout, VStackLayout};
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
@@ -89,11 +92,13 @@ use crate::platform::{
 };
 use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
 
+const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!("shaders/gpu_surface_compositor.wgsl");
+
 /// Shared mutable state carried by the hydrolysis dispatcher.
 pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
-    dynamic_intrinsic_cache: BTreeMap<usize, LayoutSize>,
+    dynamic_intrinsic_cache: BTreeMap<usize, ViewDimensions>,
     frame_device: *const wgpu::Device,
     frame_queue: *const wgpu::Queue,
 }
@@ -122,9 +127,10 @@ impl HydroState {
     }
 
     fn frame_resource_ptrs(&self) -> (*const wgpu::Device, *const wgpu::Queue) {
-        if self.frame_device.is_null() || self.frame_queue.is_null() {
-            panic!("hydrolysis frame resources are unavailable during AppliedFilter dispatch");
-        }
+        assert!(
+            !self.frame_device.is_null() && !self.frame_queue.is_null(),
+            "hydrolysis frame resources are unavailable during AppliedFilter dispatch"
+        );
         (self.frame_device, self.frame_queue)
     }
 }
@@ -193,12 +199,19 @@ pub struct HydrolysisRenderer {
     dispatcher: ViewDispatcher<HydroState, RenderContext, ()>,
     vello_renderer: vello::Renderer,
     scene: vello::Scene,
-    surface_blit: Option<SurfaceBlitState>,
+    vello_layer_surface: Option<VelloLayerSurfaceState>,
+    gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
+    gpu_surface_slots: Vec<EmbeddedGpuSurfaceRuntime>,
+    gpu_surface_cursor: usize,
+    render_layers: Vec<RenderLayer>,
+    active_scene_layers: Vec<ActiveSceneLayer>,
     active_filter_images: Vec<vello::peniko::ImageData>,
     pointer_targets: Vec<PointerTarget>,
     active_pointer_drag_target: Option<PointerAction>,
     active_pointer_drag_signature: Option<(usize, usize)>,
     gesture_engine: GestureEngine,
+    gesture_group_ids: BTreeMap<usize, usize>,
+    next_gesture_group_id: usize,
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
     text_input_targets: Vec<TextInputTarget>,
@@ -213,6 +226,7 @@ pub struct HydrolysisRenderer {
     lifecycle_disappear_previous: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_current: BTreeMap<usize, DeferredLifeCycleHook>,
     lifecycle_disappear_slot: usize,
+    redraw_requested: Rc<Cell<bool>>,
     rebuild_requested: Rc<Cell<bool>>,
     dynamic_nodes: BTreeMap<usize, DynamicNode>,
     animation_controller: AnimationController,
@@ -246,15 +260,19 @@ pub struct HydrolysisRenderer {
     #[cfg(feature = "accessibility")]
     accessibility_focus: AccessibilityNodeId,
     #[cfg(feature = "accessibility")]
+    pending_text_input_accessibility_nodes: VecDeque<AccessibilityNodeId>,
+    #[cfg(feature = "accessibility")]
     accessibility_suppression_depth: usize,
     #[cfg(feature = "accessibility")]
     pending_accessibility_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct HydroSubview {
+struct HydroSubview<'a> {
+    view: &'a AnyView,
+    state: *mut HydroState,
+    env: &'a Environment,
     stretch_axis: StretchAxis,
-    intrinsic: LayoutSize,
 }
 
 #[derive(Clone)]
@@ -293,6 +311,9 @@ struct TextInputTarget {
     depth: usize,
     order: usize,
     action: TextInputAction,
+    focus_binding: Option<Binding<bool>>,
+    #[cfg(feature = "accessibility")]
+    accessibility_node_id: Option<AccessibilityNodeId>,
 }
 
 #[derive(Clone)]
@@ -457,12 +478,90 @@ struct DynamicAccessibilitySubtree {
     actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
 }
 
-struct SurfaceBlitState {
-    target_format: wgpu::TextureFormat,
+struct VelloLayerSurfaceState {
     size: (u32, u32),
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
-    blitter: wgpu::util::TextureBlitter,
+}
+
+struct GpuSurfaceCompositorState {
+    target_format: wgpu::TextureFormat,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    _white_mask_texture: wgpu::Texture,
+    white_mask_view: wgpu::TextureView,
+}
+
+struct EmbeddedGpuSurfaceRuntime {
+    surface: GpuSurface,
+    env: Environment,
+    setup_complete: bool,
+    output_format: wgpu::TextureFormat,
+    output_size: (u32, u32),
+    output_texture: Option<wgpu::Texture>,
+    output_view: Option<wgpu::TextureView>,
+    redraw_handle: RedrawHandle,
+    start_time: Instant,
+    last_frame_time: Instant,
+}
+
+#[derive(Clone)]
+enum LayerShape {
+    Rect(vello::kurbo::Rect),
+    Path(vello::kurbo::BezPath),
+}
+
+#[derive(Clone)]
+struct ActiveSceneLayer {
+    alpha: f32,
+    transform: vello::kurbo::Affine,
+    shape: LayerShape,
+}
+
+impl ActiveSceneLayer {
+    fn push_to_scene(&self, scene: &mut vello::Scene) {
+        match &self.shape {
+            LayerShape::Rect(rect) => {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    self.alpha,
+                    self.transform,
+                    rect,
+                );
+            }
+            LayerShape::Path(path) => {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    self.alpha,
+                    self.transform,
+                    path,
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GpuSurfaceLayer {
+    slot_index: usize,
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    active_layers: Vec<ActiveSceneLayer>,
+}
+
+enum RenderLayer {
+    Vello(vello::Scene),
+    GpuSurface(GpuSurfaceLayer),
+}
+
+struct PreparedGpuSurfaceLayer {
+    view: wgpu::TextureView,
+    uniform_bytes: [u8; 64],
+    needs_redraw: bool,
 }
 
 type NavigationEntries = Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>;
@@ -546,6 +645,406 @@ impl NavigationTransitionState {
     }
 }
 
+impl GpuSurfaceCompositorState {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, target_format: wgpu::TextureFormat) -> Self {
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_uniform"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            core::num::NonZeroU64::new(64)
+                                .expect("static compositor uniform size must be non-zero"),
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pipeline_layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(GPU_SURFACE_COMPOSITOR_SHADER)),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let white_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_white_mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            white_mask_texture.as_image_copy(),
+            &[255, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let white_mask_view =
+            white_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            target_format,
+            uniform_buffer,
+            sampler,
+            bind_group_layout,
+            pipeline,
+            _white_mask_texture: white_mask_texture,
+            white_mask_view,
+        }
+    }
+
+    fn ensure_target_format(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) {
+        if self.target_format == target_format {
+            return;
+        }
+        *self = Self::new(device, queue, target_format);
+    }
+}
+
+impl EmbeddedGpuSurfaceRuntime {
+    fn new(surface: GpuSurface, env: &Environment) -> Self {
+        let now = Instant::now();
+        Self {
+            surface,
+            env: env.clone(),
+            setup_complete: false,
+            output_format: wgpu::TextureFormat::Rgba8Unorm,
+            output_size: (1, 1),
+            output_texture: None,
+            output_view: None,
+            redraw_handle: RedrawHandle::new(),
+            start_time: now,
+            last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
+        }
+    }
+
+    fn replace_surface(&mut self, surface: GpuSurface, env: &Environment) {
+        let now = Instant::now();
+        self.surface = surface;
+        self.env = env.clone();
+        self.setup_complete = false;
+        self.output_format = wgpu::TextureFormat::Rgba8Unorm;
+        self.output_size = (1, 1);
+        self.output_texture = None;
+        self.output_view = None;
+        self.redraw_handle = RedrawHandle::new();
+        self.start_time = now;
+        self.last_frame_time = now - Duration::from_secs_f32(1.0 / 60.0);
+    }
+
+    fn take_external_redraw_request(&self) -> bool {
+        self.redraw_handle.take_dirty()
+    }
+
+    fn prepare_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+        target_width: u32,
+        target_height: u32,
+        transform: vello::kurbo::Affine,
+        bounds: vello::kurbo::Rect,
+    ) -> PreparedGpuSurfaceLayer {
+        let top_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y0);
+        let top_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y0);
+        let bottom_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y1);
+        let bottom_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y1);
+
+        let layer_width =
+            edge_length_in_pixels(top_left, top_right, target_width, target_height).max(1);
+        let layer_height =
+            edge_length_in_pixels(top_left, bottom_left, target_width, target_height).max(1);
+        let output_format =
+            select_embedded_surface_format(target_format, self.surface.get_surface_prefers_hdr());
+        self.ensure_setup(device, queue, output_format);
+        self.ensure_output_target(device, layer_width, layer_height, output_format);
+
+        let texture = self
+            .output_texture
+            .as_ref()
+            .expect("hydrolysis embedded GpuSurface missing output texture");
+        let view = self
+            .output_view
+            .as_ref()
+            .expect("hydrolysis embedded GpuSurface missing output view")
+            .clone();
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.start_time);
+        let delta = now
+            .duration_since(self.last_frame_time)
+            .min(Duration::from_millis(100));
+        self.last_frame_time = now;
+        let mut frame = GpuFrame::new(
+            device,
+            queue,
+            texture,
+            view.clone(),
+            output_format,
+            layer_width,
+            layer_height,
+            PointerState::default(),
+            GestureState::new(),
+            elapsed,
+            delta,
+        );
+        self.surface.render(&mut frame);
+        let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
+        let corners = [
+            point_to_clip(top_left, target_width, target_height),
+            point_to_clip(top_right, target_width, target_height),
+            point_to_clip(bottom_right, target_width, target_height),
+            point_to_clip(bottom_left, target_width, target_height),
+        ];
+
+        PreparedGpuSurfaceLayer {
+            view,
+            uniform_bytes: encode_compositor_uniform(corners),
+            needs_redraw,
+        }
+    }
+
+    fn ensure_setup(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) {
+        if self.setup_complete {
+            return;
+        }
+
+        let ctx = GpuContext {
+            adapter: None,
+            device,
+            queue,
+            surface_format,
+            msaa_samples: self.surface.get_msaa_max_samples().get(),
+            pipeline_cache: None,
+            redraw_handle: self.redraw_handle.clone(),
+        };
+        ready_now_or_panic(
+            self.surface.setup(&ctx, &mut self.env),
+            "hydrolysis embedded GpuSurface setup",
+        );
+        self.setup_complete = true;
+    }
+
+    fn ensure_output_target(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) {
+        let needs_recreate = self.output_texture.is_none()
+            || self.output_size != (width, height)
+            || self.output_format != format;
+        if !needs_recreate {
+            return;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_embedded_gpu_surface_target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.output_format = format;
+        self.output_size = (width, height);
+        self.output_texture = Some(texture);
+        self.output_view = Some(view);
+    }
+}
+
+fn select_embedded_surface_format(
+    target_format: wgpu::TextureFormat,
+    prefers_hdr_override: Option<bool>,
+) -> wgpu::TextureFormat {
+    let target_hdr = matches!(
+        target_format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    );
+    let prefers_hdr =
+        waterui_graphics::gpu_surface::resolve_surface_hdr_preference(prefers_hdr_override);
+    if target_hdr && prefers_hdr {
+        return wgpu::TextureFormat::Rgba16Float;
+    }
+    wgpu::TextureFormat::Rgba8Unorm
+}
+
+fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2] {
+    assert!(
+        width != 0 && height != 0,
+        "hydrolysis compositor target size must be non-zero"
+    );
+
+    let clip_x = ((point.x as f32) / (width as f32)) * 2.0 - 1.0;
+    let clip_y = 1.0 - ((point.y as f32) / (height as f32)) * 2.0;
+    [clip_x, clip_y]
+}
+
+fn edge_length_in_pixels(
+    start: vello::kurbo::Point,
+    end: vello::kurbo::Point,
+    target_width: u32,
+    target_height: u32,
+) -> u32 {
+    assert!(
+        target_width != 0 && target_height != 0,
+        "hydrolysis compositor target size must be non-zero"
+    );
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    ((dx * dx + dy * dy).sqrt().round().max(1.0)) as u32
+}
+
+fn encode_compositor_uniform(corners: [[f32; 2]; 4]) -> [u8; 64] {
+    let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let mut bytes = [0u8; 64];
+    for (index, corner) in corners.iter().enumerate() {
+        let base = index * 16;
+        write_f32(&mut bytes, base, corner[0]);
+        write_f32(&mut bytes, base + 4, corner[1]);
+        write_f32(&mut bytes, base + 8, uvs[index][0]);
+        write_f32(&mut bytes, base + 12, uvs[index][1]);
+    }
+    bytes
+}
+
+fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+}
+
+fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
+where
+    F: core::future::Future,
+{
+    let mut future = future;
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
+    let mut cx = Context::from_waker(core::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("{scope}: future returned Pending in synchronous path"),
+    }
+}
+
 impl CustomNavigationController for HydroNavigationController {
     fn push_builder(&mut self, content: AnyViewBuilder<NavigationView>) {
         self.entries.borrow_mut().push(content);
@@ -603,9 +1102,10 @@ impl HoverController {
     }
 
     fn rewind_to(&mut self, cursor: usize) {
-        if cursor > self.cursor {
-            panic!("hover controller rewind cursor exceeds current cursor");
-        }
+        assert!(
+            !(cursor > self.cursor),
+            "hover controller rewind cursor exceeds current cursor"
+        );
         self.cursor = cursor;
         self.slots.truncate(cursor);
     }
@@ -695,34 +1195,40 @@ impl LazyTableSlot {
     }
 }
 
-impl HydroSubview {
-    fn from_view(view: &AnyView, state: &mut HydroState, env: &Environment) -> Self {
+impl<'a> HydroSubview<'a> {
+    fn from_view(view: &'a AnyView, state: &mut HydroState, env: &'a Environment) -> Self {
         Self {
+            view,
+            state: state as *mut _,
+            env,
             stretch_axis: effective_stretch_axis(view),
-            intrinsic: measure_view_intrinsic(view, state, env),
         }
     }
 }
 
-impl SubView for HydroSubview {
-    fn size_that_fits(&self, proposal: ProposalSize) -> LayoutSize {
-        let width = if self.stretch_axis.stretches_horizontal() {
-            proposal.width.unwrap_or(self.intrinsic.width)
-        } else {
-            proposal.width.map_or(self.intrinsic.width, |value| {
-                self.intrinsic.width.min(value)
-            })
-        };
+impl SubView for HydroSubview<'_> {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let state = unsafe { &mut *self.state };
+        let mut dimensions =
+            measure_view_dimensions_with_proposal(self.view, proposal, state, self.env);
 
-        let height = if self.stretch_axis.stretches_vertical() {
-            proposal.height.unwrap_or(self.intrinsic.height)
-        } else {
-            proposal.height.map_or(self.intrinsic.height, |value| {
-                self.intrinsic.height.min(value)
-            })
-        };
+        if self.stretch_axis.stretches_horizontal() {
+            if let Some(width) = proposal.width {
+                dimensions.size.width = width;
+            }
+        } else if let Some(width) = proposal.width {
+            dimensions.size.width = dimensions.size.width.min(width);
+        }
 
-        LayoutSize::new(width, height)
+        if self.stretch_axis.stretches_vertical() {
+            if let Some(height) = proposal.height {
+                dimensions.size.height = height;
+            }
+        } else if let Some(height) = proposal.height {
+            dimensions.size.height = dimensions.size.height.min(height);
+        }
+
+        dimensions
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -751,6 +1257,17 @@ impl core::fmt::Debug for HydrolysisRenderer {
 trait HydroNativeView: View + Sized + 'static {
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment);
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize;
+    fn accessibility_is_render_driven() -> bool {
+        false
+    }
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        _proposal: ProposalSize,
+    ) -> ViewDimensions {
+        ViewDimensions::new(Self::intrinsic(state, view, env))
+    }
     fn accessibility(
         _state: &mut HydroState,
         _ctx: RenderContext,
@@ -765,23 +1282,28 @@ fn register_native_view<V: HydroNativeView>(
     dispatcher: &mut ViewDispatcher<HydroState, RenderContext, ()>,
 ) {
     dispatcher.register::<V>(|state, ctx, view, env| {
+        let accessibility_is_render_driven = V::accessibility_is_render_driven();
         let hidden_from_accessibility = env
             .get::<AccessibilityHidden>()
             .is_some_and(AccessibilityHidden::is_hidden);
         if hidden_from_accessibility {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
-            V::accessibility(state, ctx, &view, env);
+            if !accessibility_is_render_driven {
+                V::accessibility(state, ctx, &view, env);
+            }
             V::render(state, ctx, view, env);
             let renderer = unsafe { ctx.renderer() };
             renderer.pop_accessibility_suppression();
             return;
         }
-        V::accessibility(state, ctx, &view, env);
+        if !accessibility_is_render_driven {
+            V::accessibility(state, ctx, &view, env);
+        }
         let suppress_descendants = env
             .get::<AccessibilityChildren>()
             .is_some_and(AccessibilityChildren::excludes_descendants);
-        if suppress_descendants {
+        if suppress_descendants && !accessibility_is_render_driven {
             let renderer = unsafe { ctx.renderer() };
             renderer.push_accessibility_suppression();
             V::render(state, ctx, view, env);
@@ -803,13 +1325,14 @@ fn register_native_view<V: HydroNativeView>(
     });
 }
 
-fn intrinsic_for_native<V: HydroNativeView>(
+fn dimensions_for_native<V: HydroNativeView>(
     view: &AnyView,
+    proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-) -> Option<LayoutSize> {
+) -> Option<ViewDimensions> {
     view.downcast_ref::<V>()
-        .map(|native| V::intrinsic(state, native, env))
+        .map(|native| V::dimensions(state, native, env, proposal))
 }
 
 const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
@@ -1124,7 +1647,167 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
 }
 
 fn measure_view_intrinsic(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
-    estimate_intrinsic_size(view, state, env)
+    measure_view_dimensions(view, state, env).size
+}
+
+fn measure_view_dimensions(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    measure_view_dimensions_with_proposal(view, ProposalSize::UNSPECIFIED, state, env)
+}
+
+fn measure_view_dimensions_with_proposal(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return measure_view_dimensions_with_proposal(
+            &metadata.content,
+            proposal,
+            state,
+            &metadata.value,
+        );
+    }
+
+    if let Some(content) = passthrough_content(view) {
+        return measure_view_dimensions_with_proposal(content, proposal, state, env);
+    }
+
+    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Canvas>().is_some() {
+        return ViewDimensions::new(LayoutSize::zero());
+    }
+
+    if let Some(text) = view.downcast_ref::<Str>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<&'static str>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(*text),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<String>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<Text>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            text.content().get(),
+            text.paragraph_alignment().get(),
+            env,
+            proposal.width,
+            None,
+        );
+    }
+
+    if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, env) {
+        return dimensions;
+    }
+
+    if view.downcast_ref::<Divider>().is_some() {
+        return ViewDimensions::new(LayoutSize::new(1.0, 1.0));
+    }
+
+    panic!(
+        "hydrolysis dimensions estimation encountered unsupported view type {}",
+        view.name()
+    );
+}
+
+fn measure_layout_dimensions<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let mut subviews = Vec::new();
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, state, env));
+    }
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    let size = layout.size_that_fits(proposal, &refs);
+    let bounds = LayoutRect::from_size(size);
+    let child_rects = layout.place(bounds, &refs);
+    let placed_subviews: Vec<PlacedSubview<'_>> = subviews
+        .iter()
+        .zip(child_rects.iter().copied())
+        .map(|(view, frame)| PlacedSubview::new(view as &dyn SubView, frame))
+        .collect();
+
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal_keys = Vec::new();
+    let mut vertical_keys = Vec::new();
+
+    for alignment in layout.explicit_horizontal_alignments() {
+        if !horizontal_keys.contains(&alignment) {
+            horizontal_keys.push(alignment);
+        }
+    }
+    for alignment in layout.explicit_vertical_alignments() {
+        if !vertical_keys.contains(&alignment) {
+            vertical_keys.push(alignment);
+        }
+    }
+
+    for child in &placed_subviews {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal_keys.contains(&alignment) {
+                horizontal_keys.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical_keys.contains(&alignment) {
+                vertical_keys.push(alignment);
+            }
+        }
+    }
+
+    for alignment in horizontal_keys {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed_subviews) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical_keys {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed_subviews) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+
+    dimensions
 }
 
 fn measure_navigation_view_intrinsic(
@@ -1146,9 +1829,10 @@ fn measure_navigation_view_intrinsic(
 }
 
 fn measure_tabs_intrinsic(tabs: &Tabs, state: &mut HydroState, env: &Environment) -> LayoutSize {
-    if tabs.tabs.is_empty() {
-        panic!("hydrolysis Tabs requires at least one tab");
-    }
+    assert!(
+        !(tabs.tabs.is_empty()),
+        "hydrolysis Tabs requires at least one tab"
+    );
 
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
@@ -1581,9 +2265,10 @@ fn measure_picker_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let items = picker.items.get();
-    if items.is_empty() {
-        panic!("hydrolysis picker requires at least one item");
-    }
+    assert!(
+        !(items.is_empty()),
+        "hydrolysis picker requires at least one item"
+    );
     let item_count = items.len();
 
     match picker.style {
@@ -1658,6 +2343,23 @@ macro_rules! hydro_native_view_types {
     };
 }
 
+fn dimensions_for_known_native_views(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> Option<ViewDimensions> {
+    macro_rules! try_native_dimensions {
+        ($ty:ty) => {
+            if let Some(dimensions) = dimensions_for_native::<$ty>(view, proposal, state, env) {
+                return Some(dimensions);
+            }
+        };
+    }
+    hydro_native_view_types!(try_native_dimensions);
+    None
+}
+
 impl HydroNativeView for Native<()> {
     fn render(_state: &mut HydroState, _ctx: RenderContext, _view: Self, _env: &Environment) {}
 
@@ -1680,7 +2382,31 @@ impl HydroNativeView for Native<TextConfig> {
     }
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
-        HydrolysisRenderer::measure_text_intrinsic_size(state, view.as_inner().content.get(), env)
+        HydrolysisRenderer::measure_text_dimensions(
+            state,
+            view.as_inner().content.get(),
+            view.as_inner().paragraph_alignment.get(),
+            env,
+            None,
+            None,
+        )
+        .size
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        HydrolysisRenderer::measure_text_dimensions(
+            state,
+            view.as_inner().content.get(),
+            view.as_inner().paragraph_alignment.get(),
+            env,
+            proposal.width,
+            None,
+        )
     }
 
     fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
@@ -1716,6 +2442,16 @@ impl HydroNativeView for Native<FixedContainer> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env)
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let (layout, children) = view.as_inner().as_parts();
+        measure_layout_dimensions(layout, children.iter(), proposal, state, env)
     }
 }
 
@@ -1985,9 +2721,10 @@ impl HydroNativeView for Native<Tabs> {
         #[cfg(feature = "accessibility")]
         {
             let tabs = view.as_inner();
-            if tabs.tabs.is_empty() {
-                panic!("hydrolysis Tabs requires at least one tab");
-            }
+            assert!(
+                !(tabs.tabs.is_empty()),
+                "hydrolysis Tabs requires at least one tab"
+            );
             let renderer = unsafe { ctx.renderer() };
             let selected_id = renderer.read_signal(&tabs.selection);
             let selected_index = tabs
@@ -2283,17 +3020,16 @@ impl HydroNativeView for Native<StepperConfig> {
             }
             let start = *stepper.range.start();
             let end = *stepper.range.end();
-            if start > end {
-                panic!("hydrolysis stepper requires an ordered range");
-            }
+            assert!(
+                !(start > end),
+                "hydrolysis stepper requires an ordered range"
+            );
             let current = stepper.value.get().clamp(start, end);
             node.set_numeric_value(f64::from(current));
             node.set_min_numeric_value(f64::from(start));
             node.set_max_numeric_value(f64::from(end));
             let step = stepper.step.get();
-            if step <= 0 {
-                panic!("hydrolysis stepper requires positive step");
-            }
+            assert!(!(step <= 0), "hydrolysis stepper requires positive step");
             node.set_numeric_value_step(f64::from(step));
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Increment);
@@ -2347,6 +3083,10 @@ impl HydroNativeView for Native<ProgressConfig> {
 }
 
 impl HydroNativeView for Native<TextFieldConfig> {
+    fn accessibility_is_render_driven() -> bool {
+        true
+    }
+
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
         HydrolysisRenderer::render_text_field(state, ctx, view, env);
     }
@@ -2354,98 +3094,19 @@ impl HydroNativeView for Native<TextFieldConfig> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env)
     }
-
-    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "accessibility")]
-        {
-            let text_field = view.as_inner();
-            let renderer = unsafe { ctx.renderer() };
-            let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                env,
-                if line_limit == Some(1) {
-                    AccessibilityNodeRole::TextInput
-                } else {
-                    AccessibilityNodeRole::MultilineTextInput
-                },
-            ));
-            let prompt_signal = text_field.prompt.content();
-            let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
-            let default_label = renderer
-                .accessibility_label_from_view(&text_field.label, env)
-                .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            if !prompt.is_empty() {
-                node.set_placeholder(prompt);
-            }
-            let value = renderer
-                .read_signal(&text_field.value)
-                .to_plain()
-                .to_string();
-            if !value.is_empty() {
-                node.set_value(value);
-            }
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::TextField {
-                    value: text_field.value.clone(),
-                    line_limit,
-                }),
-            );
-        }
-    }
 }
 
 impl HydroNativeView for Native<SecureFieldConfig> {
+    fn accessibility_is_render_driven() -> bool {
+        true
+    }
+
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
         HydrolysisRenderer::render_secure_field(state, ctx, view, env);
     }
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env)
-    }
-
-    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
-        #[cfg(feature = "accessibility")]
-        {
-            let secure_field = view.as_inner();
-            let renderer = unsafe { ctx.renderer() };
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
-            );
-            let default_label = renderer.accessibility_label_from_view(&secure_field.label, env);
-            let label = renderer.resolve_accessibility_label(env, default_label);
-            if let Some(label) = label {
-                node.set_label(label);
-            }
-            let secure_len = renderer
-                .read_signal(&secure_field.value)
-                .expose()
-                .chars()
-                .count();
-            node.set_value("*".repeat(secure_len));
-            node.add_action(AccessibilityAction::Focus);
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::SetValue);
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            let _ = renderer.register_accessibility_node(
-                node,
-                bounds,
-                env,
-                Some(AccessibilityActionTarget::SecureField {
-                    value: secure_field.value.clone(),
-                }),
-            );
-        }
     }
 }
 
@@ -2457,20 +3118,54 @@ impl HydroNativeView for Native<Dynamic> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        if let Some(size) = state.dynamic_intrinsic_cache.get(&identity) {
-            return *size;
+        if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity) {
+            return dimensions.size;
         }
         let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| measure_view_intrinsic(content, state, env))
+            content.map(|content| measure_view_dimensions(content, state, env))
         });
         let Some(initial) = initial else {
             panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node");
         };
-        let Some(size) = initial else {
+        let Some(dimensions) = initial else {
             panic!("hydrolysis Dynamic intrinsic requires an initial view before layout");
         };
-        state.dynamic_intrinsic_cache.insert(identity, size);
-        size
+        state
+            .dynamic_intrinsic_cache
+            .insert(identity, dimensions.clone());
+        dimensions.size
+    }
+
+    fn dimensions(
+        state: &mut HydroState,
+        view: &Self,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let dynamic = view.as_inner();
+        let identity = dynamic.identity();
+        if proposal == ProposalSize::UNSPECIFIED
+            && let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity)
+        {
+            return dimensions.clone();
+        }
+
+        let initial = dynamic.with_unconnected_view(|content| {
+            content
+                .map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
+        });
+        let Some(initial) = initial else {
+            panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node");
+        };
+        let Some(dimensions) = initial else {
+            panic!("hydrolysis Dynamic dimensions requires an initial view before layout");
+        };
+        if proposal == ProposalSize::UNSPECIFIED {
+            state
+                .dynamic_intrinsic_cache
+                .insert(identity, dimensions.clone());
+        }
+        dimensions
     }
 }
 
@@ -2713,9 +3408,10 @@ impl HydroNativeView for Native<SliderConfig> {
             }
             let start = *slider.range.start();
             let end = *slider.range.end();
-            if start >= end {
-                panic!("hydrolysis slider requires range start < end");
-            }
+            assert!(
+                !(start >= end),
+                "hydrolysis slider requires range start < end"
+            );
             let current = renderer.read_signal(&slider.value).clamp(start, end);
             node.set_numeric_value(current);
             node.set_min_numeric_value(start);
@@ -2755,9 +3451,10 @@ impl HydroNativeView for Native<PickerConfig> {
             let picker = view.as_inner();
             let renderer = unsafe { ctx.renderer() };
             let items = renderer.read_signal(&picker.items);
-            if items.is_empty() {
-                panic!("hydrolysis picker requires at least one item");
-            }
+            assert!(
+                !(items.is_empty()),
+                "hydrolysis picker requires at least one item"
+            );
             match picker.style {
                 PickerStyle::Automatic | PickerStyle::Menu => {
                     let selected = renderer.read_signal(&picker.selection);
@@ -3031,12 +3728,19 @@ impl HydrolysisRenderer {
             dispatcher,
             vello_renderer,
             scene: vello::Scene::new(),
-            surface_blit: None,
+            vello_layer_surface: None,
+            gpu_surface_compositor: None,
+            gpu_surface_slots: Vec::new(),
+            gpu_surface_cursor: 0,
+            render_layers: Vec::new(),
+            active_scene_layers: Vec::new(),
             active_filter_images: Vec::new(),
             pointer_targets: Vec::new(),
             active_pointer_drag_target: None,
             active_pointer_drag_signature: None,
             gesture_engine: GestureEngine::default(),
+            gesture_group_ids: BTreeMap::new(),
+            next_gesture_group_id: 0,
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
             text_input_targets: Vec::new(),
@@ -3051,6 +3755,7 @@ impl HydrolysisRenderer {
             lifecycle_disappear_previous: BTreeMap::new(),
             lifecycle_disappear_current: BTreeMap::new(),
             lifecycle_disappear_slot: 0,
+            redraw_requested: Rc::new(Cell::new(false)),
             rebuild_requested: Rc::new(Cell::new(false)),
             dynamic_nodes: BTreeMap::new(),
             animation_controller: AnimationController::default(),
@@ -3083,6 +3788,8 @@ impl HydrolysisRenderer {
             accessibility_root_label: String::from("WaterUI Window"),
             #[cfg(feature = "accessibility")]
             accessibility_focus: ACCESSIBILITY_ROOT_NODE_ID,
+            #[cfg(feature = "accessibility")]
+            pending_text_input_accessibility_nodes: VecDeque::new(),
             #[cfg(feature = "accessibility")]
             accessibility_suppression_depth: 0,
             #[cfg(feature = "accessibility")]
@@ -3198,9 +3905,10 @@ impl HydrolysisRenderer {
         let started = self.text_caret_fade_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let cycle_secs = INPUT_CARET_FADE_CYCLE_DURATION.as_secs_f32();
-        if cycle_secs <= 0.0 {
-            panic!("hydrolysis text caret fade cycle duration must be > 0");
-        }
+        assert!(
+            !(cycle_secs <= 0.0),
+            "hydrolysis text caret fade cycle duration must be > 0"
+        );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = ((core::f32::consts::TAU * phase).cos() + 1.0) * 0.5;
         INPUT_CARET_MIN_OPACITY + (1.0 - INPUT_CARET_MIN_OPACITY) * wave
@@ -3211,7 +3919,19 @@ impl HydrolysisRenderer {
         if previous == focused {
             return false;
         }
+        let previous_binding = previous
+            .and_then(|index| self.text_input_targets.as_slice().get(index))
+            .and_then(|target| target.focus_binding.clone());
+        let next_binding = focused
+            .and_then(|index| self.text_input_targets.as_slice().get(index))
+            .and_then(|target| target.focus_binding.clone());
+        if let Some(binding) = previous_binding {
+            binding.set(false);
+        }
         self.focused_text_input.set(focused);
+        if let Some(binding) = next_binding {
+            binding.set(true);
+        }
         self.ime_preedit = None;
         if focused.is_some() {
             self.reset_text_caret_animation(Instant::now());
@@ -3245,59 +3965,18 @@ impl HydrolysisRenderer {
     }
 
     #[cfg(feature = "accessibility")]
-    fn accessibility_text_input_focus_node_at_point(
-        &self,
-        point: vello::kurbo::Point,
-    ) -> Option<AccessibilityNodeId> {
-        let mut focused = None;
-        for (node_id, node) in &self.accessibility_nodes {
-            let Some(bounds) = node.bounds() else {
-                continue;
-            };
-            if !accesskit_rect_to_kurbo_rect(bounds).contains(point) {
-                continue;
-            }
-            match node.role() {
-                AccessibilityNodeRole::TextInput
-                | AccessibilityNodeRole::MultilineTextInput
-                | AccessibilityNodeRole::PasswordInput => {
-                    focused = Some(*node_id);
-                }
-                _ => {}
-            }
-        }
-        focused
-    }
-
-    #[cfg(feature = "accessibility")]
     fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
         let index = self.focused_text_input.get()?;
         let target = self.text_input_targets.as_slice().get(index)?;
-        let center = accessibility_activation_point(target.bounds);
-        self.accessibility_text_input_focus_node_at_point(center)
+        target.accessibility_node_id
     }
 
     #[cfg(feature = "accessibility")]
     fn focus_text_input_for_accessibility_node(&mut self, node_id: AccessibilityNodeId) -> bool {
-        let node = self
-            .accessibility_nodes
-            .iter()
-            .find_map(|(id, node)| (*id == node_id).then_some(node))
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis accessibility focus target node {:?} is missing in current tree",
-                    node_id
-                )
-            });
-        let bounds = node.bounds().unwrap_or_else(|| {
-            panic!(
-                "hydrolysis accessibility focus target node {:?} is missing bounds",
-                node_id
-            )
-        });
-        let point = accessibility_activation_point(accesskit_rect_to_kurbo_rect(bounds));
         let focused = self
-            .topmost_text_input_index_at_point(point)
+            .text_input_targets
+            .iter()
+            .position(|target| target.accessibility_node_id == Some(node_id))
             .unwrap_or_else(|| {
                 panic!(
                     "hydrolysis accessibility focus target node {:?} has no matching text input target",
@@ -3527,6 +4206,7 @@ impl HydrolysisRenderer {
 
     fn replay_dynamic_subtree(&mut self, ctx: RenderContext, subtree: &DynamicSubtree) {
         self.scene.append(&subtree.scene, Some(ctx.transform));
+        let mut gesture_group_remap = BTreeMap::new();
 
         for target in &subtree.pointer_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
@@ -3539,10 +4219,14 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.gesture_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            let group_id = *gesture_group_remap
+                .entry(target.group_id)
+                .or_insert_with(|| self.allocate_gesture_group_id());
             self.register_gesture_target_recognizer(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 target.clone(),
                 depth,
+                group_id,
             );
         }
         for target in &subtree.cursor_targets {
@@ -3555,14 +4239,29 @@ impl HydrolysisRenderer {
             let bounds = transformed_rect(ctx.hit_transform, target.bounds);
             self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
         }
+        #[cfg(feature = "accessibility")]
+        let accessibility_node_map =
+            self.replay_dynamic_accessibility_subtree(ctx.hit_transform, &subtree.accessibility);
         for target in &subtree.text_input_targets {
             let depth = self.replay_target_depth(subtree.depth_base, target.depth);
+            #[cfg(feature = "accessibility")]
+            let accessibility_node_id = target.accessibility_node_id.map(|node_id| {
+                *accessibility_node_map.get(&node_id).unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis dynamic text input accessibility node {:?} is missing remap entry",
+                        node_id
+                    )
+                })
+            });
             self.register_text_input_target_action(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 transformed_rect(ctx.hit_transform, target.cursor_area),
                 target.purpose,
                 Rc::clone(&target.action),
                 depth,
+                target.focus_binding.clone(),
+                #[cfg(feature = "accessibility")]
+                accessibility_node_id,
             );
         }
         for target in &subtree.scroll_targets {
@@ -3571,9 +4270,6 @@ impl HydrolysisRenderer {
                 Rc::clone(&target.action),
             );
         }
-
-        #[cfg(feature = "accessibility")]
-        self.replay_dynamic_accessibility_subtree(ctx.hit_transform, &subtree.accessibility);
     }
 
     #[cfg(feature = "accessibility")]
@@ -3591,9 +4287,9 @@ impl HydrolysisRenderer {
         &mut self,
         transform: vello::kurbo::Affine,
         subtree: &DynamicAccessibilitySubtree,
-    ) {
+    ) -> BTreeMap<AccessibilityNodeId, AccessibilityNodeId> {
         if self.accessibility_suppression_depth > 0 {
-            return;
+            return BTreeMap::new();
         }
 
         let mut id_map = BTreeMap::new();
@@ -3626,6 +4322,7 @@ impl HydrolysisRenderer {
                 );
             }
         }
+        id_map
     }
 
     fn watch_signal<S>(&mut self, signal: &S)
@@ -3841,7 +4538,7 @@ impl HydrolysisRenderer {
                         ProposalSize::new(None, Some(ctx.bounds.height() as f32))
                     }
                 };
-                let size = subview.size_that_fits(proposal);
+                let size = subview.measure(proposal).size;
                 let extent = match axis_config {
                     LazyStackAxisConfig::Vertical { .. } => f64::from(size.height),
                     LazyStackAxisConfig::Horizontal { .. } => f64::from(size.width),
@@ -3872,17 +4569,16 @@ impl HydrolysisRenderer {
                     ProposalSize::new(None, Some(ctx.bounds.height() as f32))
                 }
             };
-            let size = subview.size_that_fits(proposal);
+            let size = subview.measure(proposal).size;
             let child_rect = match axis_config {
                 LazyStackAxisConfig::Vertical { alignment, .. } => {
-                    if matches!(
-                        subview.stretch_axis(),
-                        StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-                    ) {
-                        panic!(
-                            "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
-                        );
-                    }
+                    assert!(
+                        !(matches!(
+                            subview.stretch_axis(),
+                            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+                        )),
+                        "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
+                    );
                     let child_width = if matches!(
                         subview.stretch_axis(),
                         StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
@@ -3893,24 +4589,23 @@ impl HydrolysisRenderer {
                         f64::from(size.width).min(ctx.bounds.width())
                     };
                     let child_height = f64::from(size.height);
-                    let x = match alignment {
-                        HorizontalAlignment::Leading => ctx.bounds.x0,
-                        HorizontalAlignment::Center => {
-                            ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
-                        }
-                        HorizontalAlignment::Trailing => ctx.bounds.x1 - child_width,
+                    let x = if alignment == HorizontalAlignment::Leading {
+                        ctx.bounds.x0
+                    } else if alignment == HorizontalAlignment::Trailing {
+                        ctx.bounds.x1 - child_width
+                    } else {
+                        ctx.bounds.x0 + (ctx.bounds.width() - child_width) / 2.0
                     };
                     vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
                 }
                 LazyStackAxisConfig::Horizontal { alignment, .. } => {
-                    if matches!(
-                        subview.stretch_axis(),
-                        StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-                    ) {
-                        panic!(
-                            "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
-                        );
-                    }
+                    assert!(
+                        !(matches!(
+                            subview.stretch_axis(),
+                            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
+                        )),
+                        "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
+                    );
                     let child_width = f64::from(size.width);
                     let child_height = if matches!(
                         subview.stretch_axis(),
@@ -3921,12 +4616,12 @@ impl HydrolysisRenderer {
                     } else {
                         f64::from(size.height).min(ctx.bounds.height())
                     };
-                    let y = match alignment {
-                        VerticalAlignment::Top => ctx.bounds.y0,
-                        VerticalAlignment::Center => {
-                            ctx.bounds.y0 + (ctx.bounds.height() - child_height) / 2.0
-                        }
-                        VerticalAlignment::Bottom => ctx.bounds.y1 - child_height,
+                    let y = if alignment == VerticalAlignment::Top {
+                        ctx.bounds.y0
+                    } else if alignment == VerticalAlignment::Bottom {
+                        ctx.bounds.y1 - child_height
+                    } else {
+                        ctx.bounds.y0 + (ctx.bounds.height() - child_height) / 2.0
                     };
                     vello::kurbo::Rect::new(cursor, y, cursor + child_width, y + child_height)
                 }
@@ -3996,14 +4691,8 @@ impl HydrolysisRenderer {
             metrics.offset_y + viewport.height(),
         );
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
         {
             let renderer = unsafe { ctx.renderer() };
@@ -4018,8 +4707,8 @@ impl HydrolysisRenderer {
                 .expect("lazy viewport stack underflow in render_scroll_view");
         }
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         {
@@ -4290,9 +4979,10 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let tabs = tabs.into_inner();
-        if tabs.tabs.is_empty() {
-            panic!("hydrolysis Tabs requires at least one tab");
-        }
+        assert!(
+            !(tabs.tabs.is_empty()),
+            "hydrolysis Tabs requires at least one tab"
+        );
 
         let tab_count = tabs.tabs.len();
         let position = tabs.position;
@@ -4414,14 +5104,8 @@ impl HydrolysisRenderer {
         };
         let metrics = handle.metrics();
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
 
         let window = resolve_visible_index_window(
@@ -4537,7 +5221,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, up_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, index, index - 1);
+                            (action.as_ref())(env, Move::new(index, index - 1));
                             true
                         },
                     );
@@ -4554,7 +5238,7 @@ impl HydrolysisRenderer {
                     renderer.register_pointer_target(
                         transformed_rect(ctx.hit_transform, down_rect),
                         move |_point, env| {
-                            (action.as_ref())(env, index, index + 1);
+                            (action.as_ref())(env, Move::new(index, index + 1));
                             true
                         },
                     );
@@ -4614,8 +5298,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         let renderer = unsafe { ctx.renderer() };
@@ -4706,14 +5390,8 @@ impl HydrolysisRenderer {
         };
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &viewport,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(1.0, ctx.transform, viewport);
         }
 
         let origin_x = viewport.x0 - scroll_metrics.offset_x;
@@ -4790,8 +5468,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
 
         let renderer = unsafe { ctx.renderer() };
@@ -4867,7 +5545,13 @@ impl HydrolysisRenderer {
                 }
             }
         }
-        Self::render_styled_text(state, ctx, StyledStr::plain(text), env);
+        Self::render_styled_text(
+            state,
+            ctx,
+            StyledStr::plain(text),
+            HorizontalAlignment::Leading,
+            env,
+        );
     }
 
     fn render_text_config(
@@ -4876,30 +5560,43 @@ impl HydrolysisRenderer {
         text: Native<TextConfig>,
         env: &Environment,
     ) {
+        let text = text.into_inner();
         let styled = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&text.into_inner().content)
+            renderer.read_signal(&text.content)
         };
-        Self::render_styled_text(state, ctx, styled, env);
+        let alignment = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&text.paragraph_alignment)
+        };
+        Self::render_styled_text(state, ctx, styled, alignment, env);
     }
 
     fn render_styled_text(
         state: &mut HydroState,
         ctx: RenderContext,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        Self::render_styled_text_limited(state, ctx, styled, env, None);
+        Self::render_styled_text_limited(state, ctx, styled, alignment, env, None);
     }
 
     fn render_styled_text_limited(
         state: &mut HydroState,
         ctx: RenderContext,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
         max_lines: Option<usize>,
     ) {
-        let layout = Self::build_text_layout(state, styled, env, Some(ctx.bounds.width() as f32));
+        let layout = Self::build_text_layout(
+            state,
+            styled,
+            alignment,
+            env,
+            Some(ctx.bounds.width() as f32),
+        );
         Self::draw_text_layout(ctx, &layout, max_lines);
     }
 
@@ -4950,6 +5647,7 @@ impl HydrolysisRenderer {
     fn build_text_layout(
         state: &mut HydroState,
         styled: StyledStr,
+        alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
     ) -> parley::Layout<[u8; 4]> {
@@ -4995,10 +5693,51 @@ impl HydrolysisRenderer {
         layout.break_all_lines(max_width);
         layout.align(
             max_width,
-            parley::Alignment::Start,
+            parley_alignment(alignment),
             parley::AlignmentOptions::default(),
         );
         layout
+    }
+
+    fn measure_text_dimensions(
+        state: &mut HydroState,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        max_width: Option<f32>,
+        max_lines: Option<usize>,
+    ) -> ViewDimensions {
+        let layout = Self::build_text_layout(state, styled, alignment, env, max_width);
+        if layout.is_empty() {
+            return ViewDimensions::new(LayoutSize::zero());
+        }
+
+        let mut width = 0.0_f32;
+        let mut height = 0.0_f32;
+        let mut first_baseline = None;
+        let mut last_baseline = None;
+
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
+            let metrics = line.metrics();
+            width = width.max(metrics.advance);
+            height += metrics.line_height;
+            if first_baseline.is_none() {
+                first_baseline = Some(metrics.baseline);
+            }
+            last_baseline = Some(metrics.baseline);
+        }
+
+        let mut dimensions = ViewDimensions::new(LayoutSize::new(width, height));
+        if let Some(first_baseline) = first_baseline {
+            dimensions.set_vertical(VerticalAlignment::FirstBaseline, first_baseline);
+        }
+        if let Some(last_baseline) = last_baseline {
+            dimensions.set_vertical(VerticalAlignment::LastBaseline, last_baseline);
+        }
+        dimensions
     }
 
     fn measure_text_intrinsic_size(
@@ -5006,7 +5745,8 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) -> LayoutSize {
-        Self::measure_text_intrinsic_size_with_line_limit(state, styled, env, None)
+        Self::measure_text_dimensions(state, styled, HorizontalAlignment::Leading, env, None, None)
+            .size
     }
 
     fn measure_text_intrinsic_size_with_line_limit(
@@ -5015,21 +5755,15 @@ impl HydrolysisRenderer {
         env: &Environment,
         max_lines: Option<usize>,
     ) -> LayoutSize {
-        let layout = Self::build_text_layout(state, styled, env, None);
-        if max_lines.is_none() {
-            return LayoutSize::new(layout.full_width(), layout.height());
-        }
-        let mut width = 0.0f32;
-        let mut height = 0.0f32;
-        for (index, line) in layout.lines().enumerate() {
-            if max_lines.is_some_and(|limit| index >= limit) {
-                break;
-            }
-            let metrics = line.metrics();
-            width = width.max(metrics.advance);
-            height += metrics.line_height;
-        }
-        LayoutSize::new(width, height)
+        Self::measure_text_dimensions(
+            state,
+            styled,
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            max_lines,
+        )
+        .size
     }
 
     fn push_text_style(
@@ -5241,9 +5975,10 @@ impl HydrolysisRenderer {
         let range_start = *slider.range.start();
         let range_end = *slider.range.end();
         let span = range_end - range_start;
-        if span <= 0.0 {
-            panic!("hydrolysis slider requires range start < end");
-        }
+        assert!(
+            !(span <= 0.0),
+            "hydrolysis slider requires range start < end"
+        );
 
         let track_left = if min_label_width > 0.0 {
             min_label_x1 + SLIDER_HORIZONTAL_SPACING
@@ -5323,9 +6058,10 @@ impl HydrolysisRenderer {
         );
         let value_binding = slider.value;
         let usable_track = track_right - track_left;
-        if usable_track <= 0.0 {
-            panic!("hydrolysis slider resolved a non-positive track width");
-        }
+        assert!(
+            !(usable_track <= 0.0),
+            "hydrolysis slider resolved a non-positive track width"
+        );
         let inverse_transform = ctx.hit_transform.inverse();
         let value_epsilon = slider_value_epsilon(span, usable_track);
         tracing::trace!(
@@ -5411,9 +6147,10 @@ impl HydrolysisRenderer {
 
         let range_start = *stepper.range.start();
         let range_end = *stepper.range.end();
-        if range_start > range_end {
-            panic!("hydrolysis stepper requires an ordered range");
-        }
+        assert!(
+            !(range_start > range_end),
+            "hydrolysis stepper requires an ordered range"
+        );
 
         let value_binding_minus = stepper.value.clone();
         let value_binding_plus = stepper.value;
@@ -5433,9 +6170,7 @@ impl HydrolysisRenderer {
             transformed_rect(ctx.hit_transform, minus_bounds),
             move |_point, _env| {
                 let step = step_signal_minus.get();
-                if step <= 0 {
-                    panic!("hydrolysis stepper requires positive step");
-                }
+                assert!(!(step <= 0), "hydrolysis stepper requires positive step");
                 let current = value_binding_minus.get();
                 let next = current.saturating_sub(step).clamp(range_start, range_end);
                 value_binding_minus.set(next);
@@ -5446,9 +6181,7 @@ impl HydrolysisRenderer {
             transformed_rect(ctx.hit_transform, plus_bounds),
             move |_point, _env| {
                 let step = step_signal_plus.get();
-                if step <= 0 {
-                    panic!("hydrolysis stepper requires positive step");
-                }
+                assert!(!(step <= 0), "hydrolysis stepper requires positive step");
                 let current = value_binding_plus.get();
                 let next = current.saturating_add(step).clamp(range_start, range_end);
                 value_binding_plus.set(next);
@@ -5593,6 +6326,60 @@ impl HydrolysisRenderer {
         let mut text_field = text_field.into_inner();
         text_field.label = normalize_layout_view(text_field.label, env);
         let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+        #[cfg(feature = "accessibility")]
+        {
+            let prompt = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .read_signal(&text_field.prompt.content())
+                    .to_plain()
+                    .to_string()
+            };
+            let value = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.read_signal(&text_field.value).to_plain().to_string()
+            };
+            let default_label = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .accessibility_label_from_view(&text_field.label, env)
+                    .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()))
+            };
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            if !prompt.is_empty() {
+                node.set_placeholder(prompt);
+            }
+            if !value.is_empty() {
+                node.set_value(value);
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            if let Some(node_id) = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::TextField {
+                    value: text_field.value.clone(),
+                    line_limit,
+                }),
+            ) {
+                renderer.push_pending_text_input_accessibility_node(node_id);
+            }
+        }
         let label_size = measure_view_intrinsic(&text_field.label, state, env);
         let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
             f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
@@ -5674,6 +6461,7 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             display_styled,
+            HorizontalAlignment::Leading,
             env,
             line_limit,
         );
@@ -5684,6 +6472,7 @@ impl HydrolysisRenderer {
         let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(committed_with_preedit),
+            HorizontalAlignment::Leading,
             env,
             Some(text_bounds.width() as f32),
         );
@@ -5749,6 +6538,44 @@ impl HydrolysisRenderer {
     ) {
         let mut secure_field = secure_field.into_inner();
         secure_field.label = normalize_layout_view(secure_field.label, env);
+        #[cfg(feature = "accessibility")]
+        {
+            let default_label = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer.accessibility_label_from_view(&secure_field.label, env)
+            };
+            let secure_len = {
+                let renderer = unsafe { ctx.renderer() };
+                renderer
+                    .read_signal(&secure_field.value)
+                    .expose()
+                    .chars()
+                    .count()
+            };
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
+            );
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            node.set_value("*".repeat(secure_len));
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            if let Some(node_id) = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::SecureField {
+                    value: secure_field.value.clone(),
+                }),
+            ) {
+                renderer.push_pending_text_input_accessibility_node(node_id);
+            }
+        }
         let label_size = measure_view_intrinsic(&secure_field.label, state, env);
         let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
             f64::from(label_size.height).max(INPUT_LABEL_HEIGHT)
@@ -5812,12 +6639,14 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             masked_display,
+            HorizontalAlignment::Leading,
             env,
             Some(1),
         );
         let cursor_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(masked),
+            HorizontalAlignment::Leading,
             env,
             Some(text_bounds.width() as f32),
         );
@@ -5886,9 +6715,10 @@ impl HydrolysisRenderer {
             let renderer = unsafe { ctx.renderer() };
             renderer.read_signal(&picker.items)
         };
-        if items.is_empty() {
-            panic!("hydrolysis picker requires at least one item");
-        }
+        assert!(
+            !(items.is_empty()),
+            "hydrolysis picker requires at least one item"
+        );
         match picker.style {
             PickerStyle::Automatic | PickerStyle::Menu => {
                 Self::render_menu_picker(state, ctx, picker.selection, items, env);
@@ -5959,6 +6789,7 @@ impl HydrolysisRenderer {
                 vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
             ),
             StyledStr::plain(selected_text),
+            HorizontalAlignment::Leading,
             env,
         );
 
@@ -6036,6 +6867,7 @@ impl HydrolysisRenderer {
                     ),
                 ),
                 StyledStr::plain(option_texts[index].clone()),
+                HorizontalAlignment::Leading,
                 env,
             );
 
@@ -6138,6 +6970,7 @@ impl HydrolysisRenderer {
                     vello::kurbo::Rect::new(0.0, 0.0, label_rect.width(), label_rect.height()),
                 ),
                 label,
+                HorizontalAlignment::Leading,
                 env,
             );
 
@@ -6200,8 +7033,8 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
-            let intrinsic = measure_view_intrinsic(&content, state, env);
-            state.dynamic_intrinsic_cache.insert(identity, intrinsic);
+            let dimensions = measure_view_dimensions(&content, state, env);
+            state.dynamic_intrinsic_cache.insert(identity, dimensions);
             let local_ctx = RenderContext {
                 renderer_ptr: ctx.renderer_ptr,
                 transform: vello::kurbo::Affine::IDENTITY,
@@ -6238,7 +7071,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let styled = StyledStr::plain(icon.into_inner().name);
-        Self::render_styled_text(state, ctx, styled, env);
+        Self::render_styled_text(state, ctx, styled, HorizontalAlignment::Leading, env);
     }
 
     fn render_gpu_surface(
@@ -6247,34 +7080,9 @@ impl HydrolysisRenderer {
         surface: Native<GpuSurface>,
         env: &Environment,
     ) {
-        let width = (ctx.bounds.width().max(1.0).round()) as u32;
-        let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let size = OffscreenSize::try_from_pixels(width, height)
-            .expect("hydrolysis GpuSurface requires non-zero offscreen size");
-        let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
-        let mut local_env = env.clone();
-        let output = surface
-            .into_inner()
-            .render_offscreen(config, &mut local_env)
-            .expect("hydrolysis failed to render GpuSurface offscreen");
-
-        let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(output.rgba8),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: output.width,
-            height: output.height,
-        };
-        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output.width),
-                ctx.bounds.height() / f64::from(output.height),
-            );
-        let scene = unsafe { ctx.scene() };
-        scene.draw_image(
-            &vello::peniko::ImageBrush::new(image),
-            ctx.transform * image_transform,
-        );
+        let renderer = unsafe { ctx.renderer() };
+        let slot_index = renderer.bind_gpu_surface_slot(surface.into_inner(), env);
+        renderer.push_gpu_surface_layer(slot_index, ctx.transform, ctx.bounds);
     }
 
     fn render_scene_view(
@@ -6322,9 +7130,10 @@ impl HydrolysisRenderer {
         let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
         let output_size = effect.output_size();
         let (output_width, output_height) = output_size.compute(input_width, input_height);
-        if output_width == 0 || output_height == 0 {
-            panic!("hydrolysis ViewEffect requires non-zero output dimensions");
-        }
+        assert!(
+            !(output_width == 0 || output_height == 0),
+            "hydrolysis ViewEffect requires non-zero output dimensions"
+        );
 
         let subtree = Self::render_subtree_scene(ctx, env, effect.take_content());
 
@@ -6508,14 +7317,8 @@ impl HydrolysisRenderer {
             renderer.resolve_animated_scalar(&metadata.value.value)
         };
         {
-            let scene = unsafe { ctx.scene() };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                alpha,
-                ctx.transform,
-                &ctx.bounds,
-            );
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_rect(alpha, ctx.transform, ctx.bounds);
         }
 
         {
@@ -6527,8 +7330,8 @@ impl HydrolysisRenderer {
         }
 
         {
-            let scene = unsafe { ctx.scene() };
-            scene.pop_layer();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
         }
     }
 
@@ -6628,7 +7431,12 @@ impl HydrolysisRenderer {
             width,
             height,
         };
-        let needs_redraw = filter.render(&input, &output) || filter.redraw_hint();
+        let needs_redraw = match filter.render(&input, &output) {
+            Ok(needs_redraw) => needs_redraw || filter.redraw_hint(),
+            Err(err) => {
+                panic!("hydrolysis filter render failed: {err}");
+            }
+        };
         if needs_redraw {
             renderer.request_rebuild();
         }
@@ -6712,16 +7520,15 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let clip_path = path_commands_to_path(value.commands(), ctx.bounds);
-        let scene = unsafe { ctx.scene() };
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            ctx.transform,
-            &clip_path,
-        );
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.push_layer_path(1.0, ctx.transform, clip_path);
+        }
         Self::dispatch_any(ctx, env, content);
-        scene.pop_layer();
+        {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.pop_layer();
+        }
     }
 
     fn render_border_metadata(
@@ -6857,11 +7664,23 @@ impl HydrolysisRenderer {
         let start = renderer.text_input_targets.len();
         Self::dispatch_any(ctx, env, content);
         let end = renderer.text_input_targets.len();
+        let focus_target_count = end - start;
+        assert!(
+            focus_target_count == 1,
+            "hydrolysis .focused() requires exactly one TextField or SecureField in the wrapped subtree, found {focus_target_count}"
+        );
+        let target = renderer
+            .text_input_targets
+            .get_mut(start)
+            .expect("hydrolysis focused metadata missing registered text input target");
+        assert!(
+            target.focus_binding.is_none(),
+            "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+        );
+        target.focus_binding = Some(value.0.clone());
 
         if should_focus {
-            if start < end {
-                renderer.set_focused_text_input(Some(start));
-            }
+            renderer.set_focused_text_input(Some(start));
             return;
         }
 
@@ -6945,8 +7764,10 @@ impl HydrolysisRenderer {
             gesture, action, ..
         } = value;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let gesture_group_identity = gesture_group_identity(&content);
         let renderer = unsafe { ctx.renderer() };
-        renderer.register_gesture_target(bounds, gesture, action);
+        let group_id = renderer.gesture_group_id_for_identity(gesture_group_identity);
+        renderer.register_gesture_target(bounds, group_id, gesture, action);
 
         Self::dispatch_any(ctx, env, content);
     }
@@ -7191,9 +8012,12 @@ impl HydrolysisRenderer {
         self.text_input_targets.clear();
         self.scroll_targets.clear();
         self.scene.reset();
+        self.render_layers.clear();
+        self.active_scene_layers.clear();
         #[cfg(feature = "accessibility")]
         {
             self.pending_accessibility_tree_update = None;
+            self.pending_text_input_accessibility_nodes.clear();
         }
     }
 
@@ -7203,6 +8027,8 @@ impl HydrolysisRenderer {
         self.lifecycle_disappear_slot = 0;
         self.hit_test_opacity = 1.0;
         self.hit_test_order = 0;
+        self.gesture_group_ids.clear();
+        self.next_gesture_group_id = 0;
         self.animation_controller.begin_rebuild_frame();
         self.scroll_controller.begin_rebuild_frame();
         self.hover_controller.begin_rebuild_frame();
@@ -7213,6 +8039,9 @@ impl HydrolysisRenderer {
         self.pending_scroll_handles.clear();
         self.pending_navigation_entries.clear();
         self.navigation_cursor = 0;
+        self.gpu_surface_cursor = 0;
+        self.render_layers.clear();
+        self.active_scene_layers.clear();
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
         #[cfg(feature = "accessibility")]
@@ -7221,11 +8050,18 @@ impl HydrolysisRenderer {
             self.accessibility_root_children.clear();
             self.accessibility_actions.clear();
             self.accessibility_next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
+            self.pending_text_input_accessibility_nodes.clear();
             self.accessibility_suppression_depth = 0;
         }
     }
 
     pub fn finish_rebuild_frame(&mut self) {
+        assert!(
+            self.active_scene_layers.is_empty(),
+            "hydrolysis renderer: scene layer stack must be empty at end of rebuild (len={})",
+            self.active_scene_layers.len()
+        );
+        self.flush_vello_scene_layer();
         self.previous_frame_retain = core::mem::take(&mut self.current_frame_retain);
 
         let previous_hooks = core::mem::take(&mut self.lifecycle_disappear_previous);
@@ -7250,6 +8086,7 @@ impl HydrolysisRenderer {
         self.lazy_list_controller.finish_rebuild_frame();
         self.lazy_table_controller.finish_rebuild_frame();
         self.navigation_slots.truncate(self.navigation_cursor);
+        self.gpu_surface_slots.truncate(self.gpu_surface_cursor);
         self.picker_menu_slots.truncate(self.picker_menu_cursor);
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
         self.dynamic_nodes
@@ -7284,6 +8121,133 @@ impl HydrolysisRenderer {
         self.dispatcher.state_mut().clear_frame_resources();
     }
 
+    fn bind_gpu_surface_slot(&mut self, surface: GpuSurface, env: &Environment) -> usize {
+        let index = self.gpu_surface_cursor;
+        self.gpu_surface_cursor = self
+            .gpu_surface_cursor
+            .checked_add(1)
+            .expect("hydrolysis gpu surface slot cursor overflow");
+
+        if index == self.gpu_surface_slots.len() {
+            self.gpu_surface_slots
+                .push(EmbeddedGpuSurfaceRuntime::new(surface, env));
+        } else {
+            self.gpu_surface_slots[index].replace_surface(surface, env);
+        }
+
+        index
+    }
+
+    fn push_layer_rect(
+        &mut self,
+        alpha: f32,
+        transform: vello::kurbo::Affine,
+        rect: vello::kurbo::Rect,
+    ) {
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect,
+        );
+        self.active_scene_layers.push(ActiveSceneLayer {
+            alpha,
+            transform,
+            shape: LayerShape::Rect(rect),
+        });
+    }
+
+    fn push_layer_path(
+        &mut self,
+        alpha: f32,
+        transform: vello::kurbo::Affine,
+        path: vello::kurbo::BezPath,
+    ) {
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &path,
+        );
+        self.active_scene_layers.push(ActiveSceneLayer {
+            alpha,
+            transform,
+            shape: LayerShape::Path(path),
+        });
+    }
+
+    fn pop_layer(&mut self) {
+        self.scene.pop_layer();
+        self.active_scene_layers
+            .pop()
+            .expect("hydrolysis renderer: pop_layer underflow");
+    }
+
+    fn flush_vello_scene_layer(&mut self) {
+        assert!(
+            (self.scene.encoding().n_open_clips as usize) == self.active_scene_layers.len(),
+            "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
+            self.scene.encoding().n_open_clips,
+            self.active_scene_layers.len()
+        );
+
+        for _ in 0..self.active_scene_layers.len() {
+            self.scene.pop_layer();
+        }
+
+        if self.scene.encoding().is_empty() {
+            for layer in &self.active_scene_layers {
+                layer.push_to_scene(&mut self.scene);
+            }
+            return;
+        }
+        let scene = core::mem::take(&mut self.scene);
+        self.render_layers.push(RenderLayer::Vello(scene));
+
+        for layer in &self.active_scene_layers {
+            layer.push_to_scene(&mut self.scene);
+        }
+    }
+
+    fn push_gpu_surface_layer(
+        &mut self,
+        slot_index: usize,
+        transform: vello::kurbo::Affine,
+        bounds: vello::kurbo::Rect,
+    ) {
+        self.flush_vello_scene_layer();
+        self.render_layers
+            .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
+                slot_index,
+                transform,
+                bounds,
+                active_layers: self.active_scene_layers.clone(),
+            }));
+    }
+
+    pub fn poll_gpu_surface_redraw_handles(&mut self) -> bool {
+        let mut requested = false;
+        for runtime in &self.gpu_surface_slots {
+            if runtime.take_external_redraw_request() {
+                requested = true;
+            }
+        }
+        if requested {
+            self.redraw_requested.set(true);
+        }
+        requested
+    }
+
+    pub fn request_redraw(&self) {
+        self.redraw_requested.set(true);
+    }
+
+    pub fn take_redraw_request(&self) -> bool {
+        self.redraw_requested.replace(false)
+    }
+
     pub fn request_rebuild(&self) {
         self.rebuild_requested.set(true);
     }
@@ -7308,6 +8272,16 @@ impl HydrolysisRenderer {
             height: target.cursor_area.height().max(1.0),
             purpose: target.purpose,
         })
+    }
+
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn focused_ui_node(&self) -> Option<AccessibilityNodeId> {
+        self.focused_text_input_accessibility_node()
+    }
+
+    pub fn clear_ui_focus(&mut self) -> bool {
+        self.set_focused_text_input(None)
     }
 
     #[must_use]
@@ -7483,40 +8457,51 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
         base_color: vello::peniko::Color,
     ) {
-        let params = vello::RenderParams {
-            base_color,
+        self.render_scene_to_surface(
+            device,
+            queue,
+            target,
+            target_format,
             width,
             height,
-            antialiasing_method: vello::AaConfig::Area,
-        };
-        self.vello_renderer
-            .render_to_texture(device, queue, &self.scene, target, &params)
-            .expect("hydrolysis renderer: failed to render scene");
+            base_color,
+        );
     }
 
-    fn ensure_surface_blit_state(
+    fn ensure_gpu_surface_compositor_state(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
     ) {
+        if self.gpu_surface_compositor.is_none() {
+            self.gpu_surface_compositor =
+                Some(GpuSurfaceCompositorState::new(device, queue, target_format));
+            return;
+        }
+        self.gpu_surface_compositor
+            .as_mut()
+            .expect("hydrolysis renderer: missing gpu surface compositor state")
+            .ensure_target_format(device, queue, target_format);
+    }
+
+    fn ensure_vello_layer_surface(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let size = (width, height);
         let needs_recreate = self
-            .surface_blit
+            .vello_layer_surface
             .as_ref()
-            .is_none_or(|state| state.target_format != target_format || state.size != size);
-
+            .is_none_or(|state| state.size != size);
         if !needs_recreate {
             return;
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_surface_blit_input"),
+            label: Some("hydrolysis_vello_layer_surface"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -7526,19 +8511,182 @@ impl HydrolysisRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let blitter = wgpu::util::TextureBlitter::new(device, target_format);
-
-        self.surface_blit = Some(SurfaceBlitState {
-            target_format,
+        self.vello_layer_surface = Some(VelloLayerSurfaceState {
             size,
             _texture: texture,
             view,
-            blitter,
         });
+    }
+
+    fn render_vello_layer_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &vello::Scene,
+        width: u32,
+        height: u32,
+    ) -> wgpu::TextureView {
+        self.ensure_vello_layer_surface(device, width, height);
+        let view = self
+            .vello_layer_surface
+            .as_ref()
+            .expect("hydrolysis renderer: missing vello layer surface state")
+            .view
+            .clone();
+        let params = vello::RenderParams {
+            base_color: vello::peniko::Color::TRANSPARENT,
+            width,
+            height,
+            antialiasing_method: vello::AaConfig::Area,
+        };
+        self.vello_renderer
+            .render_to_texture(device, queue, scene, &view, &params)
+            .expect("hydrolysis renderer: failed to render vello layer scene");
+        view
+    }
+
+    fn render_active_layers_mask_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        active_layers: &[ActiveSceneLayer],
+    ) -> wgpu::TextureView {
+        assert!(
+            !active_layers.is_empty(),
+            "hydrolysis renderer: active layer mask requires at least one layer"
+        );
+        let mut mask_scene = vello::Scene::new();
+        for layer in active_layers {
+            layer.push_to_scene(&mut mask_scene);
+        }
+        mask_scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            vello::peniko::Color::WHITE,
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        for _ in 0..active_layers.len() {
+            mask_scene.pop_layer();
+        }
+        self.render_vello_layer_to_texture(device, queue, &mask_scene, width, height)
+    }
+
+    fn default_compositor_mask_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) -> wgpu::TextureView {
+        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
+        self.gpu_surface_compositor
+            .as_ref()
+            .expect("hydrolysis renderer: missing gpu surface compositor state")
+            .white_mask_view
+            .clone()
+    }
+
+    fn clear_target_surface(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        base_color: vello::peniko::Color,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis_surface_clear_encoder"),
+        });
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hydrolysis_surface_clear_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color_to_wgpu(base_color)),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        drop(_pass);
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    fn composite_texture_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        layer_view: &wgpu::TextureView,
+        mask_view: &wgpu::TextureView,
+        uniform_bytes: &[u8; 64],
+        load_op: wgpu::LoadOp<wgpu::Color>,
+    ) {
+        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
+        let compositor = self
+            .gpu_surface_compositor
+            .as_ref()
+            .expect("hydrolysis renderer: missing gpu surface compositor state");
+
+        queue.write_buffer(&compositor.uniform_buffer, 0, uniform_bytes);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
+            layout: &compositor.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: compositor.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&compositor.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(layer_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_encoder"),
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hydrolysis_gpu_surface_compositor_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: load_op,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&compositor.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
+        drop(pass);
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
     pub fn render_scene_to_surface(
@@ -7551,40 +8699,99 @@ impl HydrolysisRenderer {
         height: u32,
         base_color: vello::peniko::Color,
     ) {
-        if target_format == wgpu::TextureFormat::Rgba8Unorm {
-            self.render_scene_to_texture(device, queue, target, width, height, base_color);
+        assert!(
+            matches!(
+                target_format.remove_srgb_suffix(),
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+            ) || matches!(
+                target_format,
+                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+            ),
+            "hydrolysis renderer: unsupported surface format {target_format:?}"
+        );
+
+        self.flush_vello_scene_layer();
+        let fullscreen_uniform =
+            encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]]);
+        let render_layers = core::mem::take(&mut self.render_layers);
+        if render_layers.is_empty() {
+            self.clear_target_surface(device, queue, target, base_color);
             return;
         }
+        let mut needs_redraw = false;
+        let mut is_first_layer = true;
 
-        if !matches!(
-            target_format.remove_srgb_suffix(),
-            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-        ) {
-            panic!(
-                "hydrolysis renderer: unsupported surface format for Vello path: {target_format:?}"
-            );
+        for layer in &render_layers {
+            let load_op = if is_first_layer {
+                wgpu::LoadOp::Clear(color_to_wgpu(base_color))
+            } else {
+                wgpu::LoadOp::Load
+            };
+            is_first_layer = false;
+            match layer {
+                RenderLayer::Vello(scene) => {
+                    let view =
+                        self.render_vello_layer_to_texture(device, queue, scene, width, height);
+                    let mask_view = self.default_compositor_mask_view(device, queue, target_format);
+                    self.composite_texture_layer(
+                        device,
+                        queue,
+                        target,
+                        target_format,
+                        &view,
+                        &mask_view,
+                        &fullscreen_uniform,
+                        load_op,
+                    );
+                }
+                RenderLayer::GpuSurface(layer) => {
+                    let prepared = self
+                        .gpu_surface_slots
+                        .get_mut(layer.slot_index)
+                        .unwrap_or_else(|| {
+                            panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
+                        })
+                        .prepare_layer(
+                            device,
+                            queue,
+                            target_format,
+                            width,
+                            height,
+                            layer.transform,
+                            layer.bounds,
+                        );
+                    if prepared.needs_redraw {
+                        needs_redraw = true;
+                    }
+                    let mask_view = if layer.active_layers.is_empty() {
+                        self.default_compositor_mask_view(device, queue, target_format)
+                    } else {
+                        self.render_active_layers_mask_to_texture(
+                            device,
+                            queue,
+                            width,
+                            height,
+                            &layer.active_layers,
+                        )
+                    };
+                    self.composite_texture_layer(
+                        device,
+                        queue,
+                        target,
+                        target_format,
+                        &prepared.view,
+                        &mask_view,
+                        &prepared.uniform_bytes,
+                        load_op,
+                    );
+                }
+            }
         }
+        self.render_layers = render_layers;
 
-        self.ensure_surface_blit_state(device, target_format, width, height);
-        let source_view = {
-            let state = self
-                .surface_blit
-                .as_ref()
-                .expect("hydrolysis renderer: missing surface blit state");
-            state.view.clone()
-        };
-
-        self.render_scene_to_texture(device, queue, &source_view, width, height, base_color);
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("hydrolysis_surface_blit_encoder"),
-        });
-        self.surface_blit
-            .as_ref()
-            .expect("hydrolysis renderer: missing surface blit state")
-            .blitter
-            .copy(device, &mut encoder, &source_view, target);
-        queue.submit(std::iter::once(encoder.finish()));
+        if needs_redraw {
+            self.request_redraw();
+        }
     }
 
     pub fn handle_pointer_down(
@@ -7818,6 +9025,23 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         self.gesture_engine
             .handle_magnification(center, delta, phase, at, env)
+    }
+
+    pub fn apply_magnification_gesture(
+        &mut self,
+        x: f32,
+        y: f32,
+        factor: f32,
+        env: &Environment,
+    ) -> bool {
+        assert!(
+            factor.is_finite() && factor > 0.0,
+            "hydrolysis magnification factor must be finite and positive"
+        );
+        let mut changed = self.handle_magnification(x, y, 0.0, TouchPhase::Started, env);
+        changed |= self.handle_magnification(x, y, factor - 1.0, TouchPhase::Moved, env);
+        changed |= self.handle_magnification(x, y, 0.0, TouchPhase::Ended, env);
+        changed
     }
 
     pub fn handle_rotation(
@@ -8092,6 +9316,7 @@ impl HydrolysisRenderer {
     fn register_gesture_target(
         &mut self,
         bounds: vello::kurbo::Rect,
+        group_id: usize,
         gesture: Gesture,
         action: BoxedAction<()>,
     ) {
@@ -8099,8 +9324,14 @@ impl HydrolysisRenderer {
             return;
         }
         let order = self.next_hit_test_order();
-        self.gesture_engine
-            .register_target(bounds, gesture, action, self.render_depth, order);
+        self.gesture_engine.register_target(
+            bounds,
+            gesture,
+            action,
+            self.render_depth,
+            order,
+            group_id,
+        );
     }
 
     fn register_gesture_target_recognizer(
@@ -8108,12 +9339,31 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
         target: GestureTarget,
         depth: usize,
+        group_id: usize,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
         self.gesture_engine
-            .register_existing_target(target.with_bounds_and_depth(bounds, depth));
+            .register_existing_target(target.with_bounds_depth_and_group(bounds, depth, group_id));
+    }
+
+    fn allocate_gesture_group_id(&mut self) -> usize {
+        let group_id = self.next_gesture_group_id;
+        self.next_gesture_group_id = self
+            .next_gesture_group_id
+            .checked_add(1)
+            .expect("hydrolysis gesture group id overflow");
+        group_id
+    }
+
+    fn gesture_group_id_for_identity(&mut self, identity: usize) -> usize {
+        if let Some(group_id) = self.gesture_group_ids.get(&identity).copied() {
+            return group_id;
+        }
+        let group_id = self.allocate_gesture_group_id();
+        self.gesture_group_ids.insert(identity, group_id);
+        group_id
     }
 
     fn ensure_active_pointer_drag_target_is_live(&mut self) {
@@ -8182,12 +9432,17 @@ impl HydrolysisRenderer {
     ) where
         F: 'static + FnMut(TextInputCommand) -> bool,
     {
+        #[cfg(feature = "accessibility")]
+        let accessibility_node_id = self.take_pending_text_input_accessibility_node();
         self.register_text_input_target_action(
             bounds,
             cursor_area,
             purpose,
             Rc::new(RefCell::new(action)),
             self.render_depth,
+            None,
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id,
         );
     }
 
@@ -8198,6 +9453,8 @@ impl HydrolysisRenderer {
         purpose: TextInputPurpose,
         action: TextInputAction,
         depth: usize,
+        focus_binding: Option<Binding<bool>>,
+        #[cfg(feature = "accessibility")] accessibility_node_id: Option<AccessibilityNodeId>,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -8210,7 +9467,20 @@ impl HydrolysisRenderer {
             depth,
             order,
             action,
+            focus_binding,
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id,
         });
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn push_pending_text_input_accessibility_node(&mut self, node_id: AccessibilityNodeId) {
+        self.pending_text_input_accessibility_nodes.push_back(node_id);
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn take_pending_text_input_accessibility_node(&mut self) -> Option<AccessibilityNodeId> {
+        self.pending_text_input_accessibility_nodes.pop_front()
     }
 
     fn register_scroll_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
@@ -8334,12 +9604,11 @@ impl HydrolysisRenderer {
         env: &Environment,
         remaining: usize,
     ) -> Option<String> {
-        if remaining == 0 {
-            panic!(
-                "hydrolysis accessibility label extraction exceeded recursion budget for {}",
-                view.name()
-            );
-        }
+        assert!(
+            !(remaining == 0),
+            "hydrolysis accessibility label extraction exceeded recursion budget for {}",
+            view.name()
+        );
         if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
             return self.accessibility_label_from_view_with_budget(
                 &metadata.content,
@@ -8403,9 +9672,6 @@ impl HydrolysisRenderer {
         let mut nodes = Vec::with_capacity(self.accessibility_nodes.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
         nodes.extend(self.accessibility_nodes.iter().cloned());
-        self.accessibility_focus = self
-            .focused_text_input_accessibility_node()
-            .unwrap_or(ACCESSIBILITY_ROOT_NODE_ID);
         if !self
             .accessibility_nodes
             .iter()
@@ -8419,6 +9685,15 @@ impl HydrolysisRenderer {
             tree_id: AccessibilityTreeId::ROOT,
             focus: self.accessibility_focus,
         });
+    }
+}
+
+fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
+    wgpu::Color {
+        r: f64::from(color.components[0]),
+        g: f64::from(color.components[1]),
+        b: f64::from(color.components[2]),
+        a: f64::from(color.components[3]),
     }
 }
 
@@ -8699,9 +9974,10 @@ fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
-    if span <= 0.0 {
-        panic!("hydrolysis accessibility slider requires range start < end");
-    }
+    assert!(
+        !(span <= 0.0),
+        "hydrolysis accessibility slider requires range start < end"
+    );
     span / 100.0
 }
 
@@ -8717,9 +9993,10 @@ fn handle_accessibility_slider_action(
     if matches!(action, AccessibilityAction::Focus) {
         return true;
     }
-    if step <= 0.0 {
-        panic!("hydrolysis accessibility slider requires positive step");
-    }
+    assert!(
+        !(step <= 0.0),
+        "hydrolysis accessibility slider requires positive step"
+    );
     let previous = value.get().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => (previous + step).min(end),
@@ -8755,9 +10032,10 @@ fn handle_accessibility_stepper_action(
         return true;
     }
     let step_value = step.get();
-    if step_value <= 0 {
-        panic!("hydrolysis accessibility stepper requires positive step");
-    }
+    assert!(
+        !(step_value <= 0),
+        "hydrolysis accessibility stepper requires positive step"
+    );
     let previous = value.get().clamp(start, end);
     let next = match action {
         AccessibilityAction::Increment => previous.saturating_add(step_value).min(end),
@@ -8805,12 +10083,11 @@ fn handle_accessibility_text_field_action(
                 panic!("hydrolysis accessibility text field SetValue requires Value data");
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
-            if exceeds_line_limit(normalized.as_str(), line_limit) {
-                panic!(
-                    "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
-                    line_limit
-                );
-            }
+            assert!(
+                !(exceeds_line_limit(normalized.as_str(), line_limit)),
+                "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
+                line_limit
+            );
             value.set(StyledStr::plain(normalized));
             true
         }
@@ -8822,12 +10099,11 @@ fn handle_accessibility_text_field_action(
             };
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             let mut plain = value.get().to_plain().to_string();
-            if !apply_text_insert(&mut plain, normalized.as_str(), line_limit) {
-                panic!(
-                    "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
-                    line_limit
-                );
-            }
+            assert!(
+                !(!apply_text_insert(&mut plain, normalized.as_str(), line_limit)),
+                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
+                line_limit
+            );
             value.set(StyledStr::plain(plain));
             true
         }
@@ -8867,11 +10143,10 @@ fn handle_accessibility_secure_field_action(
                 );
             };
             let mut plain = value.get().expose().to_owned();
-            if !apply_text_insert(&mut plain, text.as_ref(), Some(1)) {
-                panic!(
-                    "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
-                );
-            }
+            assert!(
+                !(!apply_text_insert(&mut plain, text.as_ref(), Some(1))),
+                "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
+            );
             let mut next = FormSecure::default();
             next.set(plain);
             value.set(next);
@@ -8892,9 +10167,10 @@ fn handle_accessibility_picker_cycle_action(
 ) -> bool {
     match action {
         AccessibilityAction::Click => {
-            if ids.is_empty() {
-                panic!("hydrolysis accessibility picker cycle requires non-empty options");
-            }
+            assert!(
+                !(ids.is_empty()),
+                "hydrolysis accessibility picker cycle requires non-empty options"
+            );
             let current = selection.get();
             let index = ids.iter().position(|id| *id == current).unwrap_or_else(|| {
                 panic!("hydrolysis accessibility picker selection is not present in options")
@@ -8933,6 +10209,25 @@ fn handle_accessibility_picker_select_action(
             action
         ),
     }
+}
+
+fn gesture_group_identity(view: &AnyView) -> usize {
+    gesture_group_identity_with_budget(view, 64)
+}
+
+fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
+    assert!(
+        !(remaining == 0),
+        "hydrolysis gesture group identity extraction exceeded recursion budget for {}",
+        view.name()
+    );
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return gesture_group_identity_with_budget(&metadata.content, remaining - 1);
+    }
+    if let Some(content) = passthrough_content(view) {
+        return gesture_group_identity_with_budget(content, remaining - 1);
+    }
+    view.stable_ptr() as usize
 }
 
 fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
@@ -9026,12 +10321,11 @@ fn normalize_layout_view_with_budget(
     env: &Environment,
     remaining: usize,
 ) -> AnyView {
-    if remaining == 0 {
-        panic!(
-            "hydrolysis layout normalization exceeded recursion budget for {}",
-            view.name()
-        );
-    }
+    assert!(
+        !(remaining == 0),
+        "hydrolysis layout normalization exceeded recursion budget for {}",
+        view.name()
+    );
     let next_remaining = remaining - 1;
     let mut view = view;
 
@@ -9168,78 +10462,6 @@ fn estimate_layout_intrinsic<'a>(
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
 }
 
-fn estimate_intrinsic_size(
-    view: &AnyView,
-    state: &mut HydroState,
-    env: &Environment,
-) -> LayoutSize {
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return estimate_intrinsic_size(&metadata.content, state, &metadata.value);
-    }
-
-    if let Some(content) = passthrough_content(view) {
-        return estimate_intrinsic_size(content, state, env);
-    }
-
-    if view.downcast_ref::<()>().is_some() {
-        return LayoutSize::zero();
-    }
-
-    if view.downcast_ref::<Canvas>().is_some() {
-        return LayoutSize::zero();
-    }
-
-    if let Some(text) = view.downcast_ref::<Str>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<&'static str>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(*text),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<String>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(text.clone()),
-            env,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Text>() {
-        return HydrolysisRenderer::measure_text_intrinsic_size(state, text.content().get(), env);
-    }
-
-    macro_rules! try_native_intrinsic {
-        ($ty:ty) => {
-            if let Some(intrinsic) = intrinsic_for_native::<$ty>(view, state, env) {
-                return intrinsic;
-            }
-        };
-    }
-    hydro_native_view_types!(try_native_intrinsic);
-
-    if view.downcast_ref::<Divider>().is_some() {
-        return LayoutSize::new(1.0, 1.0);
-    }
-
-    panic!(
-        "hydrolysis intrinsic estimation encountered unsupported view type {}",
-        view.name()
-    );
-}
-
 fn resolved_color_to_peniko(color: ResolvedColor) -> vello::peniko::Color {
     let srgb = color.to_srgb_with_headroom();
     vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity])
@@ -9338,18 +10560,20 @@ fn path_commands_to_path(
                 has_current = true;
             }
             PathCommand::LineTo { x, y } => {
-                if !has_current {
-                    panic!("PathCommand::LineTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::LineTo requires an active current point"
+                );
                 path.line_to(vello::kurbo::Point::new(
                     f64::from(*x) * width,
                     f64::from(*y) * height,
                 ));
             }
             PathCommand::QuadTo { cx, cy, x, y } => {
-                if !has_current {
-                    panic!("PathCommand::QuadTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::QuadTo requires an active current point"
+                );
                 path.quad_to(
                     vello::kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
                     vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
@@ -9363,9 +10587,10 @@ fn path_commands_to_path(
                 x,
                 y,
             } => {
-                if !has_current {
-                    panic!("PathCommand::CubicTo requires an active current point");
-                }
+                assert!(
+                    !(!has_current),
+                    "PathCommand::CubicTo requires an active current point"
+                );
                 path.curve_to(
                     vello::kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
                     vello::kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
@@ -9456,6 +10681,16 @@ fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
         TextFontWeight::Black => 900.0,
     };
     parley::FontWeight::new(value)
+}
+
+fn parley_alignment(alignment: HorizontalAlignment) -> parley::Alignment {
+    if alignment == HorizontalAlignment::Leading {
+        parley::Alignment::Start
+    } else if alignment == HorizontalAlignment::Trailing {
+        parley::Alignment::End
+    } else {
+        parley::Alignment::Center
+    }
 }
 
 fn transformed_rect(
@@ -9861,4 +11096,126 @@ fn draw_stepper_button(
         None,
         &vello::kurbo::RoundedRect::from_rect(bounds, 6.0),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui_canvas::Canvas;
+
+    #[test]
+    fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
+        let env = Environment::default();
+        let child = normalize_layout_view(
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            &env,
+        );
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: 0.0,
+        };
+        let mut state = HydroState::default();
+        let dimensions = measure_layout_dimensions(
+            &layout,
+            [&child],
+            ProposalSize::UNSPECIFIED,
+            &mut state,
+            &env,
+        );
+
+        assert_eq!(
+            dimensions.explicit_horizontal(HorizontalAlignment::Leading),
+            Some(10.0)
+        );
+    }
+
+    #[test]
+    fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
+        let view = AnyView::new(Metadata::new(
+            Metadata::new(
+                ().size(20.0, 10.0),
+                GestureObserver::new(DragGesture::new(8.0)).action(|| {}),
+            ),
+            GestureObserver::new(MagnificationGesture::new(1.0)).action(|| {}),
+        ));
+        let outer = view
+            .downcast_ref::<Metadata<GestureObserver>>()
+            .expect("expected outer gesture observer metadata");
+        let inner = outer
+            .content
+            .downcast_ref::<Metadata<GestureObserver>>()
+            .expect("expected inner gesture observer metadata");
+
+        assert_eq!(
+            gesture_group_identity(&outer.content),
+            gesture_group_identity(&inner.content)
+        );
+    }
+
+    #[test]
+    fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui_core::Metadata;
+
+        let offset = Binding::f32(0.0);
+        let scale = Binding::f32(1.0);
+        let drag_hits = Rc::new(Cell::new(0u32));
+        let magnify_hits = Rc::new(Cell::new(0u32));
+        let view = {
+            let canvas = Canvas::with_signal(offset.zip(&scale), |_ctx, (_offset, _scale)| {})
+                .size(120.0, 120.0);
+            let canvas = {
+                let drag_hits = Rc::clone(&drag_hits);
+                Metadata::new(
+                    canvas,
+                    GestureObserver::new(DragGesture::new(0.0)).action(move || {
+                        drag_hits.set(drag_hits.get() + 1);
+                    }),
+                )
+            };
+            {
+                let magnify_hits = Rc::clone(&magnify_hits);
+                Metadata::new(
+                    canvas,
+                    GestureObserver::new(MagnificationGesture::new(1.0)).action(move || {
+                        magnify_hits.set(magnify_hits.get() + 1);
+                    }),
+                )
+            }
+        };
+
+        let mut platform =
+            crate::platform::OffscreenWindow::new(160, 160, wgpu::TextureFormat::Rgba8Unorm);
+        let mut renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+        let env = Environment::new();
+        let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
+        let surface = platform.surface();
+        renderer.set_frame_resources(surface.device(), surface.queue());
+        renderer.reset_scene();
+        renderer.begin_rebuild_frame();
+        renderer.dispatch(view, &env, bounds);
+        renderer.finish_rebuild_frame();
+
+        let point = vello::kurbo::Point::new(60.0, 60.0);
+        let debug_targets = renderer.gesture_engine.debug_targets_at(point);
+        assert_eq!(
+            debug_targets.len(),
+            2,
+            "expected stacked drag+magnification gesture targets at point, got {:?}",
+            debug_targets
+        );
+        assert_eq!(debug_targets[0].2, debug_targets[1].2);
+
+        assert!(renderer.apply_magnification_gesture(60.0, 60.0, 1.2, &env));
+        assert_eq!(drag_hits.get(), 0);
+        assert_eq!(magnify_hits.get(), 3);
+    }
 }

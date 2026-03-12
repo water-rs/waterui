@@ -8,13 +8,13 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, SubView,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 /// Planned layout that clamps a single child's proposal.
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct FrameLayout {
     min_width: Option<f32>,
     ideal_width: Option<f32>,
@@ -46,9 +46,12 @@ impl Layout for FrameLayout {
         };
 
         // Measure the child with our constrained proposal
-        let child_size = children
+        let child_dimensions = children
             .first()
-            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
+            .map_or(ViewDimensions::new(Size::zero()), |c| {
+                c.measure(child_proposal)
+            });
+        let child_size = child_dimensions.size;
 
         // Resolve the frame size on each axis.
         //
@@ -94,9 +97,12 @@ impl Layout for FrameLayout {
             )),
         };
 
-        let child_size = children
+        let child_dimensions = children
             .first()
-            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
+            .map_or(ViewDimensions::new(Size::zero()), |c| {
+                c.measure(child_proposal)
+            });
+        let child_size = child_dimensions.size;
 
         // Handle infinite dimensions (axis-expanding views)
         let child_width = if child_size.width.is_infinite() {
@@ -112,25 +118,67 @@ impl Layout for FrameLayout {
         };
 
         let final_child_size = Size::new(child_width, child_height);
+        let mut adjusted_dimensions = child_dimensions.clone();
+        adjusted_dimensions.size = final_child_size;
 
         // Calculate the child's origin point (top-left) based on alignment.
-        let child_x = match self.alignment.horizontal() {
-            HorizontalAlignment::Leading => bounds.x(),
-            HorizontalAlignment::Center => {
-                bounds.x() + (bounds.width() - final_child_size.width) / 2.0
-            }
-            HorizontalAlignment::Trailing => bounds.max_x() - final_child_size.width,
+        let horizontal = self.alignment.horizontal();
+        let horizontal_target = if horizontal == HorizontalAlignment::Leading {
+            0.0
+        } else if horizontal == HorizontalAlignment::Trailing {
+            bounds.width()
+        } else if horizontal == HorizontalAlignment::Center {
+            bounds.width() * 0.5
+        } else {
+            adjusted_dimensions
+                .horizontal(horizontal)
+                .clamp(0.0, final_child_size.width)
         };
+        let child_x = bounds.x() + horizontal_target
+            - adjusted_dimensions
+                .horizontal(horizontal)
+                .clamp(0.0, final_child_size.width);
 
-        let child_y = match self.alignment.vertical() {
-            VerticalAlignment::Top => bounds.y(),
-            VerticalAlignment::Center => {
-                bounds.y() + (bounds.height() - final_child_size.height) / 2.0
-            }
-            VerticalAlignment::Bottom => bounds.max_y() - final_child_size.height,
+        let vertical = self.alignment.vertical();
+        let vertical_target = if vertical == VerticalAlignment::Top {
+            0.0
+        } else if vertical == VerticalAlignment::Bottom {
+            bounds.height()
+        } else if vertical == VerticalAlignment::Center {
+            bounds.height() * 0.5
+        } else {
+            adjusted_dimensions
+                .vertical(vertical)
+                .clamp(0.0, final_child_size.height)
         };
+        let child_y = bounds.y() + vertical_target
+            - adjusted_dimensions
+                .vertical(vertical)
+                .clamp(0.0, final_child_size.height);
 
         vec![Rect::new(Point::new(child_x, child_y), final_child_size)]
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_horizontal(alignment))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 }
 
@@ -265,8 +313,8 @@ mod tests {
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-            self.size
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
