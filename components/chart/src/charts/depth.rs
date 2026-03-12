@@ -5,6 +5,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{depth_bounds, depth_geometry, draw_depth, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::DepthData;
 use crate::interaction::{DepthDatum, HitResult, SelectionBindings};
 
@@ -14,6 +15,7 @@ pub struct DepthChart<S: Signal<Output = DepthData>> {
     bid_color: Srgb,
     ask_color: Srgb,
     selection: SelectionBindings<DepthDatum>,
+    composition: ChartComposition<DepthDatum>,
 }
 
 impl<S: Signal<Output = DepthData>> DepthChart<S> {
@@ -24,8 +26,11 @@ impl<S: Signal<Output = DepthData>> DepthChart<S> {
             bid_color: Srgb::from_hex("#22C55E"),
             ask_color: Srgb::from_hex("#EF4444"),
             selection: SelectionBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(DepthDatum);
 
     #[must_use]
     pub fn bid_color(mut self, color: Srgb) -> Self {
@@ -64,6 +69,7 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
         let bid_color = self.bid_color;
         let ask_color = self.ask_color;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = depth_bounds(data);
@@ -73,6 +79,7 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
                 draw_depth(ctx, data, geometry.bounds, bid_color, ask_color);
             },
             self.selection,
+            self.composition,
         )
     }
 }

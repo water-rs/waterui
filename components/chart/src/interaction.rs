@@ -1,7 +1,8 @@
 //! Hit-testing and interaction types for charts.
 
-use nami::Binding;
+use nami::{Binding, SignalExt as _};
 use waterui_core::{
+    Environment,
     gesture::{DragEvent, GesturePhase, MagnificationEvent},
     layout::Point,
 };
@@ -22,6 +23,7 @@ impl ChartAnchor {
         Self { x, y }
     }
 
+    /// Returns this anchor as a WaterUI layout point.
     #[must_use]
     pub const fn as_point(self) -> Point {
         Point::new(self.x, self.y)
@@ -63,7 +65,9 @@ impl<T> HitResult<T> {
 /// Selected/focused value for depth charts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthSide {
+    /// The bid side of the book.
     Bid,
+    /// The ask side of the book.
     Ask,
 }
 
@@ -79,6 +83,7 @@ pub struct AreaDatum {
 }
 
 impl AreaDatum {
+    /// Creates a new area-chart interaction payload.
     #[must_use]
     pub const fn new(series: usize, x: f32, y: f32) -> Self {
         Self { series, x, y }
@@ -97,6 +102,7 @@ pub struct DepthDatum {
 }
 
 impl DepthDatum {
+    /// Creates a new depth-chart interaction payload.
     #[must_use]
     pub const fn new(side: DepthSide, price: f32, cumulative_volume: f32) -> Self {
         Self {
@@ -121,6 +127,7 @@ pub struct SliceDatum {
 }
 
 impl SliceDatum {
+    /// Creates a new slice interaction payload for pie and gauge charts.
     #[must_use]
     pub const fn new(index: usize, value: f32, start_angle: f32, end_angle: f32) -> Self {
         Self {
@@ -144,6 +151,7 @@ pub struct RadarDatum {
 }
 
 impl RadarDatum {
+    /// Creates a new radar-chart interaction payload.
     #[must_use]
     pub fn new(axis: usize, label: Option<String>, value: f32) -> Self {
         Self { axis, label, value }
@@ -162,6 +170,7 @@ pub struct GridDatum {
 }
 
 impl GridDatum {
+    /// Creates a new grid interaction payload for heatmap-like charts.
     #[must_use]
     pub const fn new(row: usize, column: usize, value: f32) -> Self {
         Self { row, column, value }
@@ -180,6 +189,7 @@ pub struct RegionDatum {
 }
 
 impl RegionDatum {
+    /// Creates a new choropleth-region interaction payload.
     #[must_use]
     pub const fn new(index: usize, id: u32, value: f32) -> Self {
         Self { index, id, value }
@@ -187,7 +197,7 @@ impl RegionDatum {
 }
 
 /// Viewport for coordinate transformation.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ChartViewport {
     /// X position of chart area.
     pub x: f32,
@@ -404,8 +414,12 @@ impl ZoomPanState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectionBindings<T: Clone + PartialEq + 'static> {
-    focused: Option<Binding<Option<HitResult<T>>>>,
-    selected: Option<Binding<Option<HitResult<T>>>>,
+    focused: Binding<Option<HitResult<T>>>,
+    selected: Binding<Option<HitResult<T>>>,
+    track_focus: bool,
+    track_selected: bool,
+    external_focus: bool,
+    external_selected: bool,
 }
 
 impl<T: Clone + PartialEq + 'static> Default for SelectionBindings<T> {
@@ -416,51 +430,143 @@ impl<T: Clone + PartialEq + 'static> Default for SelectionBindings<T> {
 
 impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            focused: None,
-            selected: None,
+            focused: Binding::container(None),
+            selected: Binding::container(None),
+            track_focus: false,
+            track_selected: false,
+            external_focus: false,
+            external_selected: false,
         }
     }
 
     #[must_use]
     pub const fn is_active(&self) -> bool {
-        self.focused.is_some() || self.selected.is_some()
+        self.track_focus || self.track_selected
+    }
+
+    #[must_use]
+    pub fn activate_proxy(mut self) -> Self {
+        self.track_focus = true;
+        self.track_selected = true;
+        self
+    }
+
+    #[must_use]
+    pub fn persist_internal(mut self, env: &Environment) -> Self {
+        if !self.external_focus {
+            self.focused = crate::local_state::local_binding(env, || None::<HitResult<T>>);
+        }
+        if !self.external_selected {
+            self.selected = crate::local_state::local_binding(env, || None::<HitResult<T>>);
+        }
+        self
     }
 
     #[must_use]
     pub fn with_focused(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
-        self.focused = Some(binding.clone());
+        self.focused = binding.clone();
+        self.track_focus = true;
+        self.external_focus = true;
         self
     }
 
     #[must_use]
     pub fn with_selected(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
-        self.selected = Some(binding.clone());
+        self.selected = binding.clone();
+        self.track_selected = true;
+        self.external_selected = true;
         self
     }
 
+    #[must_use]
+    pub fn focused_signal(&self) -> nami::Computed<Option<HitResult<T>>> {
+        self.focused.computed()
+    }
+
+    #[must_use]
+    pub fn selected_signal(&self) -> nami::Computed<Option<HitResult<T>>> {
+        self.selected.computed()
+    }
+
     pub fn set_focus(&self, value: Option<HitResult<T>>) {
-        if let Some(binding) = &self.focused
-            && binding.get() != value
-        {
-            binding.set(value);
+        if self.track_focus && self.focused.get() != value {
+            self.focused.set(value);
         }
     }
 
     pub fn clear_focus(&self) {
-        if let Some(binding) = &self.focused
-            && binding.get().is_some()
-        {
-            binding.set(None);
+        if self.track_focus && self.focused.get().is_some() {
+            self.focused.set(None);
         }
     }
 
     pub fn set_selected(&self, value: Option<HitResult<T>>) {
-        if let Some(binding) = &self.selected
-            && binding.get() != value
-        {
-            binding.set(value);
+        if self.track_selected && self.selected.get() != value {
+            self.selected.set(value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::BTreeMap;
+    use alloc::rc::Rc;
+    use core::any::{Any, TypeId};
+    use core::cell::RefCell;
+
+    use super::*;
+    use nami::Signal;
+    use waterui_core::{LocalStateScope, LocalStateStore};
+
+    #[derive(Clone)]
+    struct Slot {
+        type_id: TypeId,
+        value: Rc<dyn Any>,
+    }
+
+    #[test]
+    fn persistent_internal_selection_reuses_local_state_slot() {
+        let slots = Rc::new(RefCell::new(BTreeMap::<(u64, usize), Slot>::new()));
+        let store = LocalStateStore::new({
+            let slots = Rc::clone(&slots);
+            move |path, index, type_id, init| {
+                let key = (path, index);
+                let mut slots = slots.borrow_mut();
+                if let Some(slot) = slots.get(&key) {
+                    assert_eq!(slot.type_id, type_id);
+                    return Rc::clone(&slot.value);
+                }
+                let value = init();
+                slots.insert(
+                    key,
+                    Slot {
+                        type_id,
+                        value: Rc::clone(&value),
+                    },
+                );
+                value
+            }
+        });
+        let scope = LocalStateScope::root();
+        let mut env = Environment::new();
+        env.insert(scope.clone());
+        env.insert(store);
+
+        let first = SelectionBindings::<i32>::new()
+            .activate_proxy()
+            .persist_internal(&env);
+        first.set_selected(Some(HitResult::new(0, 0, 7, ChartAnchor::new(3.0, 4.0))));
+
+        env.insert(scope.reset());
+        let second = SelectionBindings::<i32>::new()
+            .activate_proxy()
+            .persist_internal(&env);
+
+        assert_eq!(
+            second.selected_signal().get(),
+            Some(HitResult::new(0, 0, 7, ChartAnchor::new(3.0, 4.0)))
+        );
     }
 }
