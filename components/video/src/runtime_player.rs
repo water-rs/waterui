@@ -1867,20 +1867,11 @@ impl VideoRenderer {
         self.audio_player = Some(player);
         self.pending_audio_open = None;
         if let Some(audio) = self.audio_player.as_ref() {
-            if let Some(source) = audio.source_format() {
-                tracing::info!(
-                    "[VideoFallback] audio source format channels={} sample_rate_hz={}",
-                    source.channels,
-                    source.sample_rate_hz
-                );
-            }
-            if let Some(output) = audio.output_format() {
-                tracing::info!(
-                    "[VideoFallback] audio output format channels={} sample_rate_hz={}",
-                    output.channels,
-                    output.sample_rate_hz
-                );
-            }
+            tracing::info!(
+                metadata = ?audio.metadata(),
+                duration = ?audio.duration(),
+                "[VideoFallback] audio player metadata ready"
+            );
         }
         self.audio_failed = false;
         self.last_applied_volume = None;
@@ -2287,27 +2278,32 @@ impl VideoRenderer {
     }
 
     fn sync_audio_playback_params(&mut self) {
-        let Some(audio) = self.audio_player.as_ref() else {
+        if self.audio_player.is_none() {
             return;
-        };
+        }
 
         let rate = self.requested_playback_rate();
-        if self
+        let preserve_pitch = self.requested_preserve_pitch();
+        let rate_changed = self
             .last_applied_playback_rate
-            .is_none_or(|last| (last - rate).abs() > 0.001)
-        {
-            audio.set_playback_rate(rate);
-            self.last_applied_playback_rate = Some(rate);
+            .is_none_or(|last| (last - rate).abs() > 0.001);
+        let preserve_pitch_changed = self
+            .last_applied_preserve_pitch
+            .is_none_or(|last| last != preserve_pitch);
+        if !rate_changed && !preserve_pitch_changed {
+            return;
         }
 
-        let preserve_pitch = self.requested_preserve_pitch();
-        if self
-            .last_applied_preserve_pitch
-            .is_none_or(|last| last != preserve_pitch)
-        {
-            audio.set_preserve_pitch(preserve_pitch);
-            self.last_applied_preserve_pitch = Some(preserve_pitch);
+        if (rate - 1.0).abs() > 0.001 || !preserve_pitch {
+            tracing::warn!(
+                requested_rate = rate,
+                preserve_pitch,
+                "[VideoFallback] waterkit-audio no longer exposes playback-rate or pitch controls; audio remains at native speed"
+            );
         }
+
+        self.last_applied_playback_rate = Some(rate);
+        self.last_applied_preserve_pitch = Some(preserve_pitch);
     }
 
     fn sync_audio_playback(&self, should_play: bool) {
@@ -2327,8 +2323,6 @@ impl VideoRenderer {
             return;
         };
 
-        audio.set_playback_rate(self.requested_playback_rate());
-        audio.set_preserve_pitch(self.requested_preserve_pitch());
         audio.seek(pts);
         if should_play {
             audio.play();
@@ -3020,7 +3014,7 @@ impl MediaSessionState {
         Some(Self { session })
     }
 
-    fn sync(&mut self, playing: bool, position: Duration, playback_rate: f32) {
+    fn sync(&mut self, playing: bool, position: Duration, _playback_rate: f32) {
         if playing {
             let _ = self.session.request_audio_focus();
         } else {
@@ -3031,11 +3025,6 @@ impl MediaSessionState {
             PlaybackState::playing(position)
         } else {
             PlaybackState::paused(position)
-        };
-        let playback = if playing {
-            playback.with_rate(f64::from(playback_rate))
-        } else {
-            playback
         };
         let _ = self.session.set_playback_state(&playback);
     }
@@ -3065,6 +3054,52 @@ struct PendingDecodedFrame {
     progress: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VideoSampleMetadata {
+    pts: u64,
+    is_keyframe: bool,
+}
+
+fn estimated_video_duration(sample_metadata: &[VideoSampleMetadata], timescale: u32) -> Duration {
+    match sample_metadata {
+        [] => Duration::ZERO,
+        [sample] => pts_to_duration(sample.pts, timescale),
+        _ => {
+            let last = sample_metadata
+                .last()
+                .expect("sample metadata length > 1 must have a last sample");
+            let previous = sample_metadata[sample_metadata.len() - 2];
+            let frame_span = last.pts.saturating_sub(previous.pts);
+            pts_to_duration(last.pts.saturating_add(frame_span), timescale)
+        }
+    }
+}
+
+fn nearest_keyframe_index_at_or_before(
+    sample_metadata: &[VideoSampleMetadata],
+    target_index: usize,
+) -> usize {
+    sample_metadata
+        .iter()
+        .take(target_index.saturating_add(1))
+        .enumerate()
+        .rev()
+        .find_map(|(index, sample)| sample.is_keyframe.then_some(index))
+        .unwrap_or(0)
+}
+
+fn sample_pts_duration(
+    sample_metadata: &[VideoSampleMetadata],
+    timescale: u32,
+    sample_index: usize,
+) -> Duration {
+    sample_metadata
+        .get(sample_index)
+        .map_or(Duration::ZERO, |sample| {
+            pts_to_duration(sample.pts, timescale)
+        })
+}
+
 struct DecodeState {
     reader: VideoReader,
     decoder: Decoder,
@@ -3074,43 +3109,72 @@ struct DecodeState {
     timescale: u32,
     total_samples: u32,
     duration: Duration,
+    codec_type: CodecType,
+    codec_config: Option<Vec<u8>>,
+    sample_metadata: Vec<VideoSampleMetadata>,
 }
 
 impl DecodeState {
     fn open(source_path: &Path) -> Result<Self, String> {
         let reader = VideoReader::open(source_path).map_err(|error| error.to_string())?;
         let (width, height) = reader.dimensions();
-        let codec_type = detect_codec_type(reader.codec_config())?;
-        let decoder = Decoder::new(codec_type, reader.codec_config(), width, height)
+        let codec_config = reader.codec_config().map(|config| config.to_vec());
+        let codec_type = detect_codec_type(codec_config.as_deref())?;
+        let decoder = Decoder::new(codec_type, codec_config.as_deref(), width, height)
             .map_err(|error| error.to_string())?;
+        let timescale = reader.timescale();
         let sample_count = reader.sample_count();
-        let first_pts = reader.sample_info(0).map(|(pts, _)| pts).unwrap_or(0);
-        let second_pts = reader.sample_info(1).map(|(pts, _)| pts).unwrap_or(0);
-        let third_pts = reader.sample_info(2).map(|(pts, _)| pts).unwrap_or(0);
-        let duration = reader.duration().unwrap_or_default();
+        let sample_capacity =
+            usize::try_from(sample_count).expect("video sample count must fit into usize");
+        let mut sample_metadata = Vec::with_capacity(sample_capacity);
+        for index in 0..sample_capacity {
+            let (pts, is_keyframe) = reader
+                .sample_info(index)
+                .ok_or_else(|| format!("missing video sample metadata for sample {index}"))?;
+            sample_metadata.push(VideoSampleMetadata { pts, is_keyframe });
+        }
+
+        let first_pts = sample_metadata.first().map_or(0, |sample| sample.pts);
+        let second_pts = sample_metadata.get(1).map_or(0, |sample| sample.pts);
+        let third_pts = sample_metadata.get(2).map_or(0, |sample| sample.pts);
+        let duration = estimated_video_duration(&sample_metadata, timescale);
         tracing::info!(
             "[VideoFallback] decode source stats size={}x{} samples={} timescale={} pts=[{first_pts},{second_pts},{third_pts}] duration={:.3}s",
             width,
             height,
             sample_count,
-            reader.timescale(),
+            timescale,
             duration.as_secs_f64()
         );
 
         Ok(Self {
-            timescale: reader.timescale(),
-            total_samples: sample_count,
             reader,
             decoder,
             pending_decoded: VecDeque::new(),
             width,
             height,
+            timescale,
+            total_samples: sample_count,
             duration,
+            codec_type,
+            codec_config,
+            sample_metadata,
         })
     }
 
     fn duration(&self) -> Duration {
         self.duration
+    }
+
+    fn rebuild_decoder(&mut self) -> Result<(), String> {
+        self.decoder = Decoder::new(
+            self.codec_type,
+            self.codec_config.as_deref(),
+            self.width,
+            self.height,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     fn seek_to_progress(&mut self, progress: f64) -> Result<Duration, String> {
@@ -3121,8 +3185,10 @@ impl DecodeState {
         let clamped = progress.clamp(0.0, 1.0);
         let target_index =
             (clamped * f64::from(self.total_samples.saturating_sub(1))).round() as usize;
-        let keyframe_index = self.reader.nearest_keyframe_at_or_before(target_index);
+        let keyframe_index =
+            nearest_keyframe_index_at_or_before(&self.sample_metadata, target_index);
 
+        self.rebuild_decoder()?;
         self.reader.seek_to_sample(keyframe_index);
         self.pending_decoded.clear();
 
@@ -3132,7 +3198,11 @@ impl DecodeState {
                 .read_sample()
                 .map_err(|error| error.to_string())?
             else {
-                break;
+                return Ok(sample_pts_duration(
+                    &self.sample_metadata,
+                    self.timescale,
+                    target_index,
+                ));
             };
             let mut stream = self.decoder.decode(&sample_data);
             while let Some(result) = stream.next() {
@@ -3140,13 +3210,11 @@ impl DecodeState {
             }
         }
 
-        let pts = self
-            .reader
-            .sample_info(target_index)
-            .map_or(Duration::ZERO, |(pts, _)| {
-                pts_to_duration(pts, self.timescale)
-            });
-        Ok(pts)
+        Ok(sample_pts_duration(
+            &self.sample_metadata,
+            self.timescale,
+            target_index,
+        ))
     }
 
     fn next_frame(&mut self) -> Result<Option<DecodedVideoFrame>, String> {
@@ -3155,7 +3223,7 @@ impl DecodeState {
         }
 
         loop {
-            let sample_index = self.reader.current_index() as u32;
+            let sample_index = self.reader.current_index();
             let Some((sample_data, pts, _)) = self
                 .reader
                 .read_sample()
@@ -3167,8 +3235,10 @@ impl DecodeState {
             let progress = if self.total_samples <= 1 {
                 0.0
             } else {
-                f64::from(sample_index.min(self.total_samples - 1))
-                    / f64::from(self.total_samples - 1)
+                let bounded_index = u32::try_from(sample_index)
+                    .expect("video sample index must fit into u32")
+                    .min(self.total_samples - 1);
+                f64::from(bounded_index) / f64::from(self.total_samples - 1)
             };
 
             let mut stream = self.decoder.decode(&sample_data);
@@ -3345,7 +3415,7 @@ fn download_asset_to_path(
                 if should_probe {
                     file.flush().map_err(|error| error.to_string())?;
                     last_probe = bytes_written;
-                    if VideoReader::probe(destination).is_ok() {
+                    if VideoReader::open(destination).is_ok() {
                         ready_sent = true;
                         let _ = updates.send(DownloadUpdate::Ready);
                     }
@@ -3358,7 +3428,7 @@ fn download_asset_to_path(
             bytes_written,
             total_bytes,
         });
-        if !ready_sent && VideoReader::probe(destination).is_ok() {
+        if !ready_sent && VideoReader::open(destination).is_ok() {
             let _ = updates.send(DownloadUpdate::Ready);
         }
         let _ = updates.send(DownloadUpdate::Finished);
@@ -3466,13 +3536,18 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PlaybackPolicy, ShaderTargetMode, next_subtitle_selection,
+        PlaybackPolicy, ShaderTargetMode, VideoSampleMetadata, estimated_video_duration,
+        nearest_keyframe_index_at_or_before, next_subtitle_selection,
         preferred_surface_hdr_for_source, resolve_selected_subtitle_index,
         select_default_subtitle_track_index, shader_target_mode, should_enter_vod_stall_buffering,
         should_wait_for_vod_buffering,
     };
     use crate::{SubtitleSelection, SubtitleTrack};
-    use std::{fs, path::PathBuf, time::SystemTime};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, SystemTime},
+    };
     use waterui_graphics::wgpu;
     use waterui_url::Url;
 
@@ -3572,6 +3647,54 @@ mod tests {
         assert!(!should_enter_vod_stall_buffering(
             policy, true, true, true, 0
         ));
+    }
+
+    #[test]
+    fn estimated_video_duration_uses_last_sample_delta() {
+        let sample_metadata = [
+            VideoSampleMetadata {
+                pts: 0,
+                is_keyframe: true,
+            },
+            VideoSampleMetadata {
+                pts: 40,
+                is_keyframe: false,
+            },
+            VideoSampleMetadata {
+                pts: 80,
+                is_keyframe: false,
+            },
+        ];
+        assert_eq!(
+            estimated_video_duration(&sample_metadata, 1_000),
+            Duration::from_millis(120)
+        );
+    }
+
+    #[test]
+    fn nearest_keyframe_helper_returns_latest_sync_sample() {
+        let sample_metadata = [
+            VideoSampleMetadata {
+                pts: 0,
+                is_keyframe: true,
+            },
+            VideoSampleMetadata {
+                pts: 40,
+                is_keyframe: false,
+            },
+            VideoSampleMetadata {
+                pts: 80,
+                is_keyframe: true,
+            },
+            VideoSampleMetadata {
+                pts: 120,
+                is_keyframe: false,
+            },
+        ];
+        assert_eq!(nearest_keyframe_index_at_or_before(&sample_metadata, 0), 0);
+        assert_eq!(nearest_keyframe_index_at_or_before(&sample_metadata, 1), 0);
+        assert_eq!(nearest_keyframe_index_at_or_before(&sample_metadata, 2), 2);
+        assert_eq!(nearest_keyframe_index_at_or_before(&sample_metadata, 3), 2);
     }
 
     #[test]
