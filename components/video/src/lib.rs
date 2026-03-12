@@ -14,6 +14,7 @@ pub use video::{
 };
 
 mod runtime_player;
+mod subtitles;
 
 /// Installs the Rust/GPU video player hooks into the provided environment.
 ///
