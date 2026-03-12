@@ -9,7 +9,9 @@ use crate::{
     android::{
         device::AndroidDevice,
         platform::AndroidPlatform,
-        toolchain::{AndroidNdk, AndroidPlatformTools, AndroidSdk, Java, Kotlin},
+        toolchain::{
+            AndroidNdk, AndroidPlatformSdk, AndroidPlatformTools, AndroidSdk, Java, Kotlin,
+        },
     },
     apple::{
         device::AppleSimulator,
@@ -239,6 +241,24 @@ pub async fn doctor() -> Vec<DoctorItem> {
             }
         }
 
+        // Check Android platform SDK jar for build/package flows.
+        match AndroidPlatformSdk.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android Platform SDK")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android Platform SDK",
+                    "Required for Android build/package workflows",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android Platform SDK",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+
         // Check Android NDK for build/package flows.
         match AndroidNdk.check().await {
             Ok(()) => items.push(DoctorItem::ok("Android NDK")),
@@ -259,6 +279,10 @@ pub async fn doctor() -> Vec<DoctorItem> {
     } else {
         items.push(DoctorItem::missing(
             "Android Platform-Tools (adb)",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+        items.push(DoctorItem::missing(
+            "Android Platform SDK",
             "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
         ));
         items.push(DoctorItem::missing(

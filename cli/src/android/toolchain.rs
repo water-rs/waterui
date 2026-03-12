@@ -3,9 +3,14 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
+    process::Stdio,
 };
 
 use color_eyre::eyre;
+use futures::StreamExt;
+use futures_lite::io::AsyncWriteExt;
+use roxmltree::Document;
+use smol::{fs, unblock};
 
 use crate::{
     brew::Brew,
@@ -19,11 +24,22 @@ use crate::{
 };
 
 /// Complete Android toolchain including SDK, NDK, platform-tools, Java, and CMake.
-pub type AndroidToolchain = (AndroidSdk, AndroidNdk, AndroidPlatformTools, Java, Cmake);
+pub type AndroidToolchain = (
+    AndroidSdk,
+    AndroidPlatformSdk,
+    AndroidNdk,
+    AndroidPlatformTools,
+    Java,
+    Cmake,
+);
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
 pub struct AndroidSdk;
+
+/// Android platform SDK component required for `android.jar`.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidPlatformSdk;
 
 /// Android Platform-Tools (`adb`) toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -53,6 +69,7 @@ pub const fn android_studio_install_suggestion() -> &'static str {
     } else {
         "Install Android Studio from https://developer.android.com/studio."
     }
+
 }
 
 /// Android command-line tools guidance for headless/server environments.
@@ -86,6 +103,21 @@ pub const fn android_platform_tools_suggestion() -> &'static str {
 pub const fn android_ndk_install_suggestion() -> &'static str {
     "Install Android NDK with `sdkmanager --install \"ndk;<version>\"` (or Android Studio SDK Manager), then set `ANDROID_NDK_ROOT` if using a custom location."
 }
+
+const ANDROID_REPOSITORY_XML_URL: &str =
+    "https://dl.google.com/android/repository/repository2-1.xml";
+const ANDROID_REPOSITORY_BASE_URL: &str = "https://dl.google.com/android/repository/";
+const ANDROID_CMDLINE_TOOLS_PACKAGE_PATH: &str = "cmdline-tools;latest";
+const ANDROID_FIX_MAX_LICENSE_RESPONSES: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AndroidCmdlineToolsArchive {
+    download_url: String,
+    size_bytes: u64,
+}
+
+const ANDROID_APP_BUILD_GRADLE_TEMPLATE: &str =
+    include_str!("../templates/android/app/build.gradle.kts.tpl");
 
 /// Host-specific Java installation guidance for Android Gradle builds.
 #[must_use]
@@ -194,6 +226,366 @@ fn find_sdkmanager_on_path_env() -> Option<PathBuf> {
     None
 }
 
+fn parse_cmdline_tools_archive(
+    repository_xml: &str,
+    host_os: &str,
+) -> eyre::Result<AndroidCmdlineToolsArchive> {
+    let document = Document::parse(repository_xml)
+        .map_err(|error| eyre::eyre!("Failed to parse Android repository XML: {error}"))?;
+
+    let package = document
+        .descendants()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().name() == "remotePackage"
+                && node.attribute("path") == Some(ANDROID_CMDLINE_TOOLS_PACKAGE_PATH)
+        })
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Android repository XML does not contain `{ANDROID_CMDLINE_TOOLS_PACKAGE_PATH}`"
+            )
+        })?;
+
+    for archive in package
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "archive")
+    {
+        let host_matches = archive
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "host-os")
+            .and_then(|node| node.text())
+            .is_some_and(|value| value == host_os);
+        if !host_matches {
+            continue;
+        }
+
+        let complete = archive
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "complete")
+            .ok_or_else(|| eyre::eyre!("Android repository archive missing `<complete>`"))?;
+        let relative_url = complete
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "url")
+            .and_then(|node| node.text())
+            .ok_or_else(|| eyre::eyre!("Android repository archive missing download url"))?;
+        let size_bytes = complete
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "size")
+            .and_then(|node| node.text())
+            .ok_or_else(|| eyre::eyre!("Android repository archive missing download size"))?
+            .parse::<u64>()
+            .map_err(|error| eyre::eyre!("Invalid Android repository archive size: {error}"))?;
+        return Ok(AndroidCmdlineToolsArchive {
+            download_url: format!("{ANDROID_REPOSITORY_BASE_URL}{relative_url}"),
+            size_bytes,
+        });
+    }
+
+    Err(eyre::eyre!(
+        "Android repository XML does not contain a `{host_os}` archive for `{ANDROID_CMDLINE_TOOLS_PACKAGE_PATH}`"
+    ))
+}
+
+async fn resolve_cmdline_tools_archive() -> eyre::Result<AndroidCmdlineToolsArchive> {
+    use zenwave::{Client, Method, redirect::FollowRedirect};
+
+    let host_os = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macosx"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        return Err(eyre::eyre!(
+            "Automatic Android SDK installation is not supported on this host"
+        ));
+    };
+
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client
+        .method(Method::GET, ANDROID_REPOSITORY_XML_URL)
+        .await
+        .map_err(|error| eyre::eyre!("Failed to fetch Android repository metadata: {error}"))?;
+    if !response.status().is_success() {
+        return Err(eyre::eyre!(
+            "Failed to fetch Android repository metadata: HTTP {}",
+            response.status()
+        ));
+    }
+    let bytes = response
+        .into_body()
+        .into_bytes()
+        .await
+        .map_err(|error| eyre::eyre!("Failed to read Android repository metadata: {error}"))?;
+    let repository_xml = String::from_utf8(bytes.to_vec())
+        .map_err(|error| eyre::eyre!("Android repository metadata is not valid UTF-8: {error}"))?;
+    parse_cmdline_tools_archive(&repository_xml, host_os)
+}
+
+async fn download_cmdline_tools_archive(
+    archive: &AndroidCmdlineToolsArchive,
+    destination: &Path,
+) -> eyre::Result<()> {
+    use zenwave::{Client, Method, redirect::FollowRedirect};
+
+    let parent = destination.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "Android cmdline-tools download destination has no parent: {}",
+            destination.display()
+        )
+    })?;
+    fs::create_dir_all(parent).await?;
+
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client
+        .method(Method::GET, &archive.download_url)
+        .await
+        .map_err(|error| eyre::eyre!("Failed to download Android cmdline-tools: {error}"))?;
+    if !response.status().is_success() {
+        return Err(eyre::eyre!(
+            "Failed to download Android cmdline-tools: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let expected_length = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let mut body = response.into_body();
+    let mut file = fs::File::create(destination).await?;
+    let mut bytes_written = 0_u64;
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk
+            .map_err(|error| eyre::eyre!("Failed while downloading Android cmdline-tools: {error}"))?;
+        file.write_all(&chunk).await?;
+        bytes_written = bytes_written.saturating_add(
+            u64::try_from(chunk.len()).expect("download chunk length must fit into u64"),
+        );
+    }
+    file.flush().await?;
+
+    if let Some(expected_length) = expected_length
+        && expected_length != bytes_written
+    {
+        return Err(eyre::eyre!(
+            "Android cmdline-tools download size mismatch: expected {expected_length} bytes, got {bytes_written}"
+        ));
+    }
+    if bytes_written != archive.size_bytes {
+        return Err(eyre::eyre!(
+            "Android cmdline-tools archive size mismatch against repository metadata: expected {} bytes, got {bytes_written}",
+            archive.size_bytes,
+        ));
+    }
+
+    Ok(())
+}
+
+fn find_extracted_cmdline_tools_dir(root: &Path) -> eyre::Result<PathBuf> {
+    let sdkmanager_name = if cfg!(target_os = "windows") {
+        "sdkmanager.bat"
+    } else {
+        "sdkmanager"
+    };
+    if root.join("bin").join(sdkmanager_name).exists() {
+        return Ok(root.to_path_buf());
+    }
+
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| eyre::eyre!("Failed to scan extracted Android cmdline-tools: {error}"))?
+    {
+        let entry = entry
+            .map_err(|error| eyre::eyre!("Failed to read extracted Android cmdline-tools entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Ok(found) = find_extracted_cmdline_tools_dir(&path) {
+            return Ok(found);
+        }
+    }
+
+    Err(eyre::eyre!(
+        "Extracted Android cmdline-tools archive does not contain `sdkmanager`"
+    ))
+}
+
+#[cfg(unix)]
+fn ensure_android_cmdline_tools_bin_executable(bin_dir: &Path) -> eyre::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !bin_dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(bin_dir)
+        .map_err(|error| eyre::eyre!("Failed to read Android cmdline-tools bin directory: {error}"))?
+    {
+        let entry = entry
+            .map_err(|error| eyre::eyre!("Failed to inspect Android cmdline-tools bin entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let mut permissions = std::fs::metadata(&path)
+            .map_err(|error| eyre::eyre!("Failed to read permissions for {}: {error}", path.display()))?
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).map_err(|error| {
+            eyre::eyre!(
+                "Failed to mark Android cmdline-tools executable at {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_android_cmdline_tools_bin_executable(_bin_dir: &Path) -> eyre::Result<()> {
+    Ok(())
+}
+
+async fn install_android_cmdline_tools(sdk_root: &Path) -> eyre::Result<()> {
+    let archive = resolve_cmdline_tools_archive().await?;
+    fs::create_dir_all(sdk_root).await?;
+    let download_dir = sdk_root.join(".water").join("android-sdk");
+    fs::create_dir_all(&download_dir).await?;
+    let archive_path = download_dir.join("cmdline-tools-latest.zip");
+    download_cmdline_tools_archive(&archive, &archive_path).await?;
+
+    let sdk_root = sdk_root.to_path_buf();
+    let archive_path_for_extract = archive_path.clone();
+    unblock(move || -> eyre::Result<()> {
+        let extract_root = sdk_root.join(".water").join("android-sdk").join("extract");
+        if extract_root.exists() {
+            std::fs::remove_dir_all(&extract_root).map_err(|error| {
+                eyre::eyre!(
+                    "Failed to reset temporary Android cmdline-tools extraction dir {}: {error}",
+                    extract_root.display()
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&extract_root).map_err(|error| {
+            eyre::eyre!(
+                "Failed to create temporary Android cmdline-tools extraction dir {}: {error}",
+                extract_root.display()
+            )
+        })?;
+
+        let archive_file = std::fs::File::open(&archive_path_for_extract).map_err(|error| {
+            eyre::eyre!(
+                "Failed to open downloaded Android cmdline-tools archive {}: {error}",
+                archive_path_for_extract.display()
+            )
+        })?;
+        let mut zip_archive = zip::ZipArchive::new(archive_file)
+            .map_err(|error| eyre::eyre!("Failed to open Android cmdline-tools zip archive: {error}"))?;
+        zip_archive.extract(&extract_root).map_err(|error| {
+            eyre::eyre!(
+                "Failed to extract Android cmdline-tools archive into {}: {error}",
+                extract_root.display()
+            )
+        })?;
+
+        let extracted_dir = find_extracted_cmdline_tools_dir(&extract_root)?;
+        let cmdline_tools_dir = sdk_root.join("cmdline-tools");
+        let latest_dir = cmdline_tools_dir.join("latest");
+        if latest_dir.exists() {
+            std::fs::remove_dir_all(&latest_dir).map_err(|error| {
+                eyre::eyre!(
+                    "Failed to replace existing Android cmdline-tools dir {}: {error}",
+                    latest_dir.display()
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&cmdline_tools_dir).map_err(|error| {
+            eyre::eyre!(
+                "Failed to create Android cmdline-tools parent dir {}: {error}",
+                cmdline_tools_dir.display()
+            )
+        })?;
+        std::fs::rename(&extracted_dir, &latest_dir).map_err(|error| {
+            eyre::eyre!(
+                "Failed to install Android cmdline-tools into {}: {error}",
+                latest_dir.display()
+            )
+        })?;
+        ensure_android_cmdline_tools_bin_executable(&latest_dir.join("bin"))?;
+        if extract_root.exists() {
+            let _ = std::fs::remove_dir_all(&extract_root);
+        }
+        Ok(())
+    })
+    .await?;
+
+    let _ = fs::remove_file(&archive_path).await;
+    Ok(())
+}
+
+async fn run_command_with_stdin_os<N, A, S>(
+    name: N,
+    args: A,
+    stdin_payload: &[u8],
+) -> eyre::Result<String>
+where
+    N: AsRef<std::ffi::OsStr>,
+    A: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let name_ref = name.as_ref();
+    let mut command = smol::process::Command::new(name_ref);
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_payload).await?;
+        stdin.flush().await?;
+    }
+    let output = child.output().await?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let output_body = if !stderr.is_empty() {
+            format!("
+stderr:
+{stderr}")
+        } else if !stdout.is_empty() {
+            format!("
+stdout:
+{stdout}")
+        } else {
+            String::new()
+        };
+        let name_display = name_ref.to_string_lossy();
+        Err(eyre::eyre!(
+            "Command {name_display} failed with status {}{output_body}",
+            output.status,
+        ))
+    }
+}
+
+async fn accept_android_sdk_licenses() -> eyre::Result<()> {
+    let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
+    let mut responses = Vec::with_capacity(ANDROID_FIX_MAX_LICENSE_RESPONSES * 2);
+    for _ in 0..ANDROID_FIX_MAX_LICENSE_RESPONSES {
+        responses.extend_from_slice(b"y
+");
+    }
+    let args = vec![
+        OsString::from(format!("--sdk_root={}", sdk_root.display())),
+        OsString::from("--licenses"),
+    ];
+    let _ = run_command_with_stdin_os(&sdkmanager_path, args, &responses).await?;
+    Ok(())
+}
+
 fn parse_sdkmanager_package_id(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -264,22 +656,25 @@ async fn resolve_sdkmanager_and_root() -> eyre::Result<(PathBuf, PathBuf)> {
 
 async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
     let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
+    accept_android_sdk_licenses().await?;
 
+    let mut responses = Vec::with_capacity(ANDROID_FIX_MAX_LICENSE_RESPONSES * 2);
+    for _ in 0..ANDROID_FIX_MAX_LICENSE_RESPONSES {
+        responses.extend_from_slice(b"y
+");
+    }
     let args = vec![
-        OsString::from("--sdk_root"),
-        sdk_root.into_os_string(),
-        OsString::from("--install"),
+        OsString::from(format!("--sdk_root={}", sdk_root.display())),
         OsString::from(package_id),
     ];
-    run_command_os(&sdkmanager_path, args).await?;
+    run_command_with_stdin_os(&sdkmanager_path, args, &responses).await?;
     Ok(())
 }
 
 async fn latest_ndk_package_id() -> eyre::Result<String> {
     let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
     let args = vec![
-        OsString::from("--sdk_root"),
-        sdk_root.into_os_string(),
+        OsString::from(format!("--sdk_root={}", sdk_root.display())),
         OsString::from("--list"),
     ];
     let output = run_command_output_os(&sdkmanager_path, args).await?;
@@ -308,6 +703,64 @@ async fn latest_ndk_package_id() -> eyre::Result<String> {
     })
 }
 
+fn android_sdk_default_root() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return Some(PathBuf::from(env::var("HOME").ok()?).join("Library/Android/sdk"));
+    }
+    if cfg!(target_os = "linux") {
+        return Some(PathBuf::from(env::var("HOME").ok()?).join("Android/Sdk"));
+    }
+    if cfg!(target_os = "windows") {
+        let localappdata = env::var("LOCALAPPDATA").ok()?;
+        return Some(PathBuf::from(localappdata).join("Android/Sdk"));
+    }
+    None
+}
+
+fn android_sdk_install_root() -> Option<PathBuf> {
+    for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+        if let Ok(raw) = env::var(key) {
+            let sdk_path = PathBuf::from(raw);
+            if !sdk_path.as_os_str().is_empty() {
+                return Some(sdk_path);
+            }
+        }
+    }
+    android_sdk_default_root()
+}
+
+fn android_compile_sdk_level() -> eyre::Result<u32> {
+    ANDROID_APP_BUILD_GRADLE_TEMPLATE
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("compileSdk = "))
+        .ok_or_else(|| eyre::eyre!("Android app template is missing `compileSdk = ...`"))?
+        .parse::<u32>()
+        .map_err(|error| eyre::eyre!("Invalid Android compileSdk value in template: {error}"))
+}
+
+fn android_platform_package_id() -> eyre::Result<String> {
+    Ok(format!("platforms;android-{}", android_compile_sdk_level()?))
+}
+
+impl AndroidPlatformSdk {
+    /// Detect the installed Android platform SDK jar required by the app template.
+    #[must_use]
+    pub fn detect_android_jar() -> Option<PathBuf> {
+        let sdk_root = AndroidSdk::detect_path()?;
+        let api_level = android_compile_sdk_level().ok()?;
+        let android_jar = sdk_root
+            .join("platforms")
+            .join(format!("android-{api_level}"))
+            .join("android.jar");
+        if android_jar.exists() {
+            Some(android_jar)
+        } else {
+            None
+        }
+    }
+}
+
 impl AndroidSdk {
     /// Detect the path to the Android SDK installation.
     #[must_use]
@@ -321,27 +774,11 @@ impl AndroidSdk {
             }
         }
 
-        if cfg!(target_os = "macos") {
-            let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Library/Android/sdk");
-            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
-                return Some(home_sdk);
-            }
-        }
-
-        if cfg!(target_os = "linux") {
-            let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Android/Sdk");
-            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
-                return Some(home_sdk);
-            }
-        }
-
-        if cfg!(target_os = "windows") {
-            if let Ok(localappdata) = env::var("LOCALAPPDATA") {
-                let sdk_path = PathBuf::from(localappdata).join("Android/Sdk");
-                if sdk_path.exists() && looks_like_android_sdk_root(&sdk_path) {
-                    return Some(sdk_path);
-                }
-            }
+        if let Some(default_root) = android_sdk_default_root()
+            && default_root.exists()
+            && looks_like_android_sdk_root(&default_root)
+        {
+            return Some(default_root);
         }
 
         if let Some(sdkmanager_path) = find_sdkmanager_on_path_env()
@@ -429,7 +866,7 @@ pub enum FailToInstallAndroidSdk {
     )]
     PostInstallSetupRequired,
     #[error(
-        "Automatic Android SDK installation is only supported on macOS and Windows. On Linux, install Android SDK command-line tools manually."
+        "Automatic Android SDK installation is only supported on macOS, Windows, and Linux command-line tools hosts."
     )]
     UnsupportedPlatform,
 }
@@ -466,6 +903,8 @@ impl Toolchain for AndroidSdk {
                     ),
                 ))
             }
+        } else if cfg!(target_os = "linux") {
+            Err(ToolchainError::fixable(AndroidSdkInstallation))
         } else {
             Err(ToolchainError::unfixable(
                 "Android SDK not found",
@@ -495,11 +934,30 @@ impl Installation for AndroidSdkInstallation {
             brew.install_cask("android-studio")
                 .await
                 .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+        } else if cfg!(target_os = "linux") {
+            let sdk_root = android_sdk_install_root().ok_or_else(|| {
+                FailToInstallAndroidSdk::InstallFailed(eyre::eyre!(
+                    "Unable to determine Android SDK installation root. {}",
+                    android_sdk_path_suggestion()
+                ))
+            })?;
+            install_android_cmdline_tools(&sdk_root)
+                .await
+                .map_err(FailToInstallAndroidSdk::InstallFailed)?;
         } else {
             return Err(FailToInstallAndroidSdk::UnsupportedPlatform);
         }
 
-        if AndroidSdk::detect_path().is_some() {
+        if cfg!(target_os = "linux") {
+            if AndroidSdk::sdkmanager_path().await.is_some() {
+                Ok(())
+            } else {
+                Err(FailToInstallAndroidSdk::InstallFailed(eyre::eyre!(
+                    "Android SDK command-line tools were installed, but `sdkmanager` was not detected. {}",
+                    android_sdk_path_suggestion()
+                )))
+            }
+        } else if AndroidSdk::detect_path().is_some() {
             Ok(())
         } else {
             Err(FailToInstallAndroidSdk::PostInstallSetupRequired)
@@ -518,6 +976,63 @@ fn map_winget_error_for_android_sdk(error: WingetInstallError) -> FailToInstallA
                 "Package `{package_id}` is still missing after winget install; verify winget sources and retry."
             ))
         }
+    }
+}
+
+/// Installation procedure for the Android platform SDK required by the app template.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidPlatformSdkInstallation;
+
+/// Errors that can occur when installing the Android platform SDK.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidPlatformSdk {
+    #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
+    SdkManagerNotFound,
+    #[error("Failed to determine required Android platform package: {0}")]
+    MissingPackageId(eyre::Report),
+    #[error("Failed to install Android platform SDK via sdkmanager: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Android platform SDK is still missing after installation.")]
+    StillMissing,
+}
+
+impl Toolchain for AndroidPlatformSdk {
+    type Installation = AndroidPlatformSdkInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if Self::detect_android_jar().is_some() {
+            return Ok(());
+        }
+
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidPlatformSdkInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android platform SDK not found",
+                format!(
+                    "Install `{}` with sdkmanager, or run `water doctor --fix` after Android SDK command-line tools are ready.",
+                    android_platform_package_id().unwrap_or_else(|_| String::from("platforms;android-<api>"))
+                ),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidPlatformSdkInstallation {
+    type Error = FailToInstallAndroidPlatformSdk;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if AndroidSdk::sdkmanager_path().await.is_none() {
+            return Err(FailToInstallAndroidPlatformSdk::SdkManagerNotFound);
+        }
+        let package_id = android_platform_package_id()
+            .map_err(FailToInstallAndroidPlatformSdk::MissingPackageId)?;
+        install_android_sdk_package(&package_id)
+            .await
+            .map_err(FailToInstallAndroidPlatformSdk::InstallFailed)?;
+        AndroidPlatformSdk::detect_android_jar()
+            .ok_or(FailToInstallAndroidPlatformSdk::StillMissing)?;
+        Ok(())
     }
 }
 
@@ -878,6 +1393,94 @@ impl Installation for KotlinInstallation {
     }
 }
 
+async fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+    let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
+    let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    for candidate in candidates {
+        let clang = candidate.join("bin").join(if cfg!(target_os = "windows") {
+            "aarch64-linux-android24-clang.cmd"
+        } else {
+            "aarch64-linux-android24-clang"
+        });
+        if clang.exists() {
+            return Some(clang);
+        }
+    }
+
+    None
+}
+
+async fn verify_ndk_host_toolchain_executable(
+    ndk_path: &Path,
+) -> Result<(), ToolchainError<AndroidNdkInstallation>> {
+    let clang_path = ndk_host_clang_path(ndk_path).await.ok_or_else(|| {
+        ToolchainError::unfixable(
+            "Android NDK toolchain is incomplete (`clang` was not found under toolchains/llvm/prebuilt).",
+            android_ndk_install_suggestion(),
+        )
+    })?;
+
+    let probe_source = std::env::temp_dir().join("waterui_android_ndk_probe.c");
+    fs::write(&probe_source, b"int main(void) { return 0; }
+")
+        .await
+        .map_err(|error| {
+            ToolchainError::unfixable(
+                format!(
+                    "Failed to create Android NDK probe source at {}: {error}",
+                    probe_source.display()
+                ),
+                "Ensure the temporary directory is writable, then retry `water doctor`.",
+            )
+        })?;
+    let probe_output = if cfg!(target_os = "windows") {
+        PathBuf::from("NUL")
+    } else {
+        PathBuf::from("/dev/null")
+    };
+    let result = run_command_output_os(
+        &clang_path,
+        [
+            OsString::from("-x"),
+            OsString::from("c"),
+            OsString::from("-c"),
+            probe_source.clone().into_os_string(),
+            OsString::from("-o"),
+            probe_output.into_os_string(),
+        ],
+    )
+    .await;
+    let _ = fs::remove_file(&probe_source).await;
+    result.map_err(|error| {
+        let detail = error.to_string();
+        let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
+            String::from(
+                "This host cannot execute the NDK's x86_64 Linux toolchain binaries. Use an x86_64 Linux machine/VM, or install x86_64 userland emulation/runtime support so the Android clang executable can run.",
+            )
+        } else {
+            format!(
+                "Ensure the Android NDK toolchain binaries under `{}` can execute on this host, then retry packaging.",
+                clang_path.display()
+            )
+        };
+        ToolchainError::unfixable(
+            format!(
+                "Android NDK toolchain exists but failed to execute on this host: {detail}"
+            ),
+            suggestion,
+        )
+    })?;
+
+    Ok(())
+}
+
 impl AndroidNdk {
     /// Detect the Android NDK path from environment variables or standard locations.
     #[must_use]
@@ -940,7 +1543,7 @@ impl Toolchain for AndroidNdk {
         if let Some(ndk_path) = Self::detect_path() {
             let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
             if llvm_dir.exists() {
-                return Ok(());
+                return verify_ndk_host_toolchain_executable(&ndk_path).await;
             }
 
             if AndroidSdk::sdkmanager_path().await.is_some() {
@@ -990,5 +1593,67 @@ impl Installation for AndroidNdkInstallation {
         } else {
             Err(FailToInstallAndroidNdk::Incomplete)
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ANDROID_APP_BUILD_GRADLE_TEMPLATE, ANDROID_CMDLINE_TOOLS_PACKAGE_PATH,
+        AndroidCmdlineToolsArchive, android_compile_sdk_level, parse_cmdline_tools_archive,
+    };
+
+    #[test]
+    fn parses_latest_linux_cmdline_tools_archive_from_repository_xml() {
+        let xml = r#"
+            <sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
+              <remotePackage path="cmdline-tools;latest">
+                <archives>
+                  <archive>
+                    <host-os>linux</host-os>
+                    <complete>
+                      <size>42</size>
+                      <url>commandlinetools-linux-latest.zip</url>
+                    </complete>
+                  </archive>
+                </archives>
+              </remotePackage>
+            </sdk:sdk-repository>
+        "#;
+
+        let archive = parse_cmdline_tools_archive(xml, "linux")
+            .expect("linux cmdline-tools archive must parse");
+        assert_eq!(
+            archive,
+            AndroidCmdlineToolsArchive {
+                download_url: String::from(
+                    "https://dl.google.com/android/repository/commandlinetools-linux-latest.zip"
+                ),
+                size_bytes: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cmdline_tools_archive_rejects_missing_latest_package() {
+        let xml = r#"
+            <sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
+              <remotePackage path="cmdline-tools;19.0" />
+            </sdk:sdk-repository>
+        "#;
+
+        let error = parse_cmdline_tools_archive(xml, "linux")
+            .expect_err("missing latest package must fail");
+        assert!(error.to_string().contains(ANDROID_CMDLINE_TOOLS_PACKAGE_PATH));
+    }
+
+    #[test]
+    fn parses_compile_sdk_level_from_android_template() {
+        assert!(ANDROID_APP_BUILD_GRADLE_TEMPLATE.contains("compileSdk = 35"));
+        assert_eq!(
+            android_compile_sdk_level().expect("compileSdk must parse from template"),
+            35
+        );
     }
 }
