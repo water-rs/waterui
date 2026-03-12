@@ -32,6 +32,51 @@ pub struct GpuParticle {
 
 /// GPU uniforms for compute and render shaders.
 /// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct CollisionUniforms {
+    /// Whether collision response is active.
+    pub enabled: u32,
+    /// Velocity preserved along the collision normal.
+    pub restitution: f32,
+    /// Velocity preserved tangent to the collision surface.
+    pub surface_friction: f32,
+    /// Whether the circular obstacle collider is active.
+    pub obstacle_enabled: u32,
+    /// Collision bounds encoded as min_x, min_y, max_x, max_y.
+    pub bounds: glam::Vec4,
+    /// Circular obstacle center in normalized coordinates.
+    pub obstacle_center: glam::Vec2,
+    /// Circular obstacle radius.
+    pub obstacle_radius: f32,
+    _pad0: f32,
+}
+
+impl CollisionUniforms {
+    #[must_use]
+    pub fn new(
+        enabled: bool,
+        restitution: f32,
+        surface_friction: f32,
+        bounds: glam::Vec4,
+        obstacle_enabled: bool,
+        obstacle_center: glam::Vec2,
+        obstacle_radius: f32,
+    ) -> Self {
+        Self {
+            enabled: u32::from(enabled),
+            restitution,
+            surface_friction,
+            obstacle_enabled: u32::from(obstacle_enabled),
+            bounds,
+            obstacle_center,
+            obstacle_radius,
+            _pad0: 0.0,
+        }
+    }
+}
+
+/// GPU uniforms for compute and render shaders.
+/// Uses encase for automatic WGSL-compatible alignment.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct Uniforms {
     /// Elapsed time in seconds.
@@ -61,6 +106,8 @@ pub struct Uniforms {
     pub stretch_factor: f32,
     /// Edge softness (0.0=hard, 1.0=soft).
     pub softness: f32,
+    /// Collision configuration.
+    pub collision: CollisionUniforms,
     /// Life range (min, max).
     pub life_range: glam::Vec2,
     /// Speed range (min, max).
@@ -99,6 +146,7 @@ impl Default for Uniforms {
             drag: 1.0,
             stretch_factor: 0.0,
             softness: 0.5,
+            collision: CollisionUniforms::default(),
             life_range: glam::Vec2::new(1.0, 1.0),
             speed_range: glam::Vec2::new(1.0, 1.0),
             angle_range: glam::Vec2::ZERO,
