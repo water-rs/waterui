@@ -33,7 +33,9 @@ use waterui_text::text;
 use crate::Url;
 use crate::source::{MediaItem, SubtitleTrack};
 use crate::subtitles::{SubtitleCue, active_subtitle_text, parse_subtitles_from_path};
-use crate::video::{AspectRatio, Event, PlaybackPolicy, VideoConfig, VideoPlayerConfig, Volume};
+use crate::video::{
+    AspectRatio, Event, PlaybackPolicy, SubtitleSelection, VideoConfig, VideoPlayerConfig, Volume,
+};
 
 const SEEK_EPSILON: f64 = 0.005;
 const SEEK_RESTART_THROTTLE: Duration = Duration::from_millis(40);
@@ -584,6 +586,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
     env.insert_hook::<VideoConfig, AnyView>(|_env, config| {
         let VideoConfig {
             source,
+            subtitle_selection,
             volume,
             playback_rate,
             preserve_pitch,
@@ -602,7 +605,8 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             start_ui_update_pump(ui_receiver, on_event.clone(), None, Some(subtitle.clone()));
             let surface = VideoSurface::new(
                 item.source,
-                select_default_subtitle_track(&item.subtitle_tracks),
+                item.subtitle_tracks,
+                subtitle_selection.clone(),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -621,6 +625,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
     env.insert_hook::<VideoPlayerConfig, AnyView>(|_env, config| {
         let VideoPlayerConfig {
             source,
+            subtitle_selection,
             volume,
             playback_rate,
             preserve_pitch,
@@ -655,7 +660,8 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
             let surface = VideoSurface::new(
                 item.source,
-                select_default_subtitle_track(&item.subtitle_tracks),
+                item.subtitle_tracks.clone(),
+                subtitle_selection.clone(),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -669,6 +675,8 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             if show_controls {
                 let progress = player.progress_control_binding();
                 let controls = player_controls(
+                    item.subtitle_tracks,
+                    subtitle_selection.clone(),
                     player.is_playing.clone(),
                     progress,
                     player.duration_seconds.clone(),
@@ -690,12 +698,91 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
     });
 }
 
-fn select_default_subtitle_track(tracks: &[SubtitleTrack]) -> Option<SubtitleTrack> {
+fn select_default_subtitle_track_index(tracks: &[SubtitleTrack]) -> Option<usize> {
     tracks
         .iter()
-        .find(|track| track.forced)
-        .cloned()
-        .or_else(|| tracks.first().cloned())
+        .position(|track| track.forced)
+        .or_else(|| (!tracks.is_empty()).then_some(0))
+}
+
+fn resolve_selected_subtitle_index(
+    tracks: &[SubtitleTrack],
+    selection: SubtitleSelection,
+) -> Result<Option<usize>, String> {
+    match selection {
+        SubtitleSelection::Auto => Ok(select_default_subtitle_track_index(tracks)),
+        SubtitleSelection::Off => Ok(None),
+        SubtitleSelection::Track(index) => {
+            if index < tracks.len() {
+                Ok(Some(index))
+            } else {
+                Err(format!(
+                    "subtitle track index {index} is out of range for {} tracks",
+                    tracks.len()
+                ))
+            }
+        }
+    }
+}
+
+fn subtitle_track_label(track: &SubtitleTrack, index: usize) -> String {
+    if let Some(label) = track.label.as_deref()
+        && !label.trim().is_empty()
+    {
+        return label.to_owned();
+    }
+    if let Some(language) = track.language.as_deref()
+        && !language.trim().is_empty()
+    {
+        return language.to_owned();
+    }
+    format!("Track {}", index + 1)
+}
+
+fn subtitle_selection_label(
+    tracks: &[SubtitleTrack],
+    selection: SubtitleSelection,
+) -> Result<String, String> {
+    match selection {
+        SubtitleSelection::Auto => Ok(String::from("Subs Auto")),
+        SubtitleSelection::Off => Ok(String::from("Subs Off")),
+        SubtitleSelection::Track(index) => tracks
+            .get(index)
+            .map(|track| format!("Subs {}", subtitle_track_label(track, index)))
+            .ok_or_else(|| {
+                format!(
+                    "subtitle track index {index} is out of range for {} tracks",
+                    tracks.len()
+                )
+            }),
+    }
+}
+
+fn next_subtitle_selection(
+    tracks: &[SubtitleTrack],
+    selection: SubtitleSelection,
+) -> Result<SubtitleSelection, String> {
+    if tracks.is_empty() {
+        return Ok(SubtitleSelection::Off);
+    }
+
+    Ok(match selection {
+        SubtitleSelection::Auto => SubtitleSelection::Off,
+        SubtitleSelection::Off => SubtitleSelection::Track(0),
+        SubtitleSelection::Track(index) => {
+            if index >= tracks.len() {
+                return Err(format!(
+                    "subtitle track index {index} is out of range for {} tracks",
+                    tracks.len()
+                ));
+            }
+            if index + 1 < tracks.len() {
+                SubtitleSelection::Track(index + 1)
+            } else {
+                SubtitleSelection::Auto
+            }
+        }
+    })
 }
 
 fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
@@ -714,6 +801,8 @@ fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
 }
 
 fn player_controls(
+    subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_selection: Binding<SubtitleSelection>,
     is_playing: Binding<bool>,
     progress: Binding<f64>,
     duration_seconds: Binding<f64>,
@@ -750,6 +839,30 @@ fn player_controls(
         },
     );
 
+    let subtitle_toggle = if subtitle_tracks.is_empty() {
+        AnyView::new(())
+    } else {
+        AnyView::new(
+            button(Dynamic::watch(subtitle_selection.clone(), {
+                let subtitle_tracks = subtitle_tracks.clone();
+                move |selection| {
+                    let label = subtitle_selection_label(&subtitle_tracks, selection)
+                        .unwrap_or_else(|message| message);
+                    AnyView::new(text(label))
+                }
+            }))
+            .with_state(&subtitle_selection)
+            .action({
+                let subtitle_tracks = subtitle_tracks.clone();
+                move |selection| {
+                    let next = next_subtitle_selection(&subtitle_tracks, selection.get())
+                        .expect("subtitle selection state must resolve");
+                    selection.set(next);
+                }
+            }),
+        )
+    };
+
     let transport = hstack((
         button("Back 10s")
             .with_state(&progress)
@@ -782,6 +895,7 @@ fn player_controls(
         .with_state(&muted)
         .action(|is_muted| is_muted.set(!is_muted.get())),
         slider(0.0..=1.0, &volume_level),
+        subtitle_toggle,
         button("Forward 10s")
             .with_state(&progress)
             .with_state(&duration_seconds)
@@ -877,7 +991,8 @@ struct VideoSurface {
 impl VideoSurface {
     fn new(
         source: Url,
-        subtitle_track: Option<SubtitleTrack>,
+        subtitle_tracks: Vec<SubtitleTrack>,
+        subtitle_selection: Binding<SubtitleSelection>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -890,7 +1005,8 @@ impl VideoSurface {
         Self {
             renderer: VideoRenderer::new(
                 source,
-                subtitle_track,
+                subtitle_tracks,
+                subtitle_selection,
                 volume,
                 playback_rate,
                 preserve_pitch,
@@ -1066,7 +1182,9 @@ impl Drop for DecoderWorker {
 
 struct VideoRenderer {
     source: Url,
-    subtitle_track: Option<SubtitleTrack>,
+    subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_selection: Binding<SubtitleSelection>,
+    active_subtitle_track: Option<usize>,
     volume: Binding<Volume>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
@@ -1138,7 +1256,8 @@ impl core::fmt::Debug for VideoRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VideoRenderer")
             .field("source", &self.source)
-            .field("has_subtitle_track", &self.subtitle_track.is_some())
+            .field("subtitle_track_count", &self.subtitle_tracks.len())
+            .field("active_subtitle_track", &self.active_subtitle_track)
             .field("loops", &self.loops)
             .field("aspect_ratio", &self.aspect_ratio)
             .field("source_asset", &self.source_asset)
@@ -1151,7 +1270,8 @@ impl core::fmt::Debug for VideoRenderer {
 impl VideoRenderer {
     fn new(
         source: Url,
-        subtitle_track: Option<SubtitleTrack>,
+        subtitle_tracks: Vec<SubtitleTrack>,
+        subtitle_selection: Binding<SubtitleSelection>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -1166,7 +1286,9 @@ impl VideoRenderer {
 
         Self {
             source,
-            subtitle_track: subtitle_track.clone(),
+            subtitle_tracks,
+            subtitle_selection,
+            active_subtitle_track: None,
             volume,
             playback_rate,
             preserve_pitch,
@@ -1217,7 +1339,7 @@ impl VideoRenderer {
             last_seek_restart_at: None,
             source_asset: FileAssetState::Unresolved,
             source_error_reported: false,
-            subtitle_asset: subtitle_track.map(|_| FileAssetState::Unresolved),
+            subtitle_asset: None,
             subtitle_error_reported: false,
             subtitle_cues: Vec::new(),
             last_subtitle_text: None,
@@ -1579,15 +1701,39 @@ impl VideoRenderer {
         self.push_ui_update(UiUpdate::Subtitle(update));
     }
 
+    fn sync_selected_subtitle_track(&mut self) -> Result<(), String> {
+        let next =
+            resolve_selected_subtitle_index(&self.subtitle_tracks, self.subtitle_selection.get())?;
+        if self.active_subtitle_track == next {
+            return Ok(());
+        }
+
+        self.active_subtitle_track = next;
+        self.subtitle_asset = next.map(|_| FileAssetState::Unresolved);
+        self.subtitle_error_reported = false;
+        self.subtitle_cues.clear();
+        self.set_subtitle_text(None);
+        Ok(())
+    }
+
     fn ensure_subtitle_cues(&mut self) -> Result<(), String> {
-        let Some(subtitle_source) = self
-            .subtitle_track
-            .as_ref()
-            .map(|track| track.source.clone())
-        else {
+        self.sync_selected_subtitle_track()?;
+
+        let Some(track_index) = self.active_subtitle_track else {
             self.set_subtitle_text(None);
             return Ok(());
         };
+        let subtitle_source = self
+            .subtitle_tracks
+            .get(track_index)
+            .ok_or_else(|| {
+                format!(
+                    "active subtitle track index {track_index} is out of range for {} tracks",
+                    self.subtitle_tracks.len()
+                )
+            })?
+            .source
+            .clone();
         if !self.subtitle_cues.is_empty() {
             return Ok(());
         }
@@ -3320,11 +3466,12 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PlaybackPolicy, ShaderTargetMode, preferred_surface_hdr_for_source,
-        select_default_subtitle_track, shader_target_mode, should_enter_vod_stall_buffering,
+        PlaybackPolicy, ShaderTargetMode, next_subtitle_selection,
+        preferred_surface_hdr_for_source, resolve_selected_subtitle_index,
+        select_default_subtitle_track_index, shader_target_mode, should_enter_vod_stall_buffering,
         should_wait_for_vod_buffering,
     };
-    use crate::SubtitleTrack;
+    use crate::{SubtitleSelection, SubtitleTrack};
     use std::{fs, path::PathBuf, time::SystemTime};
     use waterui_graphics::wgpu;
     use waterui_url::Url;
@@ -3436,10 +3583,44 @@ mod tests {
                 .forced(true),
         ];
 
-        let selected = select_default_subtitle_track(&tracks).expect("track must be selected");
+        let selected =
+            select_default_subtitle_track_index(&tracks).expect("track must be selected");
+        assert_eq!(selected, 1);
+    }
+
+    #[test]
+    fn explicit_subtitle_track_selection_rejects_out_of_range_index() {
+        let tracks = vec![SubtitleTrack::new("https://example.com/subs/en.vtt").language("en")];
+
+        let error = resolve_selected_subtitle_index(&tracks, SubtitleSelection::Track(7))
+            .expect_err("out-of-range selection must fail");
+        assert!(error.contains("out of range"));
+    }
+
+    #[test]
+    fn subtitle_selection_cycles_auto_off_tracks_then_auto() {
+        let tracks = vec![
+            SubtitleTrack::new("https://example.com/subs/en.vtt").language("en"),
+            SubtitleTrack::new("https://example.com/subs/es.vtt").language("es"),
+        ];
+
         assert_eq!(
-            selected.source.as_str(),
-            "https://example.com/subs/forced.vtt"
+            next_subtitle_selection(&tracks, SubtitleSelection::Auto).expect("cycle must succeed"),
+            SubtitleSelection::Off
+        );
+        assert_eq!(
+            next_subtitle_selection(&tracks, SubtitleSelection::Off).expect("cycle must succeed"),
+            SubtitleSelection::Track(0)
+        );
+        assert_eq!(
+            next_subtitle_selection(&tracks, SubtitleSelection::Track(0))
+                .expect("cycle must succeed"),
+            SubtitleSelection::Track(1)
+        );
+        assert_eq!(
+            next_subtitle_selection(&tracks, SubtitleSelection::Track(1))
+                .expect("cycle must succeed"),
+            SubtitleSelection::Auto
         );
     }
 }

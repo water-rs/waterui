@@ -10,7 +10,8 @@ pub use source::{Delivery, MediaItem, SubtitleTrack};
 
 pub mod video;
 pub use video::{
-    AspectRatio, Event, PlaybackPolicy, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume,
+    AspectRatio, Event, PlaybackPolicy, SubtitleSelection, Video, VideoConfig, VideoPlayer,
+    VideoPlayerConfig, Volume,
 };
 
 mod runtime_player;
