@@ -9,4 +9,4 @@ High-performance GPU particle system for WaterUI.
 - HDR color support with Linear sRGB
 - Motion blur for rain effects
 - Additive blending for fire/glow
-- Pure-GPU bounds and circle-obstacle collision with bounce and surface friction controls
+- Pure-GPU bounds and multi-circle obstacle collision with bounce and surface friction controls
