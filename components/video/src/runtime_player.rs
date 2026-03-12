@@ -30,8 +30,8 @@ use waterui_layout::{
 };
 use waterui_text::text;
 
-use crate::Url;
 use crate::video::{AspectRatio, Event, PlaybackPolicy, VideoConfig, VideoPlayerConfig, Volume};
+use crate::{Url, source::MediaItem};
 
 const SEEK_EPSILON: f64 = 0.005;
 const SEEK_RESTART_THROTTLE: Duration = Duration::from_millis(40);
@@ -573,11 +573,11 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         } = config;
 
         let on_event: OnEvent = Rc::from(on_event);
-        AnyView::new(Dynamic::watch(source, move |url| {
+        AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
             let (ui_updates, ui_receiver) = mpsc::channel();
             start_ui_update_pump(ui_receiver, on_event.clone(), None);
             AnyView::new(VideoSurface::new(
-                url,
+                item.source,
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -603,7 +603,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         } = config;
 
         let on_event: OnEvent = Rc::from(on_event);
-        AnyView::new(Dynamic::watch(source, move |url| {
+        AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
             let player = PlayerBindings {
                 is_playing: Binding::bool(true),
                 progress_display: Binding::f64(0.0),
@@ -618,7 +618,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             start_ui_update_pump(ui_receiver, on_event.clone(), Some(player.clone()));
 
             let surface = VideoSurface::new(
-                url,
+                item.source,
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -2806,7 +2806,11 @@ impl DecodeState {
         self.pending_decoded.clear();
 
         while self.reader.current_index() < target_index {
-            let Some((sample_data, _, _)) = self.reader.read_sample_ref() else {
+            let Some((sample_data, _, _)) = self
+                .reader
+                .read_sample()
+                .map_err(|error| error.to_string())?
+            else {
                 break;
             };
             let mut stream = self.decoder.decode(&sample_data);
@@ -2831,7 +2835,11 @@ impl DecodeState {
 
         loop {
             let sample_index = self.reader.current_index() as u32;
-            let Some((sample_data, pts, _)) = self.reader.read_sample_ref() else {
+            let Some((sample_data, pts, _)) = self
+                .reader
+                .read_sample()
+                .map_err(|error| error.to_string())?
+            else {
                 return Ok(None);
             };
             let pts = pts_to_duration(pts, self.timescale);

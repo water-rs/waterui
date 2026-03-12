@@ -403,7 +403,9 @@ fn collect_timeline(path: &Path, frame_budget: usize) -> Result<Vec<TimelineFram
     let mut last_pts = None::<Duration>;
 
     while timeline.len() < frame_budget {
-        let Some((_sample, sample_pts, _keyframe)) = reader.read_sample() else {
+        let Some((_sample, sample_pts, _keyframe)) =
+            reader.read_sample().map_err(|error| error.to_string())?
+        else {
             break;
         };
 
@@ -461,7 +463,10 @@ fn measure_seek_recovery(
         let mut found_target = false;
 
         for index in 0..=target_index {
-            let Some((_sample_data, sample_pts, is_keyframe)) = scan_reader.read_sample() else {
+            let Some((_sample_data, sample_pts, is_keyframe)) = scan_reader
+                .read_sample()
+                .map_err(|error| error.to_string())?
+            else {
                 break;
             };
             if is_keyframe {
@@ -487,7 +492,10 @@ fn measure_seek_recovery(
         let started = Instant::now();
         let mut recovered = false;
         for sample_index in 0..sample_count as usize {
-            let Some((sample_data, sample_pts, _is_keyframe)) = decode_reader.read_sample() else {
+            let Some((sample_data, sample_pts, _is_keyframe)) = decode_reader
+                .read_sample()
+                .map_err(|error| error.to_string())?
+            else {
                 break;
             };
             if sample_index < keyframe_index {
@@ -579,7 +587,9 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
     let mut frame_delta_ms = Vec::<f64>::new();
 
     while decoded_frames < case.decode_frame_budget {
-        let Some((sample_data, sample_pts, _is_keyframe)) = reader.read_sample() else {
+        let Some((sample_data, sample_pts, _is_keyframe)) =
+            reader.read_sample().map_err(|error| error.to_string())?
+        else {
             break;
         };
 
