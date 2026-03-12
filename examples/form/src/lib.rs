@@ -43,15 +43,14 @@ struct AppSettings {
     notifications_enabled: bool,
 }
 
-fn main(settings: Binding<AppSettings>) -> impl View {
-    // Create reactive bindings for both forms
-    let registration = RegistrationForm::binding();
-    // Manual form controls for demonstration
-    let custom_name = binding("");
-    let custom_enabled = binding(false);
-    let custom_count = binding(5);
-    let custom_slider = binding(0.5);
-
+fn main(
+    settings: Binding<AppSettings>,
+    registration: Binding<RegistrationForm>,
+    custom_name: Binding<Str>,
+    custom_enabled: Binding<bool>,
+    custom_count: Binding<i32>,
+    custom_slider: Binding<f64>,
+) -> impl View {
     scroll(
         vstack((
             // Header
@@ -136,6 +135,11 @@ fn main(settings: Binding<AppSettings>) -> impl View {
 
 pub fn app(mut env: Environment) -> App {
     let settings = AppSettings::binding();
+    let registration = RegistrationForm::binding();
+    let custom_name = binding("");
+    let custom_enabled = binding(false);
+    let custom_count = binding(5);
+    let custom_slider = binding(0.5);
 
     // Install theme before creating App
     let theme =
@@ -154,7 +158,19 @@ pub fn app(mut env: Environment) -> App {
 
     env.install(theme);
 
-    App::new(move || main(settings.clone()), env)
+    App::new(
+        move || {
+            main(
+                settings.clone(),
+                registration.clone(),
+                custom_name.clone(),
+                custom_enabled.clone(),
+                custom_count.clone(),
+                custom_slider.clone(),
+            )
+        },
+        env,
+    )
 }
 
 waterui_ffi::export!();
