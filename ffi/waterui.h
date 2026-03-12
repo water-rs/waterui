@@ -119,6 +119,15 @@ typedef enum WuiButtonStyle {
   WuiButtonStyle_BorderedProminent,
 } WuiButtonStyle;
 
+/**
+ * FFI-safe horizontal paragraph alignment.
+ */
+typedef enum WuiHorizontalAlignment {
+  WuiHorizontalAlignment_Leading = 0,
+  WuiHorizontalAlignment_Center = 1,
+  WuiHorizontalAlignment_Trailing = 2,
+} WuiHorizontalAlignment;
+
 typedef enum WuiFontWeight {
   WuiFontWeight_Thin,
   WuiFontWeight_UltraLight,
@@ -215,6 +224,8 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_Error = 2,
   WuiVideoEventType_Buffering = 3,
   WuiVideoEventType_BufferingEnded = 4,
+  WuiVideoEventType_BufferLevel = 5,
+  WuiVideoEventType_PlaybackMetrics = 6,
 } WuiVideoEventType;
 
 typedef enum WuiProgressStyle {
@@ -594,6 +605,14 @@ typedef struct Binding_Id Binding_Id;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_PrimitiveDateTime Binding_PrimitiveDateTime;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Rect Binding_Rect;
 
 /**
@@ -730,6 +749,14 @@ typedef struct Computed_Font Computed_Font;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_HorizontalAlignment Computed_HorizontalAlignment;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Id Computed_Id;
 
 /**
@@ -747,6 +774,14 @@ typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_MenuItems Computed_MenuItems;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_PrimitiveDateTime Computed_PrimitiveDateTime;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -983,11 +1018,15 @@ typedef struct WuiWatcher_Date WuiWatcher_Date;
 
 typedef struct WuiWatcher_Font WuiWatcher_Font;
 
+typedef struct WuiWatcher_HorizontalAlignment WuiWatcher_HorizontalAlignment;
+
 typedef struct WuiWatcher_Id WuiWatcher_Id;
 
 typedef struct WuiWatcher_LivePhotoSource WuiWatcher_LivePhotoSource;
 
 typedef struct WuiWatcher_MenuItems WuiWatcher_MenuItems;
+
+typedef struct WuiWatcher_PrimitiveDateTime WuiWatcher_PrimitiveDateTime;
 
 typedef struct WuiWatcher_Region WuiWatcher_Region;
 
@@ -1698,8 +1737,11 @@ typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
 
 typedef struct Computed_StyledStr WuiComputed_StyledStr;
 
+typedef struct Computed_HorizontalAlignment WuiComputed_HorizontalAlignment;
+
 typedef struct WuiText {
   WuiComputed_StyledStr *content;
+  WuiComputed_HorizontalAlignment *paragraph_alignment;
 } WuiText;
 
 /**
@@ -1974,6 +2016,66 @@ typedef struct WuiSize {
   float height;
 } WuiSize;
 
+typedef struct WuiHorizontalGuide {
+  struct WuiTypeId alignment;
+  float value;
+} WuiHorizontalGuide;
+
+typedef struct WuiArraySlice_WuiHorizontalGuide {
+  struct WuiHorizontalGuide *head;
+  uintptr_t len;
+} WuiArraySlice_WuiHorizontalGuide;
+
+typedef struct WuiArrayVTable_WuiHorizontalGuide {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiHorizontalGuide (*slice)(const void*);
+} WuiArrayVTable_WuiHorizontalGuide;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiHorizontalGuide {
+  NonNull data;
+  struct WuiArrayVTable_WuiHorizontalGuide vtable;
+} WuiArray_WuiHorizontalGuide;
+
+typedef struct WuiVerticalGuide {
+  struct WuiTypeId alignment;
+  float value;
+} WuiVerticalGuide;
+
+typedef struct WuiArraySlice_WuiVerticalGuide {
+  struct WuiVerticalGuide *head;
+  uintptr_t len;
+} WuiArraySlice_WuiVerticalGuide;
+
+typedef struct WuiArrayVTable_WuiVerticalGuide {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiVerticalGuide (*slice)(const void*);
+} WuiArrayVTable_WuiVerticalGuide;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiVerticalGuide {
+  NonNull data;
+  struct WuiArrayVTable_WuiVerticalGuide vtable;
+} WuiArray_WuiVerticalGuide;
+
+typedef struct WuiViewDimensions {
+  struct WuiSize size;
+  struct WuiArray_WuiHorizontalGuide horizontal_guides;
+  struct WuiArray_WuiVerticalGuide vertical_guides;
+} WuiViewDimensions;
+
 typedef struct WuiProposalSize {
   float width;
   float height;
@@ -1991,7 +2093,7 @@ typedef struct WuiSubViewVTable {
    * Measures the child view given a size proposal.
    * Called potentially multiple times with different proposals during layout.
    */
-  struct WuiSize (*measure)(void *context, struct WuiProposalSize proposal);
+  struct WuiViewDimensions (*measure)(void *context, struct WuiProposalSize proposal);
   /**
    * Cleans up the context when the subview is no longer needed.
    * Called when the WuiSubView is dropped.
@@ -2249,12 +2351,12 @@ typedef struct WuiSecureField {
   WuiBinding_Secure *value;
 } WuiSecureField;
 
-typedef struct Binding_Date WuiBinding_Date;
+typedef struct Binding_PrimitiveDateTime WuiBinding_PrimitiveDateTime;
 
 /**
- * C-compatible date representation using year, month (1-12), and day (1-31).
+ * C-compatible date-time representation with second precision.
  */
-typedef struct WuiDate {
+typedef struct WuiDateTime {
   /**
    * Year (e.g., 2024)
    */
@@ -2267,26 +2369,38 @@ typedef struct WuiDate {
    * Day of month (1-31)
    */
   uint8_t day;
-} WuiDate;
+  /**
+   * Hour of day (0-23)
+   */
+  uint8_t hour;
+  /**
+   * Minute of hour (0-59)
+   */
+  uint8_t minute;
+  /**
+   * Second of minute (0-59)
+   */
+  uint8_t second;
+} WuiDateTime;
 
 /**
  * C representation of a range
  */
-typedef struct WuiRange_WuiDate {
+typedef struct WuiRange_WuiDateTime {
   /**
    * Start of the range
    */
-  struct WuiDate start;
+  struct WuiDateTime start;
   /**
    * End of the range
    */
-  struct WuiDate end;
-} WuiRange_WuiDate;
+  struct WuiDateTime end;
+} WuiRange_WuiDateTime;
 
 typedef struct WuiDatePicker {
   struct WuiAnyView *label;
-  WuiBinding_Date *value;
-  struct WuiRange_WuiDate range;
+  WuiBinding_PrimitiveDateTime *value;
+  struct WuiRange_WuiDateTime range;
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
@@ -2410,6 +2524,9 @@ typedef struct Binding_Volume WuiBinding_Volume;
 typedef struct WuiVideoEvent {
   enum WuiVideoEventType event_type;
   struct WuiStr error_message;
+  uint32_t buffered_ms;
+  float av_drift_ms;
+  uint64_t dropped_video_frames;
 } WuiVideoEvent;
 
 /**
@@ -3107,11 +3224,6 @@ typedef struct WuiAppliedFilter {
 } WuiAppliedFilter;
 
 /**
- * Callback type for async completion notifications.
- */
-typedef void (*WuiCallback)(void *user_data);
-
-/**
  * Result of a filter render operation.
  */
 typedef struct WuiAppliedFilterRenderResult {
@@ -3125,6 +3237,20 @@ typedef struct WuiAppliedFilterRenderResult {
    */
   bool needs_redraw;
 } WuiAppliedFilterRenderResult;
+
+/**
+ * Resolved output size returned to native before render scheduling.
+ */
+typedef struct WuiAppliedFilterOutputSize {
+  /**
+   * Output width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Output height in pixels.
+   */
+  uint32_t height;
+} WuiAppliedFilterOutputSize;
 
 /**
  * FFI representation of `FilteredView<Blur>`.
@@ -3245,7 +3371,29 @@ typedef struct Computed_AnyView WuiComputed_AnyView;
 
 typedef struct Binding_f32 WuiBinding_f32;
 
+/**
+ * C-compatible date representation using year, month (1-12), and day (1-31).
+ */
+typedef struct WuiDate {
+  /**
+   * Year (e.g., 2024)
+   */
+  int32_t year;
+  /**
+   * Month (1-12)
+   */
+  uint8_t month;
+  /**
+   * Day of month (1-31)
+   */
+  uint8_t day;
+} WuiDate;
+
+typedef struct Binding_Date WuiBinding_Date;
+
 typedef struct Computed_Date WuiComputed_Date;
+
+typedef struct Computed_PrimitiveDateTime WuiComputed_PrimitiveDateTime;
 
 typedef struct WuiPickerItem {
   struct WuiId tag;
@@ -4234,6 +4382,22 @@ void waterui_drop_layout(struct WuiLayout *value);
  */
 struct WuiTypeId waterui_spacer_id(void);
 
+struct WuiTypeId waterui_horizontal_alignment_leading_id(void);
+
+struct WuiTypeId waterui_horizontal_alignment_center_id(void);
+
+struct WuiTypeId waterui_horizontal_alignment_trailing_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_top_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_center_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_bottom_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_first_baseline_id(void);
+
+struct WuiTypeId waterui_vertical_alignment_last_baseline_id(void);
+
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_fixed_container_id(void);
@@ -4241,6 +4405,8 @@ struct WuiTypeId waterui_fixed_container_id(void);
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_layout_container_id(void);
+
+void waterui_drop_view_dimensions(struct WuiViewDimensions dimensions);
 
 /**
  * Calculates the size required by the layout given a proposal and child proxies.
@@ -4255,6 +4421,10 @@ struct WuiTypeId waterui_layout_container_id(void);
  * - The measure callbacks in each child must be safe to call.
  * - The `children` array will be consumed and dropped after this call.
  */
+struct WuiViewDimensions waterui_layout_measure(struct WuiLayout *layout,
+                                                struct WuiProposalSize proposal,
+                                                struct WuiArray_WuiSubView children);
+
 struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
                                              struct WuiProposalSize proposal,
                                              struct WuiArray_WuiSubView children);
@@ -4329,6 +4499,47 @@ struct WuiWatcher_StyledStr *waterui_new_watcher_styled_str(void *data,
                                                                          struct WuiStyledStr,
                                                                          struct WuiWatcherMetadata*),
                                                             void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiHorizontalAlignment waterui_read_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed,
+                                                                    struct WuiWatcher_HorizontalAlignment *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_horizontal_alignment(WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_HorizontalAlignment *waterui_clone_computed_horizontal_alignment(const WuiComputed_HorizontalAlignment *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_HorizontalAlignment *waterui_new_watcher_horizontal_alignment(void *data,
+                                                                                void (*call)(void*,
+                                                                                             enum WuiHorizontalAlignment,
+                                                                                             struct WuiWatcherMetadata*),
+                                                                                void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -5240,26 +5451,18 @@ struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilte
                                                           uint32_t input_height);
 
 /**
- * Setup the filter synchronously, call callback when ready.
- *
- * This function runs setup on the synchronous FFI path and calls the callback
- * when setup completes.
+ * Await filter setup to completion on the synchronous FFI path.
  *
  * # Arguments
  *
  * * `state` - Pointer to initialized state from `waterui_applied_filter_init`
- * * `callback` - Function to call when setup is complete
- * * `user_data` - Opaque pointer passed to callback
+ * Returns `true` when setup completes successfully.
  *
  * # Safety
  *
  * - `state` must be a valid pointer from `waterui_applied_filter_init`
- * - `callback` must be a valid function pointer
- * - `user_data` must remain valid until callback is invoked
  */
-void waterui_applied_filter_setup(struct WuiAppliedFilterState *state,
-                                  WuiCallback callback,
-                                  void *user_data);
+bool waterui_applied_filter_setup(struct WuiAppliedFilterState *state);
 
 /**
  * Render the filter.
@@ -5282,7 +5485,7 @@ void waterui_applied_filter_setup(struct WuiAppliedFilterState *state,
  * # Safety
  *
  * - `state` must be a valid pointer from `waterui_applied_filter_init`
- * - `waterui_applied_filter_setup` must have completed (callback was called)
+ * - `waterui_applied_filter_setup` must have returned `true`
  */
 struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppliedFilterState *state,
                                                                   uint32_t width,
@@ -5300,6 +5503,19 @@ struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppl
  * - Caller must ensure no concurrent `waterui_applied_filter_render` is running
  */
 bool waterui_applied_filter_sync_targets(struct WuiAppliedFilterState *state);
+
+/**
+ * Resolve the current output size from snapped filter state.
+ *
+ * Call this after `waterui_applied_filter_sync_targets` and before scheduling render work.
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_applied_filter_init`
+ */
+struct WuiAppliedFilterOutputSize waterui_applied_filter_resolve_output_size(struct WuiAppliedFilterState *state,
+                                                                             uint32_t input_width,
+                                                                             uint32_t input_height);
 
 /**
  * Poll whether the filter requires a new frame.
@@ -6353,6 +6569,77 @@ struct WuiWatcher_Date *waterui_new_watcher_date(void *data,
                                                               struct WuiDate,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiDateTime waterui_read_binding_date_time(const WuiBinding_PrimitiveDateTime *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_date_time(WuiBinding_PrimitiveDateTime *binding, struct WuiDateTime value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_date_time(const WuiBinding_PrimitiveDateTime *binding,
+                                                        struct WuiWatcher_PrimitiveDateTime *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_date_time(WuiBinding_PrimitiveDateTime *binding);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiDateTime waterui_read_computed_date_time(const WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_date_time(const WuiComputed_PrimitiveDateTime *computed,
+                                                         struct WuiWatcher_PrimitiveDateTime *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_date_time(WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_PrimitiveDateTime *waterui_clone_computed_date_time(const WuiComputed_PrimitiveDateTime *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_PrimitiveDateTime *waterui_new_watcher_date_time(void *data,
+                                                                   void (*call)(void*,
+                                                                                struct WuiDateTime,
+                                                                                struct WuiWatcherMetadata*),
+                                                                   void (*drop)(void*));
 
 /**
  * Reads the current value from a computed

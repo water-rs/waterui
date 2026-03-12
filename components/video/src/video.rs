@@ -66,6 +66,51 @@ pub enum AspectRatio {
 /// - When unmuted, `-0.7` becomes `0.7` again
 pub type Volume = f32;
 
+/// Playback strategy for network and realtime sources.
+///
+/// `Video` / `VideoPlayer` use one policy object so apps can explicitly choose
+/// between VOD buffering behavior and realtime behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackPolicy {
+    /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
+    pub realtime: bool,
+    /// Minimum buffered duration before starting playback for VOD.
+    pub vod_start_buffer_ms: u32,
+    /// Minimum buffered duration to resume after a VOD stall.
+    pub vod_resume_buffer_ms: u32,
+    /// Buffer level below which VOD enters buffering state.
+    pub vod_stall_buffer_ms: u32,
+    /// For realtime mode, drop video frames that are later than this threshold.
+    pub live_max_video_late_ms: u32,
+}
+
+impl PlaybackPolicy {
+    /// Default VOD policy.
+    pub const fn vod_default() -> Self {
+        Self {
+            realtime: false,
+            vod_start_buffer_ms: 1200,
+            vod_resume_buffer_ms: 800,
+            vod_stall_buffer_ms: 200,
+            live_max_video_late_ms: 50,
+        }
+    }
+
+    /// Default realtime/live policy.
+    pub const fn live_default() -> Self {
+        Self {
+            realtime: true,
+            ..Self::vod_default()
+        }
+    }
+}
+
+impl Default for PlaybackPolicy {
+    fn default() -> Self {
+        Self::vod_default()
+    }
+}
+
 /// Events emitted by video components.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -77,6 +122,18 @@ pub enum Event {
     Buffering,
     /// The video has resumed playing after buffering.
     BufferingEnded,
+    /// Current buffered duration in milliseconds.
+    BufferLevel {
+        /// Approximate buffered duration ahead of current playback position.
+        buffered_ms: u32,
+    },
+    /// Runtime playback diagnostics emitted periodically during playback.
+    PlaybackMetrics {
+        /// Audio/video drift in milliseconds (`audio - video`).
+        av_drift_ms: f32,
+        /// Cumulative number of dropped video frames.
+        dropped_video_frames: u64,
+    },
     /// An error occurred while loading or playing the video.
     Error {
         /// The error message describing what went wrong.
@@ -107,6 +164,8 @@ pub struct VideoConfig {
     pub aspect_ratio: AspectRatio,
     /// Whether the video should loop when it ends.
     pub loops: bool,
+    /// Playback buffering/realtime policy.
+    pub playback_policy: PlaybackPolicy,
     /// The event handler for video events.
     pub on_event: OnEvent,
 }
@@ -116,6 +175,7 @@ impl core::fmt::Debug for VideoConfig {
         f.debug_struct("VideoConfig")
             .field("aspect_ratio", &self.aspect_ratio)
             .field("loops", &self.loops)
+            .field("playback_policy", &self.playback_policy)
             .finish_non_exhaustive()
     }
 }
@@ -149,6 +209,7 @@ impl Video {
             preserve_pitch: binding(true),
             aspect_ratio: AspectRatio::default(),
             loops: true,
+            playback_policy: PlaybackPolicy::default(),
             on_event: Box::new(|_| {}),
         })
     }
@@ -164,6 +225,13 @@ impl Video {
     #[must_use]
     pub const fn loops(mut self, loops: bool) -> Self {
         self.0.loops = loops;
+        self
+    }
+
+    /// Sets playback buffering/realtime policy.
+    #[must_use]
+    pub const fn playback_policy(mut self, playback_policy: PlaybackPolicy) -> Self {
+        self.0.playback_policy = playback_policy;
         self
     }
 
@@ -240,6 +308,8 @@ pub struct VideoPlayerConfig {
     pub aspect_ratio: AspectRatio,
     /// Whether to show native playback controls.
     pub show_controls: bool,
+    /// Playback buffering/realtime policy.
+    pub playback_policy: PlaybackPolicy,
     /// The event handler for the video player.
     pub on_event: OnEvent,
 }
@@ -249,6 +319,7 @@ impl core::fmt::Debug for VideoPlayerConfig {
         f.debug_struct("VideoPlayerConfig")
             .field("aspect_ratio", &self.aspect_ratio)
             .field("show_controls", &self.show_controls)
+            .field("playback_policy", &self.playback_policy)
             .finish_non_exhaustive()
     }
 }
@@ -283,6 +354,7 @@ impl VideoPlayer {
             preserve_pitch: binding(true),
             aspect_ratio: AspectRatio::default(),
             show_controls: true,
+            playback_policy: PlaybackPolicy::default(),
             on_event: Box::new(|_| {}),
         })
     }
@@ -298,6 +370,13 @@ impl VideoPlayer {
     #[must_use]
     pub const fn show_controls(mut self, show_controls: bool) -> Self {
         self.0.show_controls = show_controls;
+        self
+    }
+
+    /// Sets playback buffering/realtime policy.
+    #[must_use]
+    pub const fn playback_policy(mut self, playback_policy: PlaybackPolicy) -> Self {
+        self.0.playback_policy = playback_policy;
         self
     }
 

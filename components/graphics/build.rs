@@ -26,6 +26,55 @@ fn is_fragment_only_shader(source: &str) -> bool {
     source.contains("@fragment") && !source.contains("@vertex")
 }
 
+fn template_default_for_line_prefix(prefix: &str) -> &'static str {
+    let line_prefix = prefix
+        .rsplit_once('\n')
+        .map_or(prefix, |(_, line)| line)
+        .trim_end();
+    if line_prefix.ends_with(": bool =") {
+        return "false";
+    }
+    if line_prefix.ends_with(": u32 =") {
+        return "0u";
+    }
+    if line_prefix.ends_with(": i32 =") {
+        return "0i";
+    }
+    "0.0"
+}
+
+fn materialize_wgsl_template(source: &str) -> String {
+    let mut materialized = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+
+    while let Some(offset) = source[cursor..].find("__") {
+        let start = cursor + offset;
+        let search_from = start + 2;
+        let Some(end_offset) = source[search_from..].find("__") else {
+            break;
+        };
+        let end = search_from + end_offset + 2;
+        let token = &source[start..end];
+        let inner = &token[2..token.len() - 2];
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            materialized.push_str(&source[cursor..end]);
+            cursor = end;
+            continue;
+        }
+
+        materialized.push_str(&source[cursor..start]);
+        materialized.push_str(template_default_for_line_prefix(&source[..start]));
+        cursor = end;
+    }
+
+    materialized.push_str(&source[cursor..]);
+    materialized
+}
+
 fn validate_wgsl_source(path: &Path, source: &str) {
     let flags = naga::valid::ValidationFlags::all();
     let capabilities = naga::valid::Capabilities::all();
@@ -53,12 +102,13 @@ fn validate_wgsl_shaders(manifest_dir: &Path) {
         println!("cargo:rerun-if-changed={}", path.display());
         let raw_source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read shader {}: {error}", path.display()));
+        let source = materialize_wgsl_template(&raw_source);
 
         if is_fragment_only_shader(&raw_source) {
-            let source = format!("{prelude_source}{raw_source}");
+            let source = format!("{prelude_source}{source}");
             validate_wgsl_source(&path, &source);
         } else {
-            validate_wgsl_source(&path, &raw_source);
+            validate_wgsl_source(&path, &source);
         }
     }
 }

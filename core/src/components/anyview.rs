@@ -97,6 +97,12 @@ impl AnyView {
         AnyViewImpl::stretch_axis(&*self.0)
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stable_ptr(&self) -> *const () {
+        (&*self.0 as *const dyn AnyViewImpl).cast::<()>()
+    }
+
     /// Downcasts `AnyView` to a concrete view type without any runtime checks.
     ///
     /// # Safety

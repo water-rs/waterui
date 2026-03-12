@@ -17,7 +17,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::image_codec::{self, DecodedRgba};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, View};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
@@ -571,12 +571,12 @@ impl GpuView for ImageRenderer {
 }
 
 impl SubView for ImageRenderer {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let intrinsic = Size::new(self.width as f32, self.height as f32);
-        Size::new(
+        ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(intrinsic.width),
             proposal.height.unwrap_or(intrinsic.height),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
