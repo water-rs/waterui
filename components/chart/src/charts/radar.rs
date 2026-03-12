@@ -3,10 +3,9 @@
 use core::num::NonZeroU32;
 
 use nami::Signal;
-use waterui_canvas::Canvas;
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{draw_radar, reactive_canvas};
+use crate::charts::canvas::{draw_radar, signal_canvas};
 use crate::data::RadarData;
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
@@ -119,10 +118,8 @@ impl<S: Signal<Output = RadarData> + Clone + 'static> View for RadarChart<S> {
         let ring_count = self.ring_count;
         let line_width = self.line_width;
         let fill_opacity = self.fill_opacity;
-        reactive_canvas(self.data, move |data| {
-            Canvas::new(move |ctx| {
-                draw_radar(ctx, &data, ring_count, line_width, fill_opacity);
-            })
+        signal_canvas(self.data, move |ctx, data| {
+            draw_radar(ctx, data, ring_count, line_width, fill_opacity);
         })
     }
 }

@@ -362,7 +362,8 @@ async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Resu
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;
-    let resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    resolved_fonts.extend(assets::scan_project_font_assets(project)?);
 
     if !resolved_fonts.is_empty() {
         // Copy fonts to app resources

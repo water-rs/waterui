@@ -7,7 +7,7 @@ use waterui_core::{Environment, Native};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
 use crate::component::GtkComponent;
-use crate::renderer::GtkRenderer;
+use crate::renderer::{GtkRenderer, mark_focus_anchor};
 use crate::util::store_watcher_guard;
 
 impl GtkComponent for Native<SecureFieldConfig> {
@@ -30,6 +30,7 @@ impl GtkComponent for Native<SecureFieldConfig> {
         let entry = gtk4::PasswordEntry::new();
         entry.set_hexpand(true);
         entry.set_show_peek_icon(true);
+        mark_focus_anchor(&entry);
 
         let binding = config.value;
 

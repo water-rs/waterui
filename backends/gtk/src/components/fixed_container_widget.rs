@@ -8,7 +8,9 @@ use std::cell::RefCell;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{Fixed, Widget, glib};
-use waterui_core::layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
+use waterui_core::layout::{
+    Layout, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions, measure_layout,
+};
 
 use crate::layout::{GtkSubView, place_children, update_positions};
 
@@ -68,7 +70,7 @@ mod imp {
                 ProposalSize::UNSPECIFIED
             };
 
-            let size = layout.size_that_fits(proposal, &refs);
+            let size = measure_layout(layout.as_ref(), proposal, &refs).size;
             let w = size.width.max(0.0).round() as i32;
             let h = size.height.max(0.0).round() as i32;
             if layout_debug_enabled() {
@@ -150,6 +152,27 @@ glib::wrapper! {
 }
 
 impl WuiFixedContainer {
+    pub(crate) fn layout_measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let imp = self.imp();
+        let layout_borrow = imp.layout.borrow();
+        let Some(layout) = layout_borrow.as_ref() else {
+            panic!("WuiFixedContainer: missing layout (internal error)");
+        };
+
+        let children = imp.children.borrow();
+        if children.is_empty() {
+            return ViewDimensions::new(Size::zero());
+        }
+
+        let subviews: Vec<GtkSubView> = children
+            .iter()
+            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
+
+        measure_layout(layout.as_ref(), proposal, &refs)
+    }
+
     pub(crate) fn layout_size_that_fits(&self, proposal: ProposalSize) -> Size {
         let imp = self.imp();
         let layout_borrow = imp.layout.borrow();
@@ -168,8 +191,11 @@ impl WuiFixedContainer {
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
 
-        let size = layout.size_that_fits(proposal, &refs);
-        Size::new(size.width.max(0.0), size.height.max(0.0))
+        let dimensions = measure_layout(layout.as_ref(), proposal, &refs);
+        Size::new(
+            dimensions.size.width.max(0.0),
+            dimensions.size.height.max(0.0),
+        )
     }
 
     fn relayout(&self) {

@@ -75,6 +75,11 @@ impl Photo {
         }
     }
 
+    #[must_use]
+    pub fn from_path(path: impl Into<String>) -> Self {
+        Self::new(Url::from_file_path_str(path.into()))
+    }
+
     /// Sets the event handler for the photo.
     ///
     /// # Examples
@@ -140,6 +145,16 @@ async fn fetch_and_decode_streaming(
     url: Url,
     mut on_decoded_frame: impl FnMut(Image),
 ) -> Result<(), String> {
+    if url.is_local() {
+        let path = url.as_str().to_string();
+        let bytes = blocking::unblock(move || std::fs::read(&path))
+            .await
+            .map_err(|error| error.to_string())?;
+        let image = Image::from_encoded(&bytes).map_err(|error| error.to_string())?;
+        on_decoded_frame(image);
+        return Ok(());
+    }
+
     // Fetch the image data using redirect-following client
     use zenwave::{Client, Method, redirect::FollowRedirect};
     let mut client = FollowRedirect::new(zenwave::client());

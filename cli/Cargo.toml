@@ -55,6 +55,10 @@ sha2 = "0.10"                 # SHA256 hashing
 zip = "7.2"                   # ZIP archive extraction
 fs_extra = "1.3"
 askama = "0.14"
+resvg = "0.45.1"
+ttf-parser = "0.25"
+waterui-assets.workspace = true
+waterui-assets-plan.workspace = true
 waterui-preview-protocol = { path = "../components/preview-protocol" }
 waterui-inspector-protocol = { path = "../components/inspector-protocol" }
 

@@ -96,6 +96,7 @@ pub use anyview::AnyView;
 pub use components::*;
 pub mod env;
 pub mod event;
+pub mod gesture;
 pub mod view;
 pub mod views;
 pub use env::Environment;
