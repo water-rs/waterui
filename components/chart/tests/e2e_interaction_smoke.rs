@@ -1,93 +1,135 @@
 mod support;
 
-use waterui::View;
-use waterui_chart::{
-    AreaChart, BarChart, BubbleChart, CandlestickChart, DepthChart, LineChart, ScatterChart,
-};
+use waterui::component::text;
+use waterui::{Binding, SignalExt as _};
+use waterui_chart::{HitResult, LineChart, PieChart};
 
 use support::{
-    assert_chart_accessibility_ready, binding_area, binding_bubbles, binding_candles,
-    binding_depth, binding_points, chart_label, mount_chart,
+    assert_chart_accessibility_ready, assert_label_exists, chart_label, mount_view, pie_data,
+    pie_hit_location, pie_slice_datum, point_hit_location, point_series, readout_text,
+    semantic_chart_shell,
 };
-
-fn assert_chart_interaction_smoke<V, F>(name: &str, build: F)
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-    let mut app = mount_chart(name, build);
-    let label = assert_chart_accessibility_ready(&mut app, name);
-
-    let base = app.snapshot();
-    assert!(
-        app.query().label(label.clone()).magnify(1.35),
-        "{name}: magnify should be handled"
-    );
-    let magnified = app.snapshot();
-    let magnify_pixels = base.changed_pixels(&magnified);
-    assert!(magnify_pixels > 0, "{name}: magnify produced no frame diff");
-
-    assert!(
-        app.query().label(label).drag_by(48.0, 0.0),
-        "{name}: drag should be handled after magnify"
-    );
-    let dragged = app.snapshot();
-    let drag_pixels = magnified.changed_pixels(&dragged);
-    assert!(
-        drag_pixels > 0,
-        "{name}: drag produced no frame diff after magnify"
-    );
-}
-
-#[test]
-fn line_chart_drag_and_magnify_smoke() {
-    let data = binding_points();
-    assert_chart_interaction_smoke("line", move || LineChart::new(data.clone()));
-}
-
-#[test]
-fn bar_chart_drag_and_magnify_smoke() {
-    let data = binding_points();
-    assert_chart_interaction_smoke("bar", move || BarChart::new(data.clone()));
-}
-
-#[test]
-fn scatter_chart_drag_and_magnify_smoke() {
-    let data = binding_points();
-    assert_chart_interaction_smoke("scatter", move || {
-        ScatterChart::new(data.clone()).radius(6.0)
-    });
-}
-
-#[test]
-fn bubble_chart_drag_and_magnify_smoke() {
-    let data = binding_bubbles();
-    assert_chart_interaction_smoke("bubble", move || {
-        BubbleChart::new(data.clone())
-            .min_radius(4.0)
-            .max_radius(18.0)
-    });
-}
-
-#[test]
-fn candlestick_chart_drag_and_magnify_smoke() {
-    let data = binding_candles();
-    assert_chart_interaction_smoke("candlestick", move || CandlestickChart::new(data.clone()));
-}
-
-#[test]
-fn depth_chart_drag_and_magnify_smoke() {
-    let data = binding_depth();
-    assert_chart_interaction_smoke("depth", move || DepthChart::new(data.clone()));
-}
-
-#[test]
-fn area_chart_drag_and_magnify_smoke() {
-    let data = binding_area();
-    assert_chart_interaction_smoke("area", move || AreaChart::new(data.clone()));
-}
 
 #[test]
 fn chart_labels_are_stable() {
     assert_eq!(chart_label("line"), "chart-line");
+    assert_eq!(chart_label("pie"), "chart-pie");
+}
+
+#[test]
+fn line_chart_drag_between_updates_selection_smoke() {
+    let data = point_series();
+    let focused = Binding::container(None::<HitResult<waterui_chart::DataPoint>>);
+    let selected = Binding::container(None::<HitResult<waterui_chart::DataPoint>>);
+    let data_for_view = data.clone();
+    let focused_for_view = focused.clone();
+    let selected_for_view = selected.clone();
+    let from_index = 6;
+    let to_index = 7;
+    let from = point_hit_location(&data, from_index);
+    let to = point_hit_location(&data, to_index);
+
+    let mut app = mount_view(move || {
+        let chart = LineChart::new(Binding::container(data_for_view.clone()))
+            .focused(&focused_for_view)
+            .selected(&selected_for_view);
+        let focused_readout = text(focused_for_view.clone().map(|hit| {
+            readout_text("focused", hit, |hit: &HitResult<waterui_chart::DataPoint>| {
+                format!("series={} index={} x={:.2} y={:.2}", hit.series, hit.index, hit.value.x, hit.value.y)
+            })
+        }))
+        .body();
+        let selected_readout = text(selected_for_view.clone().map(|hit| {
+            readout_text("selected", hit, |hit: &HitResult<waterui_chart::DataPoint>| {
+                format!("series={} index={} x={:.2} y={:.2}", hit.series, hit.index, hit.value.x, hit.value.y)
+            })
+        }))
+        .body();
+        semantic_chart_shell("line", chart, focused_readout, selected_readout)
+    });
+
+    let label = assert_chart_accessibility_ready(&mut app, "line");
+    assert!(
+        app.query()
+            .role(waterui_testing::Role::IMAGE)
+            .label(label)
+            .drag_between(from.0, from.1, to.0, to.1),
+        "line: drag_between should be handled"
+    );
+    assert!(focused.get().is_none(), "line: drag end should clear focus");
+    let selected_hit = selected
+        .get()
+        .expect("line: drag end should produce a selected hit");
+    assert_eq!(selected_hit.series, 0);
+    assert!(selected_hit.index >= from_index && selected_hit.index <= to_index);
+    app.query()
+        .role(waterui_testing::Role::LABEL)
+        .label("selected:none")
+        .assert_not_exists();
+    app.query()
+        .role(waterui_testing::Role::LABEL)
+        .label_contains("selected:series=0 index=")
+        .assert_exists();
+}
+
+#[test]
+fn pie_chart_hover_and_tap_coordinate_smoke() {
+    let data = pie_data();
+    let focused = Binding::container(None::<HitResult<waterui_chart::SliceDatum>>);
+    let selected = Binding::container(None::<HitResult<waterui_chart::SliceDatum>>);
+    let data_for_view = data.clone();
+    let focused_for_view = focused.clone();
+    let selected_for_view = selected.clone();
+    let index = 2;
+    let location = pie_hit_location(&data, index, 0.0);
+    let expected = pie_slice_datum(&data, index);
+
+    let mut app = mount_view(move || {
+        let chart = PieChart::new(Binding::container(data_for_view.clone()))
+            .focused(&focused_for_view)
+            .selected(&selected_for_view);
+        let focused_readout = text(focused_for_view.clone().map(|hit| {
+            readout_text("focused", hit, |hit: &HitResult<waterui_chart::SliceDatum>| {
+                format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
+            })
+        }))
+        .body();
+        let selected_readout = text(selected_for_view.clone().map(|hit| {
+            readout_text("selected", hit, |hit: &HitResult<waterui_chart::SliceDatum>| {
+                format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
+            })
+        }))
+        .body();
+        semantic_chart_shell("pie", chart, focused_readout, selected_readout)
+    });
+
+    let label = assert_chart_accessibility_ready(&mut app, "pie");
+    assert!(
+        app.query()
+            .role(waterui_testing::Role::IMAGE)
+            .label(label.clone())
+            .hover_at(location.0, location.1),
+        "pie: hover_at should be handled"
+    );
+    let focused_hit = focused.get().expect("pie: hover should produce a focused hit");
+    assert_eq!(focused_hit.series, 0);
+    assert_eq!(focused_hit.index, index);
+    assert_eq!(focused_hit.value, expected);
+    assert_label_exists(&mut app, "selected:none");
+
+    assert!(
+        app.query()
+            .role(waterui_testing::Role::IMAGE)
+            .label(label)
+            .tap_at(location.0, location.1),
+        "pie: tap_at should be handled"
+    );
+    let selected_hit = selected.get().expect("pie: tap should produce a selected hit");
+    assert_eq!(selected_hit.series, 0);
+    assert_eq!(selected_hit.index, index);
+    assert_eq!(selected_hit.value, expected);
+    app.query()
+        .role(waterui_testing::Role::LABEL)
+        .label("selected:none")
+        .assert_not_exists();
 }

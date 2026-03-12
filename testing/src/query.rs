@@ -81,6 +81,37 @@ impl<'a> Query<'a> {
         self.app.resolve_single(&self.selector)
     }
 
+    #[must_use]
+    pub fn exists(self) -> bool {
+        self.optional().is_some()
+    }
+
+    pub fn assert_exists(self) {
+        self.app.assert_exists(self.selector.clone());
+    }
+
+    pub fn assert_not_exists(self) {
+        self.app.assert_not_exists(self.selector.clone());
+    }
+
+    pub fn assert_ui_focus(self) {
+        self.app.assert_ui_focus(self.selector.clone());
+    }
+
+    pub fn wait_for_existence(self, timeout: std::time::Duration) -> bool {
+        self.app.wait_for_existence(self.selector.clone(), timeout)
+    }
+
+    pub fn wait_for_nonexistence(self, timeout: std::time::Duration) -> bool {
+        self.app
+            .wait_for_nonexistence(self.selector.clone(), timeout)
+    }
+
+    pub fn wait_for_value_eq(self, value: impl Into<String>, timeout: std::time::Duration) -> bool {
+        self.app
+            .wait_for_value_eq(self.selector.clone(), value, timeout)
+    }
+
     pub fn tap(self) -> bool {
         let element = self.app.resolve_single(&self.selector);
         self.app.tap_node(element.id())
@@ -116,9 +147,30 @@ impl<'a> Query<'a> {
         element.hover(self.app)
     }
 
+    pub fn hover_at(self, normalized_x: f32, normalized_y: f32) -> bool {
+        let element = self.app.resolve_single(&self.selector);
+        element.hover_at(self.app, normalized_x, normalized_y)
+    }
+
+    pub fn tap_at(self, normalized_x: f32, normalized_y: f32) -> bool {
+        let element = self.app.resolve_single(&self.selector);
+        element.tap_at(self.app, normalized_x, normalized_y)
+    }
+
     pub fn drag_by(self, dx: f32, dy: f32) -> bool {
         let element = self.app.resolve_single(&self.selector);
         element.drag_by(self.app, dx, dy)
+    }
+
+    pub fn drag_between(
+        self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+    ) -> bool {
+        let element = self.app.resolve_single(&self.selector);
+        element.drag_between(self.app, from_x, from_y, to_x, to_y)
     }
 
     pub fn magnify(self, factor: f32) -> bool {
