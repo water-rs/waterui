@@ -76,9 +76,7 @@ fn parse_positive_u64_env(name: &str, default: u64) -> u64 {
             let parsed = raw.trim().parse::<u64>().unwrap_or_else(|error| {
                 panic!("hydrolysis runner: invalid {name} `{raw}`: {error}")
             });
-            if parsed == 0 {
-                panic!("hydrolysis runner: {name} must be > 0");
-            }
+            assert!(!(parsed == 0), "hydrolysis runner: {name} must be > 0");
             parsed
         }
         Err(std::env::VarError::NotPresent) => default,
@@ -295,10 +293,22 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
-fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
-    if !scale_factor.is_finite() || scale_factor <= 0.0 {
-        panic!("hydrolysis runner: invalid scale factor {scale_factor}");
+fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
+    if !changed {
+        return;
     }
+    if runtime.renderer.take_rebuild_request() {
+        runtime.needs_rebuild = true;
+        return;
+    }
+    runtime.renderer.request_redraw();
+}
+
+fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
+    assert!(
+        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        "hydrolysis runner: invalid scale factor {scale_factor}"
+    );
     vello::kurbo::Rect::new(
         0.0,
         0.0,
@@ -368,7 +378,11 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             runtime.needs_rebuild = false;
             if let Some((x, y)) = runtime.pointer_position {
                 if runtime.renderer.sync_pointer_hover_state(x, y, env) {
-                    runtime.needs_rebuild = true;
+                    if runtime.renderer.take_rebuild_request() {
+                        runtime.needs_rebuild = true;
+                    } else {
+                        runtime.renderer.request_redraw();
+                    }
                 }
             }
         }
@@ -421,13 +435,16 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
+    if runtime.renderer.take_redraw_request() {
+        runtime.platform.request_redraw();
+    }
 }
 
 #[cfg(not(feature = "winit"))]
 pub fn run(app: App) {
     init_main_thread_executors();
     let (windows, env) = app.into_parts();
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env;
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
     env.insert(waterui_core::ViewRenderer::new(
@@ -546,7 +563,7 @@ mod winit_runner {
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
         let (windows, env) = app.into_parts();
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env;
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
         env.insert(waterui_core::ViewRenderer::new(
@@ -588,9 +605,10 @@ mod winit_runner {
         }
 
         fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
-            if !scale_factor.is_finite() || scale_factor <= 0.0 {
-                panic!("hydrolysis runner: invalid scale factor {scale_factor}");
-            }
+            assert!(
+                !(!scale_factor.is_finite() || scale_factor <= 0.0),
+                "hydrolysis runner: invalid scale factor {scale_factor}"
+            );
             (f64::from(value) / scale_factor) as f32
         }
 
@@ -701,9 +719,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::PointerUp { x, y, button } => {
                         runtime.pointer_position = Some((x, y));
@@ -717,9 +733,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::PointerMove { x, y } => {
                         runtime.pointer_position = Some((x, y));
@@ -732,9 +746,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::PointerCancel => {
                         let changed = runtime.renderer.handle_pointer_cancel(env);
@@ -744,9 +756,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Scroll {
                         x,
@@ -768,24 +778,19 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Magnification { x, y, delta, phase } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime
+                        let changed = runtime
                             .renderer
-                            .handle_magnification(x, y, delta, phase, env)
-                        {
-                            runtime.needs_rebuild = true;
-                        }
+                            .handle_magnification(x, y, delta, phase, env);
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::Rotation { x, y, delta, phase } => {
                         runtime.pointer_position = Some((x, y));
-                        if runtime.renderer.handle_rotation(x, y, delta, phase, env) {
-                            runtime.needs_rebuild = true;
-                        }
+                        let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
+                        schedule_redraw_or_rebuild(runtime, changed);
                     }
                     InputEvent::TextInput { text } => {
                         let changed = runtime.renderer.handle_text_input(text.as_str());
@@ -814,9 +819,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImePreedit { text } => {
                         let changed = runtime.renderer.handle_ime_preedit(text.as_str());
@@ -827,9 +830,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImeCommit { text } => {
                         let changed = runtime.renderer.handle_ime_commit(text.as_str());
@@ -840,9 +841,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::ImeDisabled => {
                         let changed = runtime.renderer.handle_ime_disabled();
@@ -852,9 +851,7 @@ mod winit_runner {
                             changed,
                             "runner dispatched input event"
                         );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
+                        schedule_redraw_or_rebuild(runtime, changed)
                     }
                     InputEvent::Key {
                         state: KeyState::Released,
@@ -957,6 +954,9 @@ mod winit_runner {
                 runtime
                     .platform
                     .sync_text_input_state(runtime.renderer.focused_text_input_state());
+                if runtime.renderer.poll_gpu_surface_redraw_handles() {
+                    runtime.platform.request_redraw();
+                }
                 if runtime.renderer.handle_gesture_tick(now, &self.env) {
                     runtime.needs_rebuild = true;
                 }

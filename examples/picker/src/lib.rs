@@ -4,13 +4,16 @@
 //! - Picker with different styles (Automatic, Menu, Radio)
 //! - DatePicker with various date/time selection modes
 //! - ColorPicker with alpha and HDR support
+//! - MultiDatePicker for selecting multiple dates
 //! - FilePicker for file selection and import
 
-use time::{Date, Month};
+use std::collections::BTreeSet;
+use time::{Date, Month, PrimitiveDateTime, Time};
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
+use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::file::FilePicker;
 use waterui::form::picker::{Picker, PickerStyle};
 use waterui::media::Url;
@@ -54,7 +57,15 @@ fn main() -> impl View {
 
     // DatePicker bindings
     let date = binding(Date::from_calendar_date(2025, Month::January, 1).unwrap());
-    let datetime = binding(Date::from_calendar_date(2025, Month::June, 15).unwrap());
+    let time_only = binding(Time::from_hms(14, 30, 0).unwrap());
+    let datetime = binding(PrimitiveDateTime::new(
+        Date::from_calendar_date(2025, Month::June, 15).unwrap(),
+        Time::from_hms(9, 45, 30).unwrap(),
+    ));
+    let available_dates = binding(BTreeSet::<Date>::new());
+    let available_date_count = available_dates
+        .map(|dates: BTreeSet<Date>| dates.len())
+        .computed();
 
     // ColorPicker bindings
     let basic_color = binding(Color::from(PICKER_BLUE));
@@ -104,12 +115,20 @@ fn main() -> impl View {
                 spacer(),
                 DatePicker::new(&date)
                     .label("Date Only")
-                    .ty(DatePickerType::Date),
+                    .range(
+                        Date::from_calendar_date(2025, Month::January, 1).unwrap()
+                            ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+                    ),
                 text!("Selected date: {date}"),
                 spacer(),
-                DatePicker::new(&datetime)
+                DatePicker::time(&time_only)
+                    .label("Time Only")
+                    .ty(DatePickerType::HourMinuteAndSecond),
+                text!("Selected time: {time_only}"),
+                spacer(),
+                DatePicker::datetime(&datetime)
                     .label("Date & Time")
-                    .ty(DatePickerType::DateHourAndMinute),
+                    .ty(DatePickerType::DateHourMinuteAndSecond),
                 text!("Selected datetime: {datetime}"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -134,7 +153,22 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
-            // Section 3: FilePicker
+            // Section 3: MultiDatePicker
+            vstack((
+                text("MultiDatePicker").headline(),
+                text("Select multiple dates in a cross-platform calendar").body(),
+                spacer(),
+                MultiDatePicker::new(&available_dates)
+                    .label("Availability")
+                    .range(
+                        Date::from_calendar_date(2025, Month::January, 1).unwrap()
+                            ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+                    ),
+                text!("Selected dates: {available_date_count}"),
+            ))
+            .padding_with(EdgeInsets::all(12.0)),
+            Divider,
+            // Section 4: FilePicker
             vstack((
                 text("FilePicker").headline(),
                 text("Select files from the device").body(),
@@ -198,7 +232,7 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main(), env)
+    App::new(main, env)
 }
 
 waterui_ffi::export!();

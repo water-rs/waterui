@@ -33,12 +33,12 @@
 //! use waterui::prelude::*;
 //! use waterui::ViewExt;
 //! use waterui_core::binding;
+//! use waterui_form::SecureField;
+//! use waterui_controls::TextField;
 //! use waterui_layout::stack::vstack;
-//! use waterui_text::text;
-//! use waterui::component::button;
 //!
 //! #[derive(PartialEq, Eq, Clone)]
-//! enum Field { Username, Password, Submit }
+//! enum Field { Username, Password }
 //!
 //! // Create a shared binding for focus state using an enum
 //! let focus_binding = binding(None::<Field>);
@@ -46,13 +46,12 @@
 //! // Create focused states for each field
 //! let username_focused = focus::Focused::new(&focus_binding, Field::Username);
 //! let password_focused = focus::Focused::new(&focus_binding, Field::Password);
-//! let submit_focused = focus::Focused::new(&focus_binding, Field::Submit);
 //!
 //! // Use focused states with UI elements
 //! let view = vstack((
-//!     text("Username").focused(&focus_binding, Field::Username),
-//!     text("Password").focused(&focus_binding, Field::Password),
-//!     button("Submit").focused(&focus_binding, Field::Submit),
+//!     TextField::new(&binding("")).focused(&focus_binding, Field::Username),
+//!     SecureField::new("Password", &binding("".parse().unwrap()))
+//!         .focused(&focus_binding, Field::Password),
 //! ));
 //! ```
 //!
@@ -88,11 +87,53 @@ impl Focused {
                 let equals = equals.clone();
                 move |value| value.as_ref().filter(|value| **value == equals).is_some()
             },
-            move |binding, value| {
-                if value {
+            move |binding, is_focused| {
+                if is_focused {
                     binding.set(Some(equals.clone()));
+                    return;
+                }
+
+                if binding
+                    .get()
+                    .as_ref()
+                    .is_some_and(|current| *current == equals)
+                {
+                    binding.set(None);
                 }
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+
+    use super::Focused;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Field {
+        Username,
+        Password,
+    }
+
+    #[test]
+    fn clearing_matching_focus_sets_source_to_none() {
+        let source = Binding::container(Some(Field::Username));
+        let focused = Focused::new(&source, Field::Username);
+
+        focused.0.set(false);
+
+        assert_eq!(source.get(), None);
+    }
+
+    #[test]
+    fn clearing_other_field_focus_is_ignored() {
+        let source = Binding::container(Some(Field::Password));
+        let focused = Focused::new(&source, Field::Username);
+
+        focused.0.set(false);
+
+        assert_eq!(source.get(), Some(Field::Password));
     }
 }

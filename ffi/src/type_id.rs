@@ -9,7 +9,7 @@
 /// Uses 128-bit FNV-1a hash of `type_name()` for stability across dylib boundaries,
 /// which is required for the preview system that loads user code as a dylib.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct WuiTypeId {
     pub low: u64,
     pub high: u64,

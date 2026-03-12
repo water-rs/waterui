@@ -118,6 +118,7 @@ waterui-barcode = { version = "0.1.0", path = "components/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-chart = { version = "0.1.0", path = "components/chart" }
 waterui-assets = { version = "0.1.0", path = "components/assets" }
+waterui-assets-plan = { version = "0.1.0", path = "components/assets-plan" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets-macros" }
 waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }

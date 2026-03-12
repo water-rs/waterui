@@ -1,7 +1,9 @@
 use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
+    AlignmentKeyId, HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size,
+    StretchAxis, SubView, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
+    measure_layout,
     scroll::Axis,
 };
 
@@ -21,6 +23,53 @@ pub struct WuiFixedContainer {
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
     WuiTypeId::of::<waterui::component::spacer::Spacer>()
+}
+
+fn alignment_key_id(id: AlignmentKeyId) -> WuiTypeId {
+    WuiTypeId {
+        low: id.low(),
+        high: id.high(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_horizontal_alignment_leading_id() -> WuiTypeId {
+    alignment_key_id(HorizontalAlignment::Leading.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_horizontal_alignment_center_id() -> WuiTypeId {
+    alignment_key_id(HorizontalAlignment::Center.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_horizontal_alignment_trailing_id() -> WuiTypeId {
+    alignment_key_id(HorizontalAlignment::Trailing.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_vertical_alignment_top_id() -> WuiTypeId {
+    alignment_key_id(VerticalAlignment::Top.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_vertical_alignment_center_id() -> WuiTypeId {
+    alignment_key_id(VerticalAlignment::Center.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_vertical_alignment_bottom_id() -> WuiTypeId {
+    alignment_key_id(VerticalAlignment::Bottom.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_vertical_alignment_first_baseline_id() -> WuiTypeId {
+    alignment_key_id(VerticalAlignment::FirstBaseline.stable_id())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_vertical_alignment_last_baseline_id() -> WuiTypeId {
+    alignment_key_id(VerticalAlignment::LastBaseline.stable_id())
 }
 
 ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);
@@ -157,8 +206,10 @@ impl From<StretchAxis> for WuiStretchAxis {
 pub struct WuiSubViewVTable {
     /// Measures the child view given a size proposal.
     /// Called potentially multiple times with different proposals during layout.
-    pub measure:
-        unsafe extern "C" fn(context: *mut core::ffi::c_void, proposal: WuiProposalSize) -> WuiSize,
+    pub measure: unsafe extern "C" fn(
+        context: *mut core::ffi::c_void,
+        proposal: WuiProposalSize,
+    ) -> WuiViewDimensions,
     /// Cleans up the context when the subview is no longer needed.
     /// Called when the WuiSubView is dropped.
     pub drop: unsafe extern "C" fn(context: *mut core::ffi::c_void),
@@ -192,7 +243,7 @@ impl Drop for WuiSubView {
 }
 
 impl SubView for WuiSubView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let result = unsafe { (self.vtable.measure)(self.context, proposal.into_ffi()) };
         unsafe { result.into_rust() }
     }
@@ -244,6 +295,109 @@ impl IntoRust for WuiSize {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct WuiHorizontalGuide {
+    alignment: WuiTypeId,
+    value: f32,
+}
+
+impl IntoRust for WuiHorizontalGuide {
+    type Rust = (HorizontalAlignment, f32);
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        (
+            HorizontalAlignment::from_stable_id(AlignmentKeyId::new(
+                self.alignment.low,
+                self.alignment.high,
+            )),
+            self.value,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct WuiVerticalGuide {
+    alignment: WuiTypeId,
+    value: f32,
+}
+
+impl IntoRust for WuiVerticalGuide {
+    type Rust = (VerticalAlignment, f32);
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        (
+            VerticalAlignment::from_stable_id(AlignmentKeyId::new(
+                self.alignment.low,
+                self.alignment.high,
+            )),
+            self.value,
+        )
+    }
+}
+
+#[repr(C)]
+pub struct WuiViewDimensions {
+    size: WuiSize,
+    horizontal_guides: WuiArray<WuiHorizontalGuide>,
+    vertical_guides: WuiArray<WuiVerticalGuide>,
+}
+
+impl IntoFFI for ViewDimensions {
+    type FFI = WuiViewDimensions;
+
+    fn into_ffi(self) -> Self::FFI {
+        let horizontal_guides = self
+            .explicit_horizontal_guides()
+            .map(|(alignment, value)| WuiHorizontalGuide {
+                alignment: WuiTypeId {
+                    low: alignment.stable_id().low(),
+                    high: alignment.stable_id().high(),
+                },
+                value,
+            })
+            .collect::<Vec<_>>();
+        let vertical_guides = self
+            .explicit_vertical_guides()
+            .map(|(alignment, value)| WuiVerticalGuide {
+                alignment: WuiTypeId {
+                    low: alignment.stable_id().low(),
+                    high: alignment.stable_id().high(),
+                },
+                value,
+            })
+            .collect::<Vec<_>>();
+
+        WuiViewDimensions {
+            size: self.size.into_ffi(),
+            horizontal_guides: WuiArray::new(horizontal_guides),
+            vertical_guides: WuiArray::new(vertical_guides),
+        }
+    }
+}
+
+impl IntoRust for WuiViewDimensions {
+    type Rust = ViewDimensions;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        let mut dimensions = ViewDimensions::new(unsafe { self.size.into_rust() });
+        for (alignment, value) in unsafe { self.horizontal_guides.into_rust() } {
+            dimensions.set_horizontal(alignment, value);
+        }
+        for (alignment, value) in unsafe { self.vertical_guides.into_rust() } {
+            dimensions.set_vertical(alignment, value);
+        }
+        dimensions
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_view_dimensions(dimensions: WuiViewDimensions) {
+    dimensions.horizontal_guides.consume();
+    dimensions.vertical_guides.consume();
+}
+
 #[repr(C)]
 pub struct WuiRect {
     origin: WuiPoint,
@@ -282,6 +436,22 @@ impl IntoFFI for Rect {
 /// - The `children` array must contain valid `WuiSubView` entries.
 /// - The measure callbacks in each child must be safe to call.
 /// - The `children` array will be consumed and dropped after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_measure(
+    layout: *mut WuiLayout,
+    proposal: WuiProposalSize,
+    mut children: WuiArray<WuiSubView>,
+) -> WuiViewDimensions {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    let proposal = unsafe { proposal.into_rust() };
+    let children_slice = children.as_mut_slice();
+    let subview_refs: Vec<&dyn SubView> =
+        children_slice.iter().map(|s| s as &dyn SubView).collect();
+    let dimensions = measure_layout(layout, proposal, &subview_refs);
+    children.consume_and_drop_elements();
+    dimensions.into_ffi()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_layout_size_that_fits(
     layout: *mut WuiLayout,

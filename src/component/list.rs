@@ -1,9 +1,9 @@
 //! List component implementation for `WaterUI`.
 //!
 //! This module provides the necessary components to build and configure lists
-//! in the `WaterUI` framework. It includes the `List` component for displaying collections
-//! of data, and `ListItem` for configuring individual items in the list.
-//!
+//! in the `WaterUI` framework. It includes the `List` component for displaying
+//! collections of data, and `ListItem` for configuring individual items in the
+//! list.
 
 use alloc::boxed::Box;
 use nami::collection::Collection;
@@ -13,14 +13,41 @@ use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use nami::SignalExt;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Native, NativeView, View, id::Identifiable, layout::StretchAxis,
+    id::Identifiable, layout::StretchAxis, AnyView, Environment, Native, NativeView, View,
 };
+
+/// A list reorder operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Move {
+    from: usize,
+    to: usize,
+}
+
+impl Move {
+    /// Creates a new move operation.
+    #[must_use]
+    pub const fn new(from: usize, to: usize) -> Self {
+        Self { from, to }
+    }
+
+    /// Returns the source index.
+    #[must_use]
+    pub const fn from(self) -> usize {
+        self.from
+    }
+
+    /// Returns the destination index.
+    #[must_use]
+    pub const fn to(self) -> usize {
+        self.to
+    }
+}
 
 /// Callback type for delete operations (receives environment and index).
 pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
 
-/// Callback type for move/reorder operations (receives environment, from index, to index).
-pub type OnMove = Box<dyn Fn(&Environment, usize, usize)>;
+/// Callback type for move/reorder operations (receives environment and movement).
+pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 
 /// Configuration for a list component.
 pub struct ListConfig {
@@ -55,6 +82,18 @@ where
         Self(contents)
     }
 
+    /// Starts building a list with captured state.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListStatefulBuilder<V, T> {
+        ListStatefulBuilder {
+            contents: self.0,
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
+            state: state.clone(),
+        }
+    }
+
     /// Enables edit mode with the given reactive signal.
     ///
     /// When edit mode is enabled, delete buttons and drag handles are shown.
@@ -79,45 +118,15 @@ where
         }
     }
 
-    /// Creates a delete handler builder for use with `.with_state()`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// List::new(items)
-    ///     .on_delete_builder()
-    ///     .with_state(&collection)
-    ///     .handler(|collection, _env, idx| collection.remove(idx))
-    /// ```
-    #[must_use]
-    pub fn on_delete_builder(self) -> ListDeleteBuilder<V> {
-        ListDeleteBuilder { contents: self.0 }
-    }
-
     /// Sets the callback for when items are moved/reordered.
     #[must_use]
-    pub fn on_move(self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> ListBuilder<V> {
+    pub fn on_move(self, on_move: impl Fn(&Environment, Move) + 'static) -> ListBuilder<V> {
         ListBuilder {
             contents: self.0,
             editing: Computed::new(false),
             on_delete: None,
             on_move: Some(Box::new(on_move)),
         }
-    }
-
-    /// Creates a move handler builder for use with `.with_state()`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// List::new(items)
-    ///     .on_move_builder()
-    ///     .with_state(&collection)
-    ///     .handler(|collection, _env, from, to| collection.move_item(from, to))
-    /// ```
-    #[must_use]
-    pub fn on_move_builder(self) -> ListMoveBuilder<V> {
-        ListMoveBuilder { contents: self.0 }
     }
 }
 
@@ -163,20 +172,22 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
     }
 }
 
+fn render_list_config(config: ListConfig, env: &Environment) -> AnyView {
+    if let Some(hook) = env.get::<Hook<ListConfig>>() {
+        return AnyView::new(hook.apply(env, config));
+    }
+
+    let fallback =
+        crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
+    AnyView::new(Native::new(config).with_fallback(fallback))
+}
+
 impl<V> View for List<V>
 where
     V: Views<View = ListItem> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = ConfigurableView::config(self);
-        // User customization via Hook takes precedence
-        if let Some(hook) = env.get::<Hook<ListConfig>>() {
-            return AnyView::new(hook.apply(env, config));
-        }
-        // Native backend can catch ListConfig, otherwise falls back to Lazy::vstack
-        let fallback =
-            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
-        AnyView::new(Native::new(config).with_fallback(fallback))
+        render_list_config(ConfigurableView::config(self), env)
     }
 }
 
@@ -202,6 +213,18 @@ impl<V> ListBuilder<V>
 where
     V: Views<View = ListItem>,
 {
+    /// Adds state to capture for subsequent event handlers.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListStatefulBuilder<V, T> {
+        ListStatefulBuilder {
+            contents: self.contents,
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+            state: state.clone(),
+        }
+    }
+
     /// Enables edit mode with the given reactive signal.
     #[must_use]
     pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {
@@ -216,31 +239,11 @@ where
         self
     }
 
-    /// Creates a delete handler builder for use with `.with_state()`.
-    #[must_use]
-    pub fn on_delete_builder(self) -> ListBuilderDeleteBuilder<V> {
-        ListBuilderDeleteBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_move: self.on_move,
-        }
-    }
-
     /// Sets the callback for when items are moved/reordered.
     #[must_use]
-    pub fn on_move(mut self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> Self {
+    pub fn on_move(mut self, on_move: impl Fn(&Environment, Move) + 'static) -> Self {
         self.on_move = Some(Box::new(on_move));
         self
-    }
-
-    /// Creates a move handler builder for use with `.with_state()`.
-    #[must_use]
-    pub fn on_move_builder(self) -> ListBuilderMoveBuilder<V> {
-        ListBuilderMoveBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: self.on_delete,
-        }
     }
 }
 
@@ -265,15 +268,103 @@ where
     V: Views<View = ListItem> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = ConfigurableView::config(self);
-        // User customization via Hook takes precedence
-        if let Some(hook) = env.get::<Hook<ListConfig>>() {
-            return AnyView::new(hook.apply(env, config));
+        render_list_config(ConfigurableView::config(self), env)
+    }
+}
+
+// ============================================================================
+// ListStatefulBuilder - captured state for list event handlers
+// ============================================================================
+
+/// Builder for configuring a list with captured state.
+pub struct ListStatefulBuilder<V: Views<View = ListItem>, State> {
+    contents: V,
+    editing: Computed<bool>,
+    on_delete: Option<OnDelete>,
+    on_move: Option<OnMove>,
+    state: State,
+}
+
+impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListStatefulBuilder<V, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ListStatefulBuilder")
+    }
+}
+
+impl<V, __S> ListStatefulBuilder<V, __S>
+where
+    V: Views<View = ListItem>,
+    __S: Clone + 'static,
+{
+    #[must_use]
+    pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> ListStatefulBuilder<V, (__S, __T)> {
+        ListStatefulBuilder {
+            contents: self.contents,
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+            state: (self.state, state.clone()),
         }
-        // Native backend can catch ListConfig, otherwise falls back to Lazy::vstack
-        let fallback =
-            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
-        AnyView::new(Native::new(config).with_fallback(fallback))
+    }
+}
+
+impl<V, S> ListStatefulBuilder<V, S>
+where
+    V: Views<View = ListItem>,
+    S: Clone + 'static,
+{
+    /// Enables edit mode with the given reactive signal.
+    #[must_use]
+    pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {
+        self.editing = editing.computed();
+        self
+    }
+
+    /// Sets the callback for when any item is deleted.
+    #[must_use]
+    pub fn on_delete(mut self, on_delete: impl Fn(S, &Environment, usize) + 'static) -> Self {
+        let state = self.state.clone();
+        self.on_delete = Some(Box::new(move |env, index| {
+            on_delete(state.clone(), env, index);
+        }));
+        self
+    }
+
+    /// Sets the callback for when items are moved/reordered.
+    #[must_use]
+    pub fn on_move(mut self, on_move: impl Fn(S, &Environment, Move) + 'static) -> Self {
+        let state = self.state.clone();
+        self.on_move = Some(Box::new(move |env, movement| {
+            on_move(state.clone(), env, movement);
+        }));
+        self
+    }
+}
+
+impl<V, S> ConfigurableView for ListStatefulBuilder<V, S>
+where
+    V: Views<View = ListItem> + 'static,
+    S: 'static,
+{
+    type Config = ListConfig;
+
+    fn config(self) -> Self::Config {
+        ListConfig {
+            contents: SharedAnyViews::new(self.contents),
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+        }
+    }
+}
+
+impl<V, S> View for ListStatefulBuilder<V, S>
+where
+    V: Views<View = ListItem> + 'static,
+    S: 'static,
+{
+    fn body(self, env: &Environment) -> impl View {
+        render_list_config(ConfigurableView::config(self), env)
     }
 }
 
@@ -317,328 +408,5 @@ impl ListItem {
     pub fn deletable(mut self, deletable: impl Signal<Output = bool> + 'static) -> Self {
         self.deletable = deletable.computed();
         self
-    }
-}
-
-// ============================================================================
-// List Delete Builder
-// ============================================================================
-
-/// Builder for creating list delete handlers with captured state.
-pub struct ListDeleteBuilder<V: Views<View = ListItem>> {
-    contents: V,
-}
-
-impl<V: Views<View = ListItem>> core::fmt::Debug for ListDeleteBuilder<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListDeleteBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>> ListDeleteBuilder<V> {
-    /// Sets the delete handler (no state).
-    #[must_use]
-    pub fn handler(self, on_delete: impl Fn(&Environment, usize) + 'static) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            on_delete: Some(Box::new(on_delete)),
-            on_move: None,
-        }
-    }
-
-    /// Adds state to capture for the handler.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListDeleteStatefulBuilder<V, T> {
-        ListDeleteStatefulBuilder {
-            contents: self.contents,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for list delete handlers with captured state.
-pub struct ListDeleteStatefulBuilder<V: Views<View = ListItem>, State> {
-    contents: V,
-    state: State,
-}
-
-impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListDeleteStatefulBuilder<V, S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListDeleteStatefulBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>, S: Clone + 'static> ListDeleteStatefulBuilder<V, S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListDeleteStatefulBuilder<V, (S, T)> {
-        ListDeleteStatefulBuilder {
-            contents: self.contents,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the delete handler with captured state.
-    #[must_use]
-    pub fn handler(self, on_delete: impl Fn(S, &Environment, usize) + 'static) -> ListBuilder<V> {
-        let state = self.state;
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            on_delete: Some(Box::new(move |env, idx| on_delete(state.clone(), env, idx))),
-            on_move: None,
-        }
-    }
-}
-
-// ============================================================================
-// List Move Builder
-// ============================================================================
-
-/// Builder for creating list move handlers with captured state.
-pub struct ListMoveBuilder<V: Views<View = ListItem>> {
-    contents: V,
-}
-
-impl<V: Views<View = ListItem>> core::fmt::Debug for ListMoveBuilder<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListMoveBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>> ListMoveBuilder<V> {
-    /// Sets the move handler (no state).
-    #[must_use]
-    pub fn handler(self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: Some(Box::new(on_move)),
-        }
-    }
-
-    /// Adds state to capture for the handler.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListMoveStatefulBuilder<V, T> {
-        ListMoveStatefulBuilder {
-            contents: self.contents,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for list move handlers with captured state.
-pub struct ListMoveStatefulBuilder<V: Views<View = ListItem>, State> {
-    contents: V,
-    state: State,
-}
-
-impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListMoveStatefulBuilder<V, S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListMoveStatefulBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>, S: Clone + 'static> ListMoveStatefulBuilder<V, S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListMoveStatefulBuilder<V, (S, T)> {
-        ListMoveStatefulBuilder {
-            contents: self.contents,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the move handler with captured state.
-    #[must_use]
-    pub fn handler(
-        self,
-        on_move: impl Fn(S, &Environment, usize, usize) + 'static,
-    ) -> ListBuilder<V> {
-        let state = self.state;
-        ListBuilder {
-            contents: self.contents,
-            editing: Computed::new(false),
-            on_delete: None,
-            on_move: Some(Box::new(move |env, from, to| {
-                on_move(state.clone(), env, from, to);
-            })),
-        }
-    }
-}
-
-// ============================================================================
-// ListBuilder Delete Builder (preserves existing ListBuilder state)
-// ============================================================================
-
-/// Builder for creating list delete handlers that preserves existing ListBuilder state.
-pub struct ListBuilderDeleteBuilder<V: Views<View = ListItem>> {
-    contents: V,
-    editing: Computed<bool>,
-    on_move: Option<OnMove>,
-}
-
-impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilderDeleteBuilder<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListBuilderDeleteBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>> ListBuilderDeleteBuilder<V> {
-    /// Sets the delete handler (no state).
-    #[must_use]
-    pub fn handler(self, on_delete: impl Fn(&Environment, usize) + 'static) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: Some(Box::new(on_delete)),
-            on_move: self.on_move,
-        }
-    }
-
-    /// Adds state to capture for the handler.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(
-        self,
-        state: &T,
-    ) -> ListBuilderDeleteStatefulBuilder<V, T> {
-        ListBuilderDeleteStatefulBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_move: self.on_move,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for list delete handlers with captured state that preserves existing ListBuilder state.
-pub struct ListBuilderDeleteStatefulBuilder<V: Views<View = ListItem>, State> {
-    contents: V,
-    editing: Computed<bool>,
-    on_move: Option<OnMove>,
-    state: State,
-}
-
-impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListBuilderDeleteStatefulBuilder<V, S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListBuilderDeleteStatefulBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>, S: Clone + 'static> ListBuilderDeleteStatefulBuilder<V, S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(
-        self,
-        state: &T,
-    ) -> ListBuilderDeleteStatefulBuilder<V, (S, T)> {
-        ListBuilderDeleteStatefulBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_move: self.on_move,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the delete handler with captured state.
-    #[must_use]
-    pub fn handler(self, on_delete: impl Fn(S, &Environment, usize) + 'static) -> ListBuilder<V> {
-        let state = self.state;
-        ListBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: Some(Box::new(move |env, idx| on_delete(state.clone(), env, idx))),
-            on_move: self.on_move,
-        }
-    }
-}
-
-// ============================================================================
-// ListBuilder Move Builder (preserves existing ListBuilder state)
-// ============================================================================
-
-/// Builder for creating list move handlers that preserves existing ListBuilder state.
-pub struct ListBuilderMoveBuilder<V: Views<View = ListItem>> {
-    contents: V,
-    editing: Computed<bool>,
-    on_delete: Option<OnDelete>,
-}
-
-impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilderMoveBuilder<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListBuilderMoveBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>> ListBuilderMoveBuilder<V> {
-    /// Sets the move handler (no state).
-    #[must_use]
-    pub fn handler(self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> ListBuilder<V> {
-        ListBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: self.on_delete,
-            on_move: Some(Box::new(on_move)),
-        }
-    }
-
-    /// Adds state to capture for the handler.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListBuilderMoveStatefulBuilder<V, T> {
-        ListBuilderMoveStatefulBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: self.on_delete,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for list move handlers with captured state that preserves existing ListBuilder state.
-pub struct ListBuilderMoveStatefulBuilder<V: Views<View = ListItem>, State> {
-    contents: V,
-    editing: Computed<bool>,
-    on_delete: Option<OnDelete>,
-    state: State,
-}
-
-impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListBuilderMoveStatefulBuilder<V, S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ListBuilderMoveStatefulBuilder")
-    }
-}
-
-impl<V: Views<View = ListItem>, S: Clone + 'static> ListBuilderMoveStatefulBuilder<V, S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(
-        self,
-        state: &T,
-    ) -> ListBuilderMoveStatefulBuilder<V, (S, T)> {
-        ListBuilderMoveStatefulBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: self.on_delete,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the move handler with captured state.
-    #[must_use]
-    pub fn handler(
-        self,
-        on_move: impl Fn(S, &Environment, usize, usize) + 'static,
-    ) -> ListBuilder<V> {
-        let state = self.state;
-        ListBuilder {
-            contents: self.contents,
-            editing: self.editing,
-            on_delete: self.on_delete,
-            on_move: Some(Box::new(move |env, from, to| {
-                on_move(state.clone(), env, from, to);
-            })),
-        }
     }
 }

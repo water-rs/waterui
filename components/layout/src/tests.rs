@@ -8,7 +8,10 @@
 use alloc::{format, vec, vec::Vec};
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
-use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
+use crate::{
+    HorizontalAlignmentKey, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 // ============================================================================
 // Test Infrastructure
@@ -21,8 +24,8 @@ struct FixedSizeView {
 }
 
 impl SubView for FixedSizeView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        self.size
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
@@ -52,8 +55,8 @@ impl FlexibleTextView {
 }
 
 impl SubView for FlexibleTextView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        match proposal.width {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(match proposal.width {
             Some(max_width) if max_width < self.intrinsic_size.width => {
                 // Text needs to wrap - calculate wrapped height
                 let lines = (self.intrinsic_size.width / max_width).ceil();
@@ -63,7 +66,7 @@ impl SubView for FlexibleTextView {
                 // No width constraint or enough space - return intrinsic
                 self.intrinsic_size
             }
-        }
+        })
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
@@ -77,8 +80,8 @@ impl SubView for FlexibleTextView {
 struct SpacerView;
 
 impl SubView for SpacerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        Size::zero()
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -96,9 +99,9 @@ struct HorizontalExpandingView {
 }
 
 impl SubView for HorizontalExpandingView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let width = proposal.width.unwrap_or(f32::INFINITY);
-        Size::new(width, self.height)
+        ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal
@@ -115,10 +118,60 @@ struct VerticalExpandingView {
     width: f32,
 }
 
+struct BaselineTextView {
+    size: Size,
+    first_baseline: f32,
+    last_baseline: f32,
+}
+
+impl SubView for BaselineTextView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_vertical(VerticalAlignment::FirstBaseline, self.first_baseline)
+            .with_vertical(VerticalAlignment::LastBaseline, self.last_baseline)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+struct TitleGuide;
+
+impl HorizontalAlignmentKey for TitleGuide {
+    fn default_value(dimensions: &ViewDimensions) -> f32 {
+        dimensions.size.width * 0.5
+    }
+}
+
+struct GuidedBoxView {
+    size: Size,
+    guide: f32,
+}
+
+impl SubView for GuidedBoxView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_horizontal(HorizontalAlignment::custom::<TitleGuide>(), self.guide)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
 impl SubView for VerticalExpandingView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let height = proposal.height.unwrap_or(f32::INFINITY);
-        Size::new(self.width, height)
+        ViewDimensions::new(Size::new(self.width, height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Vertical
@@ -1225,6 +1278,61 @@ fn test_vstack_form_layout() {
 }
 
 #[test]
+fn test_hstack_first_baseline_uses_text_baselines() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::FirstBaseline,
+        spacing: 10.0,
+    };
+
+    let left = BaselineTextView {
+        size: Size::new(80.0, 20.0),
+        first_baseline: 14.0,
+        last_baseline: 14.0,
+    };
+    let right = BaselineTextView {
+        size: Size::new(40.0, 40.0),
+        first_baseline: 28.0,
+        last_baseline: 28.0,
+    };
+
+    let children: Vec<&dyn SubView> = vec![&left, &right];
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_eq!(size.height, 40.0);
+
+    let rects = layout.place(Rect::from_size(size), &children);
+    let left_baseline = rects[0].y() + left.first_baseline;
+    let right_baseline = rects[1].y() + right.first_baseline;
+    assert!((left_baseline - right_baseline).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_vstack_custom_horizontal_alignment_uses_guides() {
+    let alignment = HorizontalAlignment::custom::<TitleGuide>();
+    let layout = VStackLayout {
+        alignment,
+        spacing: 8.0,
+    };
+
+    let top = GuidedBoxView {
+        size: Size::new(120.0, 20.0),
+        guide: 30.0,
+    };
+    let bottom = GuidedBoxView {
+        size: Size::new(80.0, 20.0),
+        guide: 10.0,
+    };
+
+    let children: Vec<&dyn SubView> = vec![&top, &bottom];
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_eq!(size.width, 120.0);
+
+    let rects = layout.place(Rect::from_size(size), &children);
+    let top_guide = rects[0].x() + top.guide;
+    let bottom_guide = rects[1].x() + bottom.guide;
+    assert!((top_guide - bottom_guide).abs() < f32::EPSILON);
+}
+
+#[test]
 fn test_vstack_form_with_spacer() {
     // Form with spacer pushing button to bottom
     let layout = VStackLayout {
@@ -1274,8 +1382,8 @@ fn test_vstack_form_with_spacer() {
 struct MainAxisSpacerView;
 
 impl SubView for MainAxisSpacerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
-        Size::zero()
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::MainAxis
@@ -1292,9 +1400,9 @@ struct CrossAxisDividerView {
 }
 
 impl SubView for CrossAxisDividerView {
-    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         // Returns minimal size - cross axis expansion handled by layout
-        Size::new(self.thickness, self.thickness)
+        ViewDimensions::new(Size::new(self.thickness, self.thickness))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::CrossAxis
@@ -1446,12 +1554,12 @@ struct HorizontalStretchView {
 }
 
 impl SubView for HorizontalStretchView {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // When proposed width, use it (but not less than minimum)
         let width = proposal
             .width
             .map_or(self.min_width, |w| w.max(self.min_width));
-        Size::new(width, self.height)
+        ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal

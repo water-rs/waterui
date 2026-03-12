@@ -8,6 +8,7 @@ use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_core::configurable;
+use waterui_core::layout::HorizontalAlignment;
 use waterui_graphics::color::Color;
 
 configurable!(
@@ -68,6 +69,8 @@ configurable!(
 pub struct TextConfig {
     /// The rich text content to be displayed.
     pub content: Computed<StyledStr>,
+    /// Paragraph alignment for multiline layout.
+    pub paragraph_alignment: Computed<HorizontalAlignment>,
 }
 
 impl<T> Add<T> for Text
@@ -132,6 +135,7 @@ impl Text {
     pub fn new(content: impl IntoComputed<StyledStr>) -> Self {
         Self(TextConfig {
             content: content.into_signal().map(StyledStr::from).computed(),
+            paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
         })
     }
 
@@ -162,6 +166,12 @@ impl Text {
     #[must_use]
     pub fn content(&self) -> Computed<StyledStr> {
         self.0.content.clone()
+    }
+
+    /// Returns the paragraph alignment for this text component.
+    #[must_use]
+    pub fn paragraph_alignment(&self) -> Computed<HorizontalAlignment> {
+        self.0.paragraph_alignment.clone()
     }
 
     /// Sets the font for this text component.
@@ -248,6 +258,13 @@ impl Text {
         self
     }
 
+    /// Sets the paragraph alignment for multiline text layout.
+    #[must_use]
+    pub fn text_align(mut self, alignment: impl IntoSignal<HorizontalAlignment>) -> Self {
+        self.0.paragraph_alignment = alignment.into_signal().computed();
+        self
+    }
+
     /// Sets the font to bold.
     #[must_use]
     pub fn bold(self) -> Self {
@@ -307,6 +324,20 @@ where
 {
     fn from(value: T) -> Self {
         Self::new(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_align_updates_paragraph_alignment_signal() {
+        let text = Text::new(StyledStr::plain("hello")).text_align(HorizontalAlignment::Trailing);
+        assert_eq!(
+            text.paragraph_alignment().get(),
+            HorizontalAlignment::Trailing
+        );
     }
 }
 

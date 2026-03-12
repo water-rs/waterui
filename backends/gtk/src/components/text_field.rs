@@ -12,7 +12,7 @@ use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
 
 use crate::component::GtkComponent;
-use crate::renderer::GtkRenderer;
+use crate::renderer::{GtkRenderer, mark_focus_anchor};
 use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<TextFieldConfig> {
@@ -34,6 +34,7 @@ impl GtkComponent for Native<TextFieldConfig> {
         // Create the entry
         let entry = gtk4::Entry::new();
         entry.set_hexpand(true);
+        mark_focus_anchor(&entry);
 
         let selection_menu = config.selection_menu;
         let binding = config.value;
