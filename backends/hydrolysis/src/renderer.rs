@@ -59,7 +59,7 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize, Rect as LayoutRect,
@@ -318,6 +318,7 @@ struct HoverTarget {
     bounds: vello::kurbo::Rect,
     slot: HoverSlot,
     on_enter: Option<HoverAction>,
+    on_move: Option<PointerAction>,
     on_exit: Option<HoverAction>,
 }
 
@@ -5427,7 +5428,12 @@ impl HydrolysisRenderer {
         }
         for target in &subtree.hover_targets {
             let bounds = transformed_rect(ctx.hit_transform, target.bounds);
-            self.register_hover_target(bounds, target.on_enter.clone(), target.on_exit.clone());
+            self.register_hover_target(
+                bounds,
+                target.on_enter.clone(),
+                target.on_move.clone(),
+                target.on_exit.clone(),
+            );
         }
         #[cfg(feature = "accessibility")]
         let accessibility_node_map =
@@ -9129,6 +9135,17 @@ impl HydrolysisRenderer {
                     true
                 });
             }
+            Event::HoverMove => {
+                let mut handler = value;
+                renderer.register_hover_move_target(bounds, move |point, env| {
+                    let hover_env = env.extending(HoverEvent::new(waterui_core::layout::Point::new(
+                        point.x as f32 - bounds.x0 as f32,
+                        point.y as f32 - bounds.y0 as f32,
+                    )));
+                    handler.handle(&hover_env);
+                    true
+                });
+            }
             Event::HoverExit => {
                 let mut handler = value;
                 renderer.register_hover_exit_target(bounds, move |env| {
@@ -10321,7 +10338,7 @@ impl HydrolysisRenderer {
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
         rebuild_requested |= gesture_changed;
-        rebuild_requested |= self.sync_hover_targets(point, env);
+        rebuild_requested |= self.sync_hover_targets(point, env, true);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -10338,7 +10355,7 @@ impl HydrolysisRenderer {
 
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        let changed = self.sync_hover_targets(point, env);
+        let changed = self.sync_hover_targets(point, env, false);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -10351,7 +10368,12 @@ impl HydrolysisRenderer {
         changed
     }
 
-    fn sync_hover_targets(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+    fn sync_hover_targets(
+        &mut self,
+        point: vello::kurbo::Point,
+        env: &Environment,
+        dispatch_move: bool,
+    ) -> bool {
         let mut changed = false;
         for target in &mut self.hover_targets {
             let contains = target.bounds.contains(point);
@@ -10366,6 +10388,11 @@ impl HydrolysisRenderer {
                 if let Some(on_exit) = target.on_exit.as_mut() {
                     changed |= (on_exit.borrow_mut())(env);
                 }
+            }
+            if contains && dispatch_move
+                && let Some(on_move) = target.on_move.as_mut()
+            {
+                changed |= (on_move.borrow_mut())(point, env);
             }
         }
         changed
@@ -10805,6 +10832,7 @@ impl HydrolysisRenderer {
         &mut self,
         bounds: vello::kurbo::Rect,
         on_enter: Option<HoverAction>,
+        on_move: Option<PointerAction>,
         on_exit: Option<HoverAction>,
     ) {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
@@ -10815,6 +10843,7 @@ impl HydrolysisRenderer {
             bounds,
             slot,
             on_enter,
+            on_move,
             on_exit,
         });
     }
@@ -10823,14 +10852,21 @@ impl HydrolysisRenderer {
     where
         F: 'static + FnMut(&Environment) -> bool,
     {
-        self.register_hover_target(bounds, Some(Rc::new(RefCell::new(action))), None);
+        self.register_hover_target(bounds, Some(Rc::new(RefCell::new(action))), None, None);
     }
 
     fn register_hover_exit_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&Environment) -> bool,
     {
-        self.register_hover_target(bounds, None, Some(Rc::new(RefCell::new(action))));
+        self.register_hover_target(bounds, None, None, Some(Rc::new(RefCell::new(action))));
+    }
+
+    fn register_hover_move_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
+    {
+        self.register_hover_target(bounds, None, Some(Rc::new(RefCell::new(action))), None);
     }
 
     fn register_text_input_target(
