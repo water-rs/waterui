@@ -3,7 +3,7 @@
 use color_eyre::eyre::{Result, bail};
 
 use waterui_cli::{
-    android::toolchain::{AndroidNdk, AndroidPlatformTools, AndroidSdk, Java},
+    android::toolchain::{AndroidNdk, AndroidPlatformSdk, AndroidPlatformTools, AndroidSdk, Java},
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{
@@ -38,6 +38,10 @@ pub async fn check_android_build_or_package() -> Result<()> {
     let sdk = AndroidSdk;
     if let Err(e) = sdk.check().await {
         bail!("{}", toolchain_check_message("Android SDK", e));
+    }
+    let platform_sdk = AndroidPlatformSdk;
+    if let Err(e) = platform_sdk.check().await {
+        bail!("{}", toolchain_check_message("Android Platform SDK", e));
     }
     let ndk = AndroidNdk;
     if let Err(e) = ndk.check().await {
