@@ -122,6 +122,45 @@ impl ParticleSystem {
         self
     }
 
+    /// Keep particles inside the normalized viewport `[0, 0]..[1, 1]`.
+    #[must_use]
+    pub fn collide_with_viewport(mut self) -> Self {
+        self.config.collision.enabled = true;
+        self.config.collision.bounds = [0.0, 0.0, 1.0, 1.0];
+        self
+    }
+
+    /// Keep particles inside a normalized rectangle.
+    #[must_use]
+    pub fn collide_with_rect(mut self, x: f32, y: f32, width: f32, height: f32) -> Self {
+        self.config.collision.enabled = true;
+        self.config.collision.bounds = [x, y, x + width, y + height];
+        self
+    }
+
+    /// Add a circular obstacle collider in normalized coordinates.
+    #[must_use]
+    pub fn collide_with_circle_obstacle(mut self, x: f32, y: f32, radius: f32) -> Self {
+        self.config.collision.obstacle_enabled = true;
+        self.config.collision.obstacle_center = [x, y];
+        self.config.collision.obstacle_radius = radius;
+        self
+    }
+
+    /// Set the fraction of normal velocity preserved after a collision.
+    #[must_use]
+    pub fn bounce(mut self, restitution: f32) -> Self {
+        self.config.collision.restitution = restitution;
+        self
+    }
+
+    /// Set the fraction of tangential velocity preserved after a collision.
+    #[must_use]
+    pub fn surface_friction(mut self, value: f32) -> Self {
+        self.config.collision.surface_friction = value;
+        self
+    }
+
     /// Set additive blending mode.
     #[must_use]
     pub fn additive(mut self) -> Self {
@@ -187,6 +226,13 @@ impl ParticleSystem {
             wind: self.config.environment.wind,
             turbulence: self.config.environment.turbulence,
             drag: self.config.environment.drag,
+            collision_enabled: self.config.collision.enabled,
+            collision_bounds: self.config.collision.bounds,
+            collision_restitution: self.config.collision.restitution,
+            collision_surface_friction: self.config.collision.surface_friction,
+            collision_obstacle_enabled: self.config.collision.obstacle_enabled,
+            collision_obstacle_center: self.config.collision.obstacle_center,
+            collision_obstacle_radius: self.config.collision.obstacle_radius,
             life_range: [
                 self.config.particle.life.start,
                 self.config.particle.life.end,
