@@ -15,10 +15,12 @@ use crate::{
         device::AppleSimulator,
         toolchain::{AppleSdk, Xcode},
     },
+    device::Device,
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{
         Installation, Toolchain, ToolchainError, UnfixableToolchain, cmake::Cmake,
         linux::LinuxSystemToolchain, rust::RustToolchain, sccache::Sccache,
+        windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
 };
 
@@ -311,6 +313,32 @@ pub async fn doctor() -> Vec<DoctorItem> {
         Err(ToolchainError::Unfixable(error)) => {
             items.push(DoctorItem::missing("Host CMake", unfixable_message(&error)));
         }
+    }
+
+    // Check Windows ARM64 LLVM tooling required by native `.S` dependencies
+    // in hydrolysis/windows builds (e.g. aws-lc-sys, rav1e).
+    if WindowsArm64LlvmToolchain::required_on_host() {
+        match WindowsArm64LlvmToolchain.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Windows ARM64 LLVM toolchain")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Windows ARM64 LLVM toolchain",
+                    "Required by native assembly dependencies in Windows ARM64 hydrolysis builds",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Windows ARM64 LLVM toolchain",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+    } else {
+        items.push(DoctorItem::skipped_with_message(
+            "Windows ARM64 LLVM toolchain",
+            "Only required on Windows ARM64 hosts for native assembly dependencies.",
+        ));
     }
 
     // Check Java runtime for Android Gradle builds.

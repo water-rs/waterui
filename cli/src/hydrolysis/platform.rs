@@ -15,6 +15,7 @@ use crate::{
     macos_bundle::package_binary_as_app,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::{command, run_command_os},
 };
 
@@ -58,6 +59,20 @@ pub async fn build_hydrolysis(
     let cargo = command(&mut cargo);
     cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
     cargo.arg("--target-dir").arg(&backend_target_dir);
+    let llvm_envs = WindowsArm64LlvmToolchain
+        .cargo_envs()
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })?;
+    for (key, value) in llvm_envs {
+        cargo.env(key, value);
+    }
     if options.is_release() {
         cargo.arg("--release");
     }
