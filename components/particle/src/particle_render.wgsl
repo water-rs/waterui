@@ -2,11 +2,8 @@ struct CollisionUniforms {
     enabled: u32,
     restitution: f32,
     surface_friction: f32,
-    obstacle_enabled: u32,
+    circle_obstacle_count: u32,
     bounds: vec4<f32>,
-    obstacle_center: vec2<f32>,
-    obstacle_radius: f32,
-    _pad0: f32,
 }
 
 struct Uniforms {
