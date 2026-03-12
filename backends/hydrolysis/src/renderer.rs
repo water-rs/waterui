@@ -17,10 +17,13 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
+    TextPosition as AccessibilityTextPosition, TextSelection as AccessibilityTextSelection,
     Toggled as AccessibilityToggled, Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use executor_core::spawn_local;
 use nami::{Binding, Signal};
+use waterkit_clipboard::Clipboard;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState,
@@ -46,9 +49,11 @@ use waterui::navigation::{
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
+use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
-use waterui_controls::button::{ButtonConfig, ButtonStyle};
+use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
+use waterui_controls::menu::MenuItem;
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::TextFieldConfig;
@@ -57,7 +62,7 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect as LayoutRect,
+    HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize, Rect as LayoutRect,
     Size as LayoutSize, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
@@ -144,6 +149,18 @@ pub struct RenderContext {
     pub bounds: vello::kurbo::Rect,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HydrolysisWindowOrigin {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HydrolysisTextContextMenuMode {
+    Overlay,
+    NativeWindow,
+}
+
 impl RenderContext {
     pub(crate) fn with_renderer(
         renderer: &mut HydrolysisRenderer,
@@ -215,10 +232,16 @@ pub struct HydrolysisRenderer {
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
     text_input_targets: Vec<TextInputTarget>,
+    text_selection_slots: Vec<Rc<RefCell<TextSelectionSlot>>>,
+    text_selection_cursor: usize,
+    active_text_selection_drag: Option<usize>,
+    last_text_selection_click: Option<TextSelectionClickState>,
+    active_text_context_menu: Option<ActiveTextContextMenu>,
     scroll_targets: Vec<ScrollTarget>,
     hit_test_opacity: f32,
     render_depth: usize,
     hit_test_order: usize,
+    window_bounds: vello::kurbo::Rect,
     focused_text_input: Cell<Option<usize>>,
     ime_preedit: Option<Str>,
     text_caret_fade_started_at: Option<Instant>,
@@ -298,22 +321,89 @@ struct HoverTarget {
     on_exit: Option<HoverAction>,
 }
 
-enum TextInputCommand {
-    Insert(Str),
-    Backspace,
+#[derive(Clone)]
+enum TextInputModel {
+    TextField {
+        value: nami::Binding<StyledStr>,
+        line_limit: Option<usize>,
+        selection_menu: nami::Computed<Vec<MenuItem>>,
+    },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+    },
+}
+
+#[derive(Debug, Default)]
+struct TextSelectionSlot {
+    anchor: usize,
+    focus: usize,
+    initialized: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextSelectionClickState {
+    target_index: usize,
+    point: vello::kurbo::Point,
+    at: Instant,
+    count: u8,
 }
 
 #[derive(Clone)]
 struct TextInputTarget {
     bounds: vello::kurbo::Rect,
     cursor_area: vello::kurbo::Rect,
+    text_bounds: vello::kurbo::Rect,
+    layout: parley::Layout<[u8; 4]>,
     purpose: TextInputPurpose,
     depth: usize,
     order: usize,
-    action: TextInputAction,
+    model: TextInputModel,
+    selection: Rc<RefCell<TextSelectionSlot>>,
     focus_binding: Option<Binding<bool>>,
     #[cfg(feature = "accessibility")]
     accessibility_node_id: Option<AccessibilityNodeId>,
+}
+
+#[derive(Clone)]
+enum TextContextMenuAction {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Custom(MenuItem),
+}
+
+#[derive(Clone)]
+struct TextContextMenuEntry {
+    label: String,
+    action: TextContextMenuAction,
+}
+
+#[derive(Clone)]
+struct TextContextMenuOverlayRow {
+    bounds: vello::kurbo::Rect,
+    entry: TextContextMenuEntry,
+}
+
+#[derive(Clone)]
+struct TextContextMenuOverlay {
+    bounds: vello::kurbo::Rect,
+    rows: Vec<TextContextMenuOverlayRow>,
+    model: TextInputModel,
+    selection: Rc<RefCell<TextSelectionSlot>>,
+    env: Environment,
+}
+
+#[derive(Clone)]
+enum ActiveTextContextMenu {
+    Overlay {
+        index: usize,
+        overlay: TextContextMenuOverlay,
+    },
+    NativeWindow {
+        index: usize,
+        state: nami::Binding<WindowState>,
+    },
 }
 
 #[derive(Clone)]
@@ -324,7 +414,6 @@ struct ScrollTarget {
 
 type PointerAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
 type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
-type TextInputAction = Rc<RefCell<dyn FnMut(TextInputCommand) -> bool>>;
 type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 
 #[derive(Debug, Default)]
@@ -405,6 +494,8 @@ enum LazyStackAxisConfig {
 
 #[cfg(feature = "accessibility")]
 const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
@@ -1070,6 +1161,70 @@ impl PickerMenuSlot {
     }
 }
 
+impl TextInputModel {
+    fn plain_text(&self) -> String {
+        match self {
+            Self::TextField { value, .. } => value.get().to_plain().to_string(),
+            Self::SecureField { value } => value.get().expose().to_owned(),
+        }
+    }
+
+    fn set_plain_text(&self, text: String) {
+        match self {
+            Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
+            Self::SecureField { value } => {
+                let mut next = FormSecure::default();
+                next.set(text);
+                value.set(next);
+            }
+        }
+    }
+
+    fn line_limit(&self) -> Option<usize> {
+        match self {
+            Self::TextField { line_limit, .. } => *line_limit,
+            Self::SecureField { .. } => Some(1),
+        }
+    }
+
+    fn is_secure(&self) -> bool {
+        matches!(self, Self::SecureField { .. })
+    }
+
+    fn custom_selection_menu_items(&self) -> Vec<MenuItem> {
+        match self {
+            Self::TextField { selection_menu, .. } => selection_menu.get(),
+            Self::SecureField { .. } => Vec::new(),
+        }
+    }
+
+    fn layout_index_from_plain_index(&self, plain_index: usize) -> usize {
+        match self {
+            Self::TextField { .. } => {
+                let text = self.plain_text();
+                clamp_to_char_boundary(text.as_str(), plain_index)
+            }
+            Self::SecureField { .. } => {
+                let text = self.plain_text();
+                byte_index_to_char_offset(text.as_str(), plain_index)
+            }
+        }
+    }
+
+    fn plain_index_from_layout_index(&self, layout_index: usize) -> usize {
+        match self {
+            Self::TextField { .. } => {
+                let text = self.plain_text();
+                clamp_to_char_boundary(text.as_str(), layout_index)
+            }
+            Self::SecureField { .. } => {
+                let text = self.plain_text();
+                char_offset_to_byte_index(text.as_str(), layout_index)
+            }
+        }
+    }
+}
+
 impl HoverController {
     fn begin_rebuild_frame(&mut self) {
         self.cursor = 0;
@@ -1404,8 +1559,19 @@ const INPUT_FIELD_MIN_HEIGHT: f64 = 30.0;
 const INPUT_FIELD_HORIZONTAL_INSET: f64 = 8.0;
 const INPUT_FIELD_VERTICAL_INSET: f64 = 6.0;
 const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
-const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(530);
 const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
+const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
+const TEXT_SELECTION_FILL_COLOR: [f32; 4] = [0.20, 0.45, 0.90, 0.28];
+const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
+const TEXT_CONTEXT_MENU_ROW_HEIGHT: f32 = 28.0;
+const TEXT_CONTEXT_MENU_HORIZONTAL_PADDING: f32 = 10.0;
+const TEXT_CONTEXT_MENU_VERTICAL_PADDING: f64 = 6.0;
+const TEXT_CONTEXT_MENU_MIN_WIDTH: f32 = 140.0;
+const TEXT_CONTEXT_MENU_MAX_WIDTH: f32 = 320.0;
+const TEXT_CONTEXT_MENU_WIDTH_PER_CHAR: f32 = 8.5;
+const TEXT_CONTEXT_MENU_CORNER_RADIUS: f64 = 6.0;
 
 const PICKER_MIN_WIDTH: f64 = 72.0;
 const PICKER_MIN_HEIGHT: f64 = 30.0;
@@ -1491,6 +1657,442 @@ fn apply_text_insert(buffer: &mut String, inserted: &str, max_lines: Option<usiz
 
 fn apply_backspace(buffer: &mut String) -> bool {
     buffer.pop().is_some()
+}
+
+fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
+    if index > text.len() {
+        index = text.len();
+    }
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn previous_char_boundary(text: &str, index: usize) -> usize {
+    let clamped = clamp_to_char_boundary(text, index);
+    if clamped == 0 {
+        return 0;
+    }
+    text[..clamped]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(value, _)| value)
+}
+
+fn next_char_boundary(text: &str, index: usize) -> usize {
+    let clamped = clamp_to_char_boundary(text, index);
+    if clamped >= text.len() {
+        return text.len();
+    }
+    let mut chars = text[clamped..].chars();
+    let Some(ch) = chars.next() else {
+        return text.len();
+    };
+    clamped + ch.len_utf8()
+}
+
+fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
+    let clamped = clamp_to_char_boundary(text, index);
+    text[..clamped].chars().count()
+}
+
+fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize {
+    if char_offset == 0 {
+        return 0;
+    }
+    let mut consumed = 0usize;
+    for (index, _) in text.char_indices() {
+        if consumed == char_offset {
+            return index;
+        }
+        consumed = consumed
+            .checked_add(1)
+            .expect("char offset conversion overflow");
+    }
+    text.len()
+}
+
+fn normalized_selection_range(anchor: usize, focus: usize) -> std::ops::Range<usize> {
+    anchor.min(focus)..anchor.max(focus)
+}
+
+fn replace_text_selection(
+    text: &mut String,
+    anchor: &mut usize,
+    focus: &mut usize,
+    inserted: &str,
+    line_limit: Option<usize>,
+) -> bool {
+    let start = clamp_to_char_boundary(text.as_str(), (*anchor).min(*focus));
+    let end = clamp_to_char_boundary(text.as_str(), (*anchor).max(*focus));
+    let normalized = normalized_insert_text(inserted, line_limit);
+    if normalized.is_empty() {
+        return false;
+    }
+    let mut next = text.clone();
+    next.replace_range(start..end, normalized.as_str());
+    if exceeds_line_limit(next.as_str(), line_limit) {
+        return false;
+    }
+    *text = next;
+    let caret = start + normalized.len();
+    *anchor = caret;
+    *focus = caret;
+    true
+}
+
+fn delete_backward_in_selection(text: &mut String, anchor: &mut usize, focus: &mut usize) -> bool {
+    let start = clamp_to_char_boundary(text.as_str(), (*anchor).min(*focus));
+    let end = clamp_to_char_boundary(text.as_str(), (*anchor).max(*focus));
+    if start != end {
+        text.replace_range(start..end, "");
+        *anchor = start;
+        *focus = start;
+        return true;
+    }
+    if start == 0 {
+        return false;
+    }
+    let previous = text[..start]
+        .char_indices()
+        .next_back()
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    text.replace_range(previous..start, "");
+    *anchor = previous;
+    *focus = previous;
+    true
+}
+
+fn delete_forward_in_selection(text: &mut String, anchor: &mut usize, focus: &mut usize) -> bool {
+    let start = clamp_to_char_boundary(text.as_str(), (*anchor).min(*focus));
+    let end = clamp_to_char_boundary(text.as_str(), (*anchor).max(*focus));
+    if start != end {
+        text.replace_range(start..end, "");
+        *anchor = start;
+        *focus = start;
+        return true;
+    }
+    if start >= text.len() {
+        return false;
+    }
+    let mut iter = text[start..].char_indices();
+    let Some((_, ch)) = iter.next() else {
+        return false;
+    };
+    let next = start + ch.len_utf8();
+    text.replace_range(start..next, "");
+    *anchor = start;
+    *focus = start;
+    true
+}
+
+fn selection_slot_range_for_text(slot: &TextSelectionSlot, text: &str) -> std::ops::Range<usize> {
+    let anchor = clamp_to_char_boundary(text, slot.anchor);
+    let focus = clamp_to_char_boundary(text, slot.focus);
+    normalized_selection_range(anchor, focus)
+}
+
+fn selected_text_for_model(model: &TextInputModel, slot: &TextSelectionSlot) -> Option<String> {
+    let text = model.plain_text();
+    let range = selection_slot_range_for_text(slot, text.as_str());
+    if range.is_empty() {
+        return None;
+    }
+    text.as_str().get(range).map(str::to_owned)
+}
+
+fn replace_model_selection(
+    model: &TextInputModel,
+    slot: &mut TextSelectionSlot,
+    inserted: &str,
+) -> bool {
+    let mut text = model.plain_text();
+    let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    if !replace_text_selection(
+        &mut text,
+        &mut anchor,
+        &mut focus,
+        inserted,
+        model.line_limit(),
+    ) {
+        return false;
+    }
+    model.set_plain_text(text);
+    slot.anchor = anchor;
+    slot.focus = focus;
+    slot.initialized = true;
+    true
+}
+
+fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    let mut text = model.plain_text();
+    let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    let range = normalized_selection_range(anchor, focus);
+    if range.is_empty() {
+        return false;
+    }
+    text.replace_range(range.clone(), "");
+    model.set_plain_text(text);
+    slot.anchor = range.start;
+    slot.focus = range.start;
+    slot.initialized = true;
+    true
+}
+
+fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    let mut text = model.plain_text();
+    let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    if !delete_backward_in_selection(&mut text, &mut anchor, &mut focus) {
+        return false;
+    }
+    model.set_plain_text(text);
+    slot.anchor = anchor;
+    slot.focus = focus;
+    slot.initialized = true;
+    true
+}
+
+fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    let mut text = model.plain_text();
+    let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    if !delete_forward_in_selection(&mut text, &mut anchor, &mut focus) {
+        return false;
+    }
+    model.set_plain_text(text);
+    slot.anchor = anchor;
+    slot.focus = focus;
+    slot.initialized = true;
+    true
+}
+
+fn set_model_caret_position(
+    model: &TextInputModel,
+    slot: &mut TextSelectionSlot,
+    index: usize,
+) -> bool {
+    let text = model.plain_text();
+    let index = clamp_to_char_boundary(text.as_str(), index);
+    let changed = slot.anchor != index || slot.focus != index || !slot.initialized;
+    slot.anchor = index;
+    slot.focus = index;
+    slot.initialized = true;
+    changed
+}
+
+fn move_model_caret_horizontal(
+    model: &TextInputModel,
+    slot: &mut TextSelectionSlot,
+    backward: bool,
+    extend: bool,
+) -> bool {
+    let text = model.plain_text();
+    let anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    let base = if !extend && anchor != focus {
+        if backward {
+            anchor.min(focus)
+        } else {
+            anchor.max(focus)
+        }
+    } else {
+        focus
+    };
+    let next = if backward {
+        previous_char_boundary(text.as_str(), base)
+    } else {
+        next_char_boundary(text.as_str(), base)
+    };
+    if extend {
+        let changed = slot.focus != next || !slot.initialized;
+        slot.anchor = anchor;
+        slot.focus = next;
+        slot.initialized = true;
+        return changed;
+    }
+    set_model_caret_position(model, slot, next)
+}
+
+fn read_clipboard_text_async() -> impl core::future::Future<Output = Option<String>> {
+    async {
+        let clipboard = match Clipboard::new() {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    target: "waterui::hydrolysis::input",
+                    error = %error,
+                    "failed to initialize clipboard for paste"
+                );
+                return None;
+            }
+        };
+        match clipboard.text().await {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    target: "waterui::hydrolysis::input",
+                    error = %error,
+                    "failed to read clipboard text"
+                );
+                None
+            }
+        }
+    }
+}
+
+fn spawn_clipboard_paste_task(model: TextInputModel, selection: Rc<RefCell<TextSelectionSlot>>) {
+    spawn_local(async move {
+        let Some(text) = read_clipboard_text_async().await else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let mut slot = selection.borrow_mut();
+        let _ = replace_model_selection(&model, &mut slot, text.as_str());
+    })
+    .detach();
+}
+
+fn select_all_model_text(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    let text = model.plain_text();
+    if text.is_empty() {
+        let changed = slot.anchor != 0 || slot.focus != 0 || !slot.initialized;
+        slot.anchor = 0;
+        slot.focus = 0;
+        slot.initialized = true;
+        return changed;
+    }
+    let changed = slot.anchor != 0 || slot.focus != text.len() || !slot.initialized;
+    slot.anchor = 0;
+    slot.focus = text.len();
+    slot.initialized = true;
+    changed
+}
+
+fn write_clipboard_text(text: &str) -> bool {
+    let mut clipboard: Clipboard = match Clipboard::new() {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::input",
+                error = %error,
+                "failed to initialize clipboard for copy/cut"
+            );
+            return false;
+        }
+    };
+    if let Err(error) = clipboard.set_text(text) {
+        tracing::warn!(
+            target: "waterui::hydrolysis::input",
+            error = %error,
+            "failed to set clipboard text"
+        );
+        return false;
+    }
+    true
+}
+
+fn selection_range_contains_index(
+    model: &TextInputModel,
+    slot: &TextSelectionSlot,
+    index: usize,
+) -> bool {
+    let text = model.plain_text();
+    let range = selection_slot_range_for_text(slot, text.as_str());
+    !range.is_empty() && range.contains(&index)
+}
+
+fn text_context_menu_size(entries: &[TextContextMenuEntry]) -> (f64, f64) {
+    let max_label_chars = entries
+        .iter()
+        .map(|entry| entry.label.chars().count())
+        .max()
+        .unwrap_or(0) as f32;
+    let width = (TEXT_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0
+        + max_label_chars * TEXT_CONTEXT_MENU_WIDTH_PER_CHAR)
+        .clamp(TEXT_CONTEXT_MENU_MIN_WIDTH, TEXT_CONTEXT_MENU_MAX_WIDTH);
+    let height =
+        (entries.len() as f32 * TEXT_CONTEXT_MENU_ROW_HEIGHT).max(TEXT_CONTEXT_MENU_ROW_HEIGHT);
+    (f64::from(width), f64::from(height))
+}
+
+fn text_context_menu_overlay_bounds(
+    anchor: vello::kurbo::Point,
+    entries: &[TextContextMenuEntry],
+    window_bounds: vello::kurbo::Rect,
+) -> vello::kurbo::Rect {
+    let (width, height) = text_context_menu_size(entries);
+    let preferred_x = anchor.x;
+    let preferred_y = anchor.y;
+    let fallback_x = anchor.x - width;
+    let fallback_y = anchor.y - height;
+
+    let mut x0 = if preferred_x + width <= window_bounds.x1 {
+        preferred_x
+    } else {
+        fallback_x
+    };
+    let mut y0 = if preferred_y + height <= window_bounds.y1 {
+        preferred_y
+    } else {
+        fallback_y
+    };
+
+    if x0 < window_bounds.x0 {
+        x0 = window_bounds.x0;
+    }
+    if x0 + width > window_bounds.x1 {
+        x0 = window_bounds.x1 - width;
+    }
+    if y0 < window_bounds.y0 {
+        y0 = window_bounds.y0;
+    }
+    if y0 + height > window_bounds.y1 {
+        y0 = window_bounds.y1 - height;
+    }
+    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+}
+
+fn execute_text_context_menu_action(
+    action: &TextContextMenuAction,
+    model: &TextInputModel,
+    selection: &Rc<RefCell<TextSelectionSlot>>,
+    env: &Environment,
+) -> bool {
+    match action {
+        TextContextMenuAction::Copy => {
+            let slot = selection.borrow();
+            let Some(value) = selected_text_for_model(model, &slot) else {
+                return false;
+            };
+            write_clipboard_text(value.as_str())
+        }
+        TextContextMenuAction::Cut => {
+            let mut slot = selection.borrow_mut();
+            let Some(value) = selected_text_for_model(model, &slot) else {
+                return false;
+            };
+            write_clipboard_text(value.as_str()) && delete_model_selection(model, &mut slot)
+        }
+        TextContextMenuAction::Paste => {
+            spawn_clipboard_paste_task(model.clone(), Rc::clone(selection));
+            true
+        }
+        TextContextMenuAction::SelectAll => {
+            let mut slot = selection.borrow_mut();
+            select_all_model_text(model, &mut slot)
+        }
+        TextContextMenuAction::Custom(item) => {
+            item.action.call(env);
+            true
+        }
+    }
 }
 
 struct TableMetrics {
@@ -3092,6 +3694,63 @@ impl HydroNativeView for Native<TextFieldConfig> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env)
     }
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "accessibility")]
+        {
+            let text_field = view.as_inner();
+            let renderer = unsafe { ctx.renderer() };
+            let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+            let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
+            let prompt_signal = text_field.prompt.content();
+            let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
+            let default_label = renderer
+                .accessibility_label_from_view(&text_field.label, env)
+                .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            if !prompt.is_empty() {
+                node.set_placeholder(prompt);
+            }
+            let value = renderer
+                .read_signal(&text_field.value)
+                .to_plain()
+                .to_string();
+            if !value.is_empty() {
+                node.set_value(value.clone());
+            }
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            if let Some(text_run_node_id) =
+                register_accessibility_text_run_node(renderer, &value, bounds, env)
+            {
+                node.set_children(vec![text_run_node_id]);
+                node.set_text_selection(collapsed_accessibility_text_selection(
+                    text_run_node_id,
+                    value.chars().count(),
+                ));
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::TextField {
+                    value: text_field.value.clone(),
+                    line_limit,
+                }),
+            );
+        }
+    }
 }
 
 impl HydroNativeView for Native<SecureFieldConfig> {
@@ -3105,6 +3764,49 @@ impl HydroNativeView for Native<SecureFieldConfig> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env)
+    }
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "accessibility")]
+        {
+            let secure_field = view.as_inner();
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
+            );
+            let default_label = renderer.accessibility_label_from_view(&secure_field.label, env);
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            let secure_len = renderer
+                .read_signal(&secure_field.value)
+                .expose()
+                .chars()
+                .count();
+            let masked_value = "*".repeat(secure_len);
+            node.set_value(masked_value.clone());
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            if let Some(text_run_node_id) =
+                register_accessibility_text_run_node(renderer, &masked_value, bounds, env)
+            {
+                node.set_children(vec![text_run_node_id]);
+                node.set_text_selection(collapsed_accessibility_text_selection(
+                    text_run_node_id,
+                    masked_value.chars().count(),
+                ));
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::SecureField {
+                    value: secure_field.value.clone(),
+                }),
+            );
+        }
     }
 }
 
@@ -3742,10 +4444,16 @@ impl HydrolysisRenderer {
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
             text_input_targets: Vec::new(),
+            text_selection_slots: Vec::new(),
+            text_selection_cursor: 0,
+            active_text_selection_drag: None,
+            last_text_selection_click: None,
+            active_text_context_menu: None,
             scroll_targets: Vec::new(),
             hit_test_opacity: 1.0,
             render_depth: 0,
             hit_test_order: 0,
+            window_bounds: vello::kurbo::Rect::ZERO,
             focused_text_input: Cell::new(None),
             ime_preedit: None,
             text_caret_fade_started_at: None,
@@ -3779,7 +4487,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "accessibility")]
             accessibility_actions: BTreeMap::new(),
             #[cfg(feature = "accessibility")]
-            accessibility_next_node_id: 1,
+            accessibility_next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
             #[cfg(feature = "accessibility")]
             accessibility_root_bounds: vello::kurbo::Rect::ZERO,
             #[cfg(feature = "accessibility")]
@@ -3930,11 +4638,13 @@ impl HydrolysisRenderer {
         if let Some(binding) = next_binding {
             binding.set(true);
         }
+        self.active_text_selection_drag = None;
         self.ime_preedit = None;
         if focused.is_some() {
             self.reset_text_caret_animation(Instant::now());
         } else {
             self.clear_text_caret_animation();
+            self.dismiss_active_text_context_menu();
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -3960,6 +4670,488 @@ impl HydrolysisRenderer {
                 )
             })
             .map(|(index, _)| index)
+    }
+
+    fn dismiss_active_text_context_menu(&mut self) {
+        if let Some(menu) = self.active_text_context_menu.take() {
+            if let ActiveTextContextMenu::NativeWindow { state, .. } = menu {
+                state.set(WindowState::Closed);
+            }
+        }
+    }
+
+    fn active_text_context_menu_target(&self) -> Option<usize> {
+        self.active_text_context_menu.as_ref().map(|menu| match menu {
+            ActiveTextContextMenu::Overlay { index, .. }
+            | ActiveTextContextMenu::NativeWindow { index, .. } => *index,
+        })
+    }
+
+    pub(crate) fn set_window_bounds(&mut self, bounds: vello::kurbo::Rect) {
+        self.window_bounds = bounds;
+    }
+
+    pub(crate) fn render_active_text_context_menu_overlay(
+        &mut self,
+        env: &Environment,
+        transform: vello::kurbo::Affine,
+    ) {
+        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) = self.active_text_context_menu.clone()
+        else {
+            return;
+        };
+
+        let renderer_ptr = self as *mut HydrolysisRenderer;
+        let scene = &mut self.scene;
+        let panel = vello::kurbo::RoundedRect::from_rect(
+            overlay.bounds,
+            TEXT_CONTEXT_MENU_CORNER_RADIUS,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            vello::peniko::Color::new([0.98, 0.98, 0.99, 1.0]),
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            vello::peniko::Color::new([0.8, 0.82, 0.86, 1.0]),
+            None,
+            &panel,
+        );
+        for (index, row) in overlay.rows.iter().enumerate() {
+            if index + 1 < overlay.rows.len() {
+                let separator = vello::kurbo::Rect::new(
+                    row.bounds.x0 + 6.0,
+                    row.bounds.y1 - 1.0,
+                    row.bounds.x1 - 6.0,
+                    row.bounds.y1,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    vello::peniko::Color::new([0.9, 0.91, 0.94, 1.0]),
+                    None,
+                    &separator,
+                );
+            }
+
+            let text_rect = inset_rect(
+                row.bounds,
+                f64::from(TEXT_CONTEXT_MENU_HORIZONTAL_PADDING),
+                TEXT_CONTEXT_MENU_VERTICAL_PADDING,
+            );
+            let ctx = RenderContext {
+                renderer_ptr,
+                transform,
+                hit_transform: vello::kurbo::Affine::IDENTITY,
+                bounds: overlay.bounds,
+            }
+            .child(
+                vello::kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
+                vello::kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
+            );
+            Self::render_styled_text(
+                self.dispatcher.state_mut(),
+                ctx,
+                StyledStr::plain(row.entry.label.clone()),
+                HorizontalAlignment::Leading,
+                env,
+            );
+        }
+    }
+
+    fn handle_text_context_menu_overlay_pointer_down(
+        &mut self,
+        point: vello::kurbo::Point,
+    ) -> bool {
+        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) = self.active_text_context_menu.clone()
+        else {
+            return false;
+        };
+        if !overlay.bounds.contains(point) {
+            self.dismiss_active_text_context_menu();
+            return false;
+        }
+        for row in &overlay.rows {
+            if !row.bounds.contains(point) {
+                continue;
+            }
+            let changed = execute_text_context_menu_action(
+                &row.entry.action,
+                &overlay.model,
+                &overlay.selection,
+                &overlay.env,
+            );
+            self.dismiss_active_text_context_menu();
+            return changed;
+        }
+        true
+    }
+
+    fn focused_text_target_data(
+        &mut self,
+    ) -> Option<(usize, TextInputModel, Rc<RefCell<TextSelectionSlot>>)> {
+        let index = self.focused_text_input.get()?;
+        let Some(target) = self.text_input_targets.as_slice().get(index) else {
+            self.set_focused_text_input(None);
+            return None;
+        };
+        Some((index, target.model.clone(), Rc::clone(&target.selection)))
+    }
+
+    fn text_selection_index_from_point(
+        target: &TextInputTarget,
+        point: vello::kurbo::Point,
+    ) -> usize {
+        let local_x = (point.x - target.text_bounds.x0) as f32;
+        let local_y = (point.y - target.text_bounds.y0) as f32;
+        let selection =
+            parley::Selection::from_point(&target.layout, local_x, local_y).refresh(&target.layout);
+        target
+            .model
+            .plain_index_from_layout_index(selection.focus().index())
+    }
+
+    fn text_selection_range_from_point_with_click_count(
+        target: &TextInputTarget,
+        point: vello::kurbo::Point,
+        click_count: u8,
+    ) -> (usize, usize) {
+        let local_x = (point.x - target.text_bounds.x0) as f32;
+        let local_y = (point.y - target.text_bounds.y0) as f32;
+        let selection = match click_count {
+            2 => parley::Selection::word_from_point(&target.layout, local_x, local_y),
+            3.. => parley::Selection::line_from_point(&target.layout, local_x, local_y),
+            _ => parley::Selection::from_point(&target.layout, local_x, local_y),
+        }
+        .refresh(&target.layout);
+        (
+            target
+                .model
+                .plain_index_from_layout_index(selection.anchor().index()),
+            target
+                .model
+                .plain_index_from_layout_index(selection.focus().index()),
+        )
+    }
+
+    fn next_text_selection_click_count(
+        &mut self,
+        target_index: usize,
+        point: vello::kurbo::Point,
+        at: Instant,
+    ) -> u8 {
+        let count = if let Some(previous) = self.last_text_selection_click {
+            if previous.target_index == target_index
+                && at.saturating_duration_since(previous.at) <= TEXT_SELECTION_MULTI_CLICK_INTERVAL
+                && previous.point.distance(point) <= TEXT_SELECTION_MULTI_CLICK_DISTANCE
+            {
+                previous.count.saturating_add(1).min(3)
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+        self.last_text_selection_click = Some(TextSelectionClickState {
+            target_index,
+            point,
+            at,
+            count,
+        });
+        count
+    }
+
+    fn apply_text_selection_click_gesture(
+        &mut self,
+        index: usize,
+        point: vello::kurbo::Point,
+        click_count: u8,
+    ) -> bool {
+        let Some(target) = self.text_input_targets.as_slice().get(index) else {
+            self.active_text_selection_drag = None;
+            return false;
+        };
+        let (anchor, focus) =
+            Self::text_selection_range_from_point_with_click_count(target, point, click_count);
+        let mut slot = target.selection.borrow_mut();
+        let changed =
+            slot.anchor != anchor || slot.focus != focus || !slot.initialized;
+        slot.anchor = anchor;
+        slot.focus = focus;
+        slot.initialized = true;
+        changed
+    }
+
+    fn update_text_selection_from_pointer(
+        &mut self,
+        index: usize,
+        point: vello::kurbo::Point,
+        extend: bool,
+    ) -> bool {
+        let Some(target) = self.text_input_targets.as_slice().get(index) else {
+            self.active_text_selection_drag = None;
+            return false;
+        };
+        let next_index = Self::text_selection_index_from_point(target, point);
+        let mut slot = target.selection.borrow_mut();
+        if !extend || !slot.initialized {
+            let changed =
+                slot.anchor != next_index || slot.focus != next_index || !slot.initialized;
+            slot.anchor = next_index;
+            slot.focus = next_index;
+            slot.initialized = true;
+            return changed;
+        }
+        let changed = slot.focus != next_index || !slot.initialized;
+        slot.focus = next_index;
+        slot.initialized = true;
+        changed
+    }
+
+    fn insert_text_into_focused_target(&mut self, text: &str) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        replace_model_selection(&model, &mut slot, text)
+    }
+
+    fn delete_backward_in_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        delete_model_backward(&model, &mut slot)
+    }
+
+    fn delete_forward_in_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        delete_model_forward(&model, &mut slot)
+    }
+
+    fn select_all_in_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        select_all_model_text(&model, &mut slot)
+    }
+
+    fn copy_selection_in_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        if model.is_secure() {
+            return false;
+        }
+        let slot = selection.borrow();
+        let Some(selected) = selected_text_for_model(&model, &slot) else {
+            return false;
+        };
+        write_clipboard_text(selected.as_str())
+    }
+
+    fn cut_selection_in_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        if model.is_secure() {
+            return false;
+        }
+        let mut slot = selection.borrow_mut();
+        let Some(selected) = selected_text_for_model(&model, &slot) else {
+            return false;
+        };
+        if !write_clipboard_text(selected.as_str()) {
+            return false;
+        }
+        delete_model_selection(&model, &mut slot)
+    }
+
+    fn paste_clipboard_into_focused_target(&mut self) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        spawn_clipboard_paste_task(model, selection);
+        true
+    }
+
+    fn move_focused_caret_horizontal(&mut self, backward: bool, extend: bool) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        move_model_caret_horizontal(&model, &mut slot, backward, extend)
+    }
+
+    fn move_focused_caret_to_boundary(&mut self, end: bool, extend: bool) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        let mut slot = selection.borrow_mut();
+        let text = model.plain_text();
+        let next_index = if end { text.len() } else { 0 };
+        if extend {
+            let next_index = clamp_to_char_boundary(text.as_str(), next_index);
+            let changed = slot.focus != next_index || !slot.initialized;
+            slot.focus = next_index;
+            slot.initialized = true;
+            return changed;
+        }
+        set_model_caret_position(&model, &mut slot, next_index)
+    }
+
+    fn build_text_context_menu_entries(target: &TextInputTarget) -> Vec<TextContextMenuEntry> {
+        let has_selection = {
+            let slot = target.selection.borrow();
+            selected_text_for_model(&target.model, &slot).is_some()
+        };
+        let has_text = !target.model.plain_text().is_empty();
+        let mut entries = Vec::new();
+        if has_selection && !target.model.is_secure() {
+            entries.push(TextContextMenuEntry {
+                label: "Copy".to_owned(),
+                action: TextContextMenuAction::Copy,
+            });
+            entries.push(TextContextMenuEntry {
+                label: "Cut".to_owned(),
+                action: TextContextMenuAction::Cut,
+            });
+        }
+        entries.push(TextContextMenuEntry {
+            label: "Paste".to_owned(),
+            action: TextContextMenuAction::Paste,
+        });
+        if has_text {
+            entries.push(TextContextMenuEntry {
+                label: "Select All".to_owned(),
+                action: TextContextMenuAction::SelectAll,
+            });
+        }
+        if has_selection {
+            for item in target.model.custom_selection_menu_items() {
+                entries.push(TextContextMenuEntry {
+                    label: item.label.content().get().to_plain().to_string(),
+                    action: TextContextMenuAction::Custom(item),
+                });
+            }
+        }
+        entries
+    }
+
+    fn show_text_context_menu(
+        &mut self,
+        index: usize,
+        point: vello::kurbo::Point,
+        env: &Environment,
+    ) -> bool {
+        let Some(target) = self.text_input_targets.as_slice().get(index).cloned() else {
+            return false;
+        };
+        let entries = Self::build_text_context_menu_entries(&target);
+        if entries.is_empty() {
+            self.dismiss_active_text_context_menu();
+            return false;
+        }
+
+        self.dismiss_active_text_context_menu();
+        let mode = env
+            .get::<HydrolysisTextContextMenuMode>()
+            .copied()
+            .unwrap_or(HydrolysisTextContextMenuMode::NativeWindow);
+
+        if mode == HydrolysisTextContextMenuMode::Overlay {
+            let bounds = text_context_menu_overlay_bounds(point, &entries, self.window_bounds);
+            let mut rows = Vec::with_capacity(entries.len());
+            for (index, entry) in entries.into_iter().enumerate() {
+                let y0 = bounds.y0 + f64::from(TEXT_CONTEXT_MENU_ROW_HEIGHT) * index as f64;
+                let row_bounds = vello::kurbo::Rect::new(
+                    bounds.x0,
+                    y0,
+                    bounds.x1,
+                    y0 + f64::from(TEXT_CONTEXT_MENU_ROW_HEIGHT),
+                );
+                rows.push(TextContextMenuOverlayRow {
+                    bounds: row_bounds,
+                    entry,
+                });
+            }
+            self.active_text_context_menu = Some(ActiveTextContextMenu::Overlay {
+                index,
+                overlay: TextContextMenuOverlay {
+                    bounds,
+                    rows,
+                    model: target.model,
+                    selection: target.selection,
+                    env: env.clone(),
+                },
+            });
+            return true;
+        }
+
+        let menu_state = nami::Binding::container(WindowState::Normal);
+        let (width, height) = text_context_menu_size(&entries);
+        let origin = env
+            .get::<HydrolysisWindowOrigin>()
+            .copied()
+            .expect("hydrolysis text context menu requires HydrolysisWindowOrigin in environment");
+
+        let entries_for_popup = entries.clone();
+        let model = target.model.clone();
+        let selection = Rc::clone(&target.selection);
+        let action_env = env.clone();
+        let menu_state_for_content = menu_state.clone();
+        let popup_content = move || {
+            let mut rows = Vec::with_capacity(entries_for_popup.len());
+            for entry in entries_for_popup.clone() {
+                let action = entry.action;
+                let state_binding = menu_state_for_content.clone();
+                let model = model.clone();
+                let selection = Rc::clone(&selection);
+                let action_env = action_env.clone();
+                let button = Button::new(entry.label)
+                    .style(ButtonStyle::Borderless)
+                    .action(move || {
+                        state_binding.set(WindowState::Closed);
+                        let _ = execute_text_context_menu_action(
+                            &action,
+                            &model,
+                            &selection,
+                            &action_env,
+                        );
+                    });
+                rows.push(AnyView::new(button));
+            }
+            let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+                rows.into_iter().collect();
+            AnyView::new(
+                menu_content
+                    .alignment(HorizontalAlignment::Leading)
+                    .spacing(0.0),
+            )
+        };
+        let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+            .style(WindowStyle::Borderless)
+            .resizable(false)
+            .with_state(menu_state.clone());
+        popup.closable = false;
+        popup.frame.set(LayoutRect::new(
+            LayoutPoint::new(origin.x + point.x as f32, origin.y + point.y as f32),
+            LayoutSize::new(width as f32, height as f32),
+        ));
+        popup.show(env);
+        self.active_text_context_menu = Some(ActiveTextContextMenu::NativeWindow {
+            index,
+            state: menu_state,
+        });
+        true
     }
 
     #[cfg(feature = "accessibility")]
@@ -4145,7 +5337,7 @@ impl HydrolysisRenderer {
 
             let previous_accessibility_next_node_id = renderer.accessibility_next_node_id;
             let previous_accessibility_suppression_depth = renderer.accessibility_suppression_depth;
-            renderer.accessibility_next_node_id = 1;
+            renderer.accessibility_next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
             renderer.accessibility_suppression_depth = 0;
             renderer.dispatch_with_render_depth(content, env, ctx);
             renderer.accessibility_suppression_depth = previous_accessibility_suppression_depth;
@@ -4251,11 +5443,14 @@ impl HydrolysisRenderer {
                     )
                 })
             });
-            self.register_text_input_target_action(
+            self.register_text_input_target_data(
                 transformed_rect(ctx.hit_transform, target.bounds),
                 transformed_rect(ctx.hit_transform, target.cursor_area),
+                transformed_rect(ctx.hit_transform, target.text_bounds),
+                target.layout.clone(),
                 target.purpose,
-                Rc::clone(&target.action),
+                target.model.clone(),
+                Rc::clone(&target.selection),
                 depth,
                 target.focus_binding.clone(),
                 #[cfg(feature = "accessibility")]
@@ -4387,6 +5582,19 @@ impl HydrolysisRenderer {
             self.picker_menu_slots.push(PickerMenuSlot::new());
         }
         Rc::clone(&self.picker_menu_slots[index].open)
+    }
+
+    fn bind_text_selection_slot(&mut self) -> Rc<RefCell<TextSelectionSlot>> {
+        let index = self.text_selection_cursor;
+        self.text_selection_cursor = self
+            .text_selection_cursor
+            .checked_add(1)
+            .expect("text selection slot cursor overflow");
+        if index == self.text_selection_slots.len() {
+            self.text_selection_slots
+                .push(Rc::new(RefCell::new(TextSelectionSlot::default())));
+        }
+        Rc::clone(&self.text_selection_slots[index])
     }
 
     fn resolve_animated_scalar<S>(&mut self, signal: &S) -> f32
@@ -6404,10 +7612,22 @@ impl HydrolysisRenderer {
         draw_input_field(scene, ctx.transform, field_rect);
 
         let prompt_signal = text_field.prompt.content();
-        let (prompt, value, preedit, caret_opacity) = {
+        let selection_slot = {
             let renderer = unsafe { ctx.renderer() };
-            let is_focused =
-                renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
+            renderer.bind_text_selection_slot()
+        };
+        let value_binding = text_field.value;
+        let input_model = TextInputModel::TextField {
+            value: value_binding.clone(),
+            line_limit,
+            selection_menu: text_field.selection_menu,
+        };
+        let (text_input_index, prompt, value, preedit, caret_opacity, is_focused, selection_visible) = {
+            let renderer = unsafe { ctx.renderer() };
+            let text_input_index = renderer.text_input_targets.len();
+            let is_focused = renderer.focused_text_input.get() == Some(text_input_index);
+            let selection_visible =
+                is_focused || renderer.active_text_context_menu_target() == Some(text_input_index);
             let preedit = if is_focused {
                 renderer.ime_preedit.clone().unwrap_or_default()
             } else {
@@ -6419,12 +7639,16 @@ impl HydrolysisRenderer {
                 0.0
             };
             (
+                text_input_index,
                 renderer.read_signal(&prompt_signal).to_plain(),
-                renderer.read_signal(&text_field.value).to_plain(),
+                renderer.read_signal(&value_binding).to_plain(),
                 preedit,
                 caret_opacity,
+                is_focused,
+                selection_visible,
             )
         };
+        let _ = text_input_index;
         let committed_with_preedit = value.clone() + preedit.as_str();
         let use_placeholder = committed_with_preedit.is_empty();
         let display = if use_placeholder {
@@ -6442,6 +7666,43 @@ impl HydrolysisRenderer {
             INPUT_FIELD_HORIZONTAL_INSET,
             INPUT_FIELD_VERTICAL_INSET,
         );
+        let committed_layout = HydrolysisRenderer::build_text_layout(
+            state,
+            StyledStr::plain(value.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            Some(text_bounds.width() as f32),
+        );
+        let selection = {
+            let mut slot = selection_slot.borrow_mut();
+            if !slot.initialized {
+                slot.anchor = value.len();
+                slot.focus = value.len();
+                slot.initialized = true;
+            }
+            slot.anchor = clamp_to_char_boundary(value.as_str(), slot.anchor);
+            slot.focus = clamp_to_char_boundary(value.as_str(), slot.focus);
+            let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
+            let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
+            let anchor_affinity = if anchor_layout >= value.len() {
+                parley::Affinity::Upstream
+            } else {
+                parley::Affinity::Downstream
+            };
+            let focus_affinity = if focus_layout >= value.len() {
+                parley::Affinity::Upstream
+            } else {
+                parley::Affinity::Downstream
+            };
+            let selection = parley::Selection::new(
+                parley::Cursor::from_byte_index(&committed_layout, anchor_layout, anchor_affinity),
+                parley::Cursor::from_byte_index(&committed_layout, focus_layout, focus_affinity),
+            )
+            .refresh(&committed_layout);
+            slot.anchor = input_model.plain_index_from_layout_index(selection.anchor().index());
+            slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
+            selection
+        };
         {
             let scene = unsafe { ctx.scene() };
             scene.push_layer(
@@ -6451,33 +7712,45 @@ impl HydrolysisRenderer {
                 ctx.transform,
                 &text_bounds,
             );
-        }
-        Self::render_styled_text_limited(
-            state,
-            ctx.child(
-                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
-                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
-            ),
-            display_styled,
-            HorizontalAlignment::Leading,
-            env,
-            line_limit,
-        );
-        {
-            let scene = unsafe { ctx.scene() };
+            if selection_visible && !selection.is_collapsed() {
+                for (rect, _) in selection.geometry(&committed_layout) {
+                    let highlight = vello::kurbo::Rect::new(
+                        text_bounds.x0 + rect.x0,
+                        text_bounds.y0 + rect.y0,
+                        text_bounds.x0 + rect.x1,
+                        text_bounds.y0 + rect.y1,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        ctx.transform,
+                        vello::peniko::Color::new(TEXT_SELECTION_FILL_COLOR),
+                        None,
+                        &highlight,
+                    );
+                }
+            }
+            Self::render_styled_text_limited(
+                state,
+                ctx.child(
+                    vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                    vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+                ),
+                display_styled,
+                HorizontalAlignment::Leading,
+                env,
+                line_limit,
+            );
             scene.pop_layer();
         }
-        let cursor_layout = HydrolysisRenderer::build_text_layout(
-            state,
-            StyledStr::plain(committed_with_preedit),
-            HorizontalAlignment::Leading,
-            env,
-            Some(text_bounds.width() as f32),
-        );
-        let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
-        let cursor_area =
-            text_cursor_area_from_layout(text_bounds, &cursor_layout, line_limit, caret_height);
-        if caret_opacity > 0.0 {
+        let cursor_area = {
+            let rect = selection.focus().geometry(&committed_layout, 1.0);
+            let x0 = text_bounds.x0 + rect.x0;
+            let y0 = text_bounds.y0 + rect.y0;
+            let x1 = text_bounds.x0 + rect.x1.max(rect.x0 + 1.0);
+            let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
+            vello::kurbo::Rect::new(x0, y0, x1, y1)
+        };
+        if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -6488,7 +7761,6 @@ impl HydrolysisRenderer {
             );
         }
 
-        let value_binding = text_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_cursor_target(
             transformed_rect(ctx.hit_transform, field_rect),
@@ -6505,26 +7777,11 @@ impl HydrolysisRenderer {
         renderer.register_text_input_target(
             transformed_rect(ctx.hit_transform, field_rect),
             transformed_rect(ctx.hit_transform, cursor_area),
+            transformed_rect(ctx.hit_transform, text_bounds),
+            committed_layout,
             TextInputPurpose::Normal,
-            move |command| {
-                let mut plain = value_binding.get().to_plain().to_string();
-                match command {
-                    TextInputCommand::Insert(text) => {
-                        if !apply_text_insert(&mut plain, text.as_str(), line_limit) {
-                            return false;
-                        }
-                        value_binding.set(StyledStr::plain(plain));
-                        true
-                    }
-                    TextInputCommand::Backspace => {
-                        if !apply_backspace(&mut plain) {
-                            return false;
-                        }
-                        value_binding.set(StyledStr::plain(plain));
-                        true
-                    }
-                }
-            },
+            input_model,
+            selection_slot,
         );
     }
 
@@ -6599,10 +7856,21 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let (masked, caret_opacity) = {
+        let selection_slot = {
             let renderer = unsafe { ctx.renderer() };
-            let is_focused =
-                renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
+            renderer.bind_text_selection_slot()
+        };
+        let value_binding = secure_field.value;
+        let input_model = TextInputModel::SecureField {
+            value: value_binding.clone(),
+        };
+        let (text_input_index, masked, caret_opacity, is_focused, selection_visible, plain_value) = {
+            let renderer = unsafe { ctx.renderer() };
+            let text_input_index = renderer.text_input_targets.len();
+            let is_focused = renderer.focused_text_input.get() == Some(text_input_index);
+            let selection_visible =
+                is_focused || renderer.active_text_context_menu_target() == Some(text_input_index);
+            let plain_value = renderer.read_signal(&value_binding).expose().to_owned();
             let preedit_count = if is_focused {
                 renderer
                     .ime_preedit
@@ -6611,47 +7879,114 @@ impl HydrolysisRenderer {
             } else {
                 0
             };
-            let count = renderer
-                .read_signal(&secure_field.value)
-                .expose()
-                .chars()
-                .count()
-                + preedit_count;
+            let count = plain_value.chars().count() + preedit_count;
             let caret_opacity = if is_focused {
                 renderer.text_caret_opacity(Instant::now())
             } else {
                 0.0
             };
-            ("*".repeat(count), caret_opacity)
+            (
+                text_input_index,
+                "*".repeat(count),
+                caret_opacity,
+                is_focused,
+                selection_visible,
+                plain_value,
+            )
         };
+        let _ = text_input_index;
         let text_bounds = inset_rect(
             field_rect,
             INPUT_FIELD_HORIZONTAL_INSET,
             INPUT_FIELD_VERTICAL_INSET,
         );
         let masked_display = StyledStr::plain(masked.clone());
-        Self::render_styled_text_limited(
-            state,
-            ctx.child(
-                vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
-                vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
-            ),
-            masked_display,
-            HorizontalAlignment::Leading,
-            env,
-            Some(1),
-        );
-        let cursor_layout = HydrolysisRenderer::build_text_layout(
+        let committed_layout = HydrolysisRenderer::build_text_layout(
             state,
             StyledStr::plain(masked),
             HorizontalAlignment::Leading,
             env,
             Some(text_bounds.width() as f32),
         );
-        let caret_height = f64::from(waterui_text::font::Font::default().resolve(env).get().size);
-        let cursor_area =
-            text_cursor_area_from_layout(text_bounds, &cursor_layout, Some(1), caret_height);
-        if caret_opacity > 0.0 {
+        let selection = {
+            let mut slot = selection_slot.borrow_mut();
+            if !slot.initialized {
+                slot.anchor = plain_value.len();
+                slot.focus = plain_value.len();
+                slot.initialized = true;
+            }
+            slot.anchor = clamp_to_char_boundary(plain_value.as_str(), slot.anchor);
+            slot.focus = clamp_to_char_boundary(plain_value.as_str(), slot.focus);
+            let text_len = plain_value.chars().count();
+            let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
+            let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
+            let anchor_affinity = if anchor_layout >= text_len {
+                parley::Affinity::Upstream
+            } else {
+                parley::Affinity::Downstream
+            };
+            let focus_affinity = if focus_layout >= text_len {
+                parley::Affinity::Upstream
+            } else {
+                parley::Affinity::Downstream
+            };
+            let selection = parley::Selection::new(
+                parley::Cursor::from_byte_index(&committed_layout, anchor_layout, anchor_affinity),
+                parley::Cursor::from_byte_index(&committed_layout, focus_layout, focus_affinity),
+            )
+            .refresh(&committed_layout);
+            slot.anchor = input_model.plain_index_from_layout_index(selection.anchor().index());
+            slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
+            selection
+        };
+        {
+            let scene = unsafe { ctx.scene() };
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &text_bounds,
+            );
+            if selection_visible && !selection.is_collapsed() {
+                for (rect, _) in selection.geometry(&committed_layout) {
+                    let highlight = vello::kurbo::Rect::new(
+                        text_bounds.x0 + rect.x0,
+                        text_bounds.y0 + rect.y0,
+                        text_bounds.x0 + rect.x1,
+                        text_bounds.y0 + rect.y1,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        ctx.transform,
+                        vello::peniko::Color::new(TEXT_SELECTION_FILL_COLOR),
+                        None,
+                        &highlight,
+                    );
+                }
+            }
+            Self::render_styled_text_limited(
+                state,
+                ctx.child(
+                    vello::kurbo::Affine::translate((text_bounds.x0, text_bounds.y0)),
+                    vello::kurbo::Rect::new(0.0, 0.0, text_bounds.width(), text_bounds.height()),
+                ),
+                masked_display,
+                HorizontalAlignment::Leading,
+                env,
+                Some(1),
+            );
+            scene.pop_layer();
+        }
+        let cursor_area = {
+            let rect = selection.focus().geometry(&committed_layout, 1.0);
+            let x0 = text_bounds.x0 + rect.x0;
+            let y0 = text_bounds.y0 + rect.y0;
+            let x1 = text_bounds.x0 + rect.x1.max(rect.x0 + 1.0);
+            let y1 = text_bounds.y0 + rect.y1.max(rect.y0 + 1.0);
+            vello::kurbo::Rect::new(x0, y0, x1, y1)
+        };
+        if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
             let scene = unsafe { ctx.scene() };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -6662,7 +7997,6 @@ impl HydrolysisRenderer {
             );
         }
 
-        let value_binding = secure_field.value;
         let renderer = unsafe { ctx.renderer() };
         renderer.register_cursor_target(
             transformed_rect(ctx.hit_transform, field_rect),
@@ -6679,26 +8013,11 @@ impl HydrolysisRenderer {
         renderer.register_text_input_target(
             transformed_rect(ctx.hit_transform, field_rect),
             transformed_rect(ctx.hit_transform, cursor_area),
+            transformed_rect(ctx.hit_transform, text_bounds),
+            committed_layout,
             TextInputPurpose::Password,
-            move |command| {
-                let mut plain = value_binding.get().expose().to_owned();
-                match command {
-                    TextInputCommand::Insert(text) => {
-                        if !apply_text_insert(&mut plain, text.as_str(), Some(1)) {
-                            return false;
-                        }
-                    }
-                    TextInputCommand::Backspace => {
-                        if !apply_backspace(&mut plain) {
-                            return false;
-                        }
-                    }
-                }
-                let mut next = FormSecure::default();
-                next.set(plain);
-                value_binding.set(next);
-                true
-            },
+            input_model,
+            selection_slot,
         );
     }
 
@@ -8042,12 +9361,13 @@ impl HydrolysisRenderer {
         self.active_scene_layers.clear();
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
+        self.text_selection_cursor = 0;
         #[cfg(feature = "accessibility")]
         {
             self.accessibility_nodes.clear();
             self.accessibility_root_children.clear();
             self.accessibility_actions.clear();
-            self.accessibility_next_node_id = 1;
+            self.accessibility_next_node_id = ACCESSIBILITY_FIRST_NODE_ID;
             self.pending_text_input_accessibility_nodes.clear();
             self.accessibility_suppression_depth = 0;
         }
@@ -8076,6 +9396,12 @@ impl HydrolysisRenderer {
         ) {
             self.set_focused_text_input(None);
         }
+        if matches!(
+            self.active_text_selection_drag,
+            Some(index) if index >= self.text_input_targets.len()
+        ) {
+            self.active_text_selection_drag = None;
+        }
 
         self.animation_controller.finish_rebuild_frame();
         self.scroll_controller.finish_rebuild_frame();
@@ -8086,6 +9412,8 @@ impl HydrolysisRenderer {
         self.navigation_slots.truncate(self.navigation_cursor);
         self.gpu_surface_slots.truncate(self.gpu_surface_cursor);
         self.picker_menu_slots.truncate(self.picker_menu_cursor);
+        self.text_selection_slots
+            .truncate(self.text_selection_cursor);
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
         self.dynamic_nodes
             .retain(|identity, _| active_dynamic_identities.contains(identity));
@@ -8796,7 +10124,7 @@ impl HydrolysisRenderer {
         &mut self,
         x: f32,
         y: f32,
-        _button: PointerButton,
+        button: PointerButton,
         env: &Environment,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
@@ -8804,10 +10132,25 @@ impl HydrolysisRenderer {
         let mut rebuild_requested = false;
         self.active_pointer_drag_target = None;
         self.active_pointer_drag_signature = None;
+        self.active_text_selection_drag = None;
+        let overlay_hit = matches!(
+            self.active_text_context_menu,
+            Some(ActiveTextContextMenu::Overlay { index: _, overlay: _ })
+        );
+        if overlay_hit {
+            let changed = self.handle_text_context_menu_overlay_pointer_down(point);
+            if changed || self.active_text_context_menu.is_none() {
+                return changed;
+            }
+        }
+        if button != PointerButton::Secondary {
+            self.dismiss_active_text_context_menu();
+        }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
             y,
+            button = ?button,
             pointer_targets = self.pointer_targets.len(),
             text_inputs = self.text_input_targets.len(),
             gesture_targets = self.gesture_engine.target_count(),
@@ -8848,6 +10191,7 @@ impl HydrolysisRenderer {
             target: "waterui::hydrolysis::input",
             x,
             y,
+            button = ?button,
             pointer_hits = ?pointer_indices,
             pointer_top_priority = ?top_pointer_priority,
             focused_candidate = ?focused,
@@ -8856,8 +10200,38 @@ impl HydrolysisRenderer {
             "pointer down candidates"
         );
         if focus_wins {
-            let changed = self.set_focused_text_input(focused);
+            let mut changed = self.set_focused_text_input(focused);
+            if let Some(index) = focused {
+                match button {
+                    PointerButton::Primary => {
+                        let click_count = self.next_text_selection_click_count(index, point, at);
+                        changed |= self.apply_text_selection_click_gesture(index, point, click_count);
+                        self.active_text_selection_drag = Some(index);
+                    }
+                    PointerButton::Secondary => {
+                        let keep_selection = {
+                            let target = &self.text_input_targets[index];
+                            let selection_index =
+                                Self::text_selection_index_from_point(target, point);
+                            let slot = target.selection.borrow();
+                            selection_range_contains_index(&target.model, &slot, selection_index)
+                        };
+                        if !keep_selection {
+                            changed |= self.update_text_selection_from_pointer(index, point, false);
+                        }
+                        changed |= self.show_text_context_menu(index, point, env);
+                    }
+                    _ => {}
+                }
+            }
             return rebuild_requested || changed;
+        }
+
+        if button != PointerButton::Primary {
+            if self.set_focused_text_input(focused) {
+                rebuild_requested = true;
+            }
+            return rebuild_requested;
         }
 
         for index in pointer_indices {
@@ -8914,6 +10288,7 @@ impl HydrolysisRenderer {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = Instant::now();
         let mut changed = self.handle_pointer_move(x, y, env);
+        self.active_text_selection_drag = None;
         self.active_pointer_drag_target = None;
         self.active_pointer_drag_signature = None;
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
@@ -8934,9 +10309,15 @@ impl HydrolysisRenderer {
         let at = Instant::now();
         let mut rebuild_requested = false;
         let mut drag_changed = false;
+        if let Some(index) = self.active_text_selection_drag {
+            let text_drag_changed = self.update_text_selection_from_pointer(index, point, true);
+            drag_changed |= text_drag_changed;
+            rebuild_requested |= text_drag_changed;
+        }
         if let Some(action) = self.active_pointer_drag_target.clone() {
-            drag_changed = (action.borrow_mut())(point, env);
-            rebuild_requested |= drag_changed;
+            let pointer_drag_changed = (action.borrow_mut())(point, env);
+            drag_changed |= pointer_drag_changed;
+            rebuild_requested |= pointer_drag_changed;
         }
         let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
         rebuild_requested |= gesture_changed;
@@ -8992,6 +10373,7 @@ impl HydrolysisRenderer {
 
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let mut rebuild_requested = false;
+        self.active_text_selection_drag = None;
         self.active_pointer_drag_target = None;
         self.active_pointer_drag_signature = None;
         let gesture_changed = self
@@ -9131,19 +10513,6 @@ impl HydrolysisRenderer {
         }
     }
 
-    fn dispatch_text_input_command(&mut self, command: TextInputCommand) -> bool {
-        let Some(index) = self.focused_text_input.get() else {
-            return false;
-        };
-        if index >= self.text_input_targets.len() {
-            self.set_focused_text_input(None);
-            return false;
-        }
-
-        let target = &mut self.text_input_targets[index];
-        (target.action.borrow_mut())(command)
-    }
-
     pub fn handle_text_input(&mut self, text: &str) -> bool {
         let preedit_cleared = self.ime_preedit.take().is_some();
         if text.is_empty() {
@@ -9155,9 +10524,7 @@ impl HydrolysisRenderer {
             );
             return preedit_cleared;
         }
-        let changed = self
-            .dispatch_text_input_command(TextInputCommand::Insert(Str::from(text.to_owned())))
-            || preedit_cleared;
+        let changed = self.insert_text_into_focused_target(text) || preedit_cleared;
         if changed {
             self.reset_text_caret_animation(Instant::now());
         }
@@ -9214,7 +10581,11 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
-        if modifiers.control || modifiers.alt || modifiers.super_key {
+        if self.focused_text_input.get().is_none() {
+            return false;
+        }
+
+        if modifiers.alt {
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
                 key = ?key,
@@ -9224,24 +10595,65 @@ impl HydrolysisRenderer {
             return false;
         }
 
-        let changed = match key {
-            KeyCode::Named(value) if value == "Backspace" => {
-                if self.ime_preedit.take().is_some() {
-                    true
-                } else {
-                    self.dispatch_text_input_command(TextInputCommand::Backspace)
+        let command_modifier = modifiers.control || modifiers.super_key;
+        let changed = if command_modifier {
+            match key {
+                KeyCode::Character(value) => match value.to_ascii_lowercase().as_str() {
+                    "a" => self.select_all_in_focused_target(),
+                    "c" => self.copy_selection_in_focused_target(),
+                    "x" => self.cut_selection_in_focused_target(),
+                    "v" => self.paste_clipboard_into_focused_target(),
+                    _ => false,
+                },
+                KeyCode::Named(value) if value == "Escape" => {
+                    let changed = self.active_text_context_menu.is_some();
+                    self.dismiss_active_text_context_menu();
+                    changed
                 }
+                _ => false,
             }
-            KeyCode::Character(text) => {
-                if self.ime_preedit.is_some() || text.is_empty() {
-                    false
-                } else {
-                    self.dispatch_text_input_command(TextInputCommand::Insert(Str::from(
-                        text.clone(),
-                    )))
+        } else {
+            match key {
+                KeyCode::Named(value) if value == "Backspace" => {
+                    if self.ime_preedit.take().is_some() {
+                        true
+                    } else {
+                        self.delete_backward_in_focused_target()
+                    }
                 }
+                KeyCode::Named(value) if value == "Delete" => {
+                    if self.ime_preedit.take().is_some() {
+                        true
+                    } else {
+                        self.delete_forward_in_focused_target()
+                    }
+                }
+                KeyCode::Named(value) if value == "ArrowLeft" => {
+                    self.move_focused_caret_horizontal(true, modifiers.shift)
+                }
+                KeyCode::Named(value) if value == "ArrowRight" => {
+                    self.move_focused_caret_horizontal(false, modifiers.shift)
+                }
+                KeyCode::Named(value) if value == "Home" => {
+                    self.move_focused_caret_to_boundary(false, modifiers.shift)
+                }
+                KeyCode::Named(value) if value == "End" => {
+                    self.move_focused_caret_to_boundary(true, modifiers.shift)
+                }
+                KeyCode::Named(value) if value == "Escape" => {
+                    let changed = self.active_text_context_menu.is_some();
+                    self.dismiss_active_text_context_menu();
+                    changed
+                }
+                KeyCode::Character(text) => {
+                    if self.ime_preedit.is_some() || text.is_empty() {
+                        false
+                    } else {
+                        self.insert_text_into_focused_target(text.as_str())
+                    }
+                }
+                KeyCode::Named(_) | KeyCode::Unidentified => false,
             }
-            KeyCode::Named(_) | KeyCode::Unidentified => false,
         };
         if changed {
             self.reset_text_caret_animation(Instant::now());
@@ -9421,22 +10833,26 @@ impl HydrolysisRenderer {
         self.register_hover_target(bounds, None, Some(Rc::new(RefCell::new(action))));
     }
 
-    fn register_text_input_target<F>(
+    fn register_text_input_target(
         &mut self,
         bounds: vello::kurbo::Rect,
         cursor_area: vello::kurbo::Rect,
+        text_bounds: vello::kurbo::Rect,
+        layout: parley::Layout<[u8; 4]>,
         purpose: TextInputPurpose,
-        action: F,
-    ) where
-        F: 'static + FnMut(TextInputCommand) -> bool,
-    {
+        model: TextInputModel,
+        selection: Rc<RefCell<TextSelectionSlot>>,
+    ) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
-        self.register_text_input_target_action(
+        self.register_text_input_target_data(
             bounds,
             cursor_area,
+            text_bounds,
+            layout,
             purpose,
-            Rc::new(RefCell::new(action)),
+            model,
+            selection,
             self.render_depth,
             None,
             #[cfg(feature = "accessibility")]
@@ -9444,12 +10860,15 @@ impl HydrolysisRenderer {
         );
     }
 
-    fn register_text_input_target_action(
+    fn register_text_input_target_data(
         &mut self,
         bounds: vello::kurbo::Rect,
         cursor_area: vello::kurbo::Rect,
+        text_bounds: vello::kurbo::Rect,
+        layout: parley::Layout<[u8; 4]>,
         purpose: TextInputPurpose,
-        action: TextInputAction,
+        model: TextInputModel,
+        selection: Rc<RefCell<TextSelectionSlot>>,
         depth: usize,
         focus_binding: Option<Binding<bool>>,
         #[cfg(feature = "accessibility")] accessibility_node_id: Option<AccessibilityNodeId>,
@@ -9461,10 +10880,13 @@ impl HydrolysisRenderer {
         self.text_input_targets.push(TextInputTarget {
             bounds,
             cursor_area,
+            text_bounds,
+            layout,
             purpose,
             depth,
             order,
-            action,
+            model,
+            selection,
             focus_binding,
             #[cfg(feature = "accessibility")]
             accessibility_node_id,
@@ -9809,6 +11231,47 @@ fn remap_accessibility_node_references(
     }
     if let Some(node_id) = node.popup_for() {
         node.set_popup_for(remap_accessibility_node_id(node_id, id_map));
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn register_accessibility_text_run_node(
+    renderer: &mut HydrolysisRenderer,
+    value: &str,
+    bounds: vello::kurbo::Rect,
+    env: &Environment,
+) -> Option<AccessibilityNodeId> {
+    let mut text_run = AccessibilityNode::new(AccessibilityNodeRole::TextRun);
+    text_run.set_value(value.to_owned());
+    text_run.set_character_lengths(accessibility_character_lengths(value));
+    renderer.register_accessibility_child_node(text_run, bounds, env, None)
+}
+
+#[cfg(feature = "accessibility")]
+fn accessibility_character_lengths(value: &str) -> Vec<u8> {
+    value
+        .chars()
+        .map(|ch| {
+            u8::try_from(ch.len_utf8())
+                .expect("hydrolysis accessibility text run utf8 length must fit into u8")
+        })
+        .collect()
+}
+
+#[cfg(feature = "accessibility")]
+fn collapsed_accessibility_text_selection(
+    node_id: AccessibilityNodeId,
+    character_index: usize,
+) -> AccessibilityTextSelection {
+    AccessibilityTextSelection {
+        anchor: AccessibilityTextPosition {
+            node: node_id,
+            character_index,
+        },
+        focus: AccessibilityTextPosition {
+            node: node_id,
+            character_index,
+        },
     }
 }
 
