@@ -441,10 +441,8 @@ impl AndroidPlatform {
             .with_env(format!("CC_{target_underscore}"), linker.as_os_str())
             .with_env(format!("CXX_{target_underscore}"), cxx.as_os_str())
             .with_env(format!("AR_{target_underscore}"), ar.as_os_str())
-            // Generic compiler envs for CMake crates that ignore target-scoped variants.
-            .with_env("CC", linker.as_os_str())
-            .with_env("CXX", cxx.as_os_str())
-            .with_env("AR", ar.as_os_str())
+            // Keep generic host compiler variables untouched so host build scripts
+            // continue to use the native compiler during cross-compiles.
             .with_env("ASM", linker.as_os_str())
             // For CMake-based builds (aws-lc-sys, etc.)
             .with_env("ANDROID_NDK", ndk_path.as_os_str())
@@ -473,7 +471,6 @@ impl AndroidPlatform {
         let current_path = std::env::var_os("PATH")
             .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
         let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
-        paths.insert(0, ndk_bin_dir(&ndk_path));
         if let Some(kotlin_bin) = &kotlin_bin_dir {
             paths.insert(0, kotlin_bin.clone());
         }
