@@ -11,6 +11,7 @@ use waterui_graphics::color::Srgb;
 use crate::charts::canvas::{
     draw_scatter, interactive_signal_canvas, point_bounds, point_geometry,
 };
+use crate::composition::ChartComposition;
 use crate::data::DataPoint;
 use crate::interaction::{HitResult, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32};
@@ -21,6 +22,7 @@ pub struct ScatterChart<S: Signal<Output = Vec<DataPoint>>> {
     color: Srgb,
     radius: f32,
     selection: SelectionBindings<DataPoint>,
+    composition: ChartComposition<DataPoint>,
 }
 
 impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
@@ -31,8 +33,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
             color: Srgb::from_hex("#8B5CF6"),
             radius: 4.0,
             selection: SelectionBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(DataPoint);
 
     #[must_use]
     pub fn color(mut self, color: Srgb) -> Self {
@@ -74,6 +79,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart
         let color = self.color;
         let radius = self.radius;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = point_bounds(data);
@@ -83,6 +89,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart
                 draw_scatter(ctx, data, geometry.bounds, color, radius);
             },
             self.selection,
+            self.composition,
         )
     }
 }

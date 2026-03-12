@@ -7,6 +7,7 @@ use waterui_graphics::color::Srgb;
 use crate::charts::canvas::{
     candlestick_bounds, candlestick_geometry, draw_candlestick, interactive_signal_canvas,
 };
+use crate::composition::ChartComposition;
 use crate::data::Candle;
 use crate::interaction::{HitResult, SelectionBindings};
 
@@ -16,6 +17,7 @@ pub struct CandlestickChart<S: Signal<Output = Vec<Candle>>> {
     bullish_color: Srgb,
     bearish_color: Srgb,
     selection: SelectionBindings<Candle>,
+    composition: ChartComposition<Candle>,
 }
 
 impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
@@ -26,8 +28,11 @@ impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
             bullish_color: Srgb::from_hex("#22C55E"),
             bearish_color: Srgb::from_hex("#EF4444"),
             selection: SelectionBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(Candle);
 
     #[must_use]
     pub fn bullish_color(mut self, color: Srgb) -> Self {
@@ -59,6 +64,7 @@ impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChar
         let bullish_color = self.bullish_color;
         let bearish_color = self.bearish_color;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = candlestick_bounds(data);
@@ -68,6 +74,7 @@ impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChar
                 draw_candlestick(ctx, data, geometry.bounds, bullish_color, bearish_color);
             },
             self.selection,
+            self.composition,
         )
     }
 }
