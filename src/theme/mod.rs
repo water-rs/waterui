@@ -569,6 +569,12 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
     env.insert(ColorSlotValue::<T>::new(signal));
 }
 
+/// Returns an installed color signal for the requested slot when one exists.
+#[must_use]
+pub fn installed_color_signal<T: 'static>(env: &Environment) -> Option<Computed<ResolvedColor>> {
+    env.get::<ColorSlotValue<T>>().map(|value| value.signal.clone())
+}
+
 /// Installs an explicit font signal for a specific slot.
 ///
 /// This is primarily used by native backends (via FFI) to inject platform-specific

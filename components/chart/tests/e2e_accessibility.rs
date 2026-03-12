@@ -1,7 +1,6 @@
 mod support;
 
-use waterui::component::text;
-use waterui::{Binding, SignalExt as _, View};
+use waterui::{Binding, View};
 use waterui_chart::{
     AreaChart, AreaDatum, BarChart, BubbleChart, BubblePoint, CandlestickChart, Candle,
     DataPoint, DepthChart, DepthDatum, DepthSide, HitResult, LineChart, PieChart, ScatterChart,
@@ -12,7 +11,7 @@ use support::{
     SNAPSHOT_SUITE, area_data, area_hit_location, assert_chart_accessibility_ready,
     bar_hit_location, bubble_hit_location, bubble_series, candle_series, candlestick_hit_location,
     depth_data, depth_hit_location, mount_view, pie_data, pie_hit_location, pie_slice_datum,
-    point_hit_location, point_series, readout_text, semantic_chart_shell, snapshot_suite,
+    point_hit_location, point_series, readout_view, semantic_chart_shell, snapshot_suite,
 };
 
 fn assert_chart_semantic_flow<T, V, F>(
@@ -35,14 +34,8 @@ fn assert_chart_semantic_flow<T, V, F>(
 
     let mut app = mount_view(move || {
         let chart = build_chart(focused_for_view.clone(), selected_for_view.clone());
-        let focused_readout = text(focused_for_view
-            .clone()
-            .map(move |hit| readout_text("focused", hit, formatter)))
-        .body();
-        let selected_readout = text(selected_for_view
-            .clone()
-            .map(move |hit| readout_text("selected", hit, formatter)))
-        .body();
+        let focused_readout = readout_view("focused", focused_for_view.clone(), formatter);
+        let selected_readout = readout_view("selected", selected_for_view.clone(), formatter);
         semantic_chart_shell(name, chart, focused_readout, selected_readout)
     });
 

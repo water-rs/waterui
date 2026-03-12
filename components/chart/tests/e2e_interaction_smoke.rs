@@ -1,12 +1,11 @@
 mod support;
 
-use waterui::component::text;
-use waterui::{Binding, SignalExt as _};
+use waterui::Binding;
 use waterui_chart::{HitResult, LineChart, PieChart};
 
 use support::{
     assert_chart_accessibility_ready, assert_label_exists, chart_label, mount_view, pie_data,
-    pie_hit_location, pie_slice_datum, point_hit_location, point_series, readout_text,
+    pie_hit_location, pie_slice_datum, point_hit_location, point_series, readout_view,
     semantic_chart_shell,
 };
 
@@ -33,18 +32,26 @@ fn line_chart_drag_between_updates_selection_smoke() {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
             .focused(&focused_for_view)
             .selected(&selected_for_view);
-        let focused_readout = text(focused_for_view.clone().map(|hit| {
-            readout_text("focused", hit, |hit: &HitResult<waterui_chart::DataPoint>| {
-                format!("series={} index={} x={:.2} y={:.2}", hit.series, hit.index, hit.value.x, hit.value.y)
-            })
-        }))
-        .body();
-        let selected_readout = text(selected_for_view.clone().map(|hit| {
-            readout_text("selected", hit, |hit: &HitResult<waterui_chart::DataPoint>| {
-                format!("series={} index={} x={:.2} y={:.2}", hit.series, hit.index, hit.value.x, hit.value.y)
-            })
-        }))
-        .body();
+        let focused_readout = readout_view(
+            "focused",
+            focused_for_view.clone(),
+            |hit: &HitResult<waterui_chart::DataPoint>| {
+                format!(
+                    "series={} index={} x={:.2} y={:.2}",
+                    hit.series, hit.index, hit.value.x, hit.value.y
+                )
+            },
+        );
+        let selected_readout = readout_view(
+            "selected",
+            selected_for_view.clone(),
+            |hit: &HitResult<waterui_chart::DataPoint>| {
+                format!(
+                    "series={} index={} x={:.2} y={:.2}",
+                    hit.series, hit.index, hit.value.x, hit.value.y
+                )
+            },
+        );
         semantic_chart_shell("line", chart, focused_readout, selected_readout)
     });
 
@@ -88,18 +95,20 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
         let chart = PieChart::new(Binding::container(data_for_view.clone()))
             .focused(&focused_for_view)
             .selected(&selected_for_view);
-        let focused_readout = text(focused_for_view.clone().map(|hit| {
-            readout_text("focused", hit, |hit: &HitResult<waterui_chart::SliceDatum>| {
+        let focused_readout = readout_view(
+            "focused",
+            focused_for_view.clone(),
+            |hit: &HitResult<waterui_chart::SliceDatum>| {
                 format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
-            })
-        }))
-        .body();
-        let selected_readout = text(selected_for_view.clone().map(|hit| {
-            readout_text("selected", hit, |hit: &HitResult<waterui_chart::SliceDatum>| {
+            },
+        );
+        let selected_readout = readout_view(
+            "selected",
+            selected_for_view.clone(),
+            |hit: &HitResult<waterui_chart::SliceDatum>| {
                 format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
-            })
-        }))
-        .body();
+            },
+        );
         semantic_chart_shell("pie", chart, focused_readout, selected_readout)
     });
 
