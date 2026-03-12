@@ -20,25 +20,44 @@ use waterui_text::{
 use crate::{AnimationExt, SignalExt, ViewExt};
 
 /// Copies text to the system clipboard.
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
 fn copy_to_clipboard(text: &str) {
-    #[cfg(not(target_os = "android"))]
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => {
-            if let Err(e) = clipboard.set_text(text) {
-                tracing::error!("Failed to copy to clipboard: {}", e);
+            if let Err(error) = clipboard.set_text(text) {
+                tracing::error!(%error, "Failed to copy to clipboard");
             }
         }
-        Err(e) => {
-            tracing::error!("Failed to access clipboard: {}", e);
+        Err(error) => {
+            tracing::error!(%error, "Failed to access clipboard");
         }
     }
+}
 
-    #[cfg(target_os = "android")]
-    {
-        if let Err(e) = android_clipboard::set_text(text.to_string()) {
-            tracing::error!("Failed to copy to clipboard: {}", e);
-        }
+/// Copies text to the Android clipboard.
+#[cfg(target_os = "android")]
+fn copy_to_clipboard(text: &str) {
+    if let Err(error) = android_clipboard::set_text(text.to_string()) {
+        tracing::error!(%error, "Failed to copy to clipboard");
     }
+}
+
+/// Copies text to the browser clipboard.
+#[cfg(target_arch = "wasm32")]
+fn copy_to_clipboard(text: &str) {
+    let clipboard = web_sys::window()
+        .expect("browser window is unavailable for clipboard access")
+        .navigator()
+        .clipboard();
+    let text = text.to_string();
+
+    spawn_local(async move {
+        let promise = clipboard.write_text(&text);
+        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            tracing::error!(?error, "Failed to write browser clipboard text");
+        }
+    })
+    .detach();
 }
 
 /// View that renders syntax-highlighted code snippets.

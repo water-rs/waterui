@@ -5,6 +5,7 @@ use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Blue;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
+#[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_str::Str;
 use waterui_text::{
@@ -151,9 +152,7 @@ impl View for RichTextElement {
         match self {
             Self::Text(s) => text(s).anyview(),
             Self::Link { label, url } => crate::component::link::link(text(label), url).anyview(),
-            Self::Image { src, alt: _ } => {
-                Url::parse(&*src).map_or_else(|| ().anyview(), |url| media_photo(url).anyview())
-            }
+            Self::Image { src, alt: _ } => render_image(src),
             Self::Table {
                 headers,
                 rows,
@@ -181,6 +180,20 @@ impl View for RichTextElement {
             }
             Self::Divider => Divider.anyview(),
         }
+    }
+}
+
+fn render_image(src: Str) -> AnyView {
+    #[cfg(feature = "media")]
+    {
+        let url = Url::parse(&*src)
+            .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
+        return media_photo(url).anyview();
+    }
+
+    #[cfg(not(feature = "media"))]
+    {
+        panic!("RichText image rendering requires the `media` feature: {src}");
     }
 }
 
