@@ -53,6 +53,7 @@ dirs = "6"                    # Platform-specific directories (cache, config, et
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.10"                 # SHA256 hashing
 zip = "7.2"                   # ZIP archive extraction
+roxmltree = "0.20"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.14"
 resvg = "0.45.1"
