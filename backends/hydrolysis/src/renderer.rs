@@ -48,6 +48,7 @@ use waterui::navigation::{
     NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
+use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_backend_core::ViewDispatcher;
@@ -6856,6 +6857,12 @@ impl HydrolysisRenderer {
         }
     }
 
+    fn default_text_brush(env: &Environment) -> [u8; 4] {
+        let color = theme::installed_color_signal::<theme::color::Foreground>(env)
+            .map_or_else(|| Color::srgb(0, 0, 0).resolve(env).get(), |signal| signal.get());
+        resolved_color_to_rgba8(color)
+    }
+
     fn build_text_layout(
         state: &mut HydroState,
         styled: StyledStr,
@@ -6878,7 +6885,7 @@ impl HydrolysisRenderer {
 
         let mut family_storage = Vec::new();
         let default_font = waterui_text::font::Font::default().resolve(env).get();
-        let default_brush = resolved_color_to_rgba8(Color::srgb(0, 0, 0).resolve(env).get());
+        let default_brush = Self::default_text_brush(env);
         let mut builder = state
             .layout_cx
             .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
