@@ -13,18 +13,18 @@
 //! # Example
 //!
 //! ```ignore
-//! use waterui::prelude::*;
+//! use waterui::Binding;
+//! use waterui::graphics::color::Srgb;
 //! use waterui_chart::{BarChart, DataPoint};
 //!
-//! let data = binding(vec![
-//!     DataPoint { x: 0.0, y: 100.0 },
-//!     DataPoint { x: 1.0, y: 150.0 },
-//!     DataPoint { x: 2.0, y: 80.0 },
+//! let data = Binding::container(vec![
+//!     DataPoint::new(0.0, 100.0),
+//!     DataPoint::new(1.0, 150.0),
+//!     DataPoint::new(2.0, 80.0),
 //! ]);
 //!
-//! BarChart::new(&data)
-//!     .color(Color::blue())
-//!     .entry_animation(Animation::spring(200.0, 15.0))
+//! BarChart::new(data)
+//!     .color(Srgb::from_hex("#3B82F6"))
 //! ```
 
 #![allow(clippy::multiple_crate_versions)]
@@ -35,9 +35,11 @@ pub mod animation;
 pub mod axes;
 pub mod axis;
 pub mod charts;
+mod composition;
 pub mod data;
 pub mod interaction;
 pub mod legend;
+mod local_state;
 pub mod params;
 pub mod tooltip;
 
@@ -107,6 +109,7 @@ pub use charts::scatter::ScatterChart;
 // Re-export axis types
 pub use axes::{ChartAxes, ChartAxesReactive, ChartExt};
 pub use axis::{AxisConfig, Tick, TickFormat};
+pub use composition::ChartProxy;
 
 // Re-export legend types
 pub use legend::{Legend, LegendItem, LegendOrientation, LegendPosition};

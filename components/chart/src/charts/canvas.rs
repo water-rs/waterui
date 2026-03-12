@@ -7,10 +7,10 @@ use core::f32::consts::{FRAC_PI_2, TAU};
 use core::time::Duration;
 use std::time::Instant;
 
-use nami::{Binding, Signal, SignalExt as _};
+use nami::{Signal, SignalExt as _};
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
-    Metadata,
+    Environment, Metadata,
     event::{Event, HoverEvent, OnEvent},
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, MagnificationEvent,
@@ -22,6 +22,7 @@ use waterui_graphics::color::Srgb;
 
 use crate::{
     animation::{AnimationConfig, ChartAnimator},
+    composition::ChartComposition,
     data::{
         AreaData, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataBounds,
         DataPoint, DepthData, GaugeData, HeatmapData, RadarData,
@@ -30,6 +31,7 @@ use crate::{
         AreaDatum, ChartViewport, DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum,
         RegionDatum, SelectionBindings, SliceDatum, ZoomPanState,
     },
+    local_state::{local_binding, local_shared},
 };
 
 const PLOT_PADDING_RATIO: f32 = 0.1;
@@ -146,22 +148,23 @@ impl<T> HitTarget<T> {
 
 pub(crate) trait HitGeometry<T: Clone>: Clone + 'static {
     fn hit_test(&self, point: Point) -> Option<HitResult<T>>;
+    fn viewport(&self) -> ChartViewport;
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct HitTargets<T> {
+    viewport: ChartViewport,
     targets: Vec<HitTarget<T>>,
 }
 
-impl<T> Default for HitTargets<T> {
-    fn default() -> Self {
+impl<T> HitTargets<T> {
+    fn new(viewport: ChartViewport) -> Self {
         Self {
+            viewport,
             targets: Vec::new(),
         }
     }
-}
 
-impl<T> HitTargets<T> {
     fn push_circle(&mut self, result: HitResult<T>, center: Point, radius: f32) {
         self.targets.push(HitTarget {
             result,
@@ -224,23 +227,36 @@ impl<T: Clone + 'static> HitGeometry<T> for HitTargets<T> {
         }
         best.map(|(_, target)| target.result.clone())
     }
+
+    fn viewport(&self) -> ChartViewport {
+        self.viewport
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CartesianGeometry<T> {
     pub bounds: DataBounds,
+    viewport: ChartViewport,
     targets: HitTargets<T>,
 }
 
 impl<T> CartesianGeometry<T> {
-    fn new(bounds: DataBounds, targets: HitTargets<T>) -> Self {
-        Self { bounds, targets }
+    fn new(bounds: DataBounds, viewport: ChartViewport, targets: HitTargets<T>) -> Self {
+        Self {
+            bounds,
+            viewport,
+            targets,
+        }
     }
 }
 
 impl<T: Clone + 'static> HitGeometry<T> for CartesianGeometry<T> {
     fn hit_test(&self, point: Point) -> Option<HitResult<T>> {
         self.targets.hit_test(point)
+    }
+
+    fn viewport(&self) -> ChartViewport {
+        self.viewport
     }
 }
 
@@ -343,10 +359,12 @@ where
 }
 
 pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
+    env: &Environment,
     signal: S,
     build_geometry: B,
     mut draw: F,
-    selection: SelectionBindings<T>,
+    mut selection: SelectionBindings<T>,
+    composition: ChartComposition<T>,
 ) -> impl waterui_core::View
 where
     S: Signal<Output = D> + 'static,
@@ -357,14 +375,33 @@ where
     B: Fn(&DrawingContext<'_>, &D) -> G + 'static,
     F: FnMut(&mut DrawingContext<'_>, &D, &G) + 'static,
 {
-    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
-    let geometry = Rc::new(RefCell::new(None::<G>));
+    if !composition.is_empty() {
+        selection = selection.activate_proxy();
+    }
+    if selection.is_active() {
+        selection = selection.persist_internal(env);
+    }
+
+    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
+    let geometry = local_shared(env, || RefCell::new(None::<G>));
+    let chart_frame = local_binding(env, ChartViewport::default);
+    let plot_area_frame = local_binding(env, ChartViewport::default);
     let canvas = {
         let transition = Rc::clone(&transition);
         let geometry = Rc::clone(&geometry);
+        let chart_frame = chart_frame.clone();
+        let plot_area_frame = plot_area_frame.clone();
         Canvas::with_signal(signal, move |ctx, data| {
             let built_geometry = build_geometry(ctx, &data);
             *geometry.borrow_mut() = Some(built_geometry.clone());
+            let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
+            if chart_frame.get() != current_chart_frame {
+                chart_frame.set(current_chart_frame);
+            }
+            let current_plot_area = built_geometry.viewport();
+            if plot_area_frame.get() != current_plot_area {
+                plot_area_frame.set(current_plot_area);
+            }
             let (progress, animating) = {
                 let mut transition = transition.borrow_mut();
                 let progress = transition.progress_for(&data);
@@ -441,9 +478,9 @@ where
                 if !selection.is_active() {
                     return;
                 }
-                let hover = env.get::<HoverEvent>().expect(
-                    "interactive_signal_canvas: HoverEvent missing from event environment",
-                );
+                let hover = env
+                    .get::<HoverEvent>()
+                    .expect("interactive_signal_canvas: HoverEvent missing from event environment");
                 let hit = geometry
                     .borrow()
                     .as_ref()
@@ -452,14 +489,24 @@ where
             }
         }),
     );
-    Metadata::new(
+    let canvas = Metadata::new(
         canvas,
-        OnEvent::new(Event::HoverExit, move || selection.clear_focus()),
+        OnEvent::new(Event::HoverExit, {
+            let selection = selection.clone();
+            move || selection.clear_focus()
+        }),
+    );
+    composition.apply(
+        canvas,
+        chart_frame.computed(),
+        plot_area_frame.computed(),
+        &selection,
     )
 }
 
 #[allow(dead_code)]
 pub(crate) fn interactive_cartesian_canvas<S, D, B, F>(
+    env: &Environment,
     data: S,
     bounds_of: B,
     mut draw: F,
@@ -471,9 +518,9 @@ where
     B: Fn(&D) -> DataBounds + 'static,
     F: FnMut(&mut DrawingContext<'_>, &D, DataBounds) + 'static,
 {
-    let zoom_pan = Binding::container(ZoomPanState::new());
-    let viewport = Rc::new(RefCell::new(ChartViewport::default()));
-    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
+    let zoom_pan = local_binding(env, ZoomPanState::new);
+    let viewport = local_shared(env, || RefCell::new(ChartViewport::default()));
+    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
     let canvas = {
         let viewport_for_draw = Rc::clone(&viewport);
         let transition_for_draw = Rc::clone(&transition);
@@ -638,6 +685,11 @@ fn plot_rect(ctx: &DrawingContext<'_>, padding_ratio: f32) -> Rect {
 }
 
 #[inline]
+fn chart_viewport_from_rect(rect: Rect) -> ChartViewport {
+    ChartViewport::new(rect.min_x(), rect.min_y(), rect.width(), rect.height())
+}
+
+#[inline]
 fn map_xy(plot: Rect, bounds: DataBounds, x: f32, y: f32) -> Point {
     let nx = (x - bounds.min_x) / (bounds.max_x - bounds.min_x);
     let ny = (y - bounds.min_y) / (bounds.max_y - bounds.min_y);
@@ -654,12 +706,12 @@ pub(crate) fn point_geometry(
     radius: f32,
 ) -> CartesianGeometry<DataPoint> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let anchor = map_xy(plot, bounds, point.x, point.y);
         targets.push_circle(HitResult::new(0, index, *point, anchor), anchor, radius);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn bar_geometry(
@@ -674,7 +726,7 @@ pub(crate) fn bar_geometry(
         (plot.width() / data.len() as f32 * 0.7).max(1.0)
     };
     let baseline_y = map_xy(plot, bounds, bounds.min_x, 0.0).y;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let center = map_xy(plot, bounds, point.x, point.y);
         let top = center.y.min(baseline_y);
@@ -686,7 +738,7 @@ pub(crate) fn bar_geometry(
         let anchor = Point::new(center.x, top);
         targets.push_rect(HitResult::new(0, index, *point, anchor), rect);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn bubble_geometry(
@@ -704,7 +756,7 @@ pub(crate) fn bubble_geometry(
         max_size = max_size.max(point.size);
     }
     let size_span = (max_size - min_size).max(1.0);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let anchor = map_xy(plot, bounds, point.x, point.y);
         let t = (point.size - min_size) / size_span;
@@ -715,7 +767,7 @@ pub(crate) fn bubble_geometry(
             radius.max(6.0),
         );
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn candlestick_geometry(
@@ -729,7 +781,7 @@ pub(crate) fn candlestick_geometry(
     } else {
         (plot.width() / data.len() as f32 * 0.65).max(1.0)
     };
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, candle) in data.iter().enumerate() {
         let x = map_xy(plot, bounds, candle.timestamp, candle.close).x;
         let high = map_xy(plot, bounds, candle.timestamp, candle.high).y;
@@ -748,7 +800,7 @@ pub(crate) fn candlestick_geometry(
         let anchor = Point::new(x, (top + bottom) * 0.5);
         targets.push_rect(HitResult::new(0, index, *candle, anchor), rect);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn depth_geometry(
@@ -757,7 +809,7 @@ pub(crate) fn depth_geometry(
     bounds: DataBounds,
 ) -> CartesianGeometry<DepthDatum> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, level) in data.bids.iter().enumerate() {
         let anchor = map_xy(plot, bounds, level.price, level.cumulative_volume);
         let value = DepthDatum::new(DepthSide::Bid, level.price, level.cumulative_volume);
@@ -768,7 +820,7 @@ pub(crate) fn depth_geometry(
         let value = DepthDatum::new(DepthSide::Ask, level.price, level.cumulative_volume);
         targets.push_circle(HitResult::new(1, index, value, anchor), anchor, 10.0);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn area_geometry(
@@ -779,7 +831,7 @@ pub(crate) fn area_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let point_count = data.x_values.len();
     let mut cumulative = vec![0.0f32; point_count];
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (series_index, series) in data.series.iter().enumerate() {
         if series.values.is_empty() {
             continue;
@@ -802,7 +854,7 @@ pub(crate) fn area_geometry(
             }
         }
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn pie_geometry(
@@ -817,7 +869,7 @@ pub(crate) fn pie_geometry(
     let inner_r = outer_r * inner_radius;
     let mid_r = (inner_r + outer_r) * 0.5;
     let mut angle = -FRAC_PI_2;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if total <= 0.0 {
         return targets;
     }
@@ -864,7 +916,7 @@ pub(crate) fn gauge_geometry(
         center.x + mid.cos() * ((inner_r + outer_r) * 0.5),
         center.y + mid.sin() * ((inner_r + outer_r) * 0.5),
     );
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(area));
     let datum = SliceDatum::new(0, data.value, start_angle, value_end);
     targets.push_sector(
         HitResult::new(0, 0, datum, anchor),
@@ -883,7 +935,7 @@ pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitT
     let radius = plot.width().min(plot.height()) * 0.45;
     let axis_count = data.axis_count as usize;
     let max_value = data.max_value.max(1.0);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (series_index, series) in data.series.iter().enumerate() {
         if series.values.len() < axis_count {
             continue;
@@ -914,7 +966,7 @@ pub(crate) fn heatmap_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let cell_w = plot.width() / data.cols.max(1) as f32;
     let cell_h = plot.height() / data.rows.max(1) as f32;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for row in 0..data.rows as usize {
         for col in 0..data.cols as usize {
             let idx = row * data.cols as usize + col;
@@ -939,7 +991,7 @@ pub(crate) fn contour_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let cell_w = plot.width() / (data.cols.saturating_sub(1)).max(1) as f32;
     let cell_h = plot.height() / (data.rows.saturating_sub(1)).max(1) as f32;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if data.rows < 2 || data.cols < 2 {
         return targets;
     }
@@ -978,7 +1030,7 @@ pub(crate) fn choropleth_geometry(
     let content_h = height * scale;
     let offset_x = plot.min_x() + (plot.width() - content_w) * 0.5;
     let offset_y = plot.min_y() + (plot.height() - content_h) * 0.5;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, polygon) in data.polygons.iter().enumerate() {
         if polygon.vertices.len() < 3 {
             continue;
