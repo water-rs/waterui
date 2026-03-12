@@ -33,6 +33,41 @@ pub struct GpuParticle {
 /// GPU uniforms for compute and render shaders.
 /// Uses encase for automatic WGSL-compatible alignment.
 #[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct InteractionUniforms {
+    /// Whether particle-particle interaction is active.
+    pub enabled: u32,
+    /// Uniform grid width in cells.
+    pub grid_width: u32,
+    /// Uniform grid height in cells.
+    pub grid_height: u32,
+    /// Additional interaction radius beyond particle size.
+    pub radius: f32,
+    /// Velocity response strength.
+    pub strength: f32,
+}
+
+impl InteractionUniforms {
+    #[must_use]
+    pub fn new(
+        enabled: bool,
+        grid_width: u32,
+        grid_height: u32,
+        radius: f32,
+        strength: f32,
+    ) -> Self {
+        Self {
+            enabled: u32::from(enabled),
+            grid_width,
+            grid_height,
+            radius,
+            strength,
+        }
+    }
+}
+
+/// GPU uniforms for compute and render shaders.
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct CollisionUniforms {
     /// Whether collision response is active.
     pub enabled: u32,
@@ -47,12 +82,10 @@ pub struct CollisionUniforms {
 }
 
 /// GPU representation of a circular obstacle collider.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct GpuCircleObstacle {
     pub center: glam::Vec2,
     pub radius: f32,
-    _pad0: f32,
 }
 
 impl CollisionUniforms {
@@ -77,11 +110,7 @@ impl CollisionUniforms {
 impl GpuCircleObstacle {
     #[must_use]
     pub const fn new(center: glam::Vec2, radius: f32) -> Self {
-        Self {
-            center,
-            radius,
-            _pad0: 0.0,
-        }
+        Self { center, radius }
     }
 }
 
@@ -116,6 +145,8 @@ pub struct Uniforms {
     pub stretch_factor: f32,
     /// Edge softness (0.0=hard, 1.0=soft).
     pub softness: f32,
+    /// Particle-particle interaction configuration.
+    pub interaction: InteractionUniforms,
     /// Collision configuration.
     pub collision: CollisionUniforms,
     /// Life range (min, max).
@@ -156,6 +187,7 @@ impl Default for Uniforms {
             drag: 1.0,
             stretch_factor: 0.0,
             softness: 0.5,
+            interaction: InteractionUniforms::default(),
             collision: CollisionUniforms::default(),
             life_range: glam::Vec2::new(1.0, 1.0),
             speed_range: glam::Vec2::new(1.0, 1.0),

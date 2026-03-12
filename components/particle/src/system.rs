@@ -165,6 +165,15 @@ impl ParticleSystem {
         self
     }
 
+    /// Enable pure-GPU particle-particle interaction using a neighbor grid.
+    #[must_use]
+    pub fn collide_with_particles(mut self, radius: f32, strength: f32) -> Self {
+        self.config.interaction.enabled = true;
+        self.config.interaction.radius = radius;
+        self.config.interaction.strength = strength;
+        self
+    }
+
     /// Set additive blending mode.
     #[must_use]
     pub fn additive(mut self) -> Self {
@@ -241,6 +250,9 @@ impl ParticleSystem {
                 .into_iter()
                 .map(|obstacle| [obstacle.center[0], obstacle.center[1], obstacle.radius])
                 .collect(),
+            interaction_enabled: self.config.interaction.enabled,
+            interaction_radius: self.config.interaction.radius,
+            interaction_strength: self.config.interaction.strength,
             life_range: [
                 self.config.particle.life.start,
                 self.config.particle.life.end,
