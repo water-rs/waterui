@@ -41,6 +41,8 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
+    /// Web.
+    Web,
 }
 
 /// Target backend for packaging.
@@ -237,17 +239,19 @@ pub async fn run(args: Args) -> Result<()> {
             success!("Built GTK4 app");
         }
         TargetBackend::Hydrolysis => {
-            let spinner = shell::spinner("Building hydrolysis app...");
-            display_output(build_hydrolysis(
-                &project,
-                lib_platform(args.platform),
-                build_options,
-            ))
-            .await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
+            if args.platform != TargetPlatform::Web {
+                let spinner = shell::spinner("Building hydrolysis app...");
+                display_output(build_hydrolysis(
+                    &project,
+                    hydrolysis_platform(args.platform),
+                    build_options,
+                ))
+                .await?;
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                success!("Built hydrolysis app");
             }
-            success!("Built hydrolysis app");
         }
     }
 
@@ -276,7 +280,7 @@ pub async fn run(args: Args) -> Result<()> {
         TargetBackend::Hydrolysis => {
             display_output(package_hydrolysis(
                 &project,
-                lib_platform(args.platform),
+                hydrolysis_platform(args.platform),
                 package_options,
             ))
             .await?
@@ -299,6 +303,7 @@ fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<T
         (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
         (TargetPlatform::Linux, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) => true,
         (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
+        (TargetPlatform::Web, TargetBackend::Hydrolysis) => true,
         _ => false,
     };
 
@@ -310,7 +315,8 @@ fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<T
              - Android: android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis",
+             - Windows: hydrolysis\n  \
+             - Web: hydrolysis",
             backend,
             platform
         );
@@ -346,7 +352,10 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Ios => AppleSdk::Ios,
                 TargetPlatform::IosSimulator => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
+                TargetPlatform::Android
+                | TargetPlatform::Linux
+                | TargetPlatform::Windows
+                | TargetPlatform::Web => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -368,10 +377,15 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Macos
                 && platform != TargetPlatform::Linux
                 && platform != TargetPlatform::Windows
+                && platform != TargetPlatform::Web
             {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_hydrolysis().await?;
+            if platform == TargetPlatform::Web {
+                toolchain_checks::check_web().await?;
+            } else {
+                toolchain_checks::check_hydrolysis().await?;
+            }
         }
     }
     Ok(())
@@ -381,6 +395,10 @@ fn validate_desktop_backend_platform_on_host(
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<()> {
+    if platform == TargetPlatform::Web {
+        return Ok(());
+    }
+
     match backend {
         TargetBackend::Gtk4 => {
             #[cfg(target_os = "linux")]
@@ -432,6 +450,19 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
+        TargetPlatform::Web => panic!("web is not a native lib target"),
+    }
+}
+
+const fn hydrolysis_platform(platform: TargetPlatform) -> LibTargetPlatform {
+    match platform {
+        TargetPlatform::Macos => LibTargetPlatform::MacOS,
+        TargetPlatform::Linux => LibTargetPlatform::Linux,
+        TargetPlatform::Windows => LibTargetPlatform::Windows,
+        TargetPlatform::Web => LibTargetPlatform::Web,
+        TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Android => {
+            panic!("unsupported hydrolysis platform")
+        }
     }
 }
 
@@ -443,6 +474,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
+        TargetPlatform::Web => "Web",
     }
 }
 
@@ -489,5 +521,10 @@ mod tests {
             TargetBackend::Hydrolysis
         );
         assert!(resolve_backend(TargetPlatform::Windows, TargetBackend::Gtk4).is_err());
+        assert_eq!(
+            resolve_backend(TargetPlatform::Web, TargetBackend::Hydrolysis)
+                .expect("web backend"),
+            TargetBackend::Hydrolysis
+        );
     }
 }

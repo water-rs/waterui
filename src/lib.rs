@@ -47,10 +47,15 @@ pub mod prelude {
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
         accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
-        filter, form, fullscreen, gesture, gradient, id, layout, locale, media, metadata,
-        navigation, reactive, regional, shape, signal, style, task, text, video, webview, widget,
-        window,
+        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, navigation,
+        reactive, regional, shape, signal, style, task, text, widget, window,
     };
+    #[cfg(feature = "media")]
+    pub use super::media;
+    #[cfg(feature = "video")]
+    pub use super::video;
+    #[cfg(feature = "webview")]
+    pub use super::webview;
 
     pub use crate::include_markdown;
 
@@ -82,6 +87,7 @@ pub mod prelude {
     pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{Card, Divider, card, suspense};
+    #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
         FlowTablePolicy, flow_markdown,
@@ -97,9 +103,10 @@ pub mod prelude {
     pub use super::background::{Background, Material, Shader};
 
     // Asset types
+    #[cfg(feature = "assets")]
     pub use super::{
         AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
-        LargeFile, LargeFileAsset, VideoAsset, asset,
+        LargeFile, LargeFileAsset, VideoAsset, asset, assets, include_bundle,
     };
 
     // Re-export macros
@@ -119,26 +126,32 @@ pub use waterui_graphics::{
     RadialGradientGenerator, StripeGenerator,
 };
 
+#[cfg(feature = "assets")]
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
 #[doc(inline)]
 pub use waterui_macros::*;
+#[cfg(feature = "media")]
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_svg as svg;
 pub use waterui_text as text;
+#[cfg(feature = "video")]
 pub use waterui_video as video;
+#[cfg(feature = "webview")]
 pub use waterui_webview as webview;
 
 // Asset types re-exported for convenience
 #[doc(inline)]
+#[cfg(feature = "assets")]
 pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
     LargeFile, LargeFileAsset, VideoAsset,
 };
 #[doc(inline)]
+#[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
 pub use waterui_media::Url;
 pub mod metadata;
