@@ -331,6 +331,10 @@ pub struct WuiGpuSurfaceState {
     pointer_state: PointerState,
     /// Current gesture state (pinch, pan, double-tap)
     gesture_state: GestureState,
+    /// Animation clock start for frame timing.
+    start_time: Instant,
+    /// Timestamp of the previous render.
+    last_frame_time: Instant,
     /// Number of render invocations handled by this state.
     render_invocations: u64,
     /// Stable id for diagnostics output.
@@ -339,6 +343,16 @@ pub struct WuiGpuSurfaceState {
     env: *mut crate::WuiEnv,
     /// Redraw handle for external redraw triggers.
     redraw_handle: RedrawHandle,
+}
+
+fn advance_frame_timing(state: &mut WuiGpuSurfaceState) -> (Duration, Duration) {
+    let now = Instant::now();
+    let elapsed = now.duration_since(state.start_time);
+    let delta = now
+        .duration_since(state.last_frame_time)
+        .min(Duration::from_millis(100));
+    state.last_frame_time = now;
+    (elapsed, delta)
 }
 
 /// Result returned by a GpuSurface render invocation.
@@ -536,6 +550,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
         // 4. Create State
         // Store Arc<Device> and Arc<Queue> which are cheap to clone
+        let now = Instant::now();
         let state = Box::new(WuiGpuSurfaceState {
             adapter: adapter.clone(),
             device,
@@ -550,6 +565,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             current_height: height,
             pointer_state: PointerState::default(),
             gesture_state: GestureState::default(),
+            start_time: now,
+            last_frame_time: now - Duration::from_secs_f32(1.0 / 60.0),
             render_invocations: 0,
             diagnostic_id: gpu_surface_diagnostics().on_surface_init(
                 width,
@@ -701,6 +718,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             ..Default::default()
         });
 
+        let (elapsed, delta) = advance_frame_timing(state);
+
         // Create frame data
         let mut frame = GpuFrame::new(
             &state.device,
@@ -712,6 +731,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             height,
             state.pointer_state,
             state.gesture_state,
+            elapsed,
+            delta,
         );
 
         // Call user's render callback
@@ -842,6 +863,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             format: Some(target_format),
             ..Default::default()
         });
+        let (elapsed, delta) = advance_frame_timing(state);
 
         let mut frame = GpuFrame::new(
             &state.device,
@@ -853,6 +875,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             height,
             state.pointer_state,
             state.gesture_state,
+            elapsed,
+            delta,
         );
 
         state.gpu_surface.render(&mut frame);
@@ -1018,6 +1042,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             format: Some(target_format),
             ..Default::default()
         });
+        let (elapsed, delta) = advance_frame_timing(state);
 
         let mut frame = GpuFrame::new(
             &state.device,
@@ -1029,6 +1054,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             height,
             state.pointer_state,
             state.gesture_state,
+            elapsed,
+            delta,
         );
 
         trace_metal_capture_step("render_to_metal_texture: render");
@@ -1122,6 +1149,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             format: Some(state.config.format),
             ..Default::default()
         });
+        let (elapsed, delta) = advance_frame_timing(state);
 
         let mut frame = GpuFrame::new(
             &state.device,
@@ -1133,6 +1161,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             state.current_height,
             state.pointer_state,
             state.gesture_state,
+            elapsed,
+            delta,
         );
 
         state.gpu_surface.render(&mut frame);
