@@ -10,6 +10,7 @@ use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::view::Hook;
 
+use crate::env::{parse_bool_env, parse_positive_u64_env};
 #[cfg(not(feature = "winit"))]
 use crate::platform::OffscreenWindow;
 use crate::platform::PlatformWindow;
@@ -38,12 +39,14 @@ struct RenderDiagnosticsConfig {
 
 impl RenderDiagnosticsConfig {
     fn from_env() -> Self {
-        let enabled = parse_bool_env("WATERUI_HYDROLYSIS_RENDER_DIAG", false);
+        let enabled = parse_bool_env("hydrolysis runner", "WATERUI_HYDROLYSIS_RENDER_DIAG", false);
         let interval_ms = parse_positive_u64_env(
+            "hydrolysis runner",
             "WATERUI_HYDROLYSIS_RENDER_DIAG_INTERVAL_MS",
             DEFAULT_RENDER_DIAG_INTERVAL_MS,
         );
         let slow_frame_ms = parse_positive_u64_env(
+            "hydrolysis runner",
             "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
             DEFAULT_RENDER_DIAG_SLOW_FRAME_MS,
         );
@@ -53,34 +56,6 @@ impl RenderDiagnosticsConfig {
             interval: Duration::from_millis(interval_ms),
             slow_frame_threshold: Duration::from_millis(slow_frame_ms),
         }
-    }
-}
-
-fn parse_bool_env(name: &str, default: bool) -> bool {
-    match std::env::var(name) {
-        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            _ => panic!(
-                "hydrolysis runner: invalid {name} value `{raw}`; expected one of 1/0, true/false, yes/no, on/off"
-            ),
-        },
-        Err(std::env::VarError::NotPresent) => default,
-        Err(error) => panic!("hydrolysis runner: invalid {name} environment value: {error}"),
-    }
-}
-
-fn parse_positive_u64_env(name: &str, default: u64) -> u64 {
-    match std::env::var(name) {
-        Ok(raw) => {
-            let parsed = raw.trim().parse::<u64>().unwrap_or_else(|error| {
-                panic!("hydrolysis runner: invalid {name} `{raw}`: {error}")
-            });
-            assert!(!(parsed == 0), "hydrolysis runner: {name} must be > 0");
-            parsed
-        }
-        Err(std::env::VarError::NotPresent) => default,
-        Err(error) => panic!("hydrolysis runner: invalid {name} environment value: {error}"),
     }
 }
 
