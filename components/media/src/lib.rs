@@ -81,6 +81,7 @@ pub use {
     live::LivePhoto,
     photo::Photo,
     video::{AspectRatio, Event, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
+    waterui_video::{Delivery, MediaItem, SubtitleTrack},
 };
 
 /// Re-export filtrate's Filter enum for GPU-accelerated image filters.
