@@ -1,3 +1,11 @@
+struct InteractionUniforms {
+    enabled: u32,
+    grid_width: u32,
+    grid_height: u32,
+    radius: f32,
+    strength: f32,
+}
+
 struct CollisionUniforms {
     enabled: u32,
     restitution: f32,
@@ -20,6 +28,7 @@ struct Uniforms {
     drag: f32,
     stretch_factor: f32,
     softness: f32,
+    interaction: InteractionUniforms,
     collision: CollisionUniforms,
     life_range: vec2<f32>,
     speed_range: vec2<f32>,
@@ -39,7 +48,7 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(0) var<storage, read> uniforms: Uniforms;
 
 const QUAD_VERTICES: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(-1.0, -1.0),
