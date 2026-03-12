@@ -5,6 +5,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::HydrolysisViewRenderer;
+use waterui::graphics::SceneViewMergeToParent;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
@@ -36,7 +37,7 @@ impl UiTest {
     /// Creates a default UI test runtime (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
-        let mut env = Environment::new();
+        let mut env = Environment::new().extending(SceneViewMergeToParent);
         install_native_component_hooks(&mut env);
         env.insert(waterui_core::ViewRenderer::new(
             HydrolysisViewRenderer::default(),
