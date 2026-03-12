@@ -59,6 +59,11 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let cargo_toml_path = project.backend_path::<Self>().join("Cargo.toml");
+        let lib_rs_path = project.backend_path::<Self>().join("src/lib.rs");
+        let main_rs_path = project.backend_path::<Self>().join("src/main.rs");
+        let preview_runtime_path = project.backend_path::<Self>().join("src/preview_runtime.rs");
+        let preview_symbol_path = project.backend_path::<Self>().join("src/preview_symbol.rs");
+        let web_index_path = project.backend_path::<Self>().join("web/index.html");
         if !cargo_toml_path.exists() {
             return Ok(true);
         }
@@ -67,8 +72,28 @@ impl HydrolysisBackend {
             CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path).map_err(|error| {
                 eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display())
             })?;
-        Ok(!manifest.dependencies.contains_key("hydrolysis")
-            || !manifest.dependencies.contains_key("waterui"))
+        let main_supports_preview = std::fs::read_to_string(&main_rs_path)
+            .map(|content| {
+                content.contains("feature = \"waterui-preview-mode\"")
+                    && content.contains("mod preview_symbol;")
+            })
+            .unwrap_or(false);
+        let preview_runtime_supports_symbol = std::fs::read_to_string(&preview_runtime_path)
+            .map(|content| {
+                content.contains("use crate::preview_symbol;")
+                    && content.contains("flatten_alpha_over_white")
+            })
+            .unwrap_or(false);
+
+        Ok(!manifest.dependencies.contains_key("waterui")
+            || manifest.lib.is_none()
+            || !lib_rs_path.exists()
+            || !main_rs_path.exists()
+            || !preview_runtime_path.exists()
+            || !preview_symbol_path.exists()
+            || !web_index_path.exists()
+            || !main_supports_preview
+            || !preview_runtime_supports_symbol)
     }
 }
 

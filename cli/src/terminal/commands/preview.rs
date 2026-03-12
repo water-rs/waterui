@@ -8,14 +8,17 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
+use crate::toolchain_checks;
 use crate::{error, header, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
-use waterui_cli::preview::{PreviewPlatform, PreviewSession, launch_preview_session};
+use waterui_cli::preview::{
+    PreviewPlatform, PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
+};
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
 
 /// Target platform for preview.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliPreviewPlatform {
     /// iOS Simulator.
     Ios,
@@ -35,6 +38,17 @@ impl From<CliPreviewPlatform> for PreviewPlatform {
     }
 }
 
+/// Rendering backend for preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliPreviewBackend {
+    /// Apple preview support app.
+    Apple,
+    /// Android preview support app.
+    Android,
+    /// Hydrolysis direct renderer.
+    Hydrolysis,
+}
+
 /// Arguments for the preview command.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -44,6 +58,10 @@ pub struct Args {
     /// Target platform.
     #[arg(short, long, value_enum)]
     platform: CliPreviewPlatform,
+
+    /// Rendering backend.
+    #[arg(long, value_enum)]
+    backend: Option<CliPreviewBackend>,
 
     /// Frame size "WIDTHxHEIGHT" (default: 375x667).
     #[arg(short, long, default_value = "375x667")]
@@ -80,7 +98,10 @@ pub async fn run(args: Args) -> Result<()> {
         .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
 
     let symbol = function_path_to_symbol(crate_name, &args.function_path);
+    let backend = resolve_preview_backend(args.platform, args.backend)?;
     header!("Preview: {symbol}");
+
+    check_toolchain_for_backend(args.platform, backend).await?;
 
     // Detect sccache for compilation caching
     let sccache = Sccache;
@@ -94,6 +115,24 @@ pub async fn run(args: Args) -> Result<()> {
             None
         }
     };
+
+    if backend == CliPreviewBackend::Hydrolysis {
+        let spinner = shell::spinner("Building and rendering with hydrolysis...");
+        render_preview_with_hydrolysis(
+            &project_path,
+            &symbol,
+            width,
+            height,
+            sccache_path,
+            &args.output,
+        )
+        .await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
+        success!("Preview saved to {}", args.output.display());
+        return Ok(());
+    }
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
@@ -150,6 +189,65 @@ pub async fn run(args: Args) -> Result<()> {
             Err(err)
         }
     }
+}
+
+fn resolve_preview_backend(
+    platform: CliPreviewPlatform,
+    backend_override: Option<CliPreviewBackend>,
+) -> Result<CliPreviewBackend> {
+    let default_backend = match platform {
+        CliPreviewPlatform::Ios | CliPreviewPlatform::Macos => CliPreviewBackend::Apple,
+        CliPreviewPlatform::Android => CliPreviewBackend::Android,
+    };
+
+    let backend = backend_override.unwrap_or(default_backend);
+    let supported = matches!(
+        (platform, backend),
+        (CliPreviewPlatform::Ios, CliPreviewBackend::Apple)
+            | (CliPreviewPlatform::Macos, CliPreviewBackend::Apple)
+            | (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis)
+            | (CliPreviewPlatform::Android, CliPreviewBackend::Android)
+    );
+    if !supported {
+        bail!(
+            "Preview backend {:?} does not support platform {:?}. Valid combinations: ios/apple, macos/apple, macos/hydrolysis, android/android",
+            backend,
+            platform
+        );
+    }
+    Ok(backend)
+}
+
+async fn check_toolchain_for_backend(
+    platform: CliPreviewPlatform,
+    backend: CliPreviewBackend,
+) -> Result<()> {
+    match backend {
+        CliPreviewBackend::Apple => {
+            let sdk = match platform {
+                CliPreviewPlatform::Ios => waterui_cli::apple::toolchain::AppleSdk::IosSimulator,
+                CliPreviewPlatform::Macos => waterui_cli::apple::toolchain::AppleSdk::Macos,
+                CliPreviewPlatform::Android => {
+                    bail!("Internal error: Apple preview backend is not supported on android")
+                }
+            };
+            toolchain_checks::check_apple(sdk).await?;
+        }
+        CliPreviewBackend::Android => {
+            if platform != CliPreviewPlatform::Android {
+                bail!("Internal error: Android preview backend is not supported on {platform:?}");
+            }
+            toolchain_checks::check_android().await?;
+        }
+        CliPreviewBackend::Hydrolysis => {
+            if platform != CliPreviewPlatform::Macos {
+                bail!(
+                    "Internal error: Hydrolysis preview backend is not supported on {platform:?}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

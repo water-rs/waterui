@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use cargo_metadata::PackageId;
 use color_eyre::eyre::{self, Context, OptionExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smol::fs;
 use smol::stream::StreamExt;
 use tracing::{debug, info, warn};
@@ -55,6 +55,8 @@ const FONT_REGISTRY: &[(&str, &str)] = &[
         "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip",
     ),
 ];
+const HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY: &str = "Inter";
+const HYDROLYSIS_WEB_FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 
 /// Font declaration from a crate's Cargo.toml metadata.
 #[derive(Debug, Clone)]
@@ -93,6 +95,18 @@ pub struct ResolvedFont {
     pub name: String,
     /// Absolute path to the font file.
     pub path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct HydrolysisWebFontManifest {
+    default_family: String,
+    fonts: Vec<HydrolysisWebFontManifestEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct HydrolysisWebFontManifestEntry {
+    name: String,
+    file_name: String,
 }
 
 /// Font metadata from Cargo.toml `[package.metadata.waterui.assets]`.
@@ -732,6 +746,11 @@ pub fn scan_project_font_assets(project: &Project) -> eyre::Result<Vec<ResolvedF
     unified::scan_project_fonts(project)
 }
 
+/// Stage project assets for web packaging.
+pub async fn stage_project_assets_for_web(project: &Project, site_root: &Path) -> eyre::Result<()> {
+    pipeline::stage_for_web(project, site_root).await
+}
+
 /// Copies project assets to a destination directory.
 ///
 /// Preserves directory structure within the assets folder.
@@ -769,6 +788,66 @@ pub async fn copy_fonts(fonts: &[ResolvedFont], dest: &Path) -> eyre::Result<()>
         fs::copy(&font.path, &dest_path).await?;
     }
 
+    Ok(())
+}
+
+/// Stage fonts for Hydrolysis web runtime using the existing CLI font pipeline.
+///
+/// This always provisions a default text font so Web/WASM builds have a usable
+/// fallback even when the project does not declare any fonts.
+pub async fn stage_hydrolysis_web_fonts(project: &Project, site_root: &Path) -> eyre::Result<()> {
+    let mut declarations = scan_fonts(project).await?;
+    declarations.push(FontDeclaration {
+        name: HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY.to_string(),
+        source: FontSource::BuiltIn,
+        crate_name: "waterui-cli".to_string(),
+    });
+
+    let resolved_fonts = resolve_fonts(declarations).await?;
+    let fonts_dest = site_root.join("fonts");
+    copy_fonts(&resolved_fonts, &fonts_dest).await?;
+    write_hydrolysis_web_font_manifest(&resolved_fonts, &fonts_dest).await?;
+    Ok(())
+}
+
+async fn write_hydrolysis_web_font_manifest(
+    fonts: &[ResolvedFont],
+    fonts_dest: &Path,
+) -> eyre::Result<()> {
+    let mut manifest_fonts = Vec::with_capacity(fonts.len());
+    let mut has_default_family = false;
+
+    for font in fonts {
+        let file_name = font
+            .path
+            .file_name()
+            .ok_or_eyre("Font path has no filename")?
+            .to_string_lossy()
+            .into_owned();
+        if font.name == HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY {
+            has_default_family = true;
+        }
+        manifest_fonts.push(HydrolysisWebFontManifestEntry {
+            name: font.name.clone(),
+            file_name,
+        });
+    }
+
+    assert!(
+        has_default_family,
+        "hydrolysis web font staging must include default family `{HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY}`"
+    );
+
+    let manifest = HydrolysisWebFontManifest {
+        default_family: HYDROLYSIS_WEB_DEFAULT_FONT_FAMILY.to_string(),
+        fonts: manifest_fonts,
+    };
+    let payload = serde_json::to_vec_pretty(&manifest)?;
+    fs::write(
+        fonts_dest.join(HYDROLYSIS_WEB_FONT_MANIFEST_FILE_NAME),
+        payload,
+    )
+    .await?;
     Ok(())
 }
 

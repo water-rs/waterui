@@ -13,9 +13,12 @@ mod platform;
 mod renderer;
 mod runner;
 mod scroll;
+mod time;
 mod view_renderer;
 
 pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use platform::BrowserWindow;
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;
 pub use platform::{

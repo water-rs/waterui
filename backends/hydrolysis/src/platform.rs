@@ -1,6 +1,9 @@
 use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 
+#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+use waterui_graphics::gpu_surface::preferred_surface_format;
+
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerButton {
@@ -158,6 +161,11 @@ pub enum SurfaceFrame {
         output: wgpu::SurfaceTexture,
         view: wgpu::TextureView,
     },
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    Browser {
+        output: wgpu::SurfaceTexture,
+        view: wgpu::TextureView,
+    },
 }
 
 impl SurfaceFrame {
@@ -167,6 +175,8 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(feature = "winit")]
             Self::Window { output, .. } => &output.texture,
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            Self::Browser { output, .. } => &output.texture,
         }
     }
 
@@ -176,8 +186,57 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(feature = "winit")]
             Self::Window { view, .. } => view,
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            Self::Browser { view, .. } => view,
         }
     }
+}
+
+#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+    let preferred = preferred_surface_format(caps);
+    if supports_hydrolysis_surface_format(preferred) {
+        return normalize_surface_format(caps, preferred);
+    }
+
+    if let Some(format) = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|format| supports_hydrolysis_surface_format(*format))
+    {
+        return normalize_surface_format(caps, format);
+    }
+
+    panic!(
+        "hydrolysis surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
+        caps.formats
+    );
+}
+
+#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format.remove_srgb_suffix(),
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+    ) || matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    )
+}
+
+#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+fn normalize_surface_format(
+    caps: &wgpu::SurfaceCapabilities,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if format.is_srgb() {
+        let linear = format.remove_srgb_suffix();
+        if caps.formats.contains(&linear) {
+            return linear;
+        }
+    }
+    format
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer.
@@ -525,6 +584,10 @@ impl SurfaceProvider for OffscreenSurface {
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
             }
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            SurfaceFrame::Browser { .. } => {
+                panic!("hydrolysis offscreen surface received a browser frame");
+            }
         }
     }
 
@@ -595,13 +658,15 @@ impl PlatformWindow for OffscreenWindow {
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod web_impl;
+
 #[cfg(feature = "winit")]
 mod winit_impl {
     use std::sync::Arc;
 
     use nami::Signal;
     use waterui::window::WindowState;
-    use waterui_graphics::gpu_surface::preferred_surface_format;
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
         event::{
@@ -668,7 +733,7 @@ mod winit_impl {
                 .expect("hydrolysis winit surface: failed to request device");
 
             let caps = surface.get_capabilities(&adapter);
-            let format = select_vello_surface_format(&caps);
+            let format = super::select_hydrolysis_surface_format(&caps);
             let size = window.inner_size();
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -690,50 +755,6 @@ mod winit_impl {
                 config,
             }
         }
-    }
-
-    fn select_vello_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-        let preferred = preferred_surface_format(caps);
-        if supports_hydrolysis_surface_format(preferred) {
-            return normalize_surface_format(caps, preferred);
-        }
-
-        if let Some(format) = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|format| supports_hydrolysis_surface_format(*format))
-        {
-            return normalize_surface_format(caps, format);
-        }
-
-        panic!(
-            "hydrolysis winit surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
-            caps.formats
-        );
-    }
-
-    fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
-        matches!(
-            format.remove_srgb_suffix(),
-            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-        ) || matches!(
-            format,
-            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-        )
-    }
-
-    fn normalize_surface_format(
-        caps: &wgpu::SurfaceCapabilities,
-        format: wgpu::TextureFormat,
-    ) -> wgpu::TextureFormat {
-        if format.is_srgb() {
-            let linear = format.remove_srgb_suffix();
-            if caps.formats.contains(&linear) {
-                return linear;
-            }
-        }
-        format
     }
 
     impl SurfaceProvider for WinitSurface {
@@ -1244,6 +1265,9 @@ mod winit_impl {
 
     pub use WinitWindow as ExportedWinitWindow;
 }
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 
 #[cfg(feature = "winit")]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;

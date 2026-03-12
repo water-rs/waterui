@@ -24,6 +24,7 @@ pub mod table;
 #[doc(inline)]
 pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 
+#[cfg(feature = "media")]
 pub use media::*;
 pub use text::{Text, text::text};
 //pub use waterui_canvas as canvas;
@@ -38,6 +39,7 @@ pub use waterui_layout::{
     stack::{self, HStack, VStack, ZStack, hstack, vstack, zstack},
 };
 #[doc(inline)]
+#[cfg(feature = "media")]
 pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;
