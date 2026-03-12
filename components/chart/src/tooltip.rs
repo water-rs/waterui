@@ -4,13 +4,24 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use nami::{Computed, SignalExt as _};
+use waterui_core::dynamic::Dynamic;
 use waterui_core::Str;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
+use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
+use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::text;
+
+use crate::interaction::{ChartViewport, HitResult};
+
+const TOOLTIP_EDGE_INSET: f32 = 8.0;
+const TOOLTIP_ANCHOR_GAP: f32 = 12.0;
+const TOOLTIP_MAX_WIDTH_RATIO: f32 = 0.45;
+const TOOLTIP_MIN_TOP_CLEARANCE: f32 = 56.0;
 
 /// Content to display in a tooltip.
 #[derive(Debug, Clone, Default)]
@@ -109,6 +120,7 @@ impl TooltipContent {
 /// )
 /// .background(Srgb::from_hex("#1F2937"))
 /// ```
+#[derive(Debug)]
 pub struct Tooltip {
     content: TooltipContent,
     background: Srgb,
@@ -198,14 +210,48 @@ impl View for Tooltip {
         }
 
         // Background with rounded corners
-        let content = VStack::new(HorizontalAlignment::Leading, 4.0, views);
+        let content = Padding::new(
+            EdgeInsets::all(self.padding),
+            Frame::new(VStack::new(HorizontalAlignment::Leading, 4.0, views)).min_width(80.0),
+        );
         let background =
             RoundedRectangle::new(self.corner_radius / 100.0).fill(Color::from(self.background));
 
         // Stack content over background
         AnyView::new(Frame::new(waterui_layout::stack::ZStack::new(
             waterui_layout::stack::Alignment::default(),
-            (background, Frame::new(content).min_width(80.0)),
+            (background, content),
         )))
     }
+}
+
+fn tooltip_anchor_position(anchor_x: f32, anchor_y: f32, frame: ChartViewport) -> (f32, f32) {
+    let min_x = frame.x + TOOLTIP_EDGE_INSET;
+    let max_x = frame.x + frame.width - TOOLTIP_EDGE_INSET;
+    let min_y = frame.y + TOOLTIP_MIN_TOP_CLEARANCE;
+    let max_y = frame.y + frame.height - TOOLTIP_EDGE_INSET;
+    (
+        (anchor_x + TOOLTIP_ANCHOR_GAP).clamp(min_x, max_x),
+        (anchor_y - TOOLTIP_ANCHOR_GAP).clamp(min_y, max_y),
+    )
+}
+
+pub(crate) fn chart_tooltip_overlay<T>(
+    hit: Computed<Option<HitResult<T>>>,
+    chart_frame: Computed<ChartViewport>,
+    build: impl Fn(HitResult<T>) -> AnyView + 'static,
+) -> impl View
+where
+    T: Clone + PartialEq + 'static,
+{
+    Dynamic::watch(hit.zip(&chart_frame), move |(hit, frame)| {
+        hit.map(|hit| {
+            let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
+            let tooltip = Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
+            AnyView::new(absolute((
+                tooltip.position_anchor(UnitPoint::BOTTOM_LEADING, x, y),
+            )))
+        })
+        .unwrap_or_else(|| AnyView::new(()))
+    })
 }
