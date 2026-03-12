@@ -169,13 +169,13 @@ waterui-core.workspace = true
 waterui-str.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
-waterui-media.workspace = true
-waterui-video.workspace = true
+waterui-media = { workspace = true, optional = true }
+waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
 waterui-navigation.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
-waterui-webview.workspace = true
+waterui-webview = { workspace = true, optional = true }
 waterui-locale.workspace = true
 waterkit-screen.workspace = true
 executor-core.workspace = true
@@ -187,31 +187,30 @@ cpu-time.workspace = true
 pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
-uuid = { version = "1.21.0", features = ["v4"] }
 waterui-graphics.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-svg.workspace = true
-waterui-assets.workspace = true
-waterui-assets-macros.workspace = true
+waterui-assets = { workspace = true, optional = true }
+waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol.workspace = true
 waterkit-haptic = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
 robius-open.workspace = true
 pastey.workspace = true
-tree-sitter = { version = "0.25" }
-tree-sitter-md = { version = "0.5.3" }
-tree-sitter-rust = { version = "0.23" }
-tree-sitter-javascript = { version = "0.23" }
-tree-sitter-typescript = { version = "0.23" }
-tree-sitter-python = { version = "0.23" }
-tree-sitter-go = { version = "0.23" }
-tree-sitter-java = { version = "0.23" }
-tree-sitter-swift = { version = "0.7" }
-tree-sitter-json = { version = "0.24" }
-tree-sitter-bash = { version = "0.23" }
-tree-sitter-sequel = { version = "0.3.11" }
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-md = { version = "0.5.3", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-sequel = { version = "0.3.11", optional = true }
 
 
 
@@ -226,15 +225,37 @@ android_clipboard = "0.1.0"
 zenwave = { workspace = true, features = ["rustls"] }
 
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
 arboard = "3.6.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 
 
 [features]
-default = []
+default = ["assets", "media", "webview", "flow-markdown"]
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+media = ["dep:waterui-media", "video"]
+video = ["dep:waterui-video"]
+webview = ["dep:waterui-webview"]
+flow-markdown = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-md",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-swift",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-bash",
+    "dep:tree-sitter-sequel",
+]
 std = ["dep:waterkit-haptic"]
-all = ["std"]
+all = ["std", "assets", "media", "webview", "flow-markdown"]
 
 
 [lints]

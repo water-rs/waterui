@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-waterui.workspace = true
+waterui = { version = "0.2.1", path = "../..", default-features = false }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
@@ -32,12 +32,41 @@ parley.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 executor-core.workspace = true
+async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
 accesskit = { version = "0.24", optional = true }
 accesskit_winit = { version = "0.32.1", optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+fontique = "0.7"
+js-sys = "0.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-time = "1"
+web-sys = { version = "0.3", optional = true, features = [
+    "Response",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "KeyboardEvent",
+    "Node",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+] }
+
 [features]
 default = []
 accessibility = ["dep:accesskit"]
 winit = ["accessibility", "dep:winit", "dep:accesskit_winit"]
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]

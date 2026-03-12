@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
 
 use nami::watcher::Context;
 use waterui::animation::{Animation, AnimationTrack};
+
+use crate::time::Instant;
 
 const VALUE_EPSILON: f32 = 0.000_01;
 

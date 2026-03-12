@@ -68,53 +68,15 @@ pub struct BuiltDylib {
 impl PreviewSession {
     /// Build the user's project as a dylib.
     pub async fn build_dylib(&mut self, project_path: &std::path::Path) -> Result<BuiltDylib> {
-        let stamp = self.watcher.stamp(project_path).await?;
-        let project = Project::open(project_path).await?;
-        let target = match self.platform {
-            PreviewPlatform::Macos => TargetPlatform::MacOS,
-            PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
-            PreviewPlatform::Ios => TargetPlatform::IOS,
-            PreviewPlatform::Android => TargetPlatform::Android,
-        };
-
-        let mut rust_build = RustBuild::new(project.root(), target.triple());
-        if let Some(sccache) = &self.sccache_path {
-            rust_build = rust_build.with_sccache(sccache.clone());
-        }
-        let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
-        let candidate_path = self
-            .dylib_path
-            .clone()
-            .unwrap_or_else(|| expected_path.clone());
-
-        let target_triple = target.triple().to_string();
-        let dylib_signature = dylib_build_signature(
+        build_preview_dylib(
+            project_path,
+            self.platform,
+            &mut self.watcher,
+            self.sccache_path.as_ref(),
             &self.runtime_fingerprint,
-            &target_triple,
-            project.crate_name(),
-        );
-        let dylib_path =
-            if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
-                candidate_path
-            } else {
-                info!("Building dylib...");
-                let dylib_path = rust_build
-                    .build_dylib(project.crate_name(), false)
-                    .await
-                    .wrap_err("Failed to build dylib")?;
-                write_dylib_signature(&dylib_path, &dylib_signature).await?;
-
-                info!("Dylib built: {}", dylib_path.display());
-                dylib_path
-            };
-
-        self.dylib_path = Some(dylib_path.clone());
-
-        let id = compute_dylib_id(&dylib_path).await?;
-        Ok(BuiltDylib {
-            id,
-            path: dylib_path,
-        })
+            &mut self.dylib_path,
+        )
+        .await
     }
 
     /// Render a preview and return PNG bytes.
@@ -152,6 +114,58 @@ impl PreviewSession {
             self.owns_app = false;
         }
     }
+}
+
+pub(crate) async fn build_preview_dylib(
+    project_path: &Path,
+    platform: PreviewPlatform,
+    watcher: &mut ProjectWatcher,
+    sccache_path: Option<&PathBuf>,
+    runtime_fingerprint: &str,
+    dylib_path: &mut Option<PathBuf>,
+) -> Result<BuiltDylib> {
+    let stamp = watcher.stamp(project_path).await?;
+    let project = Project::open(project_path).await?;
+    let target = match platform {
+        PreviewPlatform::Macos => TargetPlatform::MacOS,
+        PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
+        PreviewPlatform::Ios => TargetPlatform::IOS,
+        PreviewPlatform::Android => TargetPlatform::Android,
+    };
+
+    let mut rust_build = RustBuild::new(project.root(), target.triple());
+    if let Some(sccache) = sccache_path {
+        rust_build = rust_build.with_sccache(sccache.clone());
+    }
+    let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
+    let candidate_path = dylib_path
+        .clone()
+        .unwrap_or_else(|| expected_path.clone());
+
+    let target_triple = target.triple().to_string();
+    let dylib_signature =
+        dylib_build_signature(runtime_fingerprint, &target_triple, project.crate_name());
+    let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await?
+    {
+        candidate_path
+    } else {
+        info!("Building dylib...");
+        let built_path = rust_build
+            .build_dylib(project.crate_name(), false)
+            .await
+            .wrap_err("Failed to build dylib")?;
+        write_dylib_signature(&built_path, &dylib_signature).await?;
+        info!("Dylib built: {}", built_path.display());
+        built_path
+    };
+
+    *dylib_path = Some(built_path.clone());
+
+    let id = compute_dylib_id(&built_path).await?;
+    Ok(BuiltDylib {
+        id,
+        path: built_path,
+    })
 }
 
 fn dylib_signature_path(path: &Path) -> PathBuf {
