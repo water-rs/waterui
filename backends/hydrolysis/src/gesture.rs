@@ -1,7 +1,6 @@
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
 
 use waterui::gesture::{
     DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent, TapEvent,
@@ -10,6 +9,7 @@ use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 
 use crate::platform::TouchPhase;
+use crate::time::Instant;
 
 const TAP_REPEAT_WINDOW: Duration = Duration::from_millis(320);
 const TAP_SPATIAL_TOLERANCE: f64 = 24.0;

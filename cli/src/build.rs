@@ -372,7 +372,8 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         Ok(output)
     }
 
-    async fn lib_output_dir(&self, release: bool) -> Result<PathBuf, RustBuildError> {
+    /// Resolve the Cargo library artifact directory for this build target and profile.
+    pub async fn lib_output_dir(&self, release: bool) -> Result<PathBuf, RustBuildError> {
         let target_directory = self.target_directory().await?;
         Ok(target_directory
             .join(self.triple.to_string())

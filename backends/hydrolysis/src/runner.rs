@@ -2,7 +2,7 @@ use std::cell::RefCell;
 #[cfg(not(feature = "winit"))]
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 #[cfg(feature = "winit")]
 use std::{process::Command, str};
 
@@ -15,12 +15,13 @@ use waterui_core::Native;
 use waterui_core::view::Hook;
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
-#[cfg(not(feature = "winit"))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use crate::platform::OffscreenWindow;
-use crate::platform::PlatformWindow;
+use crate::platform::{InputEvent, KeyState, PlatformWindow};
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
 #[cfg(feature = "winit")]
 use crate::renderer::HydrolysisWindowOrigin;
+use crate::time::Instant;
 
 fn init_main_thread_executors() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
@@ -431,7 +432,183 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     }
 }
 
-#[cfg(not(feature = "winit"))]
+fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
+    assert!(
+        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        "hydrolysis runner: invalid scale factor {scale_factor}"
+    );
+    (f64::from(value) / scale_factor) as f32
+}
+
+fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) -> bool {
+    let mut should_close = runtime.window.state.get() == waterui::window::WindowState::Closed;
+    for event in runtime.platform.drain_events() {
+        match event {
+            InputEvent::CloseRequested => {
+                runtime.window.state.set(waterui::window::WindowState::Closed);
+                should_close = true;
+            }
+            InputEvent::Resize { width, height } => {
+                let frame = runtime.window.frame.get();
+                let logical_width = physical_to_logical_dimension(width, runtime.platform.scale_factor());
+                let logical_height =
+                    physical_to_logical_dimension(height, runtime.platform.scale_factor());
+                let frame = waterui_core::layout::Rect::new(
+                    frame.origin(),
+                    waterui_core::layout::Size::new(logical_width, logical_height),
+                );
+                runtime.window.frame.set(frame);
+                runtime.needs_rebuild = true;
+            }
+            InputEvent::PointerDown { x, y, button } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_pointer_down(x, y, button, env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "pointer_down",
+                    x,
+                    y,
+                    button = ?button,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::PointerUp { x, y, button } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_pointer_up(x, y, button, env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "pointer_up",
+                    x,
+                    y,
+                    button = ?button,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::PointerMove { x, y } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_pointer_move(x, y, env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "pointer_move",
+                    x,
+                    y,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::PointerCancel => {
+                let changed = runtime.renderer.handle_pointer_cancel(env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "pointer_cancel",
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::Scroll {
+                x,
+                y,
+                dx,
+                dy,
+                is_line_delta,
+            } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "scroll",
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    is_line_delta,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::Magnification { x, y, delta, phase } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_magnification(x, y, delta, phase, env);
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::Rotation { x, y, delta, phase } => {
+                runtime.pointer_position = Some((x, y));
+                let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::Key {
+                key,
+                state: KeyState::Pressed,
+                modifiers,
+            } => {
+                let changed = runtime.renderer.handle_key(&key, modifiers);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "key_pressed",
+                    key = ?key,
+                    modifiers = ?modifiers,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::ImePreedit { text } => {
+                let changed = runtime.renderer.handle_ime_preedit(text.as_str());
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "ime_preedit",
+                    text = text.as_str(),
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::ImeCommit { text } => {
+                let changed = runtime.renderer.handle_ime_commit(text.as_str());
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "ime_commit",
+                    text = text.as_str(),
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::ImeDisabled => {
+                let changed = runtime.renderer.handle_ime_disabled();
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "ime_disabled",
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::Key {
+                state: KeyState::Released,
+                ..
+            } => {}
+        }
+    }
+    runtime
+        .platform
+        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    if let Some((x, y)) = runtime.pointer_position {
+        runtime
+            .platform
+            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
+    }
+    should_close
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 pub fn run(app: App) {
     init_main_thread_executors();
     let (windows, env) = app.into_parts();
@@ -461,14 +638,20 @@ pub fn run(app: App) {
     }
 }
 
-#[cfg(feature = "winit")]
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub fn run(app: App) {
+    init_main_thread_executors();
+    web_runner::run(app);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
 pub fn run(app: App) {
     initialize_tracing_from_env();
     init_main_thread_executors();
     winit_runner::run(app);
 }
 
-#[cfg(feature = "winit")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
 fn initialize_tracing_from_env() {
     if std::env::var_os("RUST_LOG").is_none() {
         return;
@@ -478,9 +661,293 @@ fn initialize_tracing_from_env() {
         .try_init();
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod web_runner {
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+        future::Future,
+        rc::Rc,
+        sync::Arc,
+    };
+
+    use async_task::spawn_unchecked as spawn_local_task;
+    use executor_core::{
+        LocalExecutor,
+        async_task::{AsyncTask, Runnable},
+        try_init_local_executor,
+    };
+    use fontique::{Blob, FontInfoOverride, GenericFamily};
+    use js_sys::Uint8Array;
+    use serde::Deserialize;
+    use wasm_bindgen::{JsCast, closure::Closure};
+    use wasm_bindgen_futures::JsFuture;
+    use waterui::app::App;
+    use waterui::window::WindowState;
+    use waterui_core::Environment;
+    use web_sys::Response;
+
+    use crate::platform::{BrowserWindow, PlatformWindow};
+    use crate::renderer::HydrolysisRenderer;
+    use crate::runner::{
+        RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window,
+    };
+
+    const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
+
+    #[derive(Debug, Deserialize)]
+    struct WebFontManifest {
+        default_family: String,
+        fonts: Vec<WebFontManifestEntry>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct WebFontManifestEntry {
+        name: String,
+        file_name: String,
+    }
+
+    async fn fetch_response(path: &str) -> Response {
+        let window = web_sys::window()
+            .expect("hydrolysis web font loader requires browser window");
+        let response = JsFuture::from(window.fetch_with_str(path))
+            .await
+            .unwrap_or_else(|error| panic!("hydrolysis web font fetch failed for `{path}`: {error:?}"));
+        let response: Response = response
+            .dyn_into()
+            .unwrap_or_else(|_| panic!("hydrolysis web font fetch returned non-Response for `{path}`"));
+        assert!(
+            response.ok(),
+            "hydrolysis web font fetch failed for `{path}` with HTTP status {}",
+            response.status()
+        );
+        response
+    }
+
+    async fn fetch_bytes(path: &str) -> Vec<u8> {
+        let response = fetch_response(path).await;
+        let array_buffer = JsFuture::from(
+            response
+                .array_buffer()
+                .unwrap_or_else(|error| panic!("hydrolysis web font response array_buffer failed for `{path}`: {error:?}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("hydrolysis web font array_buffer await failed for `{path}`: {error:?}"));
+        let bytes = Uint8Array::new(&array_buffer);
+        let mut data = vec![0_u8; bytes.length() as usize];
+        bytes.copy_to(&mut data);
+        data
+    }
+
+    async fn fetch_text(path: &str) -> String {
+        String::from_utf8(fetch_bytes(path).await)
+            .unwrap_or_else(|error| panic!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}"))
+    }
+
+    async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
+        let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
+        let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(
+            |error| panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}"),
+        );
+
+        let mut default_family_ids = Vec::new();
+        let state = renderer.dispatcher_mut().state_mut();
+        for font in manifest.fonts {
+            let font_path = format!("fonts/{}", font.file_name);
+            let font_data = fetch_bytes(&font_path).await;
+            let families = state.font_cx.collection.register_fonts(
+                Blob::new(Arc::new(font_data)),
+                Some(FontInfoOverride {
+                    family_name: Some(font.name.as_str()),
+                    ..Default::default()
+                }),
+            );
+            if font.name == manifest.default_family {
+                default_family_ids.extend(families.into_iter().map(|(family_id, _)| family_id));
+            }
+        }
+
+        assert!(
+            !default_family_ids.is_empty(),
+            "hydrolysis web font manifest default family `{}` did not register any fonts",
+            manifest.default_family
+        );
+        state
+            .font_cx
+            .collection
+            .set_generic_families(GenericFamily::SansSerif, default_family_ids.iter().copied());
+        state
+            .font_cx
+            .collection
+            .set_generic_families(GenericFamily::UiSansSerif, default_family_ids.iter().copied());
+    }
+
+    #[derive(Clone)]
+    struct BrowserMainThreadExecutor {
+        runnable_queue: Rc<RefCell<VecDeque<Runnable>>>,
+        schedule_frame: Rc<dyn Fn()>,
+    }
+
+    impl LocalExecutor for BrowserMainThreadExecutor {
+        type Task<T: 'static> = AsyncTask<T>;
+
+        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+        where
+            Fut: Future + 'static,
+        {
+            let runnable_queue = self.runnable_queue.clone();
+            let schedule_frame = self.schedule_frame.clone();
+            let (runnable, task) = unsafe {
+                // SAFETY: the browser executor is single-threaded and every runnable is queued
+                // and polled on the same main-thread event loop.
+                spawn_local_task(fut, move |runnable: Runnable| {
+                    runnable_queue.borrow_mut().push_back(runnable);
+                    schedule_frame();
+                })
+            };
+            runnable.schedule();
+            AsyncTask::from(task)
+        }
+    }
+
+    struct BrowserRunner {
+        env: Environment,
+        runtime: RuntimeWindow<BrowserWindow>,
+        runnable_queue: Rc<RefCell<VecDeque<Runnable>>>,
+    }
+
+    impl BrowserRunner {
+        fn drain_local_executor_queue(&self) {
+            while let Some(runnable) = self.runnable_queue.borrow_mut().pop_front() {
+                runnable.run();
+            }
+        }
+
+        fn frame(&mut self) -> bool {
+            self.drain_local_executor_queue();
+            let should_close = handle_input_events(&mut self.runtime, &self.env);
+            if should_close || self.runtime.window.state.get() == WindowState::Closed {
+                return false;
+            }
+            render_window(&mut self.runtime, &self.env);
+            true
+        }
+
+        fn needs_next_frame(&self) -> bool {
+            self.runtime.platform.take_redraw_request() || !self.runnable_queue.borrow().is_empty()
+        }
+    }
+
+    struct BrowserRunnerHandle {
+        runner: RefCell<BrowserRunner>,
+        raf_pending: Cell<bool>,
+        raf_callback: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+    }
+
+    impl BrowserRunnerHandle {
+        fn schedule_frame(self: &Rc<Self>) {
+            if self.raf_pending.replace(true) {
+                return;
+            }
+
+            let browser_window = web_sys::window()
+                .expect("hydrolysis web runner: browser window unavailable for animation frame");
+            let callback = self.raf_callback.borrow();
+            let callback = callback
+                .as_ref()
+                .expect("hydrolysis web runner: animation frame callback not initialized");
+            browser_window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .expect("hydrolysis web runner: failed to schedule animation frame");
+        }
+
+        fn frame(self: &Rc<Self>) {
+            self.raf_pending.set(false);
+            let should_continue = self.runner.borrow_mut().frame();
+            if !should_continue {
+                return;
+            }
+
+            if self.runner.borrow().needs_next_frame() {
+                self.schedule_frame();
+            }
+        }
+    }
+
+    pub fn run(app: App) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let schedule_frame_ref: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+            let browser_schedule = {
+                let schedule_frame_ref = schedule_frame_ref.clone();
+                Rc::new(move || {
+                    let schedule = schedule_frame_ref
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("hydrolysis web runner: frame scheduler is not ready");
+                    schedule();
+                }) as Rc<dyn Fn()>
+            };
+            let runnable_queue = Rc::new(RefCell::new(VecDeque::new()));
+            let local_executor = BrowserMainThreadExecutor {
+                runnable_queue: runnable_queue.clone(),
+                schedule_frame: browser_schedule.clone(),
+            };
+            let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+
+            let (windows, env) = app.into_parts();
+            let mut windows = windows.into_iter();
+            let window = windows
+                .next()
+                .expect("hydrolysis web runner requires exactly one window");
+            assert!(
+                windows.next().is_none(),
+                "hydrolysis web runner supports exactly one window"
+            );
+
+            let mut env = env;
+            let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+            super::install_native_component_hooks(&mut env);
+            env.insert(waterui_core::ViewRenderer::new(
+                crate::view_renderer::HydrolysisViewRenderer::default(),
+            ));
+
+            let mut platform = BrowserWindow::new(browser_schedule).await;
+            platform.apply_properties(&window);
+            let mut renderer = {
+                let surface = platform.surface();
+                HydrolysisRenderer::new(surface.device())
+            };
+            load_web_fonts(&mut renderer).await;
+            let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
+            let runner = BrowserRunner {
+                env,
+                runtime,
+                runnable_queue,
+            };
+
+            let handle = Rc::new(BrowserRunnerHandle {
+                runner: RefCell::new(runner),
+                raf_pending: Cell::new(false),
+                raf_callback: RefCell::new(None),
+            });
+            let callback_handle = handle.clone();
+            let callback = Closure::wrap(Box::new(move |_ts: f64| callback_handle.frame())
+                as Box<dyn FnMut(f64)>);
+            *handle.raf_callback.borrow_mut() = Some(callback);
+            *schedule_frame_ref.borrow_mut() = Some({
+                let handle = handle.clone();
+                Rc::new(move || handle.schedule_frame())
+            });
+            handle.schedule_frame();
+        });
+    }
+}
+
 #[cfg(feature = "winit")]
 mod winit_runner {
     use std::cell::RefCell;
+    use async_task::spawn_local as spawn_local_task;
     use std::collections::HashMap;
     use std::future::Future;
     use std::mem;
@@ -493,7 +960,7 @@ mod winit_runner {
     };
     use executor_core::{
         LocalExecutor,
-        async_task::{self, AsyncTask, Runnable},
+        async_task::{AsyncTask, Runnable},
         try_init_local_executor,
     };
     use nami::Signal;
@@ -541,14 +1008,14 @@ mod winit_runner {
         {
             let runnable_tx = self.runnable_tx.clone();
             let event_proxy = self.event_proxy.clone();
-            let (runnable, task) = async_task::spawn_local(fut, move |runnable: Runnable| {
+            let (runnable, task) = spawn_local_task(fut, move |runnable: Runnable| {
                 if runnable_tx.send(runnable).is_err() {
                     return;
                 }
                 let _ = event_proxy.send_event(RunnerEvent::PollLocalTasks);
             });
             runnable.schedule();
-            task
+            AsyncTask::from(task)
         }
     }
 
@@ -644,7 +1111,6 @@ mod winit_runner {
                 y: runtime.window.frame.get().y(),
             }
         }
-
         fn create_runtime_window(
             &mut self,
             event_loop: &ActiveEventLoop,

@@ -21,6 +21,7 @@ use crate::{
         Installation, Toolchain, ToolchainError, UnfixableToolchain, cmake::Cmake,
         linux::LinuxSystemToolchain, rust::RustToolchain, sccache::Sccache,
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
+        web::{Wasm32UnknownUnknownTarget, WasmPack},
     },
 };
 
@@ -365,6 +366,33 @@ pub async fn doctor() -> Vec<DoctorItem> {
         )),
     }
 
+    match Wasm32UnknownUnknownTarget.check().await {
+        Ok(()) => items.push(DoctorItem::ok("Rust wasm32 target")),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Rust wasm32 target",
+                "wasm32-unknown-unknown target not installed",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("Rust wasm32 target", error.to_string()));
+        }
+    }
+
+    match WasmPack.check().await {
+        Ok(()) => items.push(DoctorItem::ok("wasm-pack")),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "wasm-pack",
+                "wasm-pack not found (required for web packaging)",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("wasm-pack", error.to_string()));
+        }
+    }
     // Check Linux system package toolchain
     let mut linux_packages_fixable = false;
     if cfg!(target_os = "linux") {

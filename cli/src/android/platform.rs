@@ -403,8 +403,8 @@ impl AndroidPlatform {
 
         // Build with RustBuild
         // Enable android-jni feature for waterui-ffi to generate JNI bindings in Rust
-        let mut build =
-            RustBuild::new(project.root(), triple.clone()).with_feature("waterui-ffi/android-jni");
+        let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
+            .with_feature("waterui-ffi/android-jni");
         if let Some(sccache_path) = options.sccache_path() {
             build = build.with_sccache(sccache_path.to_path_buf());
         }
@@ -484,7 +484,7 @@ impl AndroidPlatform {
         let lib_dir = build.build_lib(options.is_release()).await?;
 
         // Get the crate name and find the built .so file
-        let lib_name = project.crate_name().replace('-', "_");
+        let lib_name = project.ffi_crate_name().replace('-', "_");
         let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
 
         if !source_lib.exists() {

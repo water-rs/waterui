@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 use std::rc::Rc;
-use std::time::Instant;
 
 use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
@@ -97,6 +96,7 @@ use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
 use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
+use crate::time::Instant;
 
 const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!("shaders/gpu_surface_compositor.wgsl");
 
@@ -3820,17 +3820,21 @@ impl HydroNativeView for Native<Dynamic> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity) {
-            return dimensions.size;
-        }
         let initial = dynamic.with_unconnected_view(|content| {
             content.map(|content| measure_view_dimensions(content, state, env))
         });
-        let Some(initial) = initial else {
-            panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node");
-        };
-        let Some(dimensions) = initial else {
-            panic!("hydrolysis Dynamic intrinsic requires an initial view before layout");
+        let dimensions = match initial {
+            Some(Some(dimensions)) => dimensions,
+            Some(None) => {
+                panic!("hydrolysis Dynamic intrinsic requires an initial view before layout")
+            }
+            None => state
+                .dynamic_intrinsic_cache
+                .get(&identity)
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("hydrolysis Dynamic intrinsic cache miss for connected dynamic node")
+                }),
         };
         state
             .dynamic_intrinsic_cache
@@ -3846,27 +3850,26 @@ impl HydroNativeView for Native<Dynamic> {
     ) -> ViewDimensions {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        if proposal == ProposalSize::UNSPECIFIED
-            && let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity)
-        {
-            return dimensions.clone();
-        }
-
         let initial = dynamic.with_unconnected_view(|content| {
             content
                 .map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
         });
-        let Some(initial) = initial else {
-            panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node");
-        };
-        let Some(dimensions) = initial else {
-            panic!("hydrolysis Dynamic dimensions requires an initial view before layout");
-        };
-        if proposal == ProposalSize::UNSPECIFIED {
-            state
+        let dimensions = match initial {
+            Some(Some(dimensions)) => dimensions,
+            Some(None) => {
+                panic!("hydrolysis Dynamic dimensions requires an initial view before layout")
+            }
+            None => state
                 .dynamic_intrinsic_cache
-                .insert(identity, dimensions.clone());
-        }
+                .get(&identity)
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("hydrolysis Dynamic dimensions cache miss for connected dynamic node")
+                }),
+        };
+        state
+            .dynamic_intrinsic_cache
+            .insert(identity, dimensions.clone());
         dimensions
     }
 }
@@ -6894,15 +6897,20 @@ impl HydrolysisRenderer {
         builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
             default_font.weight,
         )));
-        if let Some(family) = default_font.family {
+        let default_font_stack = if let Some(family) = default_font.family {
             family_storage.push(family.to_string());
             let family_name = family_storage
                 .last()
                 .expect("default font family storage must contain the pushed value");
-            builder.push_default(parley::StyleProperty::FontStack(parley::FontStack::Single(
-                parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
-            )));
-        }
+            parley::FontStack::Single(parley::FontFamily::Named(Cow::Borrowed(
+                family_name.as_str(),
+            )))
+        } else {
+            parley::FontStack::Single(parley::FontFamily::Generic(
+                parley::style::GenericFamily::SansSerif,
+            ))
+        };
+        builder.push_default(parley::StyleProperty::FontStack(default_font_stack));
 
         for (range, style) in spans {
             Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
@@ -11814,6 +11822,10 @@ fn is_layout_terminal(view: &AnyView) -> bool {
     }
     hydro_native_view_types!(check_native_terminal);
     false
+}
+
+pub(crate) fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
+    normalize_layout_view(view, env)
 }
 
 fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {

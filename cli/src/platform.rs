@@ -1,5 +1,7 @@
 //! Platform abstraction for `WaterUI` CLI
 
+use std::str::FromStr;
+
 use target_lexicon::{
     Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
@@ -41,6 +43,8 @@ pub enum TargetPlatform {
     Linux,
     /// Windows (Hydrolysis)
     Windows,
+    /// Web (WASM + WebGPU)
+    Web,
 }
 
 /// Backend types available for building.
@@ -140,6 +144,8 @@ impl TargetPlatform {
             },
             Self::Linux => Triple::host(),
             Self::Windows => Triple::host(),
+            Self::Web => Triple::from_str("wasm32-unknown-unknown")
+                .expect("web target triple must remain valid"),
         }
     }
 
@@ -147,6 +153,7 @@ impl TargetPlatform {
     #[must_use]
     pub const fn available_backends(&self) -> &[TargetBackend] {
         match self {
+            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
             Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
             Self::IOS
             | Self::IOSSimulator
@@ -159,6 +166,7 @@ impl TargetPlatform {
             Self::Android => &[TargetBackend::Android],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis],
+            Self::Web => &[TargetBackend::Hydrolysis],
         }
     }
 
@@ -178,6 +186,7 @@ impl TargetPlatform {
             Self::Android => TargetBackend::Android,
             Self::Linux => TargetBackend::Gtk4,
             Self::Windows => TargetBackend::Hydrolysis,
+            Self::Web => TargetBackend::Hydrolysis,
         }
     }
 
@@ -206,7 +215,7 @@ impl TargetPlatform {
             Self::WatchOSSimulator => Some("watchsimulator"),
             Self::VisionOS => Some("xros"),
             Self::VisionOSSimulator => Some("xrsimulator"),
-            Self::Android | Self::Linux | Self::Windows => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -224,6 +233,7 @@ impl TargetPlatform {
             Self::IOS | Self::TvOS | Self::WatchOS | Self::VisionOS | Self::Android => {
                 Architecture::Aarch64(Aarch64Architecture::Aarch64)
             }
+            Self::Web => Architecture::Wasm32,
         }
     }
 }

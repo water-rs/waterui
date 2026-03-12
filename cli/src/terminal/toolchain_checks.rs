@@ -10,6 +10,7 @@ use waterui_cli::{
         Installation, Toolchain, ToolchainError, cmake::Cmake,
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
+    toolchain::{Toolchain, cmake::Cmake, web::WebToolchain},
 };
 
 fn toolchain_check_message<I: Installation>(component: &str, error: ToolchainError<I>) -> String {
@@ -77,6 +78,16 @@ pub async fn check_hydrolysis() -> Result<()> {
         bail!(
             "{}",
             toolchain_check_message("Windows ARM64 LLVM toolchain", e)
+        );
+    }
+    Ok(())
+}
+
+pub async fn check_web() -> Result<()> {
+    let toolchain: WebToolchain = Default::default();
+    if let Err(error) = toolchain.check().await {
+        bail!(
+            "Web toolchain check failed: {error}. Run `water doctor --fix` to install fixable components."
         );
     }
     Ok(())

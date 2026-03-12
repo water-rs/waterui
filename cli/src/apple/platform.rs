@@ -43,7 +43,7 @@ pub async fn build_rust_lib(
         .unwrap_or_else(|| platform.triple());
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
-    let mut build = RustBuild::new(project.root(), triple.clone());
+    let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -55,7 +55,7 @@ pub async fn build_rust_lib(
 
     // If output_dir is specified, copy the library there
     if let Some(output_dir) = options.output_dir() {
-        let lib_name = project.crate_name().replace('-', "_");
+        let lib_name = project.ffi_crate_name().replace('-', "_");
         let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
         if !source_lib.exists() {
@@ -268,17 +268,14 @@ pub async fn package_apple(
     };
 
     let derived_data = project_path.join("DerivedData");
-    let target_dir = project.target_dir();
     let triple = platform.triple();
 
     // Copy the built Rust library to where Xcode expects it
-    let profile = if options.is_debug() {
-        "debug"
-    } else {
-        "release"
-    };
-    let lib_dir = target_dir.join(triple.to_string()).join(profile);
-    let lib_name = project.crate_name().replace('-', "_");
+    let lib_dir = RustBuild::new(project.ffi_crate_path(), triple.clone())
+        .lib_output_dir(!options.is_debug())
+        .await
+        .wrap_err("Failed to resolve native FFI crate target directory")?;
+    let lib_name = project.ffi_crate_name().replace('-', "_");
     let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
     // Get SDK name - must be an Apple platform

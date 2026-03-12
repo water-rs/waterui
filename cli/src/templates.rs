@@ -27,6 +27,7 @@ mod embedded {
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
+    pub static FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/ffi");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
@@ -246,11 +247,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             )
             .replace(
                 "__FFI_EXPORT__",
-                if self.package_type == crate::project::PackageType::App {
-                    "waterui_ffi::export!();"
-                } else {
-                    ""
-                },
+                "",
             )
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
@@ -627,6 +624,7 @@ async fn write_support_cargo_toml(
 #[derive(Clone, Copy)]
 enum NativeBackendDependencyPathKind<'a> {
     WateruiRoot,
+    WorkspaceSubdir(&'a str),
     BackendsSubdir(&'a str),
 }
 
@@ -662,6 +660,7 @@ fn compute_native_backend_dependency_path(
     if waterui_path.is_absolute() {
         let absolute_path = match path_kind {
             NativeBackendDependencyPathKind::WateruiRoot => waterui_path.to_path_buf(),
+            NativeBackendDependencyPathKind::WorkspaceSubdir(subdir) => waterui_path.join(subdir),
             NativeBackendDependencyPathKind::BackendsSubdir(subdir) => {
                 waterui_path.join("backends").join(subdir)
             }
@@ -672,6 +671,9 @@ fn compute_native_backend_dependency_path(
     let project_relative_root = PathBuf::from(ctx.project_root_relative_path());
     let relative_path = match path_kind {
         NativeBackendDependencyPathKind::WateruiRoot => project_relative_root.join(waterui_path),
+        NativeBackendDependencyPathKind::WorkspaceSubdir(subdir) => {
+            project_relative_root.join(waterui_path).join(subdir)
+        }
         NativeBackendDependencyPathKind::BackendsSubdir(subdir) => project_relative_root
             .join(waterui_path)
             .join("backends")
@@ -870,8 +872,8 @@ pub mod gtk4 {
 pub mod hydrolysis {
     use super::{
         NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, embedded, io, scaffold_dir,
-        write_native_backend_bin_cargo_toml,
+        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, compute_native_backend_dependency_path,
+        embedded, fs, io, scaffold_dir,
     };
 
     /// Write all hydrolysis templates to the given directory.
@@ -893,29 +895,313 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let dependencies = [
-            NativeBackendDependencySpec::new(
-                "hydrolysis",
-                WATERUI_HYDROLYSIS_VERSION,
-                &["winit"],
-                Some(NativeBackendDependencyPathKind::BackendsSubdir(
+        use serde::Serialize;
+        use std::collections::BTreeMap;
+
+        #[derive(Serialize)]
+        struct CargoManifest {
+            package: PackageSection,
+            lib: LibSection,
+            features: BTreeMap<String, Vec<String>>,
+            dependencies: BTreeMap<String, DependencyValue>,
+            target: BTreeMap<String, TargetSection>,
+            workspace: WorkspaceSection,
+        }
+
+        #[derive(Serialize)]
+        struct PackageSection {
+            name: String,
+            version: String,
+            edition: String,
+        }
+
+        #[derive(Serialize)]
+        struct LibSection {
+            #[serde(rename = "crate-type")]
+            crate_type: Vec<String>,
+        }
+
+        #[derive(Serialize)]
+        struct TargetSection {
+            dependencies: BTreeMap<String, DependencyValue>,
+        }
+
+        #[derive(Serialize)]
+        struct WorkspaceSection {}
+
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        enum DependencyValue {
+            Simple(String),
+            Detailed(DependencyDetail),
+        }
+
+        #[derive(Serialize)]
+        struct DependencyDetail {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            version: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: Option<String>,
+            #[serde(rename = "default-features")]
+            default_features: bool,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            features: Vec<String>,
+        }
+
+        fn dependency_from_spec(
+            ctx: &TemplateContext,
+            spec: NativeBackendDependencySpec<'_>,
+        ) -> DependencyValue {
+            let features = spec
+                .features
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>();
+
+            if let Some(waterui_path) = &ctx.waterui_path
+                && let Some(path_kind) = spec.path_kind
+            {
+                return DependencyValue::Detailed(DependencyDetail {
+                    version: None,
+                    path: Some(compute_native_backend_dependency_path(
+                        ctx,
+                        waterui_path,
+                        path_kind,
+                    )),
+                    default_features: false,
+                    features,
+                });
+            }
+
+            DependencyValue::Detailed(DependencyDetail {
+                version: Some(spec.version.to_string()),
+                path: None,
+                default_features: false,
+                features,
+            })
+        }
+
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert(
+            ctx.crate_name.clone(),
+            DependencyValue::Detailed(DependencyDetail {
+                version: None,
+                path: Some(ctx.project_root_relative_path()),
+                default_features: false,
+                features: Vec::new(),
+            }),
+        );
+        dependencies.insert(
+            "waterui".to_string(),
+            match dependency_from_spec(
+                ctx,
+                NativeBackendDependencySpec::new(
+                    "waterui",
+                    WATERUI_VERSION,
+                    &[],
+                    Some(NativeBackendDependencyPathKind::WateruiRoot),
+                ),
+            ) {
+                DependencyValue::Simple(version) => DependencyValue::Detailed(DependencyDetail {
+                    version: Some(version),
+                    path: None,
+                    default_features: false,
+                    features: Vec::new(),
+                }),
+                DependencyValue::Detailed(mut detail) => {
+                    detail.default_features = false;
+                    DependencyValue::Detailed(detail)
+                }
+            },
+        );
+
+        let mut native_dependencies = BTreeMap::new();
+        native_dependencies.insert(
+            "hydrolysis".to_string(),
+            dependency_from_spec(
+                ctx,
+                NativeBackendDependencySpec::new(
                     "hydrolysis",
+                    WATERUI_HYDROLYSIS_VERSION,
+                    &["winit"],
+                    Some(NativeBackendDependencyPathKind::BackendsSubdir("hydrolysis")),
+                ),
+            ),
+        );
+        native_dependencies.insert(
+            "pollster".to_string(),
+            DependencyValue::Simple("0.4".to_string()),
+        );
+        native_dependencies.insert(
+            "waterui-preview".to_string(),
+            dependency_from_spec(
+                ctx,
+                NativeBackendDependencySpec::new(
+                    "waterui-preview",
+                    WATERUI_VERSION,
+                    &[],
+                    Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                        "components/preview",
+                    )),
+                ),
+            ),
+        );
+
+        let mut wasm_dependencies = BTreeMap::new();
+        wasm_dependencies.insert(
+            "hydrolysis".to_string(),
+            dependency_from_spec(
+                ctx,
+                NativeBackendDependencySpec::new(
+                    "hydrolysis",
+                    WATERUI_HYDROLYSIS_VERSION,
+                    &["web"],
+                    Some(NativeBackendDependencyPathKind::BackendsSubdir("hydrolysis")),
+                ),
+            ),
+        );
+        wasm_dependencies.insert(
+            "wasm-bindgen".to_string(),
+            DependencyValue::Simple("0.2".to_string()),
+        );
+
+        let mut target = BTreeMap::new();
+        target.insert(
+            "cfg(not(target_arch = \"wasm32\"))".to_string(),
+            TargetSection {
+                dependencies: native_dependencies,
+            },
+        );
+        target.insert(
+            "cfg(target_arch = \"wasm32\")".to_string(),
+            TargetSection {
+                dependencies: wasm_dependencies,
+            },
+        );
+
+        let manifest = CargoManifest {
+            package: PackageSection {
+                name: package_name.to_string(),
+                version: "0.1.0".to_string(),
+                edition: "2024".to_string(),
+            },
+            lib: LibSection {
+                crate_type: vec!["cdylib".to_string(), "rlib".to_string()],
+            },
+            features: BTreeMap::from([("waterui-preview-mode".to_string(), Vec::new())]),
+            dependencies,
+            target,
+            workspace: WorkspaceSection {},
+        };
+
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::create_dir_all(base_dir).await?;
+        fs::write(base_dir.join("Cargo.toml"), toml_string).await
+    }
+}
+
+/// Native FFI companion crate templates.
+pub mod ffi {
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
+
+    use super::{
+        NativeBackendDependencyPathKind, Path, TemplateContext, WATERUI_FFI_VERSION,
+        WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
+        normalize_path_for_config, scaffold_dir,
+    };
+
+    /// Write all FFI companion templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        scaffold_dir(&embedded::FFI, base_dir, ctx).await
+    }
+
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        let mut manifest = Manifest::<()>::default();
+        manifest.package = Some(Package::new(package_name.to_string(), "0.1.0".to_string()));
+        if let Some(ref mut package) = manifest.package {
+            package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        }
+
+        manifest.lib = Some(Product {
+            crate_type: vec![
+                "staticlib".to_string(),
+                "cdylib".to_string(),
+                "rlib".to_string(),
+            ],
+            ..Default::default()
+        });
+
+        manifest.dependencies.insert(
+            ctx.crate_name.clone(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(ctx.project_root_relative_path()),
+                ..Default::default()
+            })),
+        );
+
+        let waterui_dependency = if let Some(waterui_path) = &ctx.waterui_path {
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(compute_native_backend_dependency_path(
+                    ctx,
+                    waterui_path,
+                    NativeBackendDependencyPathKind::WateruiRoot,
                 )),
-            ),
-            NativeBackendDependencySpec::new(
-                "waterui",
-                WATERUI_VERSION,
-                &[],
-                Some(NativeBackendDependencyPathKind::WateruiRoot),
-            ),
-        ];
-        write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
+                default_features: false,
+                ..Default::default()
+            }))
+        } else {
+            Dependency::Detailed(Box::new(DependencyDetail {
+                version: Some(WATERUI_VERSION.to_string()),
+                default_features: false,
+                ..Default::default()
+            }))
+        };
+        manifest
+            .dependencies
+            .insert("waterui".to_string(), waterui_dependency);
+
+        let ffi_dependency = if let Some(waterui_path) = &ctx.waterui_path {
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(normalize_path_for_config(&waterui_path.join("ffi"))),
+                ..Default::default()
+            }))
+        } else {
+            Dependency::Detailed(Box::new(DependencyDetail {
+                version: Some(WATERUI_FFI_VERSION.to_string()),
+                ..Default::default()
+            }))
+        };
+        manifest
+            .dependencies
+            .insert("waterui-ffi".to_string(), ffi_dependency);
+
+        manifest.workspace = Some(Workspace::default());
+
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::create_dir_all(base_dir).await?;
+        fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+        Ok(())
     }
 }
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
 pub mod root {
-    use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
+    use crate::templates::WATERUI_VERSION;
 
     use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config};
 
@@ -965,7 +1251,9 @@ pub mod root {
         struct CargoManifest {
             package: PackageSection,
             lib: LibSection,
-            dependencies: BTreeMap<String, DependencyValue>,
+            dependencies: BTreeMap<String, DependencyDetail>,
+            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+            target: BTreeMap<String, TargetSection>,
             workspace: WorkspaceSection,
         }
 
@@ -987,46 +1275,68 @@ pub mod root {
         struct WorkspaceSection {}
 
         #[derive(Serialize)]
-        #[serde(untagged)]
-        enum DependencyValue {
-            Simple(String),
-            Detailed(DependencyDetail),
+        struct TargetSection {
+            dependencies: BTreeMap<String, DependencyDetail>,
         }
 
-        #[derive(Serialize)]
+        #[derive(Serialize, Clone)]
         struct DependencyDetail {
-            path: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            version: Option<String>,
+            #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
+            default_features: Option<bool>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            features: Vec<String>,
         }
 
         let mut dependencies = BTreeMap::new();
+        let mut target = BTreeMap::new();
 
-        if let Some(waterui_path) = &ctx.waterui_path {
-            dependencies.insert(
-                "waterui".to_string(),
-                DependencyValue::Detailed(DependencyDetail {
-                    path: normalize_path_for_config(waterui_path),
-                }),
-            );
-            if ctx.package_type == crate::project::PackageType::App {
-                let ffi_path = waterui_path.join("ffi");
-                dependencies.insert(
-                    "waterui-ffi".to_string(),
-                    DependencyValue::Detailed(DependencyDetail {
-                        path: normalize_path_for_config(&ffi_path),
-                    }),
-                );
+        fn path_dependency(path: &Path) -> DependencyDetail {
+            DependencyDetail {
+                path: Some(normalize_path_for_config(path)),
+                version: None,
+                default_features: None,
+                features: Vec::new(),
             }
+        }
+
+        fn version_dependency(version: &str) -> DependencyDetail {
+            DependencyDetail {
+                path: None,
+                version: Some(version.to_string()),
+                default_features: None,
+                features: Vec::new(),
+            }
+        }
+
+        let mut waterui_dependency = if let Some(waterui_path) = &ctx.waterui_path {
+            path_dependency(waterui_path)
         } else {
-            dependencies.insert(
-                "waterui".to_string(),
-                DependencyValue::Simple(WATERUI_VERSION.to_string()),
+            version_dependency(WATERUI_VERSION)
+        };
+        waterui_dependency.default_features = Some(false);
+        dependencies.insert("waterui".to_string(), waterui_dependency.clone());
+
+        let mut native_dependencies = BTreeMap::new();
+        let mut native_waterui_dependency = waterui_dependency;
+        native_waterui_dependency.features = vec![
+            "assets".to_string(),
+            "media".to_string(),
+            "webview".to_string(),
+            "flow-markdown".to_string(),
+        ];
+        native_dependencies.insert("waterui".to_string(), native_waterui_dependency);
+
+        if !native_dependencies.is_empty() {
+            target.insert(
+                "cfg(not(target_arch = \"wasm32\"))".to_string(),
+                TargetSection {
+                    dependencies: native_dependencies,
+                },
             );
-            if ctx.package_type == crate::project::PackageType::App {
-                dependencies.insert(
-                    "waterui-ffi".to_string(),
-                    DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
-                );
-            }
         }
 
         let manifest = CargoManifest {
@@ -1037,17 +1347,10 @@ pub mod root {
                 authors: vec![ctx.author.clone()],
             },
             lib: LibSection {
-                crate_type: if ctx.package_type == crate::project::PackageType::App {
-                    vec![
-                        "staticlib".to_string(),
-                        "cdylib".to_string(),
-                        "rlib".to_string(),
-                    ]
-                } else {
-                    vec!["lib".to_string()]
-                },
+                crate_type: vec!["lib".to_string()],
             },
             dependencies,
+            target,
             workspace: WorkspaceSection {},
         };
 

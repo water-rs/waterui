@@ -31,7 +31,10 @@ use waterui_cli::{
     },
     hydrolysis::{
         backend::HydrolysisBackend,
-        platform::{build_hydrolysis, package_hydrolysis},
+        platform::{
+            HydrolysisWebDevServer, build_hydrolysis, package_hydrolysis,
+            prepare_hydrolysis_web_dev_site,
+        },
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
@@ -122,6 +125,8 @@ pub enum TargetPlatform {
     Linux,
     /// Windows (native desktop).
     Windows,
+    /// Web (WASM + WebGPU in browser).
+    Web,
 }
 
 /// Target backend for running (how the app is built and rendered).
@@ -210,6 +215,7 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
+        TargetPlatform::Web => TargetBackend::Hydrolysis,
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -227,6 +233,7 @@ fn resolve_backend(
         (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
         (TargetPlatform::Linux, TargetBackend::Hydrolysis) => true,
         (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
+        (TargetPlatform::Web, TargetBackend::Hydrolysis) => true,
         // All other combinations are invalid
         _ => false,
     };
@@ -239,7 +246,8 @@ fn resolve_backend(
              - macOS: apple, hydrolysis\n  \
              - Android: android\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis",
+             - Windows: hydrolysis\n  \
+             - Web: hydrolysis",
             backend,
             platform
         );
@@ -255,6 +263,7 @@ fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetBackend
         TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
         TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
         TargetPlatform::Windows => &[TargetBackend::Hydrolysis],
+        TargetPlatform::Web => &[TargetBackend::Hydrolysis],
     }
 }
 
@@ -357,7 +366,8 @@ pub async fn run(args: Args) -> Result<()> {
         }
     };
     validate_desktop_backend_platform_on_host(platform, backend)?;
-    validate_device_arg(backend, args.device.as_deref())?;
+    validate_device_arg(platform, backend, args.device.as_deref())?;
+    validate_web_log_args(platform, args.logs, args.native_logs)?;
 
     header!(
         "Running {} on {} ({})",
@@ -425,6 +435,23 @@ pub async fn run(args: Args) -> Result<()> {
             }
         }
         _ => {}
+    }
+
+    if args.platform == TargetPlatform::Web {
+        let spinner = shell::spinner("Building Hydrolysis web app...");
+        let site_root = prepare_hydrolysis_web_dev_site(&project).await?;
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        success!("Built Hydrolysis web app at {}", site_root.display());
+
+        let server = HydrolysisWebDevServer::start(site_root).await?;
+        line!();
+        note!("Serving at http://{}/", server.address());
+        note!("Press Ctrl+C to stop the web server");
+        let _server = server;
+        futures::future::pending::<()>().await;
+        unreachable!("web dev server future should be cancelled by Ctrl+C")
     }
 
     // Step 2: Find device
@@ -569,6 +596,7 @@ async fn build_and_run(
         TargetPlatform::Android => LibTargetPlatform::Android,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
+        TargetPlatform::Web => panic!("web run should not enter build_and_run"),
     };
 
     let android_abi = match (backend, &device) {
@@ -705,7 +733,10 @@ async fn check_toolchain_for_backend(
             let sdk = match platform {
                 TargetPlatform::Ios => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
+                TargetPlatform::Android
+                | TargetPlatform::Linux
+                | TargetPlatform::Windows
+                | TargetPlatform::Web => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}")
                 }
             };
@@ -727,10 +758,15 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Macos
                 && platform != TargetPlatform::Linux
                 && platform != TargetPlatform::Windows
+                && platform != TargetPlatform::Web
             {
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_hydrolysis().await?;
+            if platform == TargetPlatform::Web {
+                toolchain_checks::check_web().await?;
+            } else {
+                toolchain_checks::check_hydrolysis().await?;
+            }
         }
     }
     Ok(())
@@ -817,6 +853,9 @@ async fn find_device(
             // Windows runs on the local machine
             Ok(SelectedDevice::Local(Local))
         }
+        TargetPlatform::Web => {
+            bail!("web platform does not use the device pipeline")
+        }
     }
 }
 
@@ -836,6 +875,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
+        TargetPlatform::Web => "Web",
     }
 }
 
@@ -848,11 +888,39 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
     }
 }
 
-fn validate_device_arg(backend: TargetBackend, device: Option<&str>) -> Result<()> {
-    if matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) && device.is_some() {
+fn validate_device_arg(
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    device: Option<&str>,
+) -> Result<()> {
+    if platform == TargetPlatform::Web && device.is_some() {
+        bail!("--device is not supported with the web platform");
+    }
+
+    if matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
+        && platform != TargetPlatform::Web
+        && device.is_some()
+    {
         bail!(
             "--device is not supported with desktop backends (gtk4/hydrolysis run on the local machine)"
         );
+    }
+    Ok(())
+}
+
+fn validate_web_log_args(
+    platform: TargetPlatform,
+    logs: Option<CliLogLevel>,
+    native_logs: bool,
+) -> Result<()> {
+    if platform != TargetPlatform::Web {
+        return Ok(());
+    }
+    if logs.is_some() {
+        bail!("--logs is not supported with the web platform");
+    }
+    if native_logs {
+        bail!("--native-logs is not supported with the web platform");
     }
     Ok(())
 }
@@ -861,6 +929,10 @@ fn validate_desktop_backend_platform_on_host(
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<()> {
+    if platform == TargetPlatform::Web {
+        return Ok(());
+    }
+
     match backend {
         TargetBackend::Gtk4 => {
             #[cfg(target_os = "linux")]
@@ -955,17 +1027,25 @@ mod tests {
 
     #[test]
     fn rejects_device_with_desktop_backend() {
-        let err = validate_device_arg(TargetBackend::Gtk4, Some("foo"))
+        let err = validate_device_arg(TargetPlatform::Linux, TargetBackend::Gtk4, Some("foo"))
             .expect_err("gtk4 with --device should fail");
         assert!(err.to_string().contains("--device is not supported"));
-        let err = validate_device_arg(TargetBackend::Hydrolysis, Some("foo"))
+        let err = validate_device_arg(TargetPlatform::Linux, TargetBackend::Hydrolysis, Some("foo"))
             .expect_err("hydrolysis with --device should fail");
         assert!(err.to_string().contains("--device is not supported"));
     }
 
     #[test]
     fn accepts_device_with_non_gtk4_backend() {
-        assert!(validate_device_arg(TargetBackend::Apple, Some("sim-1")).is_ok());
+        assert!(validate_device_arg(TargetPlatform::Ios, TargetBackend::Apple, Some("sim-1")).is_ok());
+    }
+
+    #[test]
+    fn resolve_backend_defaults_include_web() {
+        assert_eq!(
+            resolve_backend(TargetPlatform::Web, None).expect("web backend"),
+            TargetBackend::Hydrolysis
+        );
     }
 
     #[test]

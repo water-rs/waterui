@@ -12,11 +12,38 @@ use std::{
     time::Duration,
 };
 
+#[cfg(any(unix, windows))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
 use minstant::Instant;
 
 const FALLBACK_REFRESH_RATE_HZ: f64 = 60.0;
+
+#[cfg(any(unix, windows))]
+type CpuClockSample = ThreadTime;
+
+#[cfg(not(any(unix, windows)))]
+type CpuClockSample = ();
+
+#[cfg(any(unix, windows))]
+fn cpu_clock_now() -> CpuClockSample {
+    ThreadTime::now()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn cpu_clock_now() -> CpuClockSample {
+    ()
+}
+
+#[cfg(any(unix, windows))]
+fn cpu_clock_elapsed(start: CpuClockSample) -> Duration {
+    start.elapsed()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
+    Duration::ZERO
+}
 
 /// Configuration for main-thread stall detection.
 #[derive(Debug, Clone, Copy)]
@@ -200,7 +227,7 @@ where
         // SAFETY: We never move `inner` after pinning `Self`.
         let this = unsafe { self.get_unchecked_mut() };
         let wall_start = Instant::now();
-        let cpu_start = ThreadTime::now();
+        let cpu_start = cpu_clock_now();
 
         // SAFETY: `inner` is pinned together with `Self`.
         let poll_result = unsafe { Pin::new_unchecked(&mut this.inner) }.poll(cx);
@@ -209,7 +236,7 @@ where
             task_type: this.task_type,
             poll_ready: poll_result.is_ready(),
             wall: wall_start.elapsed(),
-            cpu: cpu_start.elapsed(),
+            cpu: cpu_clock_elapsed(cpu_start),
             frame_budget: this.state.frame_budget,
             refresh_hz: this.state.refresh_hz,
         };
