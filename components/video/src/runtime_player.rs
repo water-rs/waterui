@@ -3196,7 +3196,6 @@ impl DecodeState {
             let Some((sample_data, _, _)) = self
                 .reader
                 .read_sample()
-                .map_err(|error| error.to_string())?
             else {
                 return Ok(sample_pts_duration(
                     &self.sample_metadata,
@@ -3227,7 +3226,6 @@ impl DecodeState {
             let Some((sample_data, pts, _)) = self
                 .reader
                 .read_sample()
-                .map_err(|error| error.to_string())?
             else {
                 return Ok(None);
             };
