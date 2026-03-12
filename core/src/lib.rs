@@ -110,6 +110,7 @@ pub use animation::{Animatable, AnimationExt, AnimationTrack};
 /// Unified easing system for animations.
 pub mod easing;
 pub use easing::{EasingCurve, Interpolatable};
+pub use local_state::{LocalStateScope, LocalStateStore};
 pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 mod computed_f32;
@@ -117,6 +118,7 @@ pub use computed_f32::IntoSignalF32;
 pub use waterui_str::Str;
 pub mod id;
 pub mod layout;
+pub mod local_state;
 /// Module for resolving reactive values in different environments.
 pub mod resolve;
 /// VectorArithmetic trait for types that can be linearly interpolated (animation).

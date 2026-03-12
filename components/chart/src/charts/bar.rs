@@ -9,6 +9,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{bar_bounds, bar_geometry, draw_bar, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::DataPoint;
 use crate::interaction::{HitResult, SelectionBindings};
 
@@ -17,6 +18,7 @@ pub struct BarChart<S: Signal<Output = Vec<DataPoint>>> {
     data: S,
     color: Srgb,
     selection: SelectionBindings<DataPoint>,
+    composition: ChartComposition<DataPoint>,
 }
 
 impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
@@ -26,8 +28,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
             data,
             color: Srgb::from_hex("#3B82F6"),
             selection: SelectionBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(DataPoint);
 
     #[must_use]
     pub fn color(mut self, color: Srgb) -> Self {
@@ -52,6 +57,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> 
     fn body(self, _env: &Environment) -> impl View {
         let color = self.color;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = bar_bounds(data);
@@ -61,6 +67,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> 
                 draw_bar(ctx, data, geometry.bounds, color);
             },
             self.selection,
+            self.composition,
         )
     }
 }
