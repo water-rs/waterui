@@ -11,6 +11,7 @@ struct SnapshotSpec {
     name: &'static str,
     width: u32,
     height: u32,
+    frames: NonZeroU32,
     background: [u8; 3],
     system: ParticleSystem,
 }
@@ -52,6 +53,24 @@ fn flame_scene() -> ParticleSystem {
         .softness(0.6)
 }
 
+fn fog_scene() -> ParticleSystem {
+    ParticleSystem::new(2_000)
+        .emit_from_rect(1.5, 0.2)
+        .at(0.5, 1.1)
+        .rate(40_000.0)
+        .life(8.0..12.0)
+        .speed(0.02..0.08)
+        .angle(PI * 1.4..PI * 1.6)
+        .size(0.1..0.25)
+        .color(
+            Color::srgb_hex("#C8D7CC").with_opacity(0.12),
+            Color::srgb_hex("#C8D7CC").with_opacity(0.0),
+        )
+        .gravity(0.0, -0.01)
+        .wind(0.02, 0.0)
+        .softness(1.0)
+}
+
 fn explosion_scene() -> ParticleSystem {
     ParticleSystem::new(20_000)
         .emit_from_circle(0.05)
@@ -85,6 +104,7 @@ fn bounce_box_scene() -> ParticleSystem {
         )
         .gravity(0.0, 1.4)
         .turbulence(0.2)
+        .collide_with_particles(0.01, 16.0)
         .collide_with_rect(0.08, 0.08, 0.84, 0.84)
         .collide_with_circle_obstacle(0.38, 0.34, 0.06)
         .collide_with_circle_obstacle(0.5, 0.36, 0.08)
@@ -130,11 +150,7 @@ fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
     let mut env = Environment::new();
     let output = spec
         .system
-        .render_offscreen_frames(
-            render_config,
-            &mut env,
-            NonZeroU32::new(8).expect("non-zero literal"),
-        )
+        .render_offscreen_frames(render_config, &mut env, spec.frames)
         .expect("particle snapshot render should succeed");
 
     fs::write(
@@ -166,20 +182,55 @@ fn main() {
             name: "rain",
             width: 540,
             height: 960,
+            frames: NonZeroU32::new(8).expect("non-zero literal"),
             background: [0x0F, 0x17, 0x2A],
             system: rain_scene(),
         },
         SnapshotSpec {
-            name: "flame",
+            name: "flame_02",
             width: 600,
             height: 600,
+            frames: NonZeroU32::new(2).expect("non-zero literal"),
             background: [0x00, 0x00, 0x00],
             system: flame_scene(),
+        },
+        SnapshotSpec {
+            name: "flame_08",
+            width: 600,
+            height: 600,
+            frames: NonZeroU32::new(8).expect("non-zero literal"),
+            background: [0x00, 0x00, 0x00],
+            system: flame_scene(),
+        },
+        SnapshotSpec {
+            name: "flame_24",
+            width: 600,
+            height: 600,
+            frames: NonZeroU32::new(24).expect("non-zero literal"),
+            background: [0x00, 0x00, 0x00],
+            system: flame_scene(),
+        },
+        SnapshotSpec {
+            name: "fog_08",
+            width: 600,
+            height: 600,
+            frames: NonZeroU32::new(8).expect("non-zero literal"),
+            background: [0x08, 0x10, 0x12],
+            system: fog_scene(),
+        },
+        SnapshotSpec {
+            name: "fog_24",
+            width: 600,
+            height: 600,
+            frames: NonZeroU32::new(24).expect("non-zero literal"),
+            background: [0x08, 0x10, 0x12],
+            system: fog_scene(),
         },
         SnapshotSpec {
             name: "explosion",
             width: 600,
             height: 600,
+            frames: NonZeroU32::new(8).expect("non-zero literal"),
             background: [0x00, 0x00, 0x00],
             system: explosion_scene(),
         },
@@ -187,6 +238,7 @@ fn main() {
             name: "bounce_box",
             width: 600,
             height: 600,
+            frames: NonZeroU32::new(8).expect("non-zero literal"),
             background: [0x06, 0x14, 0x1F],
             system: bounce_box_scene(),
         },
