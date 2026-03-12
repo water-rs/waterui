@@ -4,6 +4,7 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 
 use crate::charts::canvas::{area_bounds, area_geometry, draw_area, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::AreaData;
 use crate::interaction::{AreaDatum, HitResult, SelectionBindings};
 
@@ -11,6 +12,7 @@ use crate::interaction::{AreaDatum, HitResult, SelectionBindings};
 pub struct AreaChart<S: Signal<Output = AreaData>> {
     data: S,
     selection: SelectionBindings<AreaDatum>,
+    composition: ChartComposition<AreaDatum>,
 }
 
 impl<S: Signal<Output = AreaData>> AreaChart<S> {
@@ -19,8 +21,11 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
         Self {
             data,
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(AreaDatum);
 
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<AreaDatum>>>) -> Self {
@@ -38,6 +43,7 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
     fn body(self, _env: &Environment) -> impl View {
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 let bounds = area_bounds(data);
@@ -47,6 +53,7 @@ impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
                 draw_area(ctx, data, geometry.bounds);
             },
             self.selection,
+            self.composition,
         )
     }
 }

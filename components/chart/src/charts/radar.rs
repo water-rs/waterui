@@ -6,6 +6,7 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 
 use crate::charts::canvas::{draw_radar, interactive_signal_canvas, radar_geometry};
+use crate::composition::ChartComposition;
 use crate::data::RadarData;
 use crate::interaction::{HitResult, RadarDatum, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
@@ -17,6 +18,7 @@ pub struct RadarChart<S: Signal<Output = RadarData>> {
     line_width: f32,
     fill_opacity: f32,
     selection: SelectionBindings<RadarDatum>,
+    composition: ChartComposition<RadarDatum>,
 }
 
 impl<S: Signal<Output = RadarData>> RadarChart<S> {
@@ -28,8 +30,11 @@ impl<S: Signal<Output = RadarData>> RadarChart<S> {
             line_width: 2.0,
             fill_opacity: 0.3,
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(RadarDatum);
 
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<RadarDatum>>>) -> Self {
@@ -104,12 +109,14 @@ impl<S: Signal<Output = RadarData> + Clone + 'static> View for RadarChart<S> {
         let line_width = self.line_width;
         let fill_opacity = self.fill_opacity;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| radar_geometry(ctx, data),
             move |ctx, data, _geometry| {
                 draw_radar(ctx, data, ring_count, line_width, fill_opacity);
             },
             self.selection,
+            self.composition,
         )
     }
 }
