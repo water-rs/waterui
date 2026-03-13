@@ -8,10 +8,9 @@
 /// Context menu metadata module.
 pub mod context_menu {
     use alloc::vec::Vec;
-    use nami::{Computed, signal::IntoComputed};
-    use waterui_core::metadata::MetadataKey;
-
-    pub use waterui_controls::menu::MenuItem;
+    use nami::Computed;
+    use waterui_controls::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
+    use waterui_core::{Environment, Metadata, View, metadata::MetadataKey};
 
     /// Context menu metadata for views.
     ///
@@ -26,8 +25,8 @@ pub mod context_menu {
     ///
     /// text!("Right-click me")
     ///     .context_menu(vec![
-    ///         MenuItem::new("Copy").action(|| println!("Copy")),
-    ///         MenuItem::new("Paste").action(|| println!("Paste")),
+    ///         "Copy".action(|| {}),
+    ///         "Paste".action(|| {}),
     ///     ])
     /// ```
     #[derive(Debug)]
@@ -41,10 +40,38 @@ pub mod context_menu {
     impl ContextMenu {
         /// Creates a new context menu with the given items.
         #[must_use]
-        pub fn new(items: impl IntoComputed<Vec<MenuItem>>) -> Self {
+        pub fn new(items: impl MenuView) -> Self {
             Self {
-                items: items.into_computed(),
+                items: items.into_menu_items(),
             }
+        }
+    }
+
+    /// Resolved context menu metadata consumed by the native backends.
+    #[doc(hidden)]
+    #[derive(Debug)]
+    pub struct ResolvedContextMenu {
+        /// The resolved menu items for the current environment.
+        pub items: Computed<Vec<ResolvedMenuItem>>,
+    }
+
+    impl MetadataKey for ResolvedContextMenu {}
+
+    /// View wrapper that resolves semantic context menu items against the environment.
+    #[doc(hidden)]
+    #[derive(Debug)]
+    pub struct ContextMenuView<Content> {
+        /// The wrapped content view.
+        pub content: Content,
+        /// Semantic context menu items.
+        pub items: Computed<Vec<MenuItem>>,
+    }
+
+    impl<Content: View> View for ContextMenuView<Content> {
+        fn body(self, env: &Environment) -> impl View {
+            let items = resolve_menu_items(self.items, env);
+
+            Metadata::new(self.content, ResolvedContextMenu { items })
         }
     }
 }

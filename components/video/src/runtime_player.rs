@@ -21,10 +21,9 @@ use waterkit_audio::{
 use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::{
     EmbeddedSubtitleTrack as EmbeddedSubtitleSourceTrack, PictureInPictureCommand,
-    PictureInPictureControllerState, PictureInPictureHostId, VideoReader,
-    embedded_subtitle_tracks, enter_picture_in_picture, is_picture_in_picture_active,
-    poll_picture_in_picture_command, read_embedded_subtitle_cues,
-    sync_picture_in_picture_controller,
+    PictureInPictureControllerState, PictureInPictureHostId, VideoReader, embedded_subtitle_tracks,
+    enter_picture_in_picture, is_picture_in_picture_active, poll_picture_in_picture_command,
+    read_embedded_subtitle_cues, sync_picture_in_picture_controller,
 };
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
@@ -37,7 +36,7 @@ use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
 };
-use waterui_text::text;
+use waterui_text::{Text, styled::StyledStr, text};
 
 use crate::Url;
 use crate::source::{MediaItem, SubtitleTrack};
@@ -970,13 +969,15 @@ fn player_controls(
         },
     );
 
-    let subtitle_toggle = button(Dynamic::watch(
-        subtitle_track_labels.zip(&subtitle_selection),
-        move |(track_labels, selection)| {
-            let label = subtitle_selection_label(&track_labels, selection)
-                .unwrap_or_else(|message| message);
-            text(label)
-        },
+    let subtitle_toggle = button(Text::computed(
+        subtitle_track_labels
+            .zip(&subtitle_selection)
+            .map(|(track_labels, selection)| {
+                StyledStr::plain(
+                    subtitle_selection_label(&track_labels, selection)
+                        .unwrap_or_else(|message| message),
+                )
+            }),
     ))
     .with_state(&subtitle_selection)
     .with_state(&subtitle_track_labels)
@@ -1017,14 +1018,22 @@ fn player_controls(
                 let delta = (10.0 / duration).min(1.0);
                 value.set((value.get() - delta).max(0.0));
             }),
-        button(Dynamic::watch(is_playing.clone(), |playing| {
-            text(if playing { "Pause" } else { "Play" })
-        }))
+        button(Text::computed(is_playing.clone().map(|playing| {
+            if playing {
+                StyledStr::plain("Pause")
+            } else {
+                StyledStr::plain("Play")
+            }
+        })))
         .with_state(&is_playing)
         .action(|playing| playing.set(!playing.get())),
-        button(Dynamic::watch(muted.clone(), |is_muted| {
-            text(if is_muted { "Unmute" } else { "Mute" })
-        }))
+        button(Text::computed(muted.clone().map(|is_muted| {
+            if is_muted {
+                StyledStr::plain("Unmute")
+            } else {
+                StyledStr::plain("Mute")
+            }
+        })))
         .with_state(&muted)
         .action(|is_muted| is_muted.set(!is_muted.get())),
         slider(0.0..=1.0, &volume_level),
@@ -1065,13 +1074,13 @@ fn player_controls(
             .with_state(&playback_rate)
             .action(|rate| rate.set(2.0)),
         slider(0.25..=2.0, &playback_rate_level),
-        button(Dynamic::watch(preserve_pitch.clone(), |enabled| {
-            text(if enabled {
-                "Pitch Lock On"
+        button(Text::computed(preserve_pitch.clone().map(|enabled| {
+            if enabled {
+                StyledStr::plain("Pitch Lock On")
             } else {
-                "Pitch Lock Off"
-            })
-        }))
+                StyledStr::plain("Pitch Lock Off")
+            }
+        })))
         .with_state(&preserve_pitch)
         .action(|enabled| enabled.set(!enabled.get())),
     ))
@@ -2985,7 +2994,8 @@ impl VideoRenderer {
         }
 
         let aspect_ratio = self.current_video_dimensions();
-        if let Err(error) = enter_picture_in_picture(self.picture_in_picture_host_id, aspect_ratio) {
+        if let Err(error) = enter_picture_in_picture(self.picture_in_picture_host_id, aspect_ratio)
+        {
             self.emit_event(Event::Error {
                 message: error.to_string(),
             });
@@ -4160,8 +4170,8 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PlaybackPolicy, ShaderTargetMode, VideoSampleMetadata, estimated_video_duration,
-        effective_audio_volume, nearest_keyframe_index_at_or_before, next_subtitle_selection,
+        PlaybackPolicy, ShaderTargetMode, VideoSampleMetadata, effective_audio_volume,
+        estimated_video_duration, nearest_keyframe_index_at_or_before, next_subtitle_selection,
         preferred_surface_hdr_for_source, progress_for_position, resolve_selected_subtitle_index,
         runtime_sidecar_subtitle_tracks, runtime_subtitle_track_labels,
         select_default_subtitle_track_index, shader_target_mode, should_enter_vod_stall_buffering,

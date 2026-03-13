@@ -6,7 +6,10 @@
 use nami::Computed;
 use nami::Signal;
 use nami::signal::IntoComputed;
-use waterui_controls::button::{Button, ButtonStyle};
+use waterui_controls::{
+    IntoLabel,
+    button::{Button, ButtonStyle},
+};
 use waterui_core::{Environment, Str, View};
 
 /// Opens a URL in the system's default browser/handler.
@@ -42,7 +45,7 @@ pub struct Link<Label> {
 
 impl<Label> Link<Label>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
 {
     /// Creates a new `Link` view with the specified label and URL.
     pub fn new(label: Label, url: impl IntoComputed<Str>) -> Self {
@@ -55,7 +58,7 @@ where
 
 impl<Label> View for Link<Label>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
         let url = self.url;
@@ -77,7 +80,7 @@ where
 /// * `url` - The URL to navigate to when the link is tapped
 pub fn link<Label>(label: Label, url: impl IntoComputed<Str>) -> Link<Label>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
 {
     Link::new(label, url)
 }

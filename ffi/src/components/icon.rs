@@ -5,9 +5,10 @@ use waterui_icon::SystemIcon;
 
 /// FFI representation of the SystemIcon component.
 ///
-/// Native backends render this as platform-native icons:
-/// - Apple: SF Symbols
-/// - Android: Material Icons (with placeholder fallback)
+/// Native backends render this as platform-native icons when supported.
+///
+/// Apple currently maps this to SF Symbols. Other backends may omit `SystemIcon` support and should use
+/// cross-platform icon-pack views instead.
 #[repr(C)]
 pub struct WuiSystemIcon {
     /// The name of the system icon.

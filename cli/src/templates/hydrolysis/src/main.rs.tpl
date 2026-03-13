@@ -13,6 +13,6 @@ fn main() {
 
 #[cfg(not(feature = "waterui-preview-mode"))]
 fn main() {
-    let app = __CRATE_NAME_IDENT__::app(waterui::env::Environment::new());
+    let app = __CRATE_NAME_IDENT__::app(waterui::configure_environment!(waterui::env::Environment::new()));
     hydrolysis::run(app);
 }

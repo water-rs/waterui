@@ -44,18 +44,18 @@ pub mod prelude {
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     pub use super::env::Environment;
-    pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
-        accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
-        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, navigation,
-        reactive, regional, shape, signal, style, task, text, widget, window,
-    };
     #[cfg(feature = "media")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
+    pub use super::{
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
+        accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
+        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, navigation,
+        reactive, regional, shape, signal, style, task, text, widget, window,
+    };
 
     pub use crate::include_markdown;
 
@@ -81,7 +81,9 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, link};
-    pub use super::component::menu::{Menu, MenuItem};
+    pub use super::component::menu::{
+        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
+    };
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
@@ -153,7 +155,7 @@ pub use waterui_assets::{
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
-pub use waterui_media::Url;
+pub use waterui_url::Url;
 pub mod metadata;
 pub mod shape;
 pub mod style;
@@ -180,6 +182,7 @@ pub mod task;
 /// Inspector runtime endpoint and diagnostics streaming.
 pub mod inspector;
 
+pub use waterui_core::plugin::Plugin;
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
 
@@ -212,3 +215,17 @@ macro_rules! __export_preview {
 
 #[doc(hidden)]
 pub use pastey;
+
+/// Configures a freshly-created environment with compile-time discovered app plugins.
+///
+/// This currently installs the runtime translation catalog generated from the caller's
+/// `i18n/*.toml` files. It is intended to be used at environment creation boundaries
+/// such as backend entry points.
+#[macro_export]
+macro_rules! configure_environment {
+    ($env:expr) => {{
+        let mut __waterui_env = $env;
+        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
+        __waterui_env
+    }};
+}

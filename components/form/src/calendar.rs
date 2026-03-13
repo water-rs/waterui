@@ -19,13 +19,18 @@ use waterui_core::{AnyView, Environment, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::spacer;
-use waterui_layout::stack::{HStack, VStack, hstack, vstack};
+use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack};
 use waterui_locale::format::date::{format_calendar_month_year, format_calendar_weekday};
 use waterui_locale::{
     Locale,
     regional::{self, RegionalContext},
 };
-use waterui_text::{Text, text};
+use waterui_text::{
+    Text,
+    font::Caption,
+    styled::{Style, StyledStr},
+    text,
+};
 
 #[derive(Debug)]
 /// A calendar-style control for selecting a single date.
@@ -322,10 +327,15 @@ fn single_day_cell_view(
     let decorated = decorated_dates.contains(&cell.date);
 
     if is_selectable {
+        let accessibility_label = day_cell_accessibility_label(cell.date);
         let button = if is_selected {
-            button(day_cell_label(cell.date, decorated)).bordered_prominent()
+            button(day_cell_label(cell.date, decorated))
+                .accessibility_label(accessibility_label.clone())
+                .bordered_prominent()
         } else {
-            button(day_cell_label(cell.date, decorated)).bordered()
+            button(day_cell_label(cell.date, decorated))
+                .accessibility_label(accessibility_label)
+                .bordered()
         };
 
         AnyView::new(
@@ -359,10 +369,15 @@ pub(crate) fn multi_day_cell_view(
     let decorated = decorated_dates.contains(&cell.date);
 
     if is_selectable {
+        let accessibility_label = day_cell_accessibility_label(cell.date);
         let button = if is_selected {
-            button(day_cell_label(cell.date, decorated)).bordered_prominent()
+            button(day_cell_label(cell.date, decorated))
+                .accessibility_label(accessibility_label.clone())
+                .bordered_prominent()
         } else {
-            button(day_cell_label(cell.date, decorated)).bordered()
+            button(day_cell_label(cell.date, decorated))
+                .accessibility_label(accessibility_label)
+                .bordered()
         };
 
         AnyView::new(
@@ -385,13 +400,16 @@ pub(crate) fn multi_day_cell_view(
     }
 }
 
-fn day_cell_label(date: Date, decorated: bool) -> AnyView {
-    let day = Text::new(date.day().to_string());
+fn day_cell_label(date: Date, decorated: bool) -> Text {
+    let mut label = StyledStr::plain(date.day().to_string());
     if decorated {
-        AnyView::new(vstack((day, Text::new("•").caption())).spacing(0.0))
-    } else {
-        AnyView::new(day)
+        label.push("\n•", Style::new().font(Caption));
     }
+    Text::new(label).text_align(HorizontalAlignment::Center)
+}
+
+fn day_cell_accessibility_label(date: Date) -> String {
+    date.day().to_string()
 }
 
 fn day_cell_placeholder(cell: DayCell, decorated: bool) -> AnyView {
