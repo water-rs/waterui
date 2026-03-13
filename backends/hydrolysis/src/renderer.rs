@@ -1,3 +1,4 @@
+use core::any::{Any, TypeId};
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
 use core::pin::Pin;
@@ -5,7 +6,7 @@ use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 use std::rc::Rc;
@@ -62,12 +63,16 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction};
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize, Rect as LayoutRect,
-    Size as LayoutSize, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
+    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
+use waterui_core::{
+    AnyView, Environment, IgnorableMetadata, LocalStateScope, LocalStateStore, Metadata, Native,
+    Retain, Str, View,
+};
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
@@ -267,6 +272,7 @@ pub struct HydrolysisRenderer {
     dynamic_identities_current_frame: Vec<usize>,
     picker_menu_slots: Vec<PickerMenuSlot>,
     picker_menu_cursor: usize,
+    local_state_registry: Rc<RefCell<LocalStateRegistry>>,
     current_frame_retain: Vec<Retain>,
     previous_frame_retain: Vec<Retain>,
     #[cfg(feature = "accessibility")]
@@ -340,6 +346,58 @@ struct TextSelectionSlot {
     anchor: usize,
     focus: usize,
     initialized: bool,
+}
+type LocalStateKey = (u64, usize);
+
+#[derive(Clone)]
+struct LocalStateSlot {
+    type_id: TypeId,
+    value: Rc<dyn Any>,
+}
+
+#[derive(Default)]
+struct LocalStateRegistry {
+    slots: BTreeMap<LocalStateKey, LocalStateSlot>,
+    active_keys: BTreeSet<LocalStateKey>,
+}
+
+impl LocalStateRegistry {
+    fn begin_rebuild_frame(&mut self) {
+        self.active_keys.clear();
+    }
+
+    fn finish_rebuild_frame(&mut self) {
+        self.slots.retain(|key, _| self.active_keys.contains(key));
+    }
+
+    fn bind_slot(
+        &mut self,
+        path: u64,
+        index: usize,
+        type_id: TypeId,
+        init: &dyn Fn() -> Rc<dyn Any>,
+    ) -> Rc<dyn Any> {
+        let key = (path, index);
+        self.active_keys.insert(key);
+        if let Some(slot) = self.slots.get(&key) {
+            assert!(
+                slot.type_id == type_id,
+                "hydrolysis local state slot type mismatch at path {} slot {}",
+                path,
+                index
+            );
+            return Rc::clone(&slot.value);
+        }
+        let value = init();
+        self.slots.insert(
+            key,
+            LocalStateSlot {
+                type_id,
+                value: Rc::clone(&value),
+            },
+        );
+        value
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3820,8 +3878,16 @@ impl HydroNativeView for Native<Dynamic> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        let initial = dynamic.with_unconnected_view(|content| {
-            content.map(|content| measure_view_dimensions(content, state, env))
+        if let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity) {
+            return dimensions.size;
+        }
+        let initial = dynamic.with_unconnected_view_mut(|slot| {
+            slot.take().map(|content| {
+                let normalized = normalize_layout_view(content, env);
+                let dimensions = measure_view_dimensions(&normalized, state, env);
+                *slot = Some(normalized);
+                dimensions
+            })
         });
         let dimensions = match initial {
             Some(Some(dimensions)) => dimensions,
@@ -3850,9 +3916,24 @@ impl HydroNativeView for Native<Dynamic> {
     ) -> ViewDimensions {
         let dynamic = view.as_inner();
         let identity = dynamic.identity();
-        let initial = dynamic.with_unconnected_view(|content| {
-            content
-                .map(|content| measure_view_dimensions_with_proposal(content, proposal, state, env))
+        if proposal == ProposalSize::UNSPECIFIED
+            && let Some(dimensions) = state.dynamic_intrinsic_cache.get(&identity)
+        {
+            return dimensions.clone();
+        }
+
+        let initial = dynamic.with_unconnected_view_mut(|slot| {
+            slot.take().map(|content| {
+                let normalized = normalize_layout_view(content, env);
+                let dimensions = measure_view_dimensions_with_proposal(
+                    &normalized,
+                    proposal,
+                    state,
+                    env,
+                );
+                *slot = Some(normalized);
+                dimensions
+            })
         });
         let dimensions = match initial {
             Some(Some(dimensions)) => dimensions,
@@ -4483,6 +4564,7 @@ impl HydrolysisRenderer {
             dynamic_identities_current_frame: Vec::new(),
             picker_menu_slots: Vec::new(),
             picker_menu_cursor: 0,
+            local_state_registry: Rc::new(RefCell::new(LocalStateRegistry::default())),
             current_frame_retain: Vec::new(),
             previous_frame_retain: Vec::new(),
             #[cfg(feature = "accessibility")]
@@ -4686,10 +4768,12 @@ impl HydrolysisRenderer {
     }
 
     fn active_text_context_menu_target(&self) -> Option<usize> {
-        self.active_text_context_menu.as_ref().map(|menu| match menu {
-            ActiveTextContextMenu::Overlay { index, .. }
-            | ActiveTextContextMenu::NativeWindow { index, .. } => *index,
-        })
+        self.active_text_context_menu
+            .as_ref()
+            .map(|menu| match menu {
+                ActiveTextContextMenu::Overlay { index, .. }
+                | ActiveTextContextMenu::NativeWindow { index, .. } => *index,
+            })
     }
 
     pub(crate) fn set_window_bounds(&mut self, bounds: vello::kurbo::Rect) {
@@ -4701,17 +4785,16 @@ impl HydrolysisRenderer {
         env: &Environment,
         transform: vello::kurbo::Affine,
     ) {
-        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) = self.active_text_context_menu.clone()
+        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) =
+            self.active_text_context_menu.clone()
         else {
             return;
         };
 
         let renderer_ptr = self as *mut HydrolysisRenderer;
         let scene = &mut self.scene;
-        let panel = vello::kurbo::RoundedRect::from_rect(
-            overlay.bounds,
-            TEXT_CONTEXT_MENU_CORNER_RADIUS,
-        );
+        let panel =
+            vello::kurbo::RoundedRect::from_rect(overlay.bounds, TEXT_CONTEXT_MENU_CORNER_RADIUS);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -4772,7 +4855,8 @@ impl HydrolysisRenderer {
         &mut self,
         point: vello::kurbo::Point,
     ) -> bool {
-        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) = self.active_text_context_menu.clone()
+        let Some(ActiveTextContextMenu::Overlay { overlay, .. }) =
+            self.active_text_context_menu.clone()
         else {
             return false;
         };
@@ -4883,8 +4967,7 @@ impl HydrolysisRenderer {
         let (anchor, focus) =
             Self::text_selection_range_from_point_with_click_count(target, point, click_count);
         let mut slot = target.selection.borrow_mut();
-        let changed =
-            slot.anchor != anchor || slot.focus != focus || !slot.initialized;
+        let changed = slot.anchor != anchor || slot.focus != focus || !slot.initialized;
         slot.anchor = anchor;
         slot.focus = focus;
         slot.initialized = true;
@@ -6861,8 +6944,10 @@ impl HydrolysisRenderer {
     }
 
     fn default_text_brush(env: &Environment) -> [u8; 4] {
-        let color = theme::installed_color_signal::<theme::color::Foreground>(env)
-            .map_or_else(|| Color::srgb(0, 0, 0).resolve(env).get(), |signal| signal.get());
+        let color = theme::installed_color_signal::<theme::color::Foreground>(env).map_or_else(
+            || Color::srgb(0, 0, 0).resolve(env).get(),
+            |signal| signal.get(),
+        );
         resolved_color_to_rgba8(color)
     }
 
@@ -7564,7 +7649,10 @@ impl HydrolysisRenderer {
             };
             let value = {
                 let renderer = unsafe { ctx.renderer() };
-                renderer.read_signal(&text_field.value).to_plain().to_string()
+                renderer
+                    .read_signal(&text_field.value)
+                    .to_plain()
+                    .to_string()
             };
             let default_label = {
                 let renderer = unsafe { ctx.renderer() };
@@ -7643,7 +7731,15 @@ impl HydrolysisRenderer {
             line_limit,
             selection_menu: text_field.selection_menu,
         };
-        let (text_input_index, prompt, value, preedit, caret_opacity, is_focused, selection_visible) = {
+        let (
+            text_input_index,
+            prompt,
+            value,
+            preedit,
+            caret_opacity,
+            is_focused,
+            selection_visible,
+        ) = {
             let renderer = unsafe { ctx.renderer() };
             let text_input_index = renderer.text_input_targets.len();
             let is_focused = renderer.focused_text_input.get() == Some(text_input_index);
@@ -8371,6 +8467,7 @@ impl HydrolysisRenderer {
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
+            let content = normalize_layout_view(content, env);
             let dimensions = measure_view_dimensions(&content, state, env);
             state.dynamic_intrinsic_cache.insert(identity, dimensions);
             let local_ctx = RenderContext {
@@ -9153,10 +9250,11 @@ impl HydrolysisRenderer {
             Event::HoverMove => {
                 let mut handler = value;
                 renderer.register_hover_move_target(bounds, move |point, env| {
-                    let hover_env = env.extending(HoverEvent::new(waterui_core::layout::Point::new(
-                        point.x as f32 - bounds.x0 as f32,
-                        point.y as f32 - bounds.y0 as f32,
-                    )));
+                    let hover_env =
+                        env.extending(HoverEvent::new(waterui_core::layout::Point::new(
+                            point.x as f32 - bounds.x0 as f32,
+                            point.y as f32 - bounds.y0 as f32,
+                        )));
                     handler.handle(&hover_env);
                     true
                 });
@@ -9394,6 +9492,7 @@ impl HydrolysisRenderer {
         self.dynamic_identities_current_frame.clear();
         self.picker_menu_cursor = 0;
         self.text_selection_cursor = 0;
+        self.local_state_registry.borrow_mut().begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
         {
             self.accessibility_nodes.clear();
@@ -9446,6 +9545,9 @@ impl HydrolysisRenderer {
         self.picker_menu_slots.truncate(self.picker_menu_cursor);
         self.text_selection_slots
             .truncate(self.text_selection_cursor);
+        self.local_state_registry
+            .borrow_mut()
+            .finish_rebuild_frame();
         let active_dynamic_identities = self.dynamic_identities_current_frame.clone();
         self.dynamic_nodes
             .retain(|identity, _| active_dynamic_identities.contains(identity));
@@ -9805,9 +9907,17 @@ impl HydrolysisRenderer {
         {
             self.accessibility_root_bounds = transformed_rect(hit_transform, bounds);
         }
+        let mut local_env = env.clone();
+        let local_state_registry = Rc::clone(&self.local_state_registry);
+        local_env.insert(LocalStateScope::root());
+        local_env.insert(LocalStateStore::new(move |path, index, type_id, init| {
+            local_state_registry
+                .borrow_mut()
+                .bind_slot(path, index, type_id, &*init)
+        }));
         let ctx = RenderContext::with_renderer_transforms(self, bounds, transform, hit_transform);
         self.render_depth = 0;
-        self.dispatch_with_render_depth(view, env, ctx);
+        self.dispatch_with_render_depth(view, &local_env, ctx);
     }
 
     pub fn render_scene_to_texture(
@@ -10167,7 +10277,10 @@ impl HydrolysisRenderer {
         self.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.active_text_context_menu,
-            Some(ActiveTextContextMenu::Overlay { index: _, overlay: _ })
+            Some(ActiveTextContextMenu::Overlay {
+                index: _,
+                overlay: _
+            })
         );
         if overlay_hit {
             let changed = self.handle_text_context_menu_overlay_pointer_down(point);
@@ -10237,7 +10350,8 @@ impl HydrolysisRenderer {
                 match button {
                     PointerButton::Primary => {
                         let click_count = self.next_text_selection_click_count(index, point, at);
-                        changed |= self.apply_text_selection_click_gesture(index, point, click_count);
+                        changed |=
+                            self.apply_text_selection_click_gesture(index, point, click_count);
                         self.active_text_selection_drag = Some(index);
                     }
                     PointerButton::Secondary => {
@@ -10404,7 +10518,8 @@ impl HydrolysisRenderer {
                     changed |= (on_exit.borrow_mut())(env);
                 }
             }
-            if contains && dispatch_move
+            if contains
+                && dispatch_move
                 && let Some(on_move) = target.on_move.as_mut()
             {
                 changed |= (on_move.borrow_mut())(point, env);
@@ -10946,7 +11061,8 @@ impl HydrolysisRenderer {
 
     #[cfg(feature = "accessibility")]
     fn push_pending_text_input_accessibility_node(&mut self, node_id: AccessibilityNodeId) {
-        self.pending_text_input_accessibility_nodes.push_back(node_id);
+        self.pending_text_input_accessibility_nodes
+            .push_back(node_id);
     }
 
     #[cfg(feature = "accessibility")]
@@ -11832,6 +11948,22 @@ fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
     normalize_layout_view_with_budget(view, env, 64)
 }
 
+fn local_state_body_env(env: &Environment) -> Environment {
+    env.get::<LocalStateScope>()
+        .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()))
+}
+
+fn local_state_child_env(env: &Environment, index: usize) -> Environment {
+    env.get::<LocalStateScope>()
+        .map_or_else(|| env.clone(), |scope| env.extending(scope.child(index)))
+}
+
+fn local_state_overlay_env(base: &Environment, current: &Environment) -> Environment {
+    current
+        .get::<LocalStateScope>()
+        .map_or_else(|| base.clone(), |scope| base.extending(scope.clone()))
+}
+
 fn normalize_layout_view_with_budget(
     view: AnyView,
     env: &Environment,
@@ -11849,7 +11981,9 @@ fn normalize_layout_view_with_budget(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("layout normalization failed to downcast Metadata<Environment>");
-        let normalized_content = normalize_layout_view_with_budget(content, &value, next_remaining);
+        let scoped_env = local_state_overlay_env(&value, env);
+        let normalized_content =
+            normalize_layout_view_with_budget(content, &scoped_env, next_remaining);
         return AnyView::new(Metadata {
             content: normalized_content,
             value,
@@ -11930,10 +12064,11 @@ fn normalize_layout_view_with_budget(
             .expect("layout normalization failed to downcast Native<FixedContainer>");
         let (layout, children) = native.into_inner().into_inner();
         let mut normalized_children = Vec::with_capacity(children.len());
-        for child in children {
+        for (index, child) in children.into_iter().enumerate() {
+            let child_env = local_state_child_env(env, index);
             normalized_children.push(normalize_layout_view_with_budget(
                 child,
-                env,
+                &child_env,
                 next_remaining,
             ));
         }
@@ -11952,7 +12087,9 @@ fn normalize_layout_view_with_budget(
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
         let (axis, content) = native.into_inner().into_inner();
-        let normalized_content = normalize_layout_view_with_budget(content, env, next_remaining);
+        let child_env = local_state_child_env(env, 0);
+        let normalized_content =
+            normalize_layout_view_with_budget(content, &child_env, next_remaining);
         return AnyView::new(Native::new(ScrollView::new(axis, normalized_content)));
     }
 
@@ -11960,8 +12097,9 @@ fn normalize_layout_view_with_budget(
         return view;
     }
 
-    view = AnyView::new(view.body(env));
-    normalize_layout_view_with_budget(view, env, next_remaining)
+    let body_env = local_state_body_env(env);
+    view = AnyView::new(view.body(&body_env));
+    normalize_layout_view_with_budget(view, &body_env, next_remaining)
 }
 
 fn estimate_layout_intrinsic<'a>(
