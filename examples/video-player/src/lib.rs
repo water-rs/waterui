@@ -51,11 +51,24 @@ fn main() -> impl View {
     let player = VideoPlayer::new(video_url)
         .show_controls(true)
         .aspect_ratio(AspectRatio::Fill)
-        .on_event(move |event| match event {
-            video::Event::Buffering => is_buffering.set(true),
-            video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
-            video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
-            video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
+        .on_event({
+            let selected_index = selected_index.clone();
+            move |event| match event {
+                video::Event::Buffering => is_buffering.set(true),
+                video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
+                video::Event::PictureInPictureChanged { .. }
+                | video::Event::BufferLevel { .. }
+                | video::Event::PlaybackMetrics { .. } => {}
+                video::Event::NextRequested => {
+                    selected_index.set((selected_index.get() + 1) % sample_videos.len());
+                }
+                video::Event::PreviousRequested => {
+                    selected_index.set(
+                        (selected_index.get() + sample_videos.len() - 1) % sample_videos.len(),
+                    );
+                }
+                video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
+            }
         });
 
     // Video with buffering overlay

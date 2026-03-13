@@ -43,6 +43,9 @@ pub enum WuiVideoEventType {
     BufferingEnded = 4,
     BufferLevel = 5,
     PlaybackMetrics = 6,
+    PictureInPictureChanged = 7,
+    NextRequested = 8,
+    PreviousRequested = 9,
 }
 
 /// FFI representation of a video event.
@@ -53,6 +56,7 @@ pub struct WuiVideoEvent {
     pub buffered_ms: u32,
     pub av_drift_ms: f32,
     pub dropped_video_frames: u64,
+    pub picture_in_picture_active: bool,
 }
 
 impl WuiVideoEvent {
@@ -63,6 +67,7 @@ impl WuiVideoEvent {
             buffered_ms: 0,
             av_drift_ms: 0.0,
             dropped_video_frames: 0,
+            picture_in_picture_active: false,
         }
     }
 }
@@ -73,6 +78,11 @@ fn into_video_event(ffi_event: WuiVideoEvent) -> VideoEvent {
         WuiVideoEventType::Ended => VideoEvent::Ended,
         WuiVideoEventType::Buffering => VideoEvent::Buffering,
         WuiVideoEventType::BufferingEnded => VideoEvent::BufferingEnded,
+        WuiVideoEventType::PictureInPictureChanged => VideoEvent::PictureInPictureChanged {
+            active: ffi_event.picture_in_picture_active,
+        },
+        WuiVideoEventType::NextRequested => VideoEvent::NextRequested,
+        WuiVideoEventType::PreviousRequested => VideoEvent::PreviousRequested,
         WuiVideoEventType::BufferLevel => VideoEvent::BufferLevel {
             buffered_ms: ffi_event.buffered_ms,
         },
@@ -97,6 +107,11 @@ impl IntoFFI for VideoEvent {
             VideoEvent::Ended => WuiVideoEvent::empty(WuiVideoEventType::Ended),
             VideoEvent::Buffering => WuiVideoEvent::empty(WuiVideoEventType::Buffering),
             VideoEvent::BufferingEnded => WuiVideoEvent::empty(WuiVideoEventType::BufferingEnded),
+            VideoEvent::PictureInPictureChanged { active } => WuiVideoEvent {
+                event_type: WuiVideoEventType::PictureInPictureChanged,
+                picture_in_picture_active: active,
+                ..WuiVideoEvent::empty(WuiVideoEventType::PictureInPictureChanged)
+            },
             VideoEvent::BufferLevel { buffered_ms } => WuiVideoEvent {
                 event_type: WuiVideoEventType::BufferLevel,
                 buffered_ms,
@@ -116,6 +131,12 @@ impl IntoFFI for VideoEvent {
                 error_message: waterui::Str::from(message).into_ffi(),
                 ..WuiVideoEvent::empty(WuiVideoEventType::Error)
             },
+            VideoEvent::NextRequested => {
+                WuiVideoEvent::empty(WuiVideoEventType::NextRequested)
+            }
+            VideoEvent::PreviousRequested => {
+                WuiVideoEvent::empty(WuiVideoEventType::PreviousRequested)
+            }
         }
     }
 }
@@ -130,8 +151,26 @@ pub struct WuiVideo {
     /// The video source URL as a string (reactive).
     /// Swift expects WuiStr, so we convert Url -> Str.
     pub source: *mut WuiComputed<waterui::Str>,
+    /// The media title shown in system media controls.
+    pub title: *mut WuiComputed<waterui::Str>,
+    /// The media artist shown in system media controls.
+    pub artist: *mut WuiComputed<waterui::Str>,
+    /// The media album shown in system media controls.
+    pub album: *mut WuiComputed<waterui::Str>,
+    /// Artwork URL shown in system media controls.
+    pub artwork_url: *mut WuiComputed<waterui::Str>,
+    /// Preferred playback duration in seconds, or `-1.0` when unknown.
+    pub duration_seconds: *mut WuiComputed<f64>,
+    /// Whether the active queue has a next item.
+    pub has_next: *mut WuiBinding<bool>,
+    /// Whether the active queue has a previous item.
+    pub has_previous: *mut WuiBinding<bool>,
     /// The volume of the video.
     pub volume: *mut WuiBinding<Volume>,
+    /// Playback speed (1.0 = normal speed).
+    pub playback_rate: *mut WuiBinding<f32>,
+    /// Whether native playback should preserve pitch when rate changes.
+    pub preserve_pitch: *mut WuiBinding<bool>,
     /// The aspect ratio mode for video playback.
     pub aspect_ratio: WuiAspectRatio,
     /// Whether the video should loop when it ends.
@@ -149,11 +188,40 @@ impl IntoFFI for VideoConfig {
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
-        let source_str = self.source.map(|url: Url| url.inner()).into_computed();
+        let source = self.source;
+        let source_str = source.clone().map(|item| item.source.inner()).into_computed();
+        let title = source
+            .clone()
+            .map(|item| item.metadata.title().unwrap_or_default().to_owned())
+            .into_computed();
+        let artist = source
+            .clone()
+            .map(|item| item.metadata.artist().unwrap_or_default().to_owned())
+            .into_computed();
+        let album = source
+            .clone()
+            .map(|item| item.metadata.album().unwrap_or_default().to_owned())
+            .into_computed();
+        let artwork_url = source
+            .clone()
+            .map(|item| item.metadata.artwork_url().unwrap_or_default().to_owned())
+            .into_computed();
+        let duration_seconds = source
+            .map(|item| item.metadata.duration().map_or(-1.0, |duration| duration.as_secs_f64()))
+            .into_computed();
 
         WuiVideo {
             source: source_str.into_ffi(),
+            title: title.into_ffi(),
+            artist: artist.into_ffi(),
+            album: album.into_ffi(),
+            artwork_url: artwork_url.into_ffi(),
+            duration_seconds: duration_seconds.into_ffi(),
+            has_next: self.has_next.into_ffi(),
+            has_previous: self.has_previous.into_ffi(),
             volume: self.volume.into_ffi(),
+            playback_rate: self.playback_rate.into_ffi(),
+            preserve_pitch: self.preserve_pitch.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             loops: self.loops,
             on_event: on_event_fn,
@@ -171,8 +239,26 @@ pub struct WuiVideoPlayer {
     /// The video source URL as a string (reactive).
     /// Swift expects WuiStr, so we convert Url -> Str.
     pub source: *mut WuiComputed<waterui::Str>,
+    /// The media title shown in system media controls.
+    pub title: *mut WuiComputed<waterui::Str>,
+    /// The media artist shown in system media controls.
+    pub artist: *mut WuiComputed<waterui::Str>,
+    /// The media album shown in system media controls.
+    pub album: *mut WuiComputed<waterui::Str>,
+    /// Artwork URL shown in system media controls.
+    pub artwork_url: *mut WuiComputed<waterui::Str>,
+    /// Preferred playback duration in seconds, or `-1.0` when unknown.
+    pub duration_seconds: *mut WuiComputed<f64>,
+    /// Whether the active queue has a next item.
+    pub has_next: *mut WuiBinding<bool>,
+    /// Whether the active queue has a previous item.
+    pub has_previous: *mut WuiBinding<bool>,
     /// The volume of the video player.
     pub volume: *mut WuiBinding<Volume>,
+    /// Playback speed (1.0 = normal speed).
+    pub playback_rate: *mut WuiBinding<f32>,
+    /// Whether native playback should preserve pitch when rate changes.
+    pub preserve_pitch: *mut WuiBinding<bool>,
     /// The aspect ratio mode for video playback.
     pub aspect_ratio: WuiAspectRatio,
     /// Whether to show native playback controls.
@@ -190,11 +276,40 @@ impl IntoFFI for VideoPlayerConfig {
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
-        let source_str = self.source.map(|url: Url| url.inner()).into_computed();
+        let source = self.source;
+        let source_str = source.clone().map(|item| item.source.inner()).into_computed();
+        let title = source
+            .clone()
+            .map(|item| item.metadata.title().unwrap_or_default().to_owned())
+            .into_computed();
+        let artist = source
+            .clone()
+            .map(|item| item.metadata.artist().unwrap_or_default().to_owned())
+            .into_computed();
+        let album = source
+            .clone()
+            .map(|item| item.metadata.album().unwrap_or_default().to_owned())
+            .into_computed();
+        let artwork_url = source
+            .clone()
+            .map(|item| item.metadata.artwork_url().unwrap_or_default().to_owned())
+            .into_computed();
+        let duration_seconds = source
+            .map(|item| item.metadata.duration().map_or(-1.0, |duration| duration.as_secs_f64()))
+            .into_computed();
 
         WuiVideoPlayer {
             source: source_str.into_ffi(),
+            title: title.into_ffi(),
+            artist: artist.into_ffi(),
+            album: album.into_ffi(),
+            artwork_url: artwork_url.into_ffi(),
+            duration_seconds: duration_seconds.into_ffi(),
+            has_next: self.has_next.into_ffi(),
+            has_previous: self.has_previous.into_ffi(),
             volume: self.volume.into_ffi(),
+            playback_rate: self.playback_rate.into_ffi(),
+            preserve_pitch: self.preserve_pitch.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             show_controls: self.show_controls,
             on_event: on_event_fn,

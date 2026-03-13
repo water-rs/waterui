@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import dev.waterui.android.runtime.WaterUiRootView
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
+import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint
 import java.io.File
 import java.lang.Runtime
 
@@ -172,5 +173,10 @@ class MainActivity : AppCompatActivity() {
         val rootView = WaterUiRootView(this)
         setContentView(rootView)
         Log.i(TAG, "WATERUI_ROOT_READY")
+    }
+
+    override fun onUserLeaveHint() {
+        notifyVideoPictureInPictureUserLeaveHint(this)
+        super.onUserLeaveHint()
     }
 }

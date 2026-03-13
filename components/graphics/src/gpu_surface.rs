@@ -891,6 +891,8 @@ pub struct GpuSurface {
     /// `None` follows global `WATERUI_GPU_PREFER_HDR` behavior.
     /// `Some(true)` prefers HDR, `Some(false)` prefers SDR.
     surface_prefers_hdr: Option<bool>,
+    /// Optional picture-in-picture host id for backend registration.
+    picture_in_picture_host_id: Option<u64>,
 }
 
 impl core::fmt::Debug for GpuSurface {
@@ -933,6 +935,7 @@ impl GpuSurface {
             renderer: Box::new(view),
             msaa_max_samples: Self::default_msaa_max_samples(),
             surface_prefers_hdr: None,
+            picture_in_picture_host_id: None,
         }
     }
 
@@ -976,6 +979,19 @@ impl GpuSurface {
     pub fn get_surface_prefers_hdr(&self) -> Option<bool> {
         self.surface_prefers_hdr
             .or_else(|| self.renderer.preferred_surface_hdr())
+    }
+
+    /// Associates this surface with a picture-in-picture host id.
+    #[must_use]
+    pub const fn picture_in_picture_host_id(mut self, host_id: u64) -> Self {
+        self.picture_in_picture_host_id = Some(host_id);
+        self
+    }
+
+    /// Returns the picture-in-picture host id, if any.
+    #[must_use]
+    pub const fn get_picture_in_picture_host_id(&self) -> Option<u64> {
+        self.picture_in_picture_host_id
     }
 
     /// Renders this surface once into an offscreen texture and reads back RGBA8 pixels.

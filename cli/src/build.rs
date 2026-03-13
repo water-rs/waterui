@@ -348,11 +348,19 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             cmd = cmd.env("RUSTC_WRAPPER", sccache_path);
         }
 
-        // Set BINDGEN_EXTRA_CLANG_ARGS for iOS/tvOS/watchOS/visionOS simulator builds
-        // This fixes bindgen issues with the *-apple-*-sim target triples
+        // Set target-scoped bindgen clang args for simulator builds.
+        //
+        // Using the global `BINDGEN_EXTRA_CLANG_ARGS` leaks the simulator SDK into
+        // host-side build scripts (for example `coreaudio-sys`), which then try to
+        // parse host frameworks against the simulator SDK and fail. Bindgen supports
+        // target-qualified env vars, so scope the override to the actual Cargo target.
         if self.triple.environment == Environment::Sim {
             if let Some(clang_args) = self.bindgen_clang_args_for_simulator().await {
-                cmd = cmd.env("BINDGEN_EXTRA_CLANG_ARGS", clang_args);
+                let bindgen_target_key = format!(
+                    "BINDGEN_EXTRA_CLANG_ARGS_{}",
+                    self.triple.to_string().replace('-', "_")
+                );
+                cmd = cmd.env(bindgen_target_key, clang_args);
             }
         }
 
