@@ -50,7 +50,7 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
-use waterui_navigation::{NavigationStack, NavigationView};
+use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView};
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::TextConfig;
 use waterui_webview::WebView;
@@ -817,6 +817,7 @@ impl GtkRenderer {
         Self::register::<Divider>(dispatcher);
         Self::register::<NavigationView>(dispatcher);
         Self::register::<NavigationStack<(), ()>>(dispatcher);
+        Self::register::<NavigationSplitLayout>(dispatcher);
 
         // Register metadata handlers
         Self::register_metadata_handlers(dispatcher);

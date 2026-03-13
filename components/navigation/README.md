@@ -4,7 +4,7 @@ Navigation containers and stack-based routing for WaterUI applications.
 
 ## Overview
 
-`waterui-navigation` provides the building blocks for hierarchical navigation patterns commonly found in mobile and desktop applications. It includes stack-based navigation with push/pop semantics, navigation bars with customizable titles and styling, programmatic navigation links, and a tab interface for switching between multiple root views.
+`waterui-navigation` provides the building blocks for hierarchical navigation patterns commonly found in mobile and desktop applications. It includes stack-based navigation with push/pop semantics, typed route values, navigation bars with leading/trailing/search chrome, adaptive split navigation, and tabs for switching between multiple root views.
 
 The crate operates through a controller-based architecture where native backends implement the `CustomNavigationController` trait to handle platform-specific navigation rendering (iOS UINavigationController, Android Navigation Component, etc.), while the Rust side manages the navigation state and view hierarchy declaratively.
 
@@ -66,6 +66,12 @@ The navigation bar can be customized:
 let mut view = NavigationView::new("Profile", profile_content);
 view.bar.color = Computed::new(Color::blue());
 view.bar.hidden = Computed::new(true);
+
+let search = Binding::container(Str::default());
+let view = view
+    .navigation_bar_leading(button("Edit").action(|| {}))
+    .navigation_bar_trailing(button("Done").action(|| {}))
+    .searchable(&search, "Search");
 ```
 
 ### NavigationStack
@@ -80,33 +86,21 @@ NavigationStack::new(
 )
 ```
 
-For programmatic navigation, use a `NavigationPath` to track the stack state:
+For typed route navigation, use a `NavigationPath` to track the stack state:
 
 ```rust
-use waterui_navigation::{NavigationStack, NavigationPath};
-use nami::binding;
+use waterui_navigation::{NavigationLink, NavigationPath, NavigationPathController, NavigationStack};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Route {
     Detail(i32),
     Settings,
 }
 
-impl View for Route {
-    fn body(self, _env: &Environment) -> impl View {
-        match self {
-            Route::Detail(id) => text(format!("Detail {}", id)),
-            Route::Settings => text("Settings"),
-        }
-    }
-}
+let path = NavigationPath::new();
 
-let path = binding(NavigationPath::new());
-
-NavigationStack::with(path.clone(),
-    NavigationView::new("Home", home_view)
-)
-.destination(|route: Route| {
+NavigationStack::with(path.clone(), NavigationView::new("Home", home_view))
+    .destination(|route: Route| {
     match route {
         Route::Detail(id) => NavigationView::new(
             format!("Item {}", id),
@@ -117,20 +111,21 @@ NavigationStack::with(path.clone(),
             settings_view()
         ),
     }
-})
+    })
 ```
 
 Navigate programmatically:
 
 ```rust
-// Push a new view
-path.borrow_mut().push(Route::Detail(42));
+path.push(Route::Detail(42));
 
-// Pop back
-path.borrow().pop();
+path.pop();
 
-// Pop multiple levels
-path.borrow().pop_n(2);
+path.pop_n(2);
+
+button("Reset")
+    .extract::<NavigationPathController<Route>>()
+    .action(|controller| controller.clear());
 ```
 
 ### NavigationLink
@@ -157,6 +152,15 @@ NavigationLink::new(
         text(">"),
     )),
     || NavigationView::new("Settings", settings_view())
+)
+```
+
+For path-backed stacks, push route values directly:
+
+```rust
+NavigationLink::value(
+    text("Show Details"),
+    Route::Detail(42),
 )
 ```
 
@@ -342,6 +346,22 @@ fn main_tabs() -> impl View {
 }
 ```
 
+### Adaptive Split Navigation
+
+```rust
+use waterui_navigation::NavigationSplitView;
+
+let selection = Binding::container(Some(Route::Detail(42)));
+
+NavigationSplitView::new(
+    &selection,
+    || sidebar_view(selection.clone()),
+    |route| detail_navigation(route),
+)
+.placeholder(|| text("Select an item"))
+.sidebar_width(300.0)
+```
+
 ## API Overview
 
 ### Types
@@ -350,8 +370,11 @@ fn main_tabs() -> impl View {
 - `NavigationStack<T, F>` - A stack-based navigation container
 - `NavigationPath<T>` - Reactive stack state for programmatic navigation
 - `NavigationLink<Label, Content>` - Declarative navigation link
+- `NavigationValueLink<Label, T>` - Declarative route-value link
+- `NavigationPathController<T>` - Typed route controller extracted from path-backed stacks
 - `NavigationController` - Runtime controller for push/pop actions
-- `Bar` - Navigation bar configuration (title, color, visibility)
+- `NavigationSplitView<T, Sidebar, Detail, Placeholder>` - Adaptive sidebar/detail navigation
+- `Bar` - Navigation bar configuration (title, leading, trailing, search, color, visibility)
 
 ### Tab Types
 

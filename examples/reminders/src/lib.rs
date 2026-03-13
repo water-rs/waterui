@@ -64,6 +64,22 @@ impl Identifiable for SidebarRow {
     }
 }
 
+#[derive(Clone)]
+struct ReminderRow {
+    id: u64,
+    title: &'static str,
+    subtitle: Option<&'static str>,
+    flagged: bool,
+}
+
+impl Identifiable for ReminderRow {
+    type Id = u64;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
 fn sidebar_rows() -> Vec<SidebarRow> {
     vec![
         SidebarRow {
@@ -94,22 +110,6 @@ fn sidebar_rows() -> Vec<SidebarRow> {
     ]
 }
 
-#[derive(Clone)]
-struct ReminderRow {
-    id: u64,
-    title: &'static str,
-    subtitle: Option<&'static str>,
-    flagged: bool,
-}
-
-impl Identifiable for ReminderRow {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
 fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow>) {
     match dest {
         SidebarDestination::Today => (
@@ -122,7 +122,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                 },
                 ReminderRow {
                     id: 2,
-                    title: "Review water preview CLI crash path",
+                    title: "Review navigation parity worktree",
                     subtitle: Some("Before lunch"),
                     flagged: true,
                 },
@@ -165,7 +165,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             ],
             vec![ReminderRow {
                 id: 8,
-                title: "Refactor toolbar metadata path",
+                title: "Refactor split navigation chrome",
                 subtitle: Some("Cross-platform"),
                 flagged: false,
             }],
@@ -231,67 +231,91 @@ fn filter_reminders(rows: Vec<ReminderRow>, normalized_query: Option<&str>) -> V
 }
 
 fn main_view() -> impl View {
-    let selection = binding(SidebarDestination::Today);
+    let selection = Binding::container(Some(SidebarDestination::Today));
     let search = Binding::container(Str::default());
 
-    hstack((
-        sidebar(selection.clone(), search.clone()),
-        Divider,
-        content(selection, search),
-    ))
+    NavigationSplitView::new(
+        &selection,
+        {
+            let selection = selection.clone();
+            let search = search.clone();
+            move || sidebar(selection.clone(), search.clone())
+        },
+        {
+            let search = search.clone();
+            move |dest| detail_view(dest, search.clone())
+        },
+    )
+    .sidebar_width(300.0)
+    .placeholder(|| placeholder_view())
 }
 
-fn sidebar(selection: Binding<SidebarDestination>, search: Binding<Str>) -> impl View {
+fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>) -> impl View {
     let rows = sidebar_rows();
+    let query = search.clone().map(|value| normalized_search_query(&value));
 
     vstack((
         vstack((
             text("Reminders").title().bold().foreground(Foreground),
-            TextField::new(&search).prompt("Search"),
+            text!("Search: {search}")
+                .caption()
+                .foreground(MutedForeground),
             text("My Lists").caption().foreground(MutedForeground),
         ))
         .spacing(10.0)
         .padding_with(EdgeInsets::all(16.0)),
         List::for_each(rows, move |row| {
             let dest = row.dest;
-            let is_selected = selection.clone().map(move |s| s == dest);
+            let is_selected = selection.clone().map(move |current| current == Some(dest));
             let selection_for_action = selection.clone();
+            let query = query.clone();
 
-            ListItem::new(Dynamic::watch(is_selected, move |active| {
-                let bg = if active {
-                    Srgb::WHITE.with_opacity(0.14)
-                } else {
-                    Srgb::WHITE.with_opacity(0.0)
-                };
+            ListItem::new(Dynamic::watch(
+                is_selected.zip(&query),
+                move |(active, query)| {
+                    let count = if let Some(query) = query.as_deref() {
+                        let (today_rows, upcoming_rows) = reminders_for(dest);
+                        filter_reminders(today_rows, Some(query)).len() as i32
+                            + filter_reminders(upcoming_rows, Some(query)).len() as i32
+                    } else {
+                        row.count
+                    };
 
-                AnyView::new(
-                    hstack((
-                        SystemIcon::from_static(dest.icon_name())
-                            .size(18.0, 18.0)
-                            .foreground(dest.icon_color()),
-                        text(dest.title()).body().foreground(Foreground),
-                        spacer(),
-                        text(format!("{}", row.count))
-                            .caption()
-                            .foreground(MutedForeground),
-                    ))
-                    .padding_with(EdgeInsets::symmetric(10.0, 14.0))
-                    .background(bg)
-                    .clip(RoundedRectangle::new(10.0))
-                    .on_tap({
-                        let selection_for_action = selection_for_action.clone();
-                        move || selection_for_action.set(dest)
-                    }),
-                )
-            }))
+                    let bg = if active {
+                        Srgb::WHITE.with_opacity(0.14)
+                    } else {
+                        Srgb::WHITE.with_opacity(0.0)
+                    };
+
+                    AnyView::new(
+                        hstack((
+                            SystemIcon::from_static(dest.icon_name())
+                                .size(18.0, 18.0)
+                                .foreground(dest.icon_color()),
+                            text(dest.title()).body().foreground(Foreground),
+                            spacer(),
+                            text(format!("{count}"))
+                                .caption()
+                                .foreground(MutedForeground),
+                        ))
+                        .padding_with(EdgeInsets::symmetric(10.0, 14.0))
+                        .background(bg)
+                        .clip(RoundedRectangle::new(10.0))
+                        .on_tap({
+                            let selection_for_action = selection_for_action.clone();
+                            move || selection_for_action.set(Some(dest))
+                        }),
+                    )
+                },
+            ))
         }),
     ))
     .width(300.0)
     .background(Material::Thick)
 }
 
-fn content(selection: Binding<SidebarDestination>, search: Binding<Str>) -> impl View {
-    Dynamic::watch(selection.zip(&search), move |(dest, query)| {
+fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
+    Dynamic::watch(search.clone(), move |query| {
         let normalized_query = normalized_search_query(&query);
         let (today_rows, upcoming_rows) = reminders_for(dest);
         let today_rows = filter_reminders(today_rows, normalized_query.as_deref());
@@ -311,17 +335,31 @@ fn content(selection: Binding<SidebarDestination>, search: Binding<Str>) -> impl
             .background(Material::Regular),
         )
     })
+    .title(dest.title())
+    .searchable(&search, "Search reminders")
+    .navigation_bar_trailing(
+        button(SystemIcon::PLUS.size(16.0, 16.0))
+            .style(ButtonStyle::Borderless)
+            .action(|| {}),
+    )
+}
+
+fn placeholder_view() -> impl View {
+    zstack((
+        Material::Regular,
+        vstack((
+            text("Select a list").title().foreground(Foreground),
+            text("Choose one of your reminder collections from the sidebar.")
+                .body()
+                .foreground(MutedForeground),
+        ))
+        .spacing(10.0),
+    ))
 }
 
 fn content_header(dest: SidebarDestination) -> impl View {
     vstack((
-        hstack((
-            text(dest.title()).title().bold().foreground(Foreground),
-            spacer(),
-            button(SystemIcon::PLUS.size(16.0, 16.0))
-                .style(ButtonStyle::Borderless)
-                .action(|| {}),
-        )),
+        text(dest.title()).title().bold().foreground(Foreground),
         text("Friday, February 6")
             .caption()
             .foreground(MutedForeground),
@@ -346,7 +384,7 @@ fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
                     vstack((
                         text(row.title).body().foreground(Foreground),
                         row.subtitle
-                            .map(|s| text(s).caption().foreground(MutedForeground)),
+                            .map(|subtitle| text(subtitle).caption().foreground(MutedForeground)),
                     ))
                     .spacing(2.0),
                     spacer(),

@@ -8,25 +8,26 @@ extern crate alloc;
 
 /// Provides search functionality for navigation.
 pub mod search;
+pub mod split;
 pub mod tab;
 
 use alloc::{rc::Rc, vec::Vec};
-use core::{
-    cell::{Cell, RefCell},
-    fmt::Debug,
-};
+use core::{cell::RefCell, fmt::Debug};
 
 use nami::{
-    Computed,
+    Binding, Computed,
     collection::{Collection, List},
 };
 use waterui_controls::button;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{
-    AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
-    impl_extractor, layout::StretchAxis, raw_view,
+    AnyView, Environment, Error, Metadata, Retain, Str, View, env::use_env, extract::Extractor,
+    extract::Use, handler::ViewBuilder, impl_extractor, layout::StretchAxis, raw_view,
 };
 use waterui_graphics::color::Color;
+
+pub use search::NavigationSearch;
+pub use split::{NavigationSplitLayout, NavigationSplitView};
 
 /// A view that combines a navigation bar with content.
 ///
@@ -101,6 +102,44 @@ impl NavigationController {
     }
 }
 
+/// Programmatic controller for a typed navigation path.
+#[derive(Clone)]
+pub struct NavigationPathController<T>(NavigationPath<T>);
+
+impl<T> Debug for NavigationPathController<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationPathController").finish()
+    }
+}
+
+impl<T: 'static + Clone> NavigationPathController<T> {
+    /// Pushes a new route value.
+    pub fn push(&self, value: T) {
+        self.0.push(value);
+    }
+
+    /// Pops the top route value.
+    pub fn pop(&self) {
+        self.0.pop();
+    }
+
+    /// Pops the top `n` route values.
+    pub fn pop_n(&self, n: usize) {
+        self.0.pop_n(n);
+    }
+
+    /// Clears the entire path.
+    pub fn clear(&self) {
+        self.0.clear();
+    }
+}
+
+impl<T: 'static + Clone> Extractor for NavigationPathController<T> {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        <Use<Self> as Extractor>::extract(env).map(|value| value.0)
+    }
+}
+
 raw_view!(NavigationView, StretchAxis::Both);
 
 /// The display mode for the navigation bar title.
@@ -140,6 +179,12 @@ pub enum NavigationTransition {
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
+    /// Leading navigation bar content.
+    pub leading: AnyView,
+    /// Trailing navigation bar content.
+    pub trailing: AnyView,
+    /// Optional search field configuration displayed in navigation chrome.
+    pub search: Option<NavigationSearch>,
     /// The background color of the navigation bar
     pub color: Computed<Color>,
     /// Whether the navigation bar is hidden
@@ -152,6 +197,9 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             title: AnyView::default(),
+            leading: AnyView::default(),
+            trailing: AnyView::default(),
+            search: None,
             // Sentinel: treat fully-transparent as "use platform default".
             // Backends can still choose to render this as transparent if they prefer.
             color: Computed::constant(Color::transparent()),
@@ -173,6 +221,17 @@ pub struct NavigationLink<Label, Content> {
     /// A function that creates the destination view when the link is activated
     pub content: Content,
 }
+
+/// A typed navigation link that pushes a route value onto a path-backed stack.
+#[must_use]
+#[derive(Debug)]
+pub struct NavigationValueLink<Label, T> {
+    /// The label view displayed for this link.
+    pub label: Label,
+    /// The route value pushed when the link is activated.
+    pub value: T,
+}
+
 impl<Label, Content> NavigationLink<Label, Content>
 where
     Label: View,
@@ -186,6 +245,17 @@ where
     /// * `content` - A function that creates the destination view
     pub const fn new(label: Label, content: Content) -> Self {
         Self { label, content }
+    }
+}
+
+impl NavigationLink<(), ()> {
+    /// Creates a typed value link for a path-backed navigation stack.
+    pub fn value<Label, T>(label: Label, value: T) -> NavigationValueLink<Label, T>
+    where
+        Label: View,
+        T: 'static + Clone,
+    {
+        NavigationValueLink { label, value }
     }
 }
 
@@ -270,53 +340,50 @@ raw_view!(NavigationStack<(),()>, StretchAxis::Both);
 
 impl<T, F> View for NavigationStack<NavigationPath<T>, F>
 where
-    T: 'static + Clone + View,
+    T: 'static + Clone + PartialEq,
     F: 'static + Fn(T) -> NavigationView,
 {
     fn body(self, _env: &Environment) -> impl View {
         let path: NavigationPath<T> = self.path;
+        let path_controller = NavigationPathController(path.clone());
         let destination = self.destination;
         let root = self.root;
         let transition = self.transition;
-        NavigationStack::new(use_env(move |receiver: NavigationController| {
-            let path = path.inner;
-            for component in &path {
-                receiver.push(destination(component));
-            }
-
-            let old_len = Cell::new(path.len());
-            #[allow(clippy::cast_possible_wrap)]
-            let guard = path.watch(.., move |slice| {
-                // list is a stack, only pop or push. So we only watch its length change
-                let slice = slice.into_value();
-                let len = slice.len();
-                let change = len as isize - old_len.get() as isize;
-                if change > 0 {
-                    // length increase, it has been pushed
-                    for item in slice.iter().skip(old_len.get()).take(len - old_len.get()) {
-                        receiver.push(destination(item.clone()));
-                    }
+        NavigationStack::new(use_env(
+            move |(receiver, mut local_env): (NavigationController, Environment)| {
+                let path = path.inner;
+                let current_path = RefCell::new(path.snapshot());
+                for component in current_path.borrow().iter().cloned() {
+                    receiver.push(destination(component));
                 }
-                #[allow(clippy::cast_sign_loss)]
-                if change < 0 {
-                    //length decrease, it has been popped
-                    let pop_count = (-change) as usize;
-                    for _ in 0..pop_count {
+
+                let guard = path.watch(.., move |slice| {
+                    let next_path = slice.into_value().to_vec();
+                    let mut current_path = current_path.borrow_mut();
+                    let shared_prefix = shared_prefix_len(&current_path, &next_path);
+
+                    for _ in shared_prefix..current_path.len() {
                         receiver.pop();
                     }
-                }
-                old_len.set(len);
-            });
 
-            Metadata::new(root, Retain::new(guard))
-        }))
+                    for item in next_path.iter().skip(shared_prefix) {
+                        receiver.push(destination(item.clone()));
+                    }
+
+                    *current_path = next_path;
+                });
+
+                local_env.insert(path_controller.clone());
+                Metadata::new(Metadata::new(root, Retain::new(guard)), local_env)
+            },
+        ))
         .transition(transition)
     }
 }
 
 /// A path representing the current navigation stack.
 #[must_use]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NavigationPath<T> {
     inner: List<T>,
 }
@@ -350,7 +417,7 @@ impl<T: 'static + Clone> NavigationPath<T> {
     }
 
     /// Pushes a new item onto the navigation path.
-    pub fn push(&mut self, value: T) {
+    pub fn push(&self, value: T) {
         self.inner.push(value);
     }
 
@@ -364,6 +431,29 @@ impl<T: 'static + Clone> NavigationPath<T> {
         for _ in 0..n {
             self.pop();
         }
+    }
+
+    /// Clears the entire path.
+    pub fn clear(&self) {
+        self.inner.clear();
+    }
+
+    /// Returns the current path length.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns whether the path is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns a cloned snapshot of the path.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<T> {
+        self.inner.snapshot()
     }
 
     /// Returns an iterator over the items in the navigation path.
@@ -387,6 +477,24 @@ where
         button(self.label)
             .extract::<NavigationController>()
             .action(move |receiver| receiver.push_builder(destination.clone()))
+    }
+}
+
+impl<Label, T> View for NavigationValueLink<Label, T>
+where
+    Label: View,
+    T: 'static + Clone,
+{
+    fn body(self, env: &waterui_core::Environment) -> impl View {
+        debug_assert!(
+            env.get::<NavigationPathController<T>>().is_some(),
+            "NavigationLink::value used outside of a path-backed navigation stack"
+        );
+
+        let value = self.value;
+        button(self.label)
+            .extract::<NavigationPathController<T>>()
+            .action(move |controller| controller.push(value.clone()))
     }
 }
 
@@ -439,6 +547,27 @@ impl NavigationView {
     pub fn large_title(self) -> Self {
         self.navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large)
     }
+
+    /// Sets leading navigation bar content.
+    #[must_use]
+    pub fn navigation_bar_leading(mut self, leading: impl View) -> Self {
+        self.bar.leading = AnyView::new(leading);
+        self
+    }
+
+    /// Sets trailing navigation bar content.
+    #[must_use]
+    pub fn navigation_bar_trailing(mut self, trailing: impl View) -> Self {
+        self.bar.trailing = AnyView::new(trailing);
+        self
+    }
+
+    /// Installs a navigation-scoped search field in the bar chrome.
+    #[must_use]
+    pub fn searchable(mut self, text: &Binding<Str>, prompt: impl Into<Str>) -> Self {
+        self.bar.search = Some(NavigationSearch::new(text, prompt));
+        self
+    }
 }
 
 /// Convenience function to create a navigation view.
@@ -449,4 +578,39 @@ impl NavigationView {
 /// * `view` - The content view to display
 pub fn navigation(title: impl View, view: impl View) -> NavigationView {
     NavigationView::new(title, view)
+}
+
+fn shared_prefix_len<T: PartialEq>(left: &[T], right: &[T]) -> usize {
+    left.iter()
+        .zip(right.iter())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::shared_prefix_len;
+
+    #[test]
+    fn shared_prefix_is_entire_prefix() {
+        let left = vec![1, 2, 3];
+        let right = vec![1, 2, 4];
+        assert_eq!(shared_prefix_len(&left, &right), 2);
+    }
+
+    #[test]
+    fn shared_prefix_is_zero_when_root_changes() {
+        let left = vec![1, 2];
+        let right = vec![3, 4];
+        assert_eq!(shared_prefix_len(&left, &right), 0);
+    }
+
+    #[test]
+    fn shared_prefix_matches_complete_path() {
+        let left = vec![1, 2, 3];
+        let right = vec![1, 2, 3];
+        assert_eq!(shared_prefix_len(&left, &right), 3);
+    }
 }
