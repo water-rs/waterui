@@ -18,7 +18,7 @@ struct RuntimeLocaleState {
     listener: Option<ListenerHandle>,
 }
 
-pub(crate) fn runtime_locale_binding() -> Binding<Locale> {
+pub fn runtime_locale_binding() -> Binding<Locale> {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some(existing) = slot.as_mut() {

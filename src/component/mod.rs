@@ -7,13 +7,9 @@ pub use waterui_controls::*;
 
 pub mod badge;
 pub mod focus;
-pub mod label;
 pub mod lazy;
 pub mod link;
 pub mod list;
-
-#[doc(inline)]
-pub use label::{Label, label};
 
 pub mod progress;
 #[doc(inline)]
