@@ -24,7 +24,7 @@ icu_locid = "1.5"
 icu_locid_transform = "1.5"
 icu_plurals = "1.5"
 icu_decimal = "1.5"
-icu_datetime = "1.5"
+icu_datetime = { version = "1.5", features = ["experimental"] }
 icu_timezone = "1.5"
 icu_calendar = "1.5"
 icu_list = "1.5"

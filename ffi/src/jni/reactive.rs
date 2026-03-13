@@ -494,17 +494,13 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTi
     binding_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
+    use jiff::civil::DateTime;
     use nami::Signal;
-    use waterui_form::picker::date::PrimitiveDateTime;
 
     let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<PrimitiveDateTime>>(
-            binding_ptr,
-            "readBindingDateTime",
-            "binding",
-        )
+        &*require_jlong_ptr::<WuiBinding<DateTime>>(binding_ptr, "readBindingDateTime", "binding")
     };
-    let date_time: PrimitiveDateTime = binding.get();
+    let date_time: DateTime = binding.get();
     let ffi = date_time.into_ffi();
 
     create_date_time_struct(
@@ -533,14 +529,10 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTim
 ) {
     use crate::IntoRust;
     use crate::components::form::WuiDateTime;
-    use waterui_form::picker::date::PrimitiveDateTime;
+    use jiff::civil::DateTime;
 
     let binding = unsafe {
-        &*require_jlong_ptr::<WuiBinding<PrimitiveDateTime>>(
-            binding_ptr,
-            "setBindingDateTime",
-            "binding",
-        )
+        &*require_jlong_ptr::<WuiBinding<DateTime>>(binding_ptr, "setBindingDateTime", "binding")
     };
     let wui_date_time = WuiDateTime {
         year,
@@ -1080,7 +1072,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDate<
     create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32).into_raw()
 }
 
-/// Read PrimitiveDateTime computed value and return Java DateTimeStruct.
+/// Read DateTime computed value and return Java DateTimeStruct.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateTime<'local>(
     mut env: JNIEnv<'local>,
@@ -1088,17 +1080,17 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateT
     computed_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
+    use jiff::civil::DateTime;
     use waterui::Signal;
-    use waterui_form::picker::date::PrimitiveDateTime;
 
     let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<PrimitiveDateTime>>(
+        &*require_jlong_ptr::<WuiComputed<DateTime>>(
             computed_ptr,
             "readComputedDateTime",
             "computed",
         )
     };
-    let date_time: PrimitiveDateTime = computed.get();
+    let date_time: DateTime = computed.get();
     let ffi = date_time.into_ffi();
 
     create_date_time_struct(
@@ -1579,7 +1571,7 @@ unsafe extern "C" fn watcher_call_date(
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
-/// Call function for PrimitiveDateTime watcher.
+/// Call function for DateTime watcher.
 unsafe extern "C" fn watcher_call_date_time(
     data: *mut (),
     value: crate::components::form::WuiDateTime,

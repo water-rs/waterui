@@ -218,7 +218,7 @@ macro_rules! ffi_computed {
                     // Take ownership of the watcher - it will be dropped when the guard drops
                     let watcher = alloc::boxed::Box::from_raw(watcher);
                     let guard = (&*computed).watch(move |ctx| {
-                        let metadata = ctx.metadata().clone();
+                        let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
                         watcher.call(value, metadata);
                     });
@@ -454,7 +454,7 @@ macro_rules! ffi_binding {
                         if is_setting_up_clone.get() {
                             return; // Skip synchronous callback during setup
                         }
-                        let metadata = ctx.metadata().clone();
+                        let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
                         watcher.call(value, metadata);
                     });
@@ -706,9 +706,9 @@ jni_computed_primitive!(i32, horizontal_alignment);
 
 // Date reactive bindings (using WuiDate FFI representation)
 use crate::components::form::{WuiDate, WuiDateTime};
-use waterui_form::picker::date::{Date, PrimitiveDateTime};
+use jiff::civil::{Date, DateTime};
 ffi_reactive!(Date, WuiDate, date);
-ffi_reactive!(PrimitiveDateTime, WuiDateTime, date_time);
+ffi_reactive!(DateTime, WuiDateTime, date_time);
 
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
@@ -739,7 +739,7 @@ impl<T: IntoFFI> WuiWatcher<T> {
         let cleaner = Cleaner { data, drop };
         WuiWatcher(Rc::new(move |ctx| {
             let _ = &cleaner; // Closure captures cleaner to ensure it lives as long as the watcher.
-            let metadata = ctx.metadata().clone();
+            let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
             unsafe {
                 call(data, value.into_ffi(), metadata.into_ffi());
@@ -844,7 +844,7 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
             if is_setting_up_clone.get() {
                 return; // Skip synchronous callback during setup
             }
-            let metadata = ctx.metadata().clone();
+            let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
             let value = ctx.into_value();
             watcher.call(value, metadata);
         });

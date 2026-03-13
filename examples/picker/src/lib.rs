@@ -2,31 +2,32 @@
 //!
 //! This example showcases:
 //! - Picker with different styles (Automatic, Menu, Radio)
-//! - DatePicker with various date/time selection modes
-//! - ColorPicker with alpha and HDR support
+//! - DatePicker with typed `jiff` date/time bindings
+//! - Calendar for single-date month-grid selection
 //! - MultiDatePicker for selecting multiple dates
+//! - ColorPicker with alpha and HDR support
 //! - FilePicker for file selection and import
 
 use std::collections::BTreeSet;
-use time::{Date, Month, PrimitiveDateTime, Time};
+
+use jiff::civil::{Date, DateTime, Time};
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
-use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::file::FilePicker;
+use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
 use waterui::media::Url;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::RoundedRectangle;
 
-// Color constants for picker defaults
 const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
 const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");
 const PICKER_RED: Srgb = Srgb::from_hex("#E61A66");
 
-/// Fruit options for picker demos
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum Fruit {
     #[default]
@@ -49,31 +50,51 @@ impl Fruit {
     }
 }
 
+fn fixed_date(year: i16, month: i8, day: i8) -> Date {
+    Date::new(year, month, day).expect("picker example date must be valid")
+}
+
+fn fixed_time(hour: i8, minute: i8, second: i8) -> Time {
+    Time::new(hour, minute, second, 0).expect("picker example time must be valid")
+}
+
+fn fixed_date_time(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> DateTime {
+    DateTime::new(year, month, day, hour, minute, second, 0)
+        .expect("picker example date-time must be valid")
+}
+
+fn decorated_dates() -> BTreeSet<Date> {
+    [
+        fixed_date(2025, 6, 3),
+        fixed_date(2025, 6, 7),
+        fixed_date(2025, 6, 15),
+        fixed_date(2025, 6, 24),
+    ]
+    .into_iter()
+    .collect()
+}
+
 fn main() -> impl View {
-    // Picker bindings for style demos
     let automatic_selection = binding(Fruit::Apple);
     let menu_selection = binding(Fruit::Banana);
     let radio_selection = binding(Fruit::Cherry);
 
-    // DatePicker bindings
-    let date = binding(Date::from_calendar_date(2025, Month::January, 1).unwrap());
-    let time_only = binding(Time::from_hms(14, 30, 0).unwrap());
-    let datetime = binding(PrimitiveDateTime::new(
-        Date::from_calendar_date(2025, Month::June, 15).unwrap(),
-        Time::from_hms(9, 45, 30).unwrap(),
-    ));
+    let date = binding(fixed_date(2025, 1, 1));
+    let time_only = binding(fixed_time(14, 30, 0));
+    let datetime = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
+    let calendar_date = binding(fixed_date(2025, 6, 15));
     let available_dates = binding(BTreeSet::<Date>::new());
-    let available_date_count = available_dates.map(|dates| dates.len()).computed();
+    let available_date_count = available_dates
+        .map(|dates: BTreeSet<Date>| dates.len())
+        .computed();
+    let decorated_dates = waterui::Computed::constant(decorated_dates());
 
-    // ColorPicker bindings
     let basic_color = binding(Color::from(PICKER_BLUE));
     let alpha_color = binding(Color::from(PICKER_PINK).with_opacity(0.8));
     let hdr_color = binding(Color::from(PICKER_RED));
 
-    // FilePicker binding
     let selected_files = binding(Vec::new());
 
-    // Create picker items
     let picker_items: Vec<_> = Fruit::all()
         .into_iter()
         .map(|(fruit, label)| text(label).tag(fruit))
@@ -81,13 +102,11 @@ fn main() -> impl View {
 
     scroll(
         vstack((
-            // Header section
             vstack((
                 text("Picker Gallery").title(),
-                text("Demonstrating WaterUI's picker components").body(),
+                text("Demonstrating WaterUI form and picker components").body(),
             )),
             Divider,
-            // Section 0: Picker Styles
             vstack((
                 text("Picker Styles").headline(),
                 text("Choose from different picker presentation styles").body(),
@@ -106,17 +125,13 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
-            // Section 1: DatePicker
             vstack((
                 text("DatePicker").headline(),
                 text("Select dates and times with platform-native pickers").body(),
                 spacer(),
                 DatePicker::new(&date)
                     .label("Date Only")
-                    .range(
-                        Date::from_calendar_date(2025, Month::January, 1).unwrap()
-                            ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
-                    ),
+                    .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
                 text!("Selected date: {date}"),
                 spacer(),
                 DatePicker::time(&time_only)
@@ -131,7 +146,31 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
-            // Section 2: ColorPicker
+            vstack((
+                text("Calendar").headline(),
+                text("Month-grid calendar with single-date selection and passive decorations")
+                    .body(),
+                spacer(),
+                Calendar::new(&calendar_date)
+                    .label("Trip Date")
+                    .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
+                    .decorated(decorated_dates.clone()),
+                text!("Selected calendar date: {calendar_date}"),
+            ))
+            .padding_with(EdgeInsets::all(12.0)),
+            Divider,
+            vstack((
+                text("Multi-Date Picker").headline(),
+                text("Month-grid calendar for selecting multiple dates").body(),
+                spacer(),
+                MultiDatePicker::new(&available_dates)
+                    .label("Available Dates")
+                    .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
+                    .decorated(decorated_dates),
+                text!("Selected dates: {available_date_count}"),
+            ))
+            .padding_with(EdgeInsets::all(12.0)),
+            Divider,
             vstack((
                 text("ColorPicker").headline(),
                 text("Select colors with optional alpha and HDR support").body(),
@@ -151,22 +190,6 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
-            // Section 3: MultiDatePicker
-            vstack((
-                text("MultiDatePicker").headline(),
-                text("Select multiple dates in a cross-platform calendar").body(),
-                spacer(),
-                MultiDatePicker::new(&available_dates)
-                    .label("Availability")
-                    .range(
-                        Date::from_calendar_date(2025, Month::January, 1).unwrap()
-                            ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
-                    ),
-                text!("Selected dates: {available_date_count}"),
-            ))
-            .padding_with(EdgeInsets::all(12.0)),
-            Divider,
-            // Section 4: FilePicker
             vstack((
                 text("FilePicker").headline(),
                 text("Select files from the device").body(),
@@ -177,7 +200,6 @@ fn main() -> impl View {
                 file_list(&selected_files),
             ))
             .padding_with(EdgeInsets::all(12.0)),
-            // Footer
             vstack((
                 Divider,
                 text("Built with WaterUI Picker Components").caption(),
@@ -187,7 +209,6 @@ fn main() -> impl View {
     )
 }
 
-/// Helper view to display picker selection
 fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
     let selection = selection.clone();
     hstack((
@@ -196,7 +217,6 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
     ))
 }
 
-/// Helper view to display a color preview
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
     use waterui::shape::{Rectangle, ShapeExt};
     hstack((
@@ -214,7 +234,6 @@ fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
     ))
 }
 
-/// Helper view to display selected files
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {
     let files = files.clone();
     text(files.map(|urls| {
@@ -230,7 +249,7 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main(), env)
+    App::new(main, env)
 }
 
 waterui_ffi::export!();
