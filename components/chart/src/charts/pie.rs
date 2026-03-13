@@ -9,6 +9,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{draw_pie, interactive_signal_canvas, pie_geometry};
+use crate::composition::ChartComposition;
 use crate::data::DataPoint;
 use crate::interaction::{HitResult, SelectionBindings, SliceDatum};
 use crate::params::{ChartParamError, DonutInnerRadius};
@@ -19,6 +20,7 @@ pub struct PieChart<S: Signal<Output = Vec<DataPoint>>> {
     colors: Vec<Srgb>,
     inner_radius: f32,
     selection: SelectionBindings<SliceDatum>,
+    composition: ChartComposition<SliceDatum>,
 }
 
 impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
@@ -29,8 +31,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
             colors: Vec::new(),
             inner_radius: 0.0,
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(SliceDatum);
 
     #[must_use]
     pub fn colors(mut self, colors: Vec<Srgb>) -> Self {
@@ -78,6 +83,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> 
         let colors = self.colors;
         let inner_radius = self.inner_radius;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| pie_geometry(ctx, data, inner_radius),
             move |ctx, data, _geometry| {
@@ -85,6 +91,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> 
                 draw_pie(ctx, data, &colors, inner_radius);
             },
             self.selection,
+            self.composition,
         )
     }
 }

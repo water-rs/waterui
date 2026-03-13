@@ -1,3 +1,5 @@
+//! Snapshot-layout regression coverage for chart readouts.
+
 mod support;
 
 use waterui::Binding;
@@ -24,7 +26,11 @@ fn semantic_chart_shell_keeps_long_readouts_inside_viewport() {
         )
     });
 
-    let focused = app.query().role(Role::LABEL).label(FOCUSED_READOUT).single();
+    let focused = app
+        .query()
+        .role(Role::LABEL)
+        .label(FOCUSED_READOUT)
+        .single();
     let focused_bounds = focused.bounds();
     assert!(
         focused_bounds.height() > 0.0,
@@ -35,7 +41,11 @@ fn semantic_chart_shell_keeps_long_readouts_inside_viewport() {
         "focused readout must stay inside viewport: {focused_bounds:?}"
     );
 
-    let selected = app.query().role(Role::LABEL).label(SELECTED_READOUT).single();
+    let selected = app
+        .query()
+        .role(Role::LABEL)
+        .label(SELECTED_READOUT)
+        .single();
     let selected_bounds = selected.bounds();
     assert!(
         selected_bounds.height() > 0.0,

@@ -5,10 +5,11 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{
-    bubble_bounds, bubble_geometry, draw_bubble, interactive_signal_canvas,
+    bubble_bounds, bubble_geometry, draw_bubble, interactive_cartesian_signal_canvas,
 };
+use crate::composition::ChartComposition;
 use crate::data::BubblePoint;
-use crate::interaction::{HitResult, SelectionBindings};
+use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
 /// Bubble chart for 3D data visualization.
@@ -19,6 +20,9 @@ pub struct BubbleChart<S: Signal<Output = Vec<BubblePoint>>> {
     max_radius: f32,
     opacity: f32,
     selection: SelectionBindings<BubblePoint>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
+    composition: ChartComposition<BubblePoint>,
 }
 
 impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
@@ -31,8 +35,15 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
             max_radius: 30.0,
             opacity: 0.7,
             selection: SelectionBindings::default(),
+            cartesian_selection: CartesianSelectionBindings::default(),
+            cartesian_viewport: CartesianViewportBindings::default(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::interaction::chart_x_selection_methods!();
+
+    crate::composition::chart_composition_methods!(BubblePoint);
 
     #[must_use]
     pub fn color(mut self, color: Srgb) -> Self {
@@ -113,12 +124,11 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
         let min_radius = self.min_radius;
         let max_radius = self.max_radius;
         let opacity = self.opacity;
-        interactive_signal_canvas(
+        interactive_cartesian_signal_canvas(
+            _env,
             self.data,
-            move |ctx, data| {
-                let bounds = bubble_bounds(data);
-                bubble_geometry(ctx, data, bounds, min_radius, max_radius)
-            },
+            |data: &Vec<BubblePoint>| bubble_bounds(data),
+            move |ctx, data, bounds| bubble_geometry(ctx, data, bounds, min_radius, max_radius),
             move |ctx, data, geometry| {
                 draw_bubble(
                     ctx,
@@ -131,6 +141,9 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
                 );
             },
             self.selection,
+            self.cartesian_selection,
+            self.cartesian_viewport,
+            self.composition,
         )
     }
 }
