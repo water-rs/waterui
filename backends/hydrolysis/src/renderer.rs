@@ -44,8 +44,8 @@ use waterui::metadata::context_menu::ContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationStack, NavigationTransition,
-    NavigationView,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    NavigationTransition, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
@@ -57,6 +57,7 @@ use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
 use waterui_controls::menu::MenuItem;
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
+use waterui_controls::text_field::TextField;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
@@ -1560,6 +1561,9 @@ const NAVIGATION_TITLE_HEIGHT_INLINE: f64 = 24.0;
 const NAVIGATION_TITLE_HEIGHT_LARGE: f64 = 32.0;
 const NAVIGATION_BAR_HORIZONTAL_INSET: f64 = 12.0;
 const NAVIGATION_BAR_BOTTOM_INSET: f64 = 8.0;
+const NAVIGATION_BAR_ITEM_SPACING: f64 = 8.0;
+const NAVIGATION_SEARCH_HEIGHT: f64 = 40.0;
+const NAVIGATION_SEARCH_VERTICAL_INSET: f64 = 8.0;
 const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
 const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 
@@ -2296,14 +2300,36 @@ fn navigation_bar_height(view: &NavigationView) -> f64 {
     if view.bar.hidden.get() {
         0.0
     } else {
-        match view.bar.display_mode {
+        let base = match view.bar.display_mode {
             waterui::navigation::NavigationTitleDisplayMode::Automatic => {
                 NAVIGATION_BAR_HEIGHT_AUTOMATIC
             }
             waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
             waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
-        }
+        };
+        let search_extra = if view.bar.search.is_some() {
+            NAVIGATION_SEARCH_HEIGHT + NAVIGATION_SEARCH_VERTICAL_INSET * 2.0
+        } else {
+            0.0
+        };
+        base + search_extra
     }
+}
+
+fn navigation_base_bar_height_for_display_mode(
+    display_mode: waterui::navigation::NavigationTitleDisplayMode,
+) -> f64 {
+    match display_mode {
+        waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+            NAVIGATION_BAR_HEIGHT_AUTOMATIC
+        }
+        waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
+        waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+    }
+}
+
+fn split_compact_threshold(sidebar_width: f64) -> f64 {
+    sidebar_width + 360.0
 }
 
 fn measure_view_intrinsic(view: &AnyView, state: &mut HydroState, env: &Environment) -> LayoutSize {
@@ -2481,9 +2507,35 @@ fn measure_navigation_view_intrinsic(
     } else {
         LayoutSize::zero()
     };
+    let leading_size = if !navigation.bar.leading.is::<()>() {
+        measure_view_intrinsic(&navigation.bar.leading, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let trailing_size = if !navigation.bar.trailing.is::<()>() {
+        measure_view_intrinsic(&navigation.bar.trailing, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let search_size = if let Some(search) = navigation.bar.search.as_ref() {
+        measure_view_intrinsic(
+            &AnyView::new(TextField::new(&search.text).prompt(search.prompt.clone())),
+            state,
+            env,
+        )
+    } else {
+        LayoutSize::zero()
+    };
     let content_size = measure_view_intrinsic(&navigation.content, state, env);
     let width = f64::from(content_size.width)
-        .max(f64::from(title_size.width) + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0);
+        .max(
+            f64::from(leading_size.width)
+                + f64::from(title_size.width)
+                + f64::from(trailing_size.width)
+                + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0
+                + NAVIGATION_BAR_ITEM_SPACING * 2.0,
+        )
+        .max(f64::from(search_size.width) + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0);
     let height = f64::from(content_size.height) + bar_height;
     LayoutSize::new(width as f32, height as f32)
 }
@@ -2980,6 +3032,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<LazyContainer>);
         $macro!(Native<ScrollView>);
         $macro!(Native<NavigationView>);
+        $macro!(Native<NavigationSplitLayout>);
         $macro!(Native<NavigationStack<(), ()>>);
         $macro!(Native<Tabs>);
         $macro!(Native<ListConfig>);
@@ -3317,6 +3370,34 @@ impl HydroNativeView for Native<NavigationView> {
                 None,
             );
         }
+    }
+}
+
+impl HydroNativeView for Native<NavigationSplitLayout> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_navigation_split_layout(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        let split = view.as_inner();
+        let sidebar = measure_view_intrinsic(&split.sidebar, state, env);
+        let detail = if let Some(detail) = split.detail.as_ref() {
+            measure_navigation_view_intrinsic(detail, state, env)
+        } else {
+            measure_view_intrinsic(&split.placeholder, state, env)
+        };
+        LayoutSize::new(
+            (f64::from(split.sidebar_width) + f64::from(detail.width)) as f32,
+            f64::from(sidebar.height.max(detail.height)) as f32,
+        )
+    }
+
+    fn accessibility(
+        _state: &mut HydroState,
+        _ctx: RenderContext,
+        _view: &Self,
+        _env: &Environment,
+    ) {
     }
 }
 
@@ -6033,13 +6114,22 @@ impl HydrolysisRenderer {
     ) {
         let navigation = navigation.into_inner();
         let NavigationView { bar, content } = navigation;
+        let waterui::navigation::Bar {
+            title,
+            leading,
+            trailing,
+            search,
+            color,
+            hidden,
+            display_mode,
+        } = bar;
         let bar_height = if {
             let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&bar.hidden)
+            renderer.read_signal(&hidden)
         } {
             0.0
         } else {
-            match bar.display_mode {
+            let base = match display_mode {
                 waterui::navigation::NavigationTitleDisplayMode::Automatic => {
                     NAVIGATION_BAR_HEIGHT_AUTOMATIC
                 }
@@ -6049,10 +6139,17 @@ impl HydrolysisRenderer {
                 waterui::navigation::NavigationTitleDisplayMode::Large => {
                     NAVIGATION_BAR_HEIGHT_LARGE
                 }
-            }
+            };
+            let search_extra = if search.is_some() {
+                NAVIGATION_SEARCH_HEIGHT + NAVIGATION_SEARCH_VERTICAL_INSET * 2.0
+            } else {
+                0.0
+            };
+            base + search_extra
         };
 
         if bar_height > 0.0 {
+            let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode);
             let bar_rect = vello::kurbo::Rect::new(
                 ctx.bounds.x0,
                 ctx.bounds.y0,
@@ -6061,7 +6158,7 @@ impl HydrolysisRenderer {
             );
             let bar_color = {
                 let renderer = unsafe { ctx.renderer() };
-                let color = renderer.read_signal(&bar.color);
+                let color = renderer.read_signal(&color);
                 resolved_color_to_peniko(color.resolve(env).get())
             };
             {
@@ -6088,8 +6185,37 @@ impl HydrolysisRenderer {
                 );
             }
 
+            let leading_width = if !leading.is::<()>() {
+                f64::from(measure_view_intrinsic(&leading, _state, env).width)
+            } else {
+                0.0
+            };
+            let trailing_width = if !trailing.is::<()>() {
+                f64::from(measure_view_intrinsic(&trailing, _state, env).width)
+            } else {
+                0.0
+            };
+            let leading_rect = vello::kurbo::Rect::new(
+                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y0 + (base_bar_height - NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+                (bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET + leading_width).min(bar_rect.x1),
+                bar_rect.y0 + (base_bar_height + NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+            );
+            let trailing_rect = vello::kurbo::Rect::new(
+                (bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET - trailing_width).max(bar_rect.x0),
+                bar_rect.y0 + (base_bar_height - NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
+                bar_rect.y0 + (base_bar_height + NAVIGATION_TITLE_HEIGHT_INLINE) * 0.5,
+            );
+            if !leading.is::<()>() && leading_rect.width() > 0.0 && leading_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, leading, leading_rect);
+            }
+            if !trailing.is::<()>() && trailing_rect.width() > 0.0 && trailing_rect.height() > 0.0 {
+                Self::dispatch_in_rect(ctx, env, trailing, trailing_rect);
+            }
+
             let title_height = if matches!(
-                bar.display_mode,
+                display_mode,
                 waterui::navigation::NavigationTitleDisplayMode::Large
             ) {
                 NAVIGATION_TITLE_HEIGHT_LARGE
@@ -6097,13 +6223,42 @@ impl HydrolysisRenderer {
                 NAVIGATION_TITLE_HEIGHT_INLINE
             };
             let title_rect = vello::kurbo::Rect::new(
-                bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
-                bar_rect.y1 - title_height - NAVIGATION_BAR_BOTTOM_INSET,
-                bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
-                bar_rect.y1 - NAVIGATION_BAR_BOTTOM_INSET,
+                (bar_rect.x0
+                    + NAVIGATION_BAR_HORIZONTAL_INSET
+                    + leading_width
+                    + NAVIGATION_BAR_ITEM_SPACING)
+                    .min(bar_rect.x1),
+                bar_rect.y0 + (base_bar_height - title_height) * 0.5,
+                (bar_rect.x1
+                    - NAVIGATION_BAR_HORIZONTAL_INSET
+                    - trailing_width
+                    - NAVIGATION_BAR_ITEM_SPACING)
+                    .max(bar_rect.x0),
+                bar_rect.y0 + (base_bar_height + title_height) * 0.5,
             );
             if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
-                Self::dispatch_in_rect_without_accessibility(ctx, env, bar.title, title_rect);
+                Self::dispatch_in_rect_without_accessibility(ctx, env, title, title_rect);
+            }
+
+            if let Some(search) = search.as_ref() {
+                let search_rect = vello::kurbo::Rect::new(
+                    bar_rect.x0 + NAVIGATION_BAR_HORIZONTAL_INSET,
+                    bar_rect.y0 + base_bar_height + NAVIGATION_SEARCH_VERTICAL_INSET,
+                    bar_rect.x1 - NAVIGATION_BAR_HORIZONTAL_INSET,
+                    (bar_rect.y0
+                        + base_bar_height
+                        + NAVIGATION_SEARCH_VERTICAL_INSET
+                        + NAVIGATION_SEARCH_HEIGHT)
+                        .min(bar_rect.y1 - NAVIGATION_SEARCH_VERTICAL_INSET),
+                );
+                if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
+                    Self::dispatch_in_rect(
+                        ctx,
+                        env,
+                        AnyView::new(TextField::new(&search.text).prompt(search.prompt.clone())),
+                        search_rect,
+                    );
+                }
             }
         }
 
@@ -6115,6 +6270,59 @@ impl HydrolysisRenderer {
         );
         if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
             Self::dispatch_in_rect(ctx, env, content, content_rect);
+        }
+    }
+
+    fn render_navigation_split_layout(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        split: Native<NavigationSplitLayout>,
+        env: &Environment,
+    ) {
+        let split = split.into_inner();
+        let compact = ctx.bounds.width() < split_compact_threshold(f64::from(split.sidebar_width));
+
+        if compact && let Some(detail) = split.detail {
+            Self::dispatch_in_rect(ctx, env, AnyView::new(detail), ctx.bounds);
+            let back_button_rect = navigation_back_button_rect(ctx.bounds);
+            {
+                let scene = unsafe { ctx.scene() };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    vello::peniko::Color::new([0.92, 0.92, 0.94, 1.0]),
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(back_button_rect, 6.0),
+                );
+            }
+            let clear_selection = Rc::new(RefCell::new(split.clear_selection));
+            let env = env.clone();
+            let renderer = unsafe { ctx.renderer() };
+            renderer.register_pointer_target(
+                transformed_rect(ctx.hit_transform, back_button_rect),
+                move |_point, _| {
+                    let mut action = clear_selection.borrow_mut();
+                    (action)(&env);
+                    true
+                },
+            );
+            return;
+        }
+
+        let sidebar_width = f64::from(split.sidebar_width).min(ctx.bounds.width() * 0.5);
+        let sidebar_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0,
+            ctx.bounds.x0 + sidebar_width,
+            ctx.bounds.y1,
+        );
+        let detail_rect =
+            vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
+        Self::dispatch_in_rect(ctx, env, split.sidebar, sidebar_rect);
+        if let Some(detail) = split.detail {
+            Self::dispatch_in_rect(ctx, env, AnyView::new(detail), detail_rect);
+        } else {
+            Self::dispatch_in_rect(ctx, env, split.placeholder, detail_rect);
         }
     }
 

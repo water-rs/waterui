@@ -1,80 +1,97 @@
-//! Navigation Example - Demonstrates WaterUI's navigation capabilities
-//!
-//! This example showcases:
-//! - NavigationStack for managing a stack of views
-//! - NavigationLink for declarative navigation
-//! - Nested navigation (multiple levels deep)
-//! - Reactive state across navigation
+//! Navigation example demonstrating typed paths, bar slots, and split-ready APIs.
 
 use waterui::app::App;
-use waterui::navigation::{NavigationLink, NavigationStack};
-use waterui::prelude::theme_color::{MutedForeground, SurfaceVariant};
+use waterui::navigation::{
+    NavigationLink, NavigationPath, NavigationPathController, NavigationStack,
+};
+use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 
-/// A simple item to display in lists
-#[derive(Clone)]
-struct Item {
-    name: &'static str,
+#[derive(Clone, PartialEq, Eq)]
+struct Topic {
+    title: &'static str,
     description: &'static str,
 }
 
-/// Sample data for the example
-fn sample_items() -> Vec<Item> {
+#[derive(Clone, PartialEq, Eq)]
+enum Route {
+    Topic(Topic),
+    Settings,
+    About,
+    Privacy,
+    Nested(Topic),
+    Deepest,
+}
+
+fn sample_topics() -> Vec<Topic> {
     vec![
-        Item {
-            name: "Getting Started",
+        Topic {
+            title: "Getting Started",
             description: "Learn the basics of WaterUI navigation",
         },
-        Item {
-            name: "Advanced Patterns",
-            description: "Deep dive into complex navigation flows",
+        Topic {
+            title: "Advanced Patterns",
+            description: "Deep dive into route-driven navigation",
         },
-        Item {
-            name: "Best Practices",
-            description: "Tips for building great navigation experiences",
+        Topic {
+            title: "Best Practices",
+            description: "Keep navigation ergonomic and predictable",
         },
     ]
 }
 
-/// Root view containing the navigation stack
 fn main_view() -> impl View {
     let counter = binding(0);
     let notifications = binding(true);
     let dark_mode = binding(false);
-    NavigationStack::new(home_view(counter, notifications, dark_mode).title("Navigation Demo"))
+    let path = NavigationPath::new();
+
+    NavigationStack::with(
+        path.clone(),
+        home_view(counter.clone(), notifications.clone(), dark_mode.clone())
+            .title("Navigation Demo")
+            .navigation_bar_trailing(
+                button("Reset")
+                    .extract::<NavigationPathController<Route>>()
+                    .action(|path| path.clear()),
+            ),
+    )
+    .destination(move |route| match route {
+        Route::Topic(topic) => detail_view(topic, counter.clone()),
+        Route::Settings => settings_view(notifications.clone(), dark_mode.clone()),
+        Route::About => about_view(),
+        Route::Privacy => privacy_view(),
+        Route::Nested(topic) => nested_detail_view(topic),
+        Route::Deepest => deepest_view(),
+    })
 }
 
-/// Home screen with navigation links
 fn home_view(
     counter: Binding<i32>,
     notifications: Binding<bool>,
     dark_mode: Binding<bool>,
 ) -> impl View {
-    let items = sample_items();
-
     scroll(
         vstack((
             header_section(),
             counter_section(&counter),
-            topics_section(items, counter),
+            topics_section(sample_topics()),
             settings_section(notifications, dark_mode),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
 }
 
-/// Header section of home view
 fn header_section() -> impl View {
     vstack((
         text("Welcome to Navigation Demo").title(),
-        text("Tap any item below to navigate")
+        text("Typed route values drive every destination here.")
             .body()
             .foreground(MutedForeground),
     ))
 }
 
-/// Counter section demonstrating state persistence
 fn counter_section(counter: &Binding<i32>) -> impl View {
     let counter_display = counter.clone();
     vstack((
@@ -86,15 +103,15 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
             hstack((
                 button("-")
                     .with_state(counter)
-                    .action(|c| c.set(c.get() - 1)),
+                    .action(|value| value.set(value.get() - 1)),
                 spacer_min(16.0),
                 text!("Count: {counter_display}").body(),
                 spacer_min(16.0),
                 button("+")
                     .with_state(counter)
-                    .action(|c| c.set(c.get() + 1)),
+                    .action(|value| value.set(value.get() + 1)),
             )),
-            text("This counter persists across navigation")
+            text("This value stays live across the whole path.")
                 .caption()
                 .foreground(MutedForeground),
         ))
@@ -103,172 +120,121 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
     ))
 }
 
-/// Topics navigation links section
-fn topics_section(items: Vec<Item>, counter: Binding<i32>) -> impl View {
+fn topics_section(items: Vec<Topic>) -> impl View {
     vstack((
         spacer_min(16.0),
         Divider,
         spacer_min(16.0),
         text("Topics").sub_headline(),
         spacer_min(8.0),
-        vstack(
-            items
-                .into_iter()
-                .map(|item| item_row(item, counter.clone()))
-                .collect::<Vec<_>>(),
-        ),
+        vstack(items.into_iter().map(topic_row).collect::<Vec<_>>()),
     ))
 }
 
-/// Settings navigation link section
+fn topic_row(topic: Topic) -> impl View {
+    let route = Route::Topic(topic.clone());
+    NavigationLink::value(
+        vstack((
+            hstack((
+                text(topic.title).sub_headline(),
+                spacer(),
+                text(">").foreground(MutedForeground),
+            )),
+            text(topic.description)
+                .caption()
+                .foreground(MutedForeground),
+        ))
+        .padding_with(EdgeInsets::symmetric(8.0, 0.0)),
+        route,
+    )
+}
+
 fn settings_section(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl View {
+    let _ = (notifications, dark_mode);
     vstack((
         spacer_min(16.0),
         Divider,
         spacer_min(16.0),
-        NavigationLink::new(
+        NavigationLink::value(
             hstack((
                 text("Settings").sub_headline(),
                 spacer(),
                 text(">").foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            move || settings_view(notifications.clone(), dark_mode.clone()).title("Settings"),
+            Route::Settings,
         ),
     ))
 }
 
-/// A row that navigates to item detail
-fn item_row(item: Item, counter: Binding<i32>) -> impl View {
-    let name = item.name;
-    let description = item.description;
-
-    NavigationLink::new(
-        vstack((
-            hstack((
-                text(name).sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            )),
-            text(description).caption().foreground(MutedForeground),
-        ))
-        .padding_with(EdgeInsets::symmetric(8.0, 0.0)),
-        move || detail_view(item.clone(), counter.clone()).title(name),
-    )
-}
-
-/// Detail view for an item
-fn detail_view(item: Item, counter: Binding<i32>) -> impl View {
+fn detail_view(topic: Topic, counter: Binding<i32>) -> NavigationView {
     scroll(
         vstack((
-            detail_header(&item),
-            counter_display(counter),
-            detail_navigation(item.clone()),
-            detail_content(),
+            vstack((
+                text(topic.title).headline(),
+                spacer_min(8.0),
+                text(topic.description).body().foreground(MutedForeground),
+                spacer_min(24.0),
+                Divider,
+            )),
+            spacer_min(24.0),
+            vstack((
+                text("Shared Counter").sub_headline(),
+                text!("Current value: {counter}").body(),
+            ))
+            .padding_with(EdgeInsets::all(12.0))
+            .background(SurfaceVariant),
+            spacer_min(24.0),
+            NavigationLink::value(
+                hstack((
+                    text("Go Deeper").sub_headline(),
+                    spacer(),
+                    text(">").foreground(MutedForeground),
+                ))
+                .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+                Route::Nested(topic.clone()),
+            ),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+    .title(topic.title)
 }
 
-/// Header section of detail view
-fn detail_header(item: &Item) -> impl View {
-    vstack((
-        text(item.name).headline(),
-        spacer_min(8.0),
-        text(item.description).body().foreground(MutedForeground),
-        spacer_min(24.0),
-        Divider,
-    ))
-}
-
-/// Counter display in detail view
-fn counter_display(counter: Binding<i32>) -> impl View {
-    vstack((
-        spacer_min(24.0),
-        vstack((
-            text("Shared Counter").sub_headline(),
-            text!("Current value: {counter}").body(),
-            text("Modified from any screen")
-                .caption()
-                .foreground(MutedForeground),
-        ))
-        .padding_with(EdgeInsets::all(12.0))
-        .background(SurfaceVariant),
-    ))
-}
-
-/// Navigation link to nested view
-fn detail_navigation(item: Item) -> impl View {
-    vstack((
-        spacer_min(24.0),
-        NavigationLink::new(
-            hstack((
-                text("Go Deeper").sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            move || nested_detail_view(item.clone()).title("Nested View"),
-        ),
-    ))
-}
-
-/// Content placeholder in detail view
-fn detail_content() -> impl View {
-    vstack((
-        spacer_min(16.0),
-        vstack((
-            text("Content Area").sub_headline(),
-            spacer_min(8.0),
-            text("This is where the main content would appear.").body(),
-            text("Try using the back button to go back.")
-                .body()
-                .foreground(MutedForeground),
-        ))
-        .padding_with(EdgeInsets::all(12.0)),
-    ))
-}
-
-/// A nested detail view to demonstrate deep navigation
-fn nested_detail_view(item: Item) -> impl View {
+fn nested_detail_view(topic: Topic) -> NavigationView {
     vstack((
         text("Nested Navigation").title(),
         spacer_min(16.0),
-        text!("You navigated from: {name}", name = item.name).body(),
+        text!("You navigated from: {title}", title = topic.title).body(),
         spacer_min(24.0),
-        text("This demonstrates multi-level navigation.")
-            .body()
-            .foreground(MutedForeground),
-        spacer_min(24.0),
-        NavigationLink::new(
+        NavigationLink::value(
             hstack((
                 text("Go Even Deeper").sub_headline(),
                 spacer(),
                 text(">").foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            || deepest_view().title("Level 3"),
+            Route::Deepest,
         ),
     ))
     .padding_with(EdgeInsets::all(16.0))
+    .title("Nested View")
 }
 
-/// The deepest level view
-fn deepest_view() -> impl View {
+fn deepest_view() -> NavigationView {
     vstack((
         text("You're Deep!").headline(),
         spacer_min(24.0),
-        text("This is 3 levels deep in the navigation stack.").body(),
+        text("This is route level three in the stack.").body(),
         spacer_min(16.0),
-        text("Use the back button to return.")
+        text("Use the back button or Reset to unwind the path.")
             .body()
             .foreground(MutedForeground),
     ))
     .padding_with(EdgeInsets::all(16.0))
+    .title("Level 3")
 }
 
-/// Settings view with sub-navigation
-fn settings_view(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl View {
+fn settings_view(notifications: Binding<bool>, dark_mode: Binding<bool>) -> NavigationView {
     scroll(
         vstack((
             text("Settings").title(),
@@ -285,9 +251,10 @@ fn settings_view(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+    .title("Settings")
+    .navigation_bar_leading(text("Routes").caption().foreground(MutedForeground))
 }
 
-/// A toggle row in settings
 fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>) -> impl View {
     hstack((
         vstack((
@@ -300,81 +267,74 @@ fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>
     .padding_with(EdgeInsets::symmetric(8.0, 0.0))
 }
 
-/// Navigation links in settings
 fn settings_links() -> impl View {
     vstack((
-        NavigationLink::new(
+        NavigationLink::value(
             hstack((
                 text("About").sub_headline(),
                 spacer(),
                 text(">").foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            || about_view().title("About"),
+            Route::About,
         ),
         Divider,
-        NavigationLink::new(
+        NavigationLink::value(
             hstack((
                 text("Privacy Policy").sub_headline(),
                 spacer(),
                 text(">").foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
-            || privacy_view().title("Privacy"),
+            Route::Privacy,
         ),
     ))
 }
 
-/// About view
-fn about_view() -> impl View {
+fn about_view() -> NavigationView {
     vstack((
         text("Navigation Example").title(),
         spacer_min(8.0),
-        text("Version 1.0.0").caption().foreground(MutedForeground),
+        text("Route-driven WaterUI navigation")
+            .caption()
+            .foreground(MutedForeground),
         spacer_min(24.0),
-        text("Demonstrates WaterUI navigation capabilities.").body(),
+        text("This example exercises typed routes, path control, and bar slots.").body(),
         spacer_min(16.0),
-        features_list(),
+        vstack((
+            text("Features showcased:").foreground(Foreground),
+            "- Path-backed NavigationStack",
+            "- NavigationLink::value",
+            "- NavigationPathController",
+            "- Navigation bar leading/trailing slots",
+        )),
     ))
     .padding_with(EdgeInsets::all(16.0))
+    .title("About")
 }
 
-/// Features list in about view
-fn features_list() -> impl View {
-    vstack((
-        text("Features showcased:"),
-        spacer_min(8.0),
-        "- NavigationStack for view management",
-        "- NavigationLink for declarative navigation",
-        "- Nested navigation (multiple levels)",
-        "- State persistence across navigation",
-    ))
-}
-
-/// Privacy view
-fn privacy_view() -> impl View {
+fn privacy_view() -> NavigationView {
     scroll(
         vstack((
             text("Privacy Policy").title(),
             spacer_min(16.0),
-            text("This is a sample privacy policy page.").body(),
+            text("This is a sample privacy page for the navigation example.").body(),
             spacer_min(16.0),
-            text("Navigation allows easy access to information.")
+            text("Typed routes keep the navigation tree explicit and inspectable.")
                 .body()
                 .foreground(MutedForeground),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+    .title("Privacy")
 }
 
-/// Application entry point
 pub fn app(env: Environment) -> App {
     App::new(main_view(), env)
 }
 
 waterui_ffi::export!();
 
-// Preview for `water preview --platform {macos,android,ios}`.
 #[preview]
 fn navigation_preview() -> impl View {
     main_view()

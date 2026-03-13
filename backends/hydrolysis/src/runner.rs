@@ -448,6 +448,16 @@ fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &
                 runtime.window.state.set(waterui::window::WindowState::Closed);
                 should_close = true;
             }
+            InputEvent::Moved { x, y } => {
+                let frame = runtime.window.frame.get();
+                runtime
+                    .window
+                    .frame
+                    .set(waterui_core::layout::Rect::new(
+                        waterui_core::layout::Point::new(x, y),
+                        *frame.size(),
+                    ));
+            }
             InputEvent::Resize { width, height } => {
                 let frame = runtime.window.frame.get();
                 let logical_width = physical_to_logical_dimension(width, runtime.platform.scale_factor());
@@ -542,6 +552,19 @@ fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &
                 runtime.pointer_position = Some((x, y));
                 let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
                 schedule_redraw_or_rebuild(runtime, changed);
+            }
+            InputEvent::TextInput { text } => {
+                let changed = runtime.renderer.handle_text_input(text.as_str());
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "text_input",
+                    text = text.as_str(),
+                    changed,
+                    "runner dispatched input event"
+                );
+                if changed {
+                    runtime.needs_rebuild = true;
+                }
             }
             InputEvent::Key {
                 key,
