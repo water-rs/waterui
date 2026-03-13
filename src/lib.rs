@@ -147,8 +147,8 @@ pub use waterui_webview as webview;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets::{
-    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
-    LargeFile, LargeFileAsset, VideoAsset,
+    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
+    LargeFileAsset, VideoAsset,
 };
 #[doc(inline)]
 #[cfg(feature = "assets")]

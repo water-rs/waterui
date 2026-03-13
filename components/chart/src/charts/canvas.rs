@@ -7,14 +7,14 @@ use core::f32::consts::{FRAC_PI_2, TAU};
 use core::time::Duration;
 use std::time::Instant;
 
-use nami::{Binding, Signal, SignalExt as _};
+use nami::{Signal, SignalExt as _};
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
-    Metadata,
+    Environment, Metadata,
     event::{Event, HoverEvent, OnEvent},
     gesture::{
-        DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, MagnificationEvent,
-        MagnificationGesture, TapEvent, TapGesture,
+        DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, TapEvent,
+        TapGesture,
     },
     layout::{Point, Rect, Size},
 };
@@ -22,14 +22,17 @@ use waterui_graphics::color::Srgb;
 
 use crate::{
     animation::{AnimationConfig, ChartAnimator},
+    composition::ChartComposition,
     data::{
         AreaData, BubblePoint, Candle, ChoroplethData, ColorScale, ContourData, DataBounds,
         DataPoint, DepthData, GaugeData, HeatmapData, RadarData,
     },
     interaction::{
-        AreaDatum, ChartViewport, DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum,
-        RegionDatum, SelectionBindings, SliceDatum, ZoomPanState,
+        AreaDatum, CartesianSelectionBindings, CartesianViewportBindings, ChartViewport,
+        DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum, RegionDatum,
+        SelectionBindings, SliceDatum,
     },
+    local_state::{local_binding, local_shared},
 };
 
 const PLOT_PADDING_RATIO: f32 = 0.1;
@@ -146,22 +149,23 @@ impl<T> HitTarget<T> {
 
 pub(crate) trait HitGeometry<T: Clone>: Clone + 'static {
     fn hit_test(&self, point: Point) -> Option<HitResult<T>>;
+    fn viewport(&self) -> ChartViewport;
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct HitTargets<T> {
+    viewport: ChartViewport,
     targets: Vec<HitTarget<T>>,
 }
 
-impl<T> Default for HitTargets<T> {
-    fn default() -> Self {
+impl<T> HitTargets<T> {
+    fn new(viewport: ChartViewport) -> Self {
         Self {
+            viewport,
             targets: Vec::new(),
         }
     }
-}
 
-impl<T> HitTargets<T> {
     fn push_circle(&mut self, result: HitResult<T>, center: Point, radius: f32) {
         self.targets.push(HitTarget {
             result,
@@ -224,23 +228,36 @@ impl<T: Clone + 'static> HitGeometry<T> for HitTargets<T> {
         }
         best.map(|(_, target)| target.result.clone())
     }
+
+    fn viewport(&self) -> ChartViewport {
+        self.viewport
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CartesianGeometry<T> {
     pub bounds: DataBounds,
+    viewport: ChartViewport,
     targets: HitTargets<T>,
 }
 
 impl<T> CartesianGeometry<T> {
-    fn new(bounds: DataBounds, targets: HitTargets<T>) -> Self {
-        Self { bounds, targets }
+    fn new(bounds: DataBounds, viewport: ChartViewport, targets: HitTargets<T>) -> Self {
+        Self {
+            bounds,
+            viewport,
+            targets,
+        }
     }
 }
 
 impl<T: Clone + 'static> HitGeometry<T> for CartesianGeometry<T> {
     fn hit_test(&self, point: Point) -> Option<HitResult<T>> {
         self.targets.hit_test(point)
+    }
+
+    fn viewport(&self) -> ChartViewport {
+        self.viewport
     }
 }
 
@@ -342,11 +359,382 @@ where
     })
 }
 
+fn cartesian_x_from_point<T>(geometry: &CartesianGeometry<T>, point: Point, clamp: bool) -> Option<f32> {
+    let viewport = geometry.viewport;
+    if viewport.width <= 0.0 {
+        return None;
+    }
+    let x = if clamp {
+        point.x.clamp(viewport.x, viewport.x + viewport.width)
+    } else if viewport.contains(point) {
+        point.x
+    } else {
+        return None;
+    };
+    let normalized_x = ((x - viewport.x) / viewport.width).clamp(0.0, 1.0);
+    Some(geometry.bounds.min_x + geometry.bounds.width() * normalized_x)
+}
+
+fn cartesian_y_from_point<T>(geometry: &CartesianGeometry<T>, point: Point, clamp: bool) -> Option<f32> {
+    let viewport = geometry.viewport;
+    if viewport.height <= 0.0 {
+        return None;
+    }
+    let y = if clamp {
+        point.y.clamp(viewport.y, viewport.y + viewport.height)
+    } else if viewport.contains(point) {
+        point.y
+    } else {
+        return None;
+    };
+    let normalized_y = ((y - viewport.y) / viewport.height).clamp(0.0, 1.0);
+    Some(geometry.bounds.max_y - geometry.bounds.height() * normalized_y)
+}
+
+#[inline]
+fn normalized_scalar_range(start: f32, end: f32) -> core::ops::RangeInclusive<f32> {
+    if start <= end {
+        start..=end
+    } else {
+        end..=start
+    }
+}
+
+pub(crate) fn interactive_cartesian_signal_canvas<S, D, T, B, G, F>(
+    env: &Environment,
+    signal: S,
+    bounds_of: B,
+    build_geometry: G,
+    mut draw: F,
+    mut selection: SelectionBindings<T>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
+    composition: ChartComposition<T>,
+) -> impl waterui_core::View
+where
+    S: Signal<Output = D> + 'static,
+    S::Guard: 'static,
+    D: Clone + PartialEq + 'static,
+    T: Clone + PartialEq + 'static,
+    B: Fn(&D) -> DataBounds + 'static,
+    G: Fn(&DrawingContext<'_>, &D, DataBounds) -> CartesianGeometry<T> + 'static,
+    F: FnMut(&mut DrawingContext<'_>, &D, &CartesianGeometry<T>) + 'static,
+{
+    cartesian_selection.validate();
+    cartesian_viewport.validate();
+    if !composition.is_empty() {
+        selection = selection.activate_proxy();
+    }
+    if selection.is_active() {
+        selection = selection.persist_internal(env);
+    }
+    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
+    let geometry = local_shared(env, || RefCell::new(None::<CartesianGeometry<T>>));
+    let base_bounds = local_shared(env, || RefCell::new(DataBounds::default()));
+    let chart_frame = local_binding(env, ChartViewport::default);
+    let plot_area_frame = local_binding(env, ChartViewport::default);
+    let x_range_start = local_binding(env, || None::<f32>);
+    let y_range_start = local_binding(env, || None::<f32>);
+    let viewport_state = cartesian_viewport.state_signal();
+    let canvas = {
+        let transition = Rc::clone(&transition);
+        let geometry = Rc::clone(&geometry);
+        let base_bounds = Rc::clone(&base_bounds);
+        let chart_frame = chart_frame.clone();
+        let plot_area_frame = plot_area_frame.clone();
+        let cartesian_viewport = cartesian_viewport.clone();
+        Canvas::with_signal(signal.zip(&viewport_state), move |ctx, (data, viewport_state)| {
+            let current_base_bounds = normalize_bounds(bounds_of(&data));
+            *base_bounds.borrow_mut() = current_base_bounds;
+            let visible_bounds = cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
+            let built_geometry = build_geometry(ctx, &data, visible_bounds);
+            *geometry.borrow_mut() = Some(built_geometry.clone());
+            let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
+            if chart_frame.get() != current_chart_frame {
+                chart_frame.set(current_chart_frame);
+            }
+            let current_plot_area = built_geometry.viewport();
+            if plot_area_frame.get() != current_plot_area {
+                plot_area_frame.set(current_plot_area);
+            }
+            let (progress, animating) = {
+                let mut transition = transition.borrow_mut();
+                let progress = transition.progress_for(&data);
+                let animating = transition.is_animating();
+                (progress, animating)
+            };
+            if animating {
+                ctx.request_next_frame();
+            }
+            ctx.save();
+            ctx.set_global_alpha(progress);
+            draw(ctx, &data, &built_geometry);
+            ctx.restore();
+        })
+    };
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(TapGesture::new()).action_with_env({
+            let geometry = Rc::clone(&geometry);
+            let selection = selection.clone();
+            let cartesian_selection = cartesian_selection.clone();
+            move |env| {
+                if !selection.is_active() && !cartesian_selection.is_active() {
+                    return;
+                }
+                let tap = env
+                    .get::<TapEvent>()
+                    .expect("interactive_cartesian_signal_canvas: TapEvent missing from gesture environment");
+                let point = gesture_point_to_point(&tap.location);
+                let geometry_ref = geometry.borrow();
+                let Some(geometry) = geometry_ref.as_ref() else {
+                    return;
+                };
+                let hit = geometry.hit_test(point);
+                selection.set_focus(hit.clone());
+                selection.set_selected(hit);
+                if cartesian_selection.tracks_x_value() {
+                    cartesian_selection.set_x_value(cartesian_x_from_point(geometry, point, false));
+                }
+                if cartesian_selection.tracks_y_value() {
+                    cartesian_selection.set_y_value(cartesian_y_from_point(geometry, point, false));
+                }
+            }
+        }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        GestureObserver::new(DragGesture::new(0.0)).action_with_env({
+            let geometry = Rc::clone(&geometry);
+            let base_bounds = Rc::clone(&base_bounds);
+            let selection = selection.clone();
+            let cartesian_selection = cartesian_selection.clone();
+            let cartesian_viewport = cartesian_viewport.clone();
+            let x_range_start = x_range_start.clone();
+            let y_range_start = y_range_start.clone();
+            move |env| {
+                let handles_selection_drag = cartesian_selection.is_active()
+                    || selection.has_external_bindings()
+                    || (!cartesian_viewport.allows_horizontal_drag()
+                        && !cartesian_viewport.allows_vertical_drag());
+                if !handles_selection_drag
+                    && !cartesian_viewport.allows_horizontal_drag()
+                    && !cartesian_viewport.allows_vertical_drag()
+                {
+                    return;
+                }
+
+                let drag = env.get::<DragEvent>().expect(
+                    "interactive_cartesian_signal_canvas: DragEvent missing from gesture environment",
+                );
+                let geometry_ref = geometry.borrow();
+                let Some(geometry) = geometry_ref.as_ref() else {
+                    return;
+                };
+                let point = gesture_point_to_point(&drag.location);
+
+                if handles_selection_drag {
+                    match drag.phase {
+                        GesturePhase::Started => {
+                            let hit = geometry.hit_test(point);
+                            selection.set_focus(hit.clone());
+                            let start_point = Point::new(
+                                point.x - drag.translation.x,
+                                point.y - drag.translation.y,
+                            );
+                            if cartesian_selection.tracks_x_range() {
+                                if let Some(start) = cartesian_x_from_point(geometry, start_point, true) {
+                                    x_range_start.set(Some(start));
+                                    if let Some(end) = cartesian_x_from_point(geometry, point, true) {
+                                        cartesian_selection
+                                            .set_x_range(Some(normalized_scalar_range(start, end)));
+                                    }
+                                }
+                            } else if cartesian_selection.tracks_x_value() {
+                                cartesian_selection
+                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                            }
+                            if cartesian_selection.tracks_y_range() {
+                                if let Some(start) = cartesian_y_from_point(geometry, start_point, true) {
+                                    y_range_start.set(Some(start));
+                                    if let Some(end) = cartesian_y_from_point(geometry, point, true) {
+                                        cartesian_selection
+                                            .set_y_range(Some(normalized_scalar_range(start, end)));
+                                    }
+                                }
+                            } else if cartesian_selection.tracks_y_value() {
+                                cartesian_selection
+                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                            }
+                        }
+                        GesturePhase::Updated => {
+                            let hit = geometry.hit_test(point);
+                            selection.set_focus(hit);
+                            if cartesian_selection.tracks_x_range() {
+                                if let (Some(start), Some(end)) = (
+                                    x_range_start.get(),
+                                    cartesian_x_from_point(geometry, point, true),
+                                ) {
+                                    cartesian_selection
+                                        .set_x_range(Some(normalized_scalar_range(start, end)));
+                                }
+                            } else if cartesian_selection.tracks_x_value() {
+                                cartesian_selection
+                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                            }
+                            if cartesian_selection.tracks_y_range() {
+                                if let (Some(start), Some(end)) = (
+                                    y_range_start.get(),
+                                    cartesian_y_from_point(geometry, point, true),
+                                ) {
+                                    cartesian_selection
+                                        .set_y_range(Some(normalized_scalar_range(start, end)));
+                                }
+                            } else if cartesian_selection.tracks_y_value() {
+                                cartesian_selection
+                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                            }
+                        }
+                        GesturePhase::Ended => {
+                            let hit = geometry.hit_test(point);
+                            selection.set_selected(hit);
+                            selection.clear_focus();
+                            if cartesian_selection.tracks_x_range() {
+                                if let (Some(start), Some(end)) = (
+                                    x_range_start.get(),
+                                    cartesian_x_from_point(geometry, point, true),
+                                ) {
+                                    cartesian_selection
+                                        .set_x_range(Some(normalized_scalar_range(start, end)));
+                                }
+                                x_range_start.set(None);
+                            } else if cartesian_selection.tracks_x_value() {
+                                cartesian_selection
+                                    .set_x_value(cartesian_x_from_point(geometry, point, true));
+                            }
+                            if cartesian_selection.tracks_y_range() {
+                                if let (Some(start), Some(end)) = (
+                                    y_range_start.get(),
+                                    cartesian_y_from_point(geometry, point, true),
+                                ) {
+                                    cartesian_selection
+                                        .set_y_range(Some(normalized_scalar_range(start, end)));
+                                }
+                                y_range_start.set(None);
+                            } else if cartesian_selection.tracks_y_value() {
+                                cartesian_selection
+                                    .set_y_value(cartesian_y_from_point(geometry, point, true));
+                            }
+                        }
+                        GesturePhase::Cancelled => {
+                            selection.clear_focus();
+                            if cartesian_selection.tracks_x_range() {
+                                x_range_start.set(None);
+                            }
+                            if cartesian_selection.tracks_y_range() {
+                                y_range_start.set(None);
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                let base_bounds = *base_bounds.borrow();
+                let plot_viewport = geometry.viewport;
+                match drag.phase {
+                    GesturePhase::Started => {
+                        selection.clear_focus();
+                        if cartesian_viewport.allows_horizontal_drag() {
+                            x_range_start.set(Some(geometry.bounds.min_x));
+                        }
+                        if cartesian_viewport.allows_vertical_drag() {
+                            y_range_start.set(Some(geometry.bounds.min_y));
+                        }
+                    }
+                    GesturePhase::Updated | GesturePhase::Ended => {
+                        if cartesian_viewport.allows_horizontal_drag() {
+                            if let Some(start) = x_range_start.get() {
+                                let visible_width = geometry.bounds.width();
+                                let max_start = (base_bounds.max_x - visible_width).max(base_bounds.min_x);
+                                let candidate = start - drag.translation.x / plot_viewport.width * visible_width;
+                                let clamped = if max_start <= base_bounds.min_x {
+                                    base_bounds.min_x
+                                } else {
+                                    candidate.clamp(base_bounds.min_x, max_start)
+                                };
+                                cartesian_viewport.set_x_position(clamped);
+                            }
+                            if matches!(drag.phase, GesturePhase::Ended) {
+                                x_range_start.set(None);
+                            }
+                        }
+                        if cartesian_viewport.allows_vertical_drag() {
+                            if let Some(start) = y_range_start.get() {
+                                let visible_height = geometry.bounds.height();
+                                let max_start = (base_bounds.max_y - visible_height).max(base_bounds.min_y);
+                                let candidate = start - drag.translation.y / plot_viewport.height * visible_height;
+                                let clamped = if max_start <= base_bounds.min_y {
+                                    base_bounds.min_y
+                                } else {
+                                    candidate.clamp(base_bounds.min_y, max_start)
+                                };
+                                cartesian_viewport.set_y_position(clamped);
+                            }
+                            if matches!(drag.phase, GesturePhase::Ended) {
+                                y_range_start.set(None);
+                            }
+                        }
+                    }
+                    GesturePhase::Cancelled => {
+                        x_range_start.set(None);
+                        y_range_start.set(None);
+                    }
+                }
+            }
+        }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        OnEvent::new_with_env(Event::HoverMove, {
+            let geometry = Rc::clone(&geometry);
+            let selection = selection.clone();
+            move |env| {
+                if !selection.is_active() {
+                    return;
+                }
+                let hover = env.get::<HoverEvent>().expect(
+                    "interactive_cartesian_signal_canvas: HoverEvent missing from event environment",
+                );
+                let hit = geometry
+                    .borrow()
+                    .as_ref()
+                    .and_then(|geometry| geometry.hit_test(hover.location));
+                selection.set_focus(hit);
+            }
+        }),
+    );
+    let canvas = Metadata::new(
+        canvas,
+        OnEvent::new(Event::HoverExit, {
+            let selection = selection.clone();
+            move || selection.clear_focus()
+        }),
+    );
+    composition.apply(
+        canvas,
+        chart_frame.computed(),
+        plot_area_frame.computed(),
+        &selection,
+    )
+}
+
 pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
+    env: &Environment,
     signal: S,
     build_geometry: B,
     mut draw: F,
-    selection: SelectionBindings<T>,
+    mut selection: SelectionBindings<T>,
+    composition: ChartComposition<T>,
 ) -> impl waterui_core::View
 where
     S: Signal<Output = D> + 'static,
@@ -357,14 +745,33 @@ where
     B: Fn(&DrawingContext<'_>, &D) -> G + 'static,
     F: FnMut(&mut DrawingContext<'_>, &D, &G) + 'static,
 {
-    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
-    let geometry = Rc::new(RefCell::new(None::<G>));
+    if !composition.is_empty() {
+        selection = selection.activate_proxy();
+    }
+    if selection.is_active() {
+        selection = selection.persist_internal(env);
+    }
+
+    let transition = local_shared(env, || RefCell::new(ChartTransitionState::<D>::new()));
+    let geometry = local_shared(env, || RefCell::new(None::<G>));
+    let chart_frame = local_binding(env, ChartViewport::default);
+    let plot_area_frame = local_binding(env, ChartViewport::default);
     let canvas = {
         let transition = Rc::clone(&transition);
         let geometry = Rc::clone(&geometry);
+        let chart_frame = chart_frame.clone();
+        let plot_area_frame = plot_area_frame.clone();
         Canvas::with_signal(signal, move |ctx, data| {
             let built_geometry = build_geometry(ctx, &data);
             *geometry.borrow_mut() = Some(built_geometry.clone());
+            let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
+            if chart_frame.get() != current_chart_frame {
+                chart_frame.set(current_chart_frame);
+            }
+            let current_plot_area = built_geometry.viewport();
+            if plot_area_frame.get() != current_plot_area {
+                plot_area_frame.set(current_plot_area);
+            }
             let (progress, animating) = {
                 let mut transition = transition.borrow_mut();
                 let progress = transition.progress_for(&data);
@@ -441,9 +848,9 @@ where
                 if !selection.is_active() {
                     return;
                 }
-                let hover = env.get::<HoverEvent>().expect(
-                    "interactive_signal_canvas: HoverEvent missing from event environment",
-                );
+                let hover = env
+                    .get::<HoverEvent>()
+                    .expect("interactive_signal_canvas: HoverEvent missing from event environment");
                 let hit = geometry
                     .borrow()
                     .as_ref()
@@ -452,93 +859,18 @@ where
             }
         }),
     );
-    Metadata::new(
-        canvas,
-        OnEvent::new(Event::HoverExit, move || selection.clear_focus()),
-    )
-}
-
-#[allow(dead_code)]
-pub(crate) fn interactive_cartesian_canvas<S, D, B, F>(
-    data: S,
-    bounds_of: B,
-    mut draw: F,
-) -> impl waterui_core::View
-where
-    S: Signal<Output = D> + Clone + 'static,
-    S::Guard: 'static,
-    D: Clone + PartialEq + 'static,
-    B: Fn(&D) -> DataBounds + 'static,
-    F: FnMut(&mut DrawingContext<'_>, &D, DataBounds) + 'static,
-{
-    let zoom_pan = Binding::container(ZoomPanState::new());
-    let viewport = Rc::new(RefCell::new(ChartViewport::default()));
-    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
-    let canvas = {
-        let viewport_for_draw = Rc::clone(&viewport);
-        let transition_for_draw = Rc::clone(&transition);
-        Canvas::with_signal(data.zip(&zoom_pan), move |ctx, (data, zoom_pan)| {
-            let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-            *viewport_for_draw.borrow_mut() =
-                ChartViewport::new(plot.min_x(), plot.min_y(), plot.width(), plot.height());
-            let base_bounds = normalize_bounds(bounds_of(&data));
-            let visible_bounds = if zoom_pan.is_transformed() {
-                zoom_pan.transform_bounds(&base_bounds)
-            } else {
-                base_bounds
-            };
-            let (progress, animating) = {
-                let mut transition = transition_for_draw.borrow_mut();
-                let progress = transition.progress_for(&data);
-                let animating = transition.is_animating();
-                (progress, animating)
-            };
-            if animating {
-                ctx.request_next_frame();
-            }
-            ctx.save();
-            ctx.set_global_alpha(progress);
-            draw(ctx, &data, visible_bounds);
-            ctx.restore();
-        })
-    };
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(DragGesture::new(0.0))
-            .with_state(&zoom_pan)
-            .with_state(&viewport)
-            .action_with_env(|(zoom_pan, viewport), env| {
-                let drag = env.get::<DragEvent>().expect(
-                    "interactive_cartesian_canvas: DragEvent missing from gesture environment",
-                );
-                let mut state = zoom_pan.get();
-                state.apply_drag_event(drag, *viewport.borrow());
-                zoom_pan.set(state);
-            }),
+        OnEvent::new(Event::HoverExit, {
+            let selection = selection.clone();
+            move || selection.clear_focus()
+        }),
     );
-    let canvas = Metadata::new(
+    composition.apply(
         canvas,
-        GestureObserver::new(MagnificationGesture::new(1.0))
-            .with_state(&zoom_pan)
-            .with_state(&viewport)
-            .action_with_env(|(zoom_pan, viewport), env| {
-                let magnification = env
-                    .get::<MagnificationEvent>()
-                    .expect("interactive_cartesian_canvas: MagnificationEvent missing from gesture environment");
-                let mut state = zoom_pan.get();
-                state.apply_magnification_event(magnification, *viewport.borrow());
-                zoom_pan.set(state);
-            }),
-    );
-    Metadata::new(
-        canvas,
-        GestureObserver::new(TapGesture::repeat(2))
-            .with_state(&zoom_pan)
-            .action(|zoom_pan| {
-                let mut state = zoom_pan.get();
-                state.apply_double_tap();
-                zoom_pan.set(state);
-            }),
+        chart_frame.computed(),
+        plot_area_frame.computed(),
+        &selection,
     )
 }
 
@@ -638,6 +970,11 @@ fn plot_rect(ctx: &DrawingContext<'_>, padding_ratio: f32) -> Rect {
 }
 
 #[inline]
+fn chart_viewport_from_rect(rect: Rect) -> ChartViewport {
+    ChartViewport::new(rect.min_x(), rect.min_y(), rect.width(), rect.height())
+}
+
+#[inline]
 fn map_xy(plot: Rect, bounds: DataBounds, x: f32, y: f32) -> Point {
     let nx = (x - bounds.min_x) / (bounds.max_x - bounds.min_x);
     let ny = (y - bounds.min_y) / (bounds.max_y - bounds.min_y);
@@ -654,12 +991,12 @@ pub(crate) fn point_geometry(
     radius: f32,
 ) -> CartesianGeometry<DataPoint> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let anchor = map_xy(plot, bounds, point.x, point.y);
         targets.push_circle(HitResult::new(0, index, *point, anchor), anchor, radius);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn bar_geometry(
@@ -674,7 +1011,7 @@ pub(crate) fn bar_geometry(
         (plot.width() / data.len() as f32 * 0.7).max(1.0)
     };
     let baseline_y = map_xy(plot, bounds, bounds.min_x, 0.0).y;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let center = map_xy(plot, bounds, point.x, point.y);
         let top = center.y.min(baseline_y);
@@ -686,7 +1023,7 @@ pub(crate) fn bar_geometry(
         let anchor = Point::new(center.x, top);
         targets.push_rect(HitResult::new(0, index, *point, anchor), rect);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn bubble_geometry(
@@ -704,7 +1041,7 @@ pub(crate) fn bubble_geometry(
         max_size = max_size.max(point.size);
     }
     let size_span = (max_size - min_size).max(1.0);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, point) in data.iter().enumerate() {
         let anchor = map_xy(plot, bounds, point.x, point.y);
         let t = (point.size - min_size) / size_span;
@@ -715,7 +1052,7 @@ pub(crate) fn bubble_geometry(
             radius.max(6.0),
         );
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn candlestick_geometry(
@@ -729,7 +1066,7 @@ pub(crate) fn candlestick_geometry(
     } else {
         (plot.width() / data.len() as f32 * 0.65).max(1.0)
     };
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, candle) in data.iter().enumerate() {
         let x = map_xy(plot, bounds, candle.timestamp, candle.close).x;
         let high = map_xy(plot, bounds, candle.timestamp, candle.high).y;
@@ -748,7 +1085,7 @@ pub(crate) fn candlestick_geometry(
         let anchor = Point::new(x, (top + bottom) * 0.5);
         targets.push_rect(HitResult::new(0, index, *candle, anchor), rect);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn depth_geometry(
@@ -757,7 +1094,7 @@ pub(crate) fn depth_geometry(
     bounds: DataBounds,
 ) -> CartesianGeometry<DepthDatum> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, level) in data.bids.iter().enumerate() {
         let anchor = map_xy(plot, bounds, level.price, level.cumulative_volume);
         let value = DepthDatum::new(DepthSide::Bid, level.price, level.cumulative_volume);
@@ -768,7 +1105,7 @@ pub(crate) fn depth_geometry(
         let value = DepthDatum::new(DepthSide::Ask, level.price, level.cumulative_volume);
         targets.push_circle(HitResult::new(1, index, value, anchor), anchor, 10.0);
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn area_geometry(
@@ -779,7 +1116,7 @@ pub(crate) fn area_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let point_count = data.x_values.len();
     let mut cumulative = vec![0.0f32; point_count];
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (series_index, series) in data.series.iter().enumerate() {
         if series.values.is_empty() {
             continue;
@@ -802,7 +1139,7 @@ pub(crate) fn area_geometry(
             }
         }
     }
-    CartesianGeometry::new(bounds, targets)
+    CartesianGeometry::new(bounds, chart_viewport_from_rect(plot), targets)
 }
 
 pub(crate) fn pie_geometry(
@@ -817,7 +1154,7 @@ pub(crate) fn pie_geometry(
     let inner_r = outer_r * inner_radius;
     let mid_r = (inner_r + outer_r) * 0.5;
     let mut angle = -FRAC_PI_2;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if total <= 0.0 {
         return targets;
     }
@@ -864,7 +1201,7 @@ pub(crate) fn gauge_geometry(
         center.x + mid.cos() * ((inner_r + outer_r) * 0.5),
         center.y + mid.sin() * ((inner_r + outer_r) * 0.5),
     );
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(area));
     let datum = SliceDatum::new(0, data.value, start_angle, value_end);
     targets.push_sector(
         HitResult::new(0, 0, datum, anchor),
@@ -883,7 +1220,7 @@ pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitT
     let radius = plot.width().min(plot.height()) * 0.45;
     let axis_count = data.axis_count as usize;
     let max_value = data.max_value.max(1.0);
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (series_index, series) in data.series.iter().enumerate() {
         if series.values.len() < axis_count {
             continue;
@@ -914,7 +1251,7 @@ pub(crate) fn heatmap_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let cell_w = plot.width() / data.cols.max(1) as f32;
     let cell_h = plot.height() / data.rows.max(1) as f32;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for row in 0..data.rows as usize {
         for col in 0..data.cols as usize {
             let idx = row * data.cols as usize + col;
@@ -939,7 +1276,7 @@ pub(crate) fn contour_geometry(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let cell_w = plot.width() / (data.cols.saturating_sub(1)).max(1) as f32;
     let cell_h = plot.height() / (data.rows.saturating_sub(1)).max(1) as f32;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if data.rows < 2 || data.cols < 2 {
         return targets;
     }
@@ -978,7 +1315,7 @@ pub(crate) fn choropleth_geometry(
     let content_h = height * scale;
     let offset_x = plot.min_x() + (plot.width() - content_w) * 0.5;
     let offset_y = plot.min_y() + (plot.height() - content_h) * 0.5;
-    let mut targets = HitTargets::default();
+    let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, polygon) in data.polygons.iter().enumerate() {
         if polygon.vertices.len() < 3 {
             continue;
