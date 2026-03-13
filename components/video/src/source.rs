@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use crate::Url;
+use waterkit_audio::MediaMetadata;
 
 /// Transport/delivery strategy for a media item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,6 +68,8 @@ pub struct MediaItem {
     pub delivery: Delivery,
     /// Sidecar subtitle tracks associated with this item.
     pub subtitle_tracks: Vec<SubtitleTrack>,
+    /// User-provided metadata used for system media sessions and now playing UI.
+    pub metadata: MediaMetadata,
 }
 
 impl MediaItem {
@@ -76,6 +79,7 @@ impl MediaItem {
             source: source.into(),
             delivery: Delivery::Progressive,
             subtitle_tracks: Vec::new(),
+            metadata: MediaMetadata::new(),
         }
     }
 
@@ -83,6 +87,13 @@ impl MediaItem {
     #[must_use]
     pub fn subtitle_track(mut self, track: SubtitleTrack) -> Self {
         self.subtitle_tracks.push(track);
+        self
+    }
+
+    /// Replaces the item metadata.
+    #[must_use]
+    pub fn metadata(mut self, metadata: MediaMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -121,6 +132,7 @@ impl<'a> From<Cow<'a, str>> for MediaItem {
 #[cfg(test)]
 mod tests {
     use super::{Delivery, MediaItem, SubtitleTrack};
+    use waterkit_audio::MediaMetadata;
 
     #[test]
     fn media_item_defaults_to_progressive_delivery() {
@@ -128,6 +140,7 @@ mod tests {
         assert_eq!(item.delivery, Delivery::Progressive);
         assert_eq!(item.source.as_str(), "https://example.com/video.mp4");
         assert!(item.subtitle_tracks.is_empty());
+        assert_eq!(item.metadata, MediaMetadata::new());
     }
 
     #[test]
@@ -144,5 +157,17 @@ mod tests {
         assert_eq!(track.label.as_deref(), Some("English"));
         assert_eq!(track.language.as_deref(), Some("en"));
         assert!(!track.forced);
+    }
+
+    #[test]
+    fn media_item_preserves_user_metadata() {
+        let metadata = MediaMetadata::new()
+            .with_title("Trailer")
+            .with_artist("WaterUI")
+            .with_album("Demo")
+            .with_artwork_url("https://example.com/poster.png");
+        let item = MediaItem::from("https://example.com/video.mp4").metadata(metadata.clone());
+
+        assert_eq!(item.metadata, metadata);
     }
 }

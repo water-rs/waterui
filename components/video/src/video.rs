@@ -74,7 +74,7 @@ pub enum SubtitleSelection {
     Auto,
     /// Disable subtitle rendering.
     Off,
-    /// Force a specific sidecar subtitle track by index in [`MediaItem::subtitle_tracks`].
+    /// Force a specific subtitle track by index in the player's current runtime track list.
     Track(usize),
 }
 
@@ -130,6 +130,11 @@ pub enum Event {
     ReadyToPlay,
     /// The video has finished playing.
     Ended,
+    /// Picture in picture mode changed for the current player instance.
+    PictureInPictureChanged {
+        /// `true` when playback is currently presented in picture in picture.
+        active: bool,
+    },
     /// The video is buffering due to slow network or disk.
     Buffering,
     /// The video has resumed playing after buffering.
@@ -146,6 +151,10 @@ pub enum Event {
         /// Cumulative number of dropped video frames.
         dropped_video_frames: u64,
     },
+    /// The system or player UI requested the next item in the active queue.
+    NextRequested,
+    /// The system or player UI requested the previous item in the active queue.
+    PreviousRequested,
     /// An error occurred while loading or playing the video.
     Error {
         /// The error message describing what went wrong.
@@ -166,8 +175,12 @@ type OnEvent = Box<dyn Fn(Event) + 'static>;
 pub struct VideoConfig {
     /// The media item to play.
     pub source: Computed<MediaItem>,
-    /// Sidecar subtitle selection policy.
+    /// Subtitle selection policy for the player's current runtime track list.
     pub subtitle_selection: Binding<SubtitleSelection>,
+    /// Whether the current queue has a next item.
+    pub has_next: Binding<bool>,
+    /// Whether the current queue has a previous item.
+    pub has_previous: Binding<bool>,
     /// The volume of the video.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -219,6 +232,8 @@ impl Video {
         Self(VideoConfig {
             source: source.into_computed(),
             subtitle_selection: binding(SubtitleSelection::Auto),
+            has_next: Binding::bool(false),
+            has_previous: Binding::bool(false),
             volume: binding(0.5),
             playback_rate: binding(1.0),
             preserve_pitch: binding(true),
@@ -261,6 +276,20 @@ impl Video {
     #[must_use]
     pub fn subtitle_selection(mut self, subtitle_selection: &Binding<SubtitleSelection>) -> Self {
         self.0.subtitle_selection = subtitle_selection.clone();
+        self
+    }
+
+    /// Sets whether the current queue has a next item.
+    #[must_use]
+    pub fn has_next(mut self, has_next: &Binding<bool>) -> Self {
+        self.0.has_next = has_next.clone();
+        self
+    }
+
+    /// Sets whether the current queue has a previous item.
+    #[must_use]
+    pub fn has_previous(mut self, has_previous: &Binding<bool>) -> Self {
+        self.0.has_previous = has_previous.clone();
         self
     }
 
@@ -320,8 +349,12 @@ impl Video {
 pub struct VideoPlayerConfig {
     /// The media item to play.
     pub source: Computed<MediaItem>,
-    /// Sidecar subtitle selection policy.
+    /// Subtitle selection policy for the player's current runtime track list.
     pub subtitle_selection: Binding<SubtitleSelection>,
+    /// Whether the current queue has a next item.
+    pub has_next: Binding<bool>,
+    /// Whether the current queue has a previous item.
+    pub has_previous: Binding<bool>,
     /// The volume of the video player.
     pub volume: Binding<Volume>,
     /// Playback speed (1.0 = normal speed).
@@ -374,6 +407,8 @@ impl VideoPlayer {
         Self(VideoPlayerConfig {
             source: source.into_computed(),
             subtitle_selection: binding(SubtitleSelection::Auto),
+            has_next: Binding::bool(false),
+            has_previous: Binding::bool(false),
             volume: binding(0.5),
             playback_rate: binding(1.0),
             preserve_pitch: binding(true),
@@ -416,6 +451,20 @@ impl VideoPlayer {
     #[must_use]
     pub fn subtitle_selection(mut self, subtitle_selection: &Binding<SubtitleSelection>) -> Self {
         self.0.subtitle_selection = subtitle_selection.clone();
+        self
+    }
+
+    /// Sets whether the current queue has a next item.
+    #[must_use]
+    pub fn has_next(mut self, has_next: &Binding<bool>) -> Self {
+        self.0.has_next = has_next.clone();
+        self
+    }
+
+    /// Sets whether the current queue has a previous item.
+    #[must_use]
+    pub fn has_previous(mut self, has_previous: &Binding<bool>) -> Self {
+        self.0.has_previous = has_previous.clone();
         self
     }
 

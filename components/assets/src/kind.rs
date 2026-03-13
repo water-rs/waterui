@@ -51,7 +51,9 @@ impl AssetKind {
             // Font extensions
             b"ttf" | b"otf" | b"ttc" | b"otc" | b"woff" | b"woff2" => Self::Font,
             // Image extensions
-            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" | b"svg" => Self::Image,
+            b"png" | b"jpg" | b"jpeg" | b"gif" | b"webp" | b"avif" | b"bmp" | b"ico" | b"svg" => {
+                Self::Image
+            }
             // Video extensions
             b"mp4" | b"mov" | b"webm" | b"avi" | b"mkv" => Self::Video,
             // Audio extensions
