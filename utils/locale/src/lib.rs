@@ -23,20 +23,34 @@
 
 #![forbid(unsafe_code)]
 
+pub mod catalog;
 pub mod format;
 pub mod locale;
 pub mod parser;
 pub mod plural;
 pub mod regional;
 mod system;
-pub mod text;
 
 // Re-exports
+pub use catalog::TranslationCatalog;
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
 pub use format::{LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
 pub use plural::{PluralCategory, select_plural};
-pub use text::LocalizedText;
+
+/// Returns a reactive binding for the effective locale in the given environment.
+#[must_use]
+pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> {
+    if let Some(context) = env.get::<regional::RegionalContext>().cloned() {
+        return nami::Binding::container(context.locale().clone());
+    }
+
+    if let Some(locale) = env.get::<Locale>().cloned() {
+        return nami::Binding::container(locale);
+    }
+
+    system::runtime_locale_binding()
+}
 
 #[cfg(test)]
 mod tests {

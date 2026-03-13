@@ -1,7 +1,8 @@
 //! Color Picker Component
 
 use nami::Binding;
-use waterui_core::{AnyView, View, configurable};
+use waterui_controls::IntoLabel;
+use waterui_core::{AnyView, configurable};
 use waterui_graphics::color::Color;
 
 #[derive(Debug)]
@@ -69,8 +70,8 @@ impl ColorPicker {
 
     /// Sets the label of the color picker.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 }

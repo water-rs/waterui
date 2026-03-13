@@ -443,7 +443,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
 #[cfg(not(feature = "winit"))]
 pub fn run(app: App) {
     init_main_thread_executors();
-    let (windows, env) = app.into_parts();
+    let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env;
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
@@ -562,7 +562,7 @@ mod winit_runner {
         };
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
-        let (windows, env) = app.into_parts();
+        let (windows, _menu_bar, env) = app.into_parts();
         let mut env = env;
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);

@@ -229,7 +229,8 @@ impl GestureEngine {
         env: &Environment,
     ) -> bool {
         let mut changed = self.replace_active_recognizers(point, at, env);
-        changed |= self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
+        changed |=
+            self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
         changed
     }
 
