@@ -45,6 +45,8 @@ pub use waterui_core::layout::*;
 
 pub mod spacer;
 pub use spacer::{Spacer, spacer};
+pub mod divider;
+pub use divider::Divider;
 pub mod stack;
 
 pub mod scroll;

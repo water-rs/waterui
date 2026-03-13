@@ -20,7 +20,7 @@ use nami::{
     Computed,
     collection::{Collection, List},
 };
-use waterui_controls::button;
+use waterui_controls::{IntoLabel, button};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{
     AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
@@ -175,7 +175,7 @@ pub struct NavigationLink<Label, Content> {
 }
 impl<Label, Content> NavigationLink<Label, Content>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
     Content: ViewBuilder<Output = NavigationView>,
 {
     /// Creates a new navigation link.
@@ -374,7 +374,7 @@ impl<T: 'static + Clone> NavigationPath<T> {
 
 impl<Label, Content> View for NavigationLink<Label, Content>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
     Content: ViewBuilder<Output = NavigationView>,
 {
     fn body(self, env: &waterui_core::Environment) -> impl View {
