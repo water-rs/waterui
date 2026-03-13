@@ -8,10 +8,10 @@ use waterui::text::styled::StyledStr;
 use waterui::{
     Color, Str,
     component::{
-        menu::MenuItem,
+        menu::ResolvedMenuItem,
         slider::SliderConfig,
         stepper::StepperConfig,
-        text_field::{KeyboardType, TextFieldConfig},
+        text_field::{KeyboardType, ResolvedTextFieldConfig},
         toggle::{ToggleConfig, ToggleStyle},
     },
 };
@@ -29,13 +29,13 @@ into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
     PhoneNumber
 }}
 
-into_ffi! {TextFieldConfig,
+into_ffi! {ResolvedTextFieldConfig,
     pub struct WuiTextField {
         label: *mut WuiAnyView,
         value: *mut WuiBinding<StyledStr>,
         prompt: WuiText,
         keyboard: WuiKeyboardType,
-        selection_menu: *mut WuiComputed<Vec<MenuItem>>,
+        selection_menu: *mut WuiComputed<Vec<ResolvedMenuItem>>,
     }
 }
 
@@ -106,7 +106,7 @@ impl IntoFFI for RangeInclusive<i32> {
 }
 
 // FFI view bindings for form components
-ffi_view!(TextFieldConfig, WuiTextField, text_field);
+ffi_view!(ResolvedTextFieldConfig, WuiTextField, text_field);
 
 ffi_view!(ToggleConfig, WuiToggle, toggle);
 

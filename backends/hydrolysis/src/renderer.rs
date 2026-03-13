@@ -54,11 +54,11 @@ use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
-use waterui_controls::menu::MenuItem;
+use waterui_controls::label::Label as SemanticLabel;
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
-use waterui_controls::text_field::TextField;
-use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
@@ -335,7 +335,7 @@ enum TextInputModel {
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
-        selection_menu: nami::Computed<Vec<MenuItem>>,
+        selection_menu: nami::Computed<Vec<ResolvedMenuItem>>,
     },
     SecureField {
         value: nami::Binding<FormSecure>,
@@ -431,13 +431,16 @@ enum TextContextMenuAction {
     Cut,
     Paste,
     SelectAll,
-    Custom(MenuItem),
+    Custom(ResolvedCommand),
 }
 
 #[derive(Clone)]
-struct TextContextMenuEntry {
-    label: String,
-    action: TextContextMenuAction,
+enum TextContextMenuEntry {
+    Command {
+        label: String,
+        action: TextContextMenuAction,
+    },
+    Divider,
 }
 
 #[derive(Clone)]
@@ -1252,7 +1255,7 @@ impl TextInputModel {
         matches!(self, Self::SecureField { .. })
     }
 
-    fn custom_selection_menu_items(&self) -> Vec<MenuItem> {
+    fn custom_selection_menu_items(&self) -> Vec<ResolvedMenuItem> {
         match self {
             Self::TextField { selection_menu, .. } => selection_menu.get(),
             Self::SecureField { .. } => Vec::new(),
@@ -2075,7 +2078,10 @@ fn selection_range_contains_index(
 fn text_context_menu_size(entries: &[TextContextMenuEntry]) -> (f64, f64) {
     let max_label_chars = entries
         .iter()
-        .map(|entry| entry.label.chars().count())
+        .filter_map(|entry| match entry {
+            TextContextMenuEntry::Command { label, .. } => Some(label.chars().count()),
+            TextContextMenuEntry::Divider => None,
+        })
         .max()
         .unwrap_or(0) as f32;
     let width = (TEXT_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0
@@ -2152,8 +2158,8 @@ fn execute_text_context_menu_action(
             let mut slot = selection.borrow_mut();
             select_all_model_text(model, &mut slot)
         }
-        TextContextMenuAction::Custom(item) => {
-            item.action.call(env);
+        TextContextMenuAction::Custom(command) => {
+            command.action.call(env);
             true
         }
     }
@@ -2785,7 +2791,7 @@ fn measure_progress_intrinsic(
 }
 
 fn measure_text_field_intrinsic(
-    text_field: &TextFieldConfig,
+    text_field: &ResolvedTextFieldConfig,
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
@@ -2793,7 +2799,7 @@ fn measure_text_field_intrinsic(
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = f64::from(label_size.height).max(INPUT_LABEL_HEIGHT);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-    let prompt = text_field.prompt.content().get();
+    let prompt = text_field.prompt.content.get();
     let value = text_field.value.get();
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
@@ -3042,7 +3048,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<SliderConfig>);
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);
-        $macro!(Native<TextFieldConfig>);
+        $macro!(Native<ResolvedTextFieldConfig>);
         $macro!(Native<SecureFieldConfig>);
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
@@ -3823,7 +3829,7 @@ impl HydroNativeView for Native<ProgressConfig> {
     }
 }
 
-impl HydroNativeView for Native<TextFieldConfig> {
+impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     fn accessibility_is_render_driven() -> bool {
         true
     }
@@ -3849,7 +3855,7 @@ impl HydroNativeView for Native<TextFieldConfig> {
                     AccessibilityNodeRole::MultilineTextInput
                 },
             ));
-            let prompt_signal = text_field.prompt.content();
+            let prompt_signal = text_field.prompt.content.clone();
             let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
             let default_label = renderer
                 .accessibility_label_from_view(&text_field.label, env)
@@ -4006,12 +4012,8 @@ impl HydroNativeView for Native<Dynamic> {
         let initial = dynamic.with_unconnected_view_mut(|slot| {
             slot.take().map(|content| {
                 let normalized = normalize_layout_view(content, env);
-                let dimensions = measure_view_dimensions_with_proposal(
-                    &normalized,
-                    proposal,
-                    state,
-                    env,
-                );
+                let dimensions =
+                    measure_view_dimensions_with_proposal(&normalized, proposal, state, env);
                 *slot = Some(normalized);
                 dimensions
             })
@@ -4891,7 +4893,15 @@ impl HydrolysisRenderer {
             &panel,
         );
         for (index, row) in overlay.rows.iter().enumerate() {
-            if index + 1 < overlay.rows.len() {
+            let next_is_divider = overlay
+                .rows
+                .as_slice()
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.entry, TextContextMenuEntry::Divider));
+            if index + 1 < overlay.rows.len()
+                && !matches!(row.entry, TextContextMenuEntry::Divider)
+                && !next_is_divider
+            {
                 let separator = vello::kurbo::Rect::new(
                     row.bounds.x0 + 6.0,
                     row.bounds.y1 - 1.0,
@@ -4907,28 +4917,47 @@ impl HydrolysisRenderer {
                 );
             }
 
-            let text_rect = inset_rect(
-                row.bounds,
-                f64::from(TEXT_CONTEXT_MENU_HORIZONTAL_PADDING),
-                TEXT_CONTEXT_MENU_VERTICAL_PADDING,
-            );
-            let ctx = RenderContext {
-                renderer_ptr,
-                transform,
-                hit_transform: vello::kurbo::Affine::IDENTITY,
-                bounds: overlay.bounds,
+            match &row.entry {
+                TextContextMenuEntry::Command { label, .. } => {
+                    let text_rect = inset_rect(
+                        row.bounds,
+                        f64::from(TEXT_CONTEXT_MENU_HORIZONTAL_PADDING),
+                        TEXT_CONTEXT_MENU_VERTICAL_PADDING,
+                    );
+                    let ctx = RenderContext {
+                        renderer_ptr,
+                        transform,
+                        hit_transform: vello::kurbo::Affine::IDENTITY,
+                        bounds: overlay.bounds,
+                    }
+                    .child(
+                        vello::kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
+                        vello::kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
+                    );
+                    Self::render_styled_text(
+                        self.dispatcher.state_mut(),
+                        ctx,
+                        StyledStr::plain(label.clone()),
+                        HorizontalAlignment::Leading,
+                        env,
+                    );
+                }
+                TextContextMenuEntry::Divider => {
+                    let separator = vello::kurbo::Rect::new(
+                        row.bounds.x0 + 6.0,
+                        row.bounds.y0 + row.bounds.height() * 0.5 - 0.5,
+                        row.bounds.x1 - 6.0,
+                        row.bounds.y0 + row.bounds.height() * 0.5 + 0.5,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        vello::peniko::Color::new([0.86, 0.87, 0.9, 1.0]),
+                        None,
+                        &separator,
+                    );
+                }
             }
-            .child(
-                vello::kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
-                vello::kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
-            );
-            Self::render_styled_text(
-                self.dispatcher.state_mut(),
-                ctx,
-                StyledStr::plain(row.entry.label.clone()),
-                HorizontalAlignment::Leading,
-                env,
-            );
         }
     }
 
@@ -4949,14 +4978,19 @@ impl HydrolysisRenderer {
             if !row.bounds.contains(point) {
                 continue;
             }
-            let changed = execute_text_context_menu_action(
-                &row.entry.action,
-                &overlay.model,
-                &overlay.selection,
-                &overlay.env,
-            );
-            self.dismiss_active_text_context_menu();
-            return changed;
+            match &row.entry {
+                TextContextMenuEntry::Command { action, .. } => {
+                    let changed = execute_text_context_menu_action(
+                        action,
+                        &overlay.model,
+                        &overlay.selection,
+                        &overlay.env,
+                    );
+                    self.dismiss_active_text_context_menu();
+                    return changed;
+                }
+                TextContextMenuEntry::Divider => return false,
+            }
         }
         true
     }
@@ -5185,31 +5219,39 @@ impl HydrolysisRenderer {
         let has_text = !target.model.plain_text().is_empty();
         let mut entries = Vec::new();
         if has_selection && !target.model.is_secure() {
-            entries.push(TextContextMenuEntry {
+            entries.push(TextContextMenuEntry::Command {
                 label: "Copy".to_owned(),
                 action: TextContextMenuAction::Copy,
             });
-            entries.push(TextContextMenuEntry {
+            entries.push(TextContextMenuEntry::Command {
                 label: "Cut".to_owned(),
                 action: TextContextMenuAction::Cut,
             });
         }
-        entries.push(TextContextMenuEntry {
+        entries.push(TextContextMenuEntry::Command {
             label: "Paste".to_owned(),
             action: TextContextMenuAction::Paste,
         });
         if has_text {
-            entries.push(TextContextMenuEntry {
+            entries.push(TextContextMenuEntry::Command {
                 label: "Select All".to_owned(),
                 action: TextContextMenuAction::SelectAll,
             });
         }
         if has_selection {
             for item in target.model.custom_selection_menu_items() {
-                entries.push(TextContextMenuEntry {
-                    label: item.label.content().get().to_plain().to_string(),
-                    action: TextContextMenuAction::Custom(item),
-                });
+                match item {
+                    ResolvedMenuItem::Command(command) => {
+                        entries.push(TextContextMenuEntry::Command {
+                            label: command.label.content.get().to_plain().to_string(),
+                            action: TextContextMenuAction::Custom(command),
+                        });
+                    }
+                    ResolvedMenuItem::Divider => entries.push(TextContextMenuEntry::Divider),
+                    ResolvedMenuItem::Menu(_) => {
+                        panic!("hydrolysis text selection menus do not support nested menus yet")
+                    }
+                }
             }
         }
         entries
@@ -5280,23 +5322,28 @@ impl HydrolysisRenderer {
         let popup_content = move || {
             let mut rows = Vec::with_capacity(entries_for_popup.len());
             for entry in entries_for_popup.clone() {
-                let action = entry.action;
                 let state_binding = menu_state_for_content.clone();
                 let model = model.clone();
                 let selection = Rc::clone(&selection);
                 let action_env = action_env.clone();
-                let button = Button::new(entry.label)
-                    .style(ButtonStyle::Borderless)
-                    .action(move || {
-                        state_binding.set(WindowState::Closed);
-                        let _ = execute_text_context_menu_action(
-                            &action,
-                            &model,
-                            &selection,
-                            &action_env,
-                        );
-                    });
-                rows.push(AnyView::new(button));
+                match entry {
+                    TextContextMenuEntry::Command { label, action } => {
+                        let button =
+                            Button::new(label)
+                                .style(ButtonStyle::Borderless)
+                                .action(move || {
+                                    state_binding.set(WindowState::Closed);
+                                    let _ = execute_text_context_menu_action(
+                                        &action,
+                                        &model,
+                                        &selection,
+                                        &action_env,
+                                    );
+                                });
+                        rows.push(AnyView::new(button));
+                    }
+                    TextContextMenuEntry::Divider => rows.push(AnyView::new(Divider)),
+                }
             }
             let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
                 rows.into_iter().collect();
@@ -7840,7 +7887,7 @@ impl HydrolysisRenderer {
     fn render_text_field(
         state: &mut HydroState,
         ctx: RenderContext,
-        text_field: Native<TextFieldConfig>,
+        text_field: Native<ResolvedTextFieldConfig>,
         env: &Environment,
     ) {
         let mut text_field = text_field.into_inner();
@@ -7851,7 +7898,7 @@ impl HydrolysisRenderer {
             let prompt = {
                 let renderer = unsafe { ctx.renderer() };
                 renderer
-                    .read_signal(&text_field.prompt.content())
+                    .read_signal(&text_field.prompt.content)
                     .to_plain()
                     .to_string()
             };
@@ -7928,7 +7975,7 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let prompt_signal = text_field.prompt.content();
+        let prompt_signal = text_field.prompt.content.clone();
         let selection_slot = {
             let renderer = unsafe { ctx.renderer() };
             renderer.bind_text_selection_slot()
@@ -11413,6 +11460,10 @@ impl HydrolysisRenderer {
         }
         if let Some(content) = passthrough_content(view) {
             return self.accessibility_label_from_view_with_budget(content, env, remaining - 1);
+        }
+        if let Some(label) = view.downcast_ref::<SemanticLabel>() {
+            let styled = self.read_signal(&label.__text().__resolve(env).content);
+            return Some(styled.to_plain().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
             return Some(label.as_str().to_owned());

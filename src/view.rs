@@ -9,7 +9,6 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -64,7 +63,7 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::{context_menu::ContextMenu, secure::Secure},
+    metadata::secure::Secure,
     theme,
     view_ext::OnChange,
 };
@@ -1207,15 +1206,18 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Right-click me")
     ///     .context_menu(vec![
-    ///         MenuItem::new("Copy").action(|| println!("Copy")),
-    ///         MenuItem::new("Paste").action(|| println!("Paste")),
+    ///         "Copy".action(|| {}),
+    ///         "Paste".action(|| {}),
     ///     ]);
     /// ```
     fn context_menu(
         self,
-        items: impl IntoComputed<Vec<crate::metadata::context_menu::MenuItem>>,
-    ) -> Metadata<ContextMenu> {
-        Metadata::new(self, ContextMenu::new(items))
+        items: impl crate::component::menu::MenuView,
+    ) -> crate::metadata::context_menu::ContextMenuView<Self> {
+        crate::metadata::context_menu::ContextMenuView {
+            content: self,
+            items: items.into_menu_items(),
+        }
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
