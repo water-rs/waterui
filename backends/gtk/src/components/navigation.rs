@@ -6,10 +6,11 @@ use std::rc::Rc;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::Signal;
+use waterui_controls::text_field::TextField;
 use waterui_core::Environment;
 use waterui_navigation::{
-    CustomNavigationController, NavigationController, NavigationStack, NavigationTransition,
-    NavigationView,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    NavigationTransition, NavigationView,
 };
 
 use crate::component::GtkComponent;
@@ -24,16 +25,33 @@ fn css_for_header_bar_color(color: waterui_graphics::color::Color, env: &Environ
     )
 }
 
+fn clear_box_children(container: &gtk4::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}
+
+fn render_search_widget(
+    renderer: &mut GtkRenderer,
+    env: &Environment,
+    search: Option<&waterui_navigation::NavigationSearch>,
+) -> Option<gtk4::Widget> {
+    search.map(|search| {
+        renderer
+            .render(
+                TextField::new(&search.text).prompt(search.prompt.clone()),
+                env,
+            )
+            .upcast()
+    })
+}
+
 impl GtkComponent for NavigationView {
-    /// Renders a `WaterUI` `NavigationView` as a GTK4 Box with HeaderBar.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
-        // When this NavigationView lives inside a NavigationStack, the stack owns the
-        // navigation chrome. In that case, render content only (no nested header bars).
         if env.get::<NavigationController>().is_some() {
             let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
             container.set_hexpand(true);
             container.set_vexpand(true);
-
             let content_widget = renderer.render_any(self.content, env);
             container.append(&content_widget);
             return container.upcast();
@@ -43,7 +61,6 @@ impl GtkComponent for NavigationView {
         container.set_hexpand(true);
         container.set_vexpand(true);
 
-        // Create the header bar
         let header_bar = gtk4::HeaderBar::new();
         header_bar.add_css_class("waterui-navigation-headerbar");
         let provider = gtk4::CssProvider::new();
@@ -51,11 +68,24 @@ impl GtkComponent for NavigationView {
             .style_context()
             .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-        // Title is a view; render it and let that subtree manage its own reactivity.
+        let leading_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let trailing_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        header_bar.pack_start(&leading_box);
+        header_bar.pack_end(&trailing_box);
+
         let title_widget = renderer.render_any(self.bar.title, env);
         header_bar.set_title_widget(Some(&title_widget));
 
-        // Watch for hidden state changes
+        if !self.bar.leading.is::<()>() {
+            let leading_widget = renderer.render_any(self.bar.leading, env);
+            leading_box.append(&leading_widget);
+        }
+
+        if !self.bar.trailing.is::<()>() {
+            let trailing_widget = renderer.render_any(self.bar.trailing, env);
+            trailing_box.append(&trailing_widget);
+        }
+
         let hidden_guard = self.bar.hidden.watch({
             let header_bar = header_bar.clone();
             move |ctx: nami::watcher::Context<bool>| {
@@ -67,7 +97,6 @@ impl GtkComponent for NavigationView {
             }
         });
 
-        // Watch for color changes
         let env_for_color = env.clone();
         let provider_for_color = provider.clone();
         let color_guard = self.bar.color.watch(
@@ -81,52 +110,59 @@ impl GtkComponent for NavigationView {
             },
         );
 
-        // Set initial hidden state
         if self.bar.hidden.get() {
             header_bar.set_visible(false);
         }
 
-        // Set initial color state
         provider.load_from_data(&css_for_header_bar_color(self.bar.color.get(), env));
 
         container.append(&header_bar);
+        if let Some(search_widget) = render_search_widget(renderer, env, self.bar.search.as_ref()) {
+            search_widget.set_margin_top(6);
+            search_widget.set_margin_bottom(6);
+            search_widget.set_margin_start(12);
+            search_widget.set_margin_end(12);
+            container.append(&search_widget);
+        }
 
-        // Render and add the content
         let content_widget = renderer.render_any(self.content, env);
         container.append(&content_widget);
 
-        // Store watcher guards
         store_watcher_guards(&container, vec![hidden_guard, color_guard]);
-
         container.upcast()
     }
 }
 
 impl GtkComponent for NavigationStack<(), ()> {
-    /// Renders a `WaterUI` `NavigationStack` as a GTK4 Stack with navigation.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let transition = self.transition_style();
         let root = self.into_inner();
 
-        // Create the main container
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.set_hexpand(true);
         container.set_vexpand(true);
 
-        // Create a header bar for the stack
+        let bar_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(&bar_container);
+
         let header_bar = gtk4::HeaderBar::new();
         header_bar.add_css_class("waterui-navigation-headerbar");
         let provider = gtk4::CssProvider::new();
         header_bar
             .style_context()
             .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        bar_container.append(&header_bar);
 
         let back_button = gtk4::Button::with_label("Back");
         back_button.set_visible(false);
-        header_bar.pack_start(&back_button);
-        container.append(&header_bar);
+        let leading_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let trailing_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let search_holder = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        leading_slot.append(&back_button);
+        header_bar.pack_start(&leading_slot);
+        header_bar.pack_end(&trailing_slot);
+        bar_container.append(&search_holder);
 
-        // Create the stack for content views
         let gtk_stack = gtk4::Stack::new();
         gtk_stack.set_hexpand(true);
         gtk_stack.set_vexpand(true);
@@ -144,27 +180,24 @@ impl GtkComponent for NavigationStack<(), ()> {
                 gtk_stack.set_transition_duration(0);
             }
         }
-
         container.append(&gtk_stack);
 
-        // Install the controller in the environment for child views
         let mut child_env = env.clone();
-
-        // Create the GTK navigation controller and install it into the subtree environment.
         let controller = GtkNavigationController::new(
             gtk_stack.clone(),
+            bar_container.clone(),
             header_bar.clone(),
+            leading_slot.clone(),
+            trailing_slot.clone(),
+            search_holder.clone(),
             back_button.clone(),
             provider.clone(),
             &child_env,
         );
         let navigation_controller = NavigationController::new(controller.clone());
-
-        // Insert controller into environment so child views can access it
         child_env.insert(navigation_controller.clone());
         controller.set_env(child_env.clone());
 
-        // Back button should route through the controller so it shares the same logic as Rust-driven pops.
         back_button.connect_clicked({
             let controller = controller.clone();
             move |_| {
@@ -173,12 +206,23 @@ impl GtkComponent for NavigationStack<(), ()> {
             }
         });
 
-        // Render the root view. If it is a NavigationView, let the stack own the chrome.
         match root.downcast::<NavigationView>() {
             Ok(nav_view) => {
                 let NavigationView { bar, content } = *nav_view;
                 let title_widget = renderer.render_any(bar.title, &child_env);
-                controller.set_root_bar_state(title_widget, bar.color, bar.hidden);
+                let leading_widget =
+                    (!bar.leading.is::<()>()).then(|| renderer.render_any(bar.leading, &child_env));
+                let trailing_widget = (!bar.trailing.is::<()>())
+                    .then(|| renderer.render_any(bar.trailing, &child_env));
+                let search_widget = render_search_widget(renderer, &child_env, bar.search.as_ref());
+                controller.set_root_bar_state(
+                    title_widget,
+                    leading_widget,
+                    trailing_widget,
+                    search_widget,
+                    bar.color,
+                    bar.hidden,
+                );
                 let root_widget = renderer.render_any(content, &child_env);
                 gtk_stack.add_named(&root_widget, Some("root"));
                 gtk_stack.set_visible_child_name("root");
@@ -194,7 +238,6 @@ impl GtkComponent for NavigationStack<(), ()> {
     }
 }
 
-/// GTK-specific navigation controller implementation.
 #[derive(Clone)]
 struct GtkNavigationController {
     inner: Rc<RefCell<GtkNavigationControllerInner>>,
@@ -202,29 +245,38 @@ struct GtkNavigationController {
 
 struct GtkNavigationControllerInner {
     stack: gtk4::Stack,
+    bar_container: gtk4::Box,
     header_bar: gtk4::HeaderBar,
+    leading_slot: gtk4::Box,
+    trailing_slot: gtk4::Box,
+    search_holder: gtk4::Box,
     back_button: gtk4::Button,
     color_provider: gtk4::CssProvider,
     view_stack: Vec<NavigationViewState>,
     active_bar_guards: Vec<nami::watcher::BoxWatcherGuard>,
     next_id: usize,
-    /// Environment for rendering child views.
     env: Environment,
 }
 
 struct NavigationViewState {
     id: String,
     title_widget: Option<gtk4::Widget>,
+    leading_widget: Option<gtk4::Widget>,
+    trailing_widget: Option<gtk4::Widget>,
+    search_widget: Option<gtk4::Widget>,
     bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
     bar_hidden: Option<nami::Computed<bool>>,
 }
 
 impl GtkNavigationController {
-    /// Creates a new GTK navigation controller.
-    ///
+    #[allow(clippy::too_many_arguments)]
     fn new(
         stack: gtk4::Stack,
+        bar_container: gtk4::Box,
         header_bar: gtk4::HeaderBar,
+        leading_slot: gtk4::Box,
+        trailing_slot: gtk4::Box,
+        search_holder: gtk4::Box,
         back_button: gtk4::Button,
         color_provider: gtk4::CssProvider,
         env: &Environment,
@@ -232,13 +284,19 @@ impl GtkNavigationController {
         Self {
             inner: Rc::new(RefCell::new(GtkNavigationControllerInner {
                 stack,
+                bar_container,
                 header_bar,
+                leading_slot,
+                trailing_slot,
+                search_holder,
                 back_button,
                 color_provider,
-                // Track root so `pop()` can return to it.
                 view_stack: vec![NavigationViewState {
                     id: "root".to_string(),
                     title_widget: None,
+                    leading_widget: None,
+                    trailing_widget: None,
+                    search_widget: None,
                     bar_color: None,
                     bar_hidden: None,
                 }],
@@ -253,14 +311,21 @@ impl GtkNavigationController {
         self.inner.borrow_mut().env = env;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn set_root_bar_state(
         &self,
         title_widget: gtk4::Widget,
+        leading_widget: Option<gtk4::Widget>,
+        trailing_widget: Option<gtk4::Widget>,
+        search_widget: Option<gtk4::Widget>,
         bar_color: nami::Computed<waterui_graphics::color::Color>,
         bar_hidden: nami::Computed<bool>,
     ) {
         let mut inner = self.inner.borrow_mut();
         inner.view_stack[0].title_widget = Some(title_widget);
+        inner.view_stack[0].leading_widget = leading_widget;
+        inner.view_stack[0].trailing_widget = trailing_widget;
+        inner.view_stack[0].search_widget = search_widget;
         inner.view_stack[0].bar_color = Some(bar_color);
         inner.view_stack[0].bar_hidden = Some(bar_hidden);
         inner.apply_active_bar_for_top();
@@ -270,30 +335,32 @@ impl GtkNavigationController {
 impl CustomNavigationController for GtkNavigationController {
     fn push(&mut self, content: NavigationView) {
         let mut inner = self.inner.borrow_mut();
-
         let id = format!("view_{}", inner.next_id);
         inner.next_id += 1;
 
-        // Render with a fresh renderer to avoid holding a raw pointer.
         let mut renderer = GtkRenderer::new();
         let content_widget = renderer.render_any(content.content, &inner.env);
-
-        // Create container and add the rendered content
         let view_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         view_container.set_hexpand(true);
         view_container.set_vexpand(true);
         view_container.append(&content_widget);
-
-        // Add to stack
         inner.stack.add_named(&view_container, Some(&id));
         inner.stack.set_visible_child_name(&id);
 
-        // Update header bar title widget
         let title_widget = renderer.render_any(content.bar.title, &inner.env);
-        // Track the view and its bar configuration for later restores.
+        let leading_widget = (!content.bar.leading.is::<()>())
+            .then(|| renderer.render_any(content.bar.leading, &inner.env));
+        let trailing_widget = (!content.bar.trailing.is::<()>())
+            .then(|| renderer.render_any(content.bar.trailing, &inner.env));
+        let search_widget =
+            render_search_widget(&mut renderer, &inner.env, content.bar.search.as_ref());
+
         inner.view_stack.push(NavigationViewState {
             id,
             title_widget: Some(title_widget),
+            leading_widget,
+            trailing_widget,
+            search_widget,
             bar_color: Some(content.bar.color),
             bar_hidden: Some(content.bar.hidden),
         });
@@ -309,17 +376,15 @@ impl CustomNavigationController for GtkNavigationController {
 impl GtkNavigationControllerInner {
     fn pop_internal(&mut self) {
         if self.view_stack.len() <= 1 {
-            return; // Can't pop the root view
+            return;
         }
 
-        // Remove current view
         if let Some(current) = self.view_stack.pop() {
             if let Some(child) = self.stack.child_by_name(&current.id) {
                 self.stack.remove(&child);
             }
         }
 
-        // Show previous view
         if let Some(previous) = self.view_stack.last() {
             self.stack.set_visible_child_name(&previous.id);
         }
@@ -328,7 +393,6 @@ impl GtkNavigationControllerInner {
     }
 
     fn apply_active_bar_for_top(&mut self) {
-        // Drop previous active subscriptions so only the top-of-stack drives chrome.
         self.active_bar_guards.clear();
 
         let is_root = self.view_stack.len() <= 1;
@@ -338,30 +402,50 @@ impl GtkNavigationControllerInner {
             return;
         };
 
-        // Title widget
+        clear_box_children(&self.leading_slot);
+        clear_box_children(&self.trailing_slot);
+        clear_box_children(&self.search_holder);
+        self.leading_slot.append(&self.back_button);
+
         if let Some(title) = &top.title_widget {
             self.header_bar.set_title_widget(Some(title));
         } else {
             self.header_bar.set_title_widget(None::<&gtk4::Widget>);
         }
+        if let Some(leading) = &top.leading_widget {
+            self.leading_slot.append(leading);
+        }
+        if let Some(trailing) = &top.trailing_widget {
+            self.trailing_slot.append(trailing);
+        }
+        if let Some(search) = &top.search_widget {
+            search.set_margin_top(6);
+            search.set_margin_bottom(6);
+            search.set_margin_start(12);
+            search.set_margin_end(12);
+            self.search_holder.append(search);
+        }
 
-        // Hidden state
         if let Some(hidden) = &top.bar_hidden {
             let header_bar = self.header_bar.clone();
+            let bar_container = self.bar_container.clone();
             let hidden_guard = hidden.watch(move |ctx: nami::watcher::Context<bool>| {
                 let hidden = ctx.into_value();
                 let header_bar = header_bar.clone();
+                let bar_container = bar_container.clone();
                 glib::idle_add_local_once(move || {
                     header_bar.set_visible(!hidden);
+                    bar_container.set_visible(!hidden);
                 });
             });
             self.header_bar.set_visible(!hidden.get());
+            self.bar_container.set_visible(!hidden.get());
             self.active_bar_guards.push(hidden_guard);
         } else {
             self.header_bar.set_visible(true);
+            self.bar_container.set_visible(true);
         }
 
-        // Background color
         if let Some(color) = &top.bar_color {
             self.color_provider
                 .load_from_data(&css_for_header_bar_color(color.get(), &self.env));
@@ -379,5 +463,25 @@ impl GtkNavigationControllerInner {
             );
             self.active_bar_guards.push(color_guard);
         }
+    }
+}
+
+impl GtkComponent for NavigationSplitLayout {
+    fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+        let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+        paned.set_position(self.sidebar_width as i32);
+        let sidebar = renderer.render_any(self.sidebar, env);
+        sidebar.set_hexpand(true);
+        sidebar.set_vexpand(true);
+        paned.set_start_child(Some(&sidebar));
+        let detail = if let Some(detail) = self.detail {
+            renderer.render(detail, env)
+        } else {
+            renderer.render_any(self.placeholder, env)
+        };
+        detail.set_hexpand(true);
+        detail.set_vexpand(true);
+        paned.set_end_child(Some(&detail));
+        paned.upcast()
     }
 }

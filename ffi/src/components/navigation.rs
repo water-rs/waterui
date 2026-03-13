@@ -1,16 +1,18 @@
 use alloc::boxed::Box;
 
+use crate::action::WuiAction;
 use crate::array::WuiArray;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui::Color;
+use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
 use waterui_navigation::{
-    Bar, CustomNavigationController, NavigationController, NavigationStack,
-    NavigationTitleDisplayMode, NavigationTransition, NavigationView,
+    Bar, CustomNavigationController, NavigationController, NavigationSearch, NavigationSplitLayout,
+    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView,
 };
 
 into_ffi! {
@@ -24,6 +26,31 @@ into_ffi! {
 pub struct WuiNavigationLink {
     pub label: *mut WuiAnyView,
     pub destination: *mut WuiFn<*mut WuiAnyView>,
+}
+
+#[repr(C)]
+pub struct WuiNavigationSearch {
+    pub text: *mut WuiBinding<Str>,
+    pub prompt: crate::WuiStr,
+}
+
+impl IntoFFI for NavigationSearch {
+    type FFI = *mut WuiNavigationSearch;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiNavigationSearch {
+            text: self.text.into_ffi(),
+            prompt: self.prompt.into_ffi(),
+        }))
+    }
+}
+
+impl IntoFFI for Option<NavigationSearch> {
+    type FFI = *mut WuiNavigationSearch;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.map_or(core::ptr::null_mut(), IntoFFI::into_ffi)
+    }
 }
 
 /// The display mode for the navigation bar title (FFI-compatible).
@@ -52,6 +79,9 @@ impl IntoFFI for NavigationTitleDisplayMode {
 into_ffi! {Bar,
     pub struct WuiBar {
         title: *mut WuiAnyView,
+        leading: *mut WuiAnyView,
+        trailing: *mut WuiAnyView,
+        search: *mut WuiNavigationSearch,
         color: *mut WuiComputed<Color>,
         hidden: *mut WuiComputed<bool>,
         display_mode: WuiNavigationTitleDisplayMode,
@@ -103,6 +133,66 @@ impl IntoFFI for NavigationStack<(), ()> {
 }
 
 ffi_view!(NavigationStack<(),()>, WuiNavigationStack, navigation_stack);
+
+#[repr(C)]
+pub struct WuiNavigationSplitLayout {
+    /// Sidebar content.
+    pub sidebar: *mut WuiAnyView,
+    /// Placeholder content for empty regular-width selection.
+    pub placeholder: *mut WuiAnyView,
+    /// Active detail bar state when a selection exists.
+    pub detail_bar: WuiBar,
+    /// Active detail content when a selection exists.
+    pub detail_content: *mut WuiAnyView,
+    /// Whether a detail selection currently exists.
+    pub has_detail: bool,
+    /// Preferred sidebar width in logical points.
+    pub sidebar_width: f32,
+    /// Action that clears the current selection on compact layouts.
+    pub clear_selection: *mut WuiAction,
+}
+
+impl IntoFFI for NavigationSplitLayout {
+    type FFI = WuiNavigationSplitLayout;
+
+    fn into_ffi(self) -> Self::FFI {
+        let (detail_bar, detail_content, has_detail) = match self.detail {
+            Some(detail) => {
+                let detail = detail.into_ffi();
+                (detail.bar, detail.content, true)
+            }
+            None => (
+                WuiBar {
+                    title: core::ptr::null_mut(),
+                    leading: core::ptr::null_mut(),
+                    trailing: core::ptr::null_mut(),
+                    search: core::ptr::null_mut(),
+                    color: core::ptr::null_mut(),
+                    hidden: core::ptr::null_mut(),
+                    display_mode: NavigationTitleDisplayMode::Automatic.into_ffi(),
+                },
+                core::ptr::null_mut(),
+                false,
+            ),
+        };
+
+        WuiNavigationSplitLayout {
+            sidebar: self.sidebar.into_ffi(),
+            placeholder: self.placeholder.into_ffi(),
+            detail_bar,
+            detail_content,
+            has_detail,
+            sidebar_width: self.sidebar_width,
+            clear_selection: self.clear_selection.into_ffi(),
+        }
+    }
+}
+
+ffi_view!(
+    NavigationSplitLayout,
+    WuiNavigationSplitLayout,
+    split_navigation_container
+);
 
 /// Position of the tab bar within the tab container.
 #[repr(C)]
