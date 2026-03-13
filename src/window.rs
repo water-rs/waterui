@@ -31,6 +31,7 @@ use waterui_str::Str;
 use crate::{
     ViewExt,
     background::{Material, MaterialBackground},
+    component::label::LabelDisplayMode,
     prelude::FullScreenOverlayManager,
     snackbar::SnackbarManager,
 };
@@ -208,9 +209,14 @@ impl Window {
     }
 
     /// Set the toolbar content for the window.
+    ///
+    /// Toolbar subtrees automatically install [`LabelDisplayMode::IconOnly`] so
+    /// semantic labels adapt to compact window chrome while preserving their
+    /// accessibility text. Individual labels can opt back into
+    /// [`LabelDisplayMode::TitleOnly`] or [`LabelDisplayMode::TitleAndIcon`].
     #[must_use]
     pub fn toolbar(mut self, toolbar: impl View) -> Self {
-        self.toolbar = Some(AnyView::new(toolbar));
+        self.toolbar = Some(AnyView::new(toolbar.install(LabelDisplayMode::IconOnly)));
         self
     }
 
