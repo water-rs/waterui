@@ -136,7 +136,6 @@ peniko = "0.6"
 lyon = "1.0"
 wgpu-hal = { version = "27", features = ["gles", "metal"] }
 glow = "0.16"
-time = "0.3"
 tiny-skia = "0.11"
 zenwave = { version = "0.3.0", default-features = false, features = ["hyper-backend", "ws"] }
 skyzen = { version = "0.1.0", default-features = false }
@@ -148,7 +147,7 @@ gdk4 = "0.9"
 glib = "0.20"
 cairo-rs = { version = "0.20", features = ["v1_18"] }
 pollster = "0.4"
-jiff = "0.2"
+jiff = { version = "0.2", features = ["serde"] }
 async-channel = "2.5"
 rodio = { version = "0.19", features = ["symphonia-isomp4", "symphonia-aac"] }
 cpal = "0.15"

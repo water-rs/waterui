@@ -41,6 +41,7 @@ base64 = "0.22.1"
 pastey.workspace = true
 tracing.workspace = true
 tracing-panic.workspace = true
+jiff.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 pollster = "0.4"
 raw-window-handle = "0.6"

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, eyre};
-use time::OffsetDateTime;
+use jiff::Timestamp;
 
 use crate::device::Device;
 use crate::{android, apple};
@@ -25,8 +25,6 @@ pub enum DevicePlatform {
 /// Android devices use serials (e.g., `emulator-5554`, `ABCD1234`).
 #[must_use]
 pub fn detect_platform(device_id: &str) -> DevicePlatform {
-    // iOS UDIDs are typically in UUID format with hyphens at specific positions
-    // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (8-4-4-4-12)
     let parts: Vec<&str> = device_id.split('-').collect();
     if parts.len() == 5
         && parts[0].len() == 8
@@ -39,7 +37,6 @@ pub fn detect_platform(device_id: &str) -> DevicePlatform {
         return DevicePlatform::Ios;
     }
 
-    // Default to Android for all other formats
     DevicePlatform::Android
 }
 
@@ -48,35 +45,14 @@ pub fn detect_platform(device_id: &str) -> DevicePlatform {
 /// Format: `screenshot_YYYY-MM-DD_HHMMSS.png`
 #[must_use]
 pub fn generate_screenshot_filename() -> PathBuf {
-    let now = OffsetDateTime::now_utc();
     let filename = format!(
-        "screenshot_{:04}-{:02}-{:02}_{:02}{:02}{:02}.png",
-        now.year(),
-        now.month() as u8,
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second()
+        "screenshot_{}.png",
+        Timestamp::now().strftime("%Y-%m-%d_%H%M%S")
     );
     PathBuf::from(filename)
 }
 
 /// Capture a screenshot from a device.
-///
-/// Automatically detects the device platform (iOS or Android) from the device ID
-/// and calls the appropriate platform-specific screenshot function.
-///
-/// # Arguments
-///
-/// * `device_id` - The device identifier (UDID for iOS, serial for Android)
-/// * `output` - The output file path for the screenshot (PNG format)
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The screenshot command fails
-/// - The device is not available or not booted
-/// - The output file cannot be written
 pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
     match detect_platform(device_id) {
         DevicePlatform::Ios => apple::device::screenshot(device_id, output).await,
@@ -85,18 +61,11 @@ pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
 }
 
 /// Verify that a device exists and return its platform.
-///
-/// Scans available devices and checks if the given device ID exists.
-///
-/// # Errors
-///
-/// Returns an error if the device is not found.
 pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
     let platform = detect_platform(device_id);
 
     match platform {
         DevicePlatform::Ios => {
-            // Check if the simulator exists
             let simulators = apple::device::AppleSimulator::scan().await?;
             if simulators.iter().any(|s| s.udid == device_id) {
                 Ok(DevicePlatform::Ios)
@@ -105,7 +74,6 @@ pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
             }
         }
         DevicePlatform::Android => {
-            // Check if the Android device exists
             let devices = android::device::AndroidDevice::scan().await?;
             if devices.iter().any(|d| d.identifier() == device_id) {
                 Ok(DevicePlatform::Android)
