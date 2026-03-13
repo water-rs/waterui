@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use smol::process::Command;
-use time::OffsetDateTime;
 use tracing::{debug, info};
 
 /// Check if crash debug output is enabled via `WATERUI_CRASH_DEBUG=1`
@@ -28,7 +28,7 @@ macro_rules! crash_debug {
 /// Structured crash diagnostics captured while launching or monitoring an app.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CrashReport {
-    time: OffsetDateTime,
+    time: Timestamp,
     device_name: String,
     device_identifier: String,
     app_identifier: String,
@@ -40,7 +40,7 @@ impl CrashReport {
     /// Create a new crash report.
     #[must_use]
     pub fn new(
-        time: OffsetDateTime,
+        time: Timestamp,
         device_name: impl Into<String>,
         device_identifier: impl Into<String>,
         app_identifier: impl Into<String>,
@@ -59,7 +59,7 @@ impl CrashReport {
 
     /// Time the crash report was generated.
     #[must_use]
-    pub const fn time(&self) -> OffsetDateTime {
+    pub const fn time(&self) -> Timestamp {
         self.time
     }
 
@@ -107,7 +107,7 @@ impl fmt::Display for CrashReport {
 
 #[derive(Debug)]
 struct IpsReport {
-    time: OffsetDateTime,
+    time: Timestamp,
     bundle_id: Option<String>,
     pid: Option<u32>,
     summary: String,
@@ -120,7 +120,7 @@ pub async fn find_macos_ips_crash_report_since(
     app_identifier: &str,
     process_name: &str,
     pid: Option<u32>,
-    since: OffsetDateTime,
+    since: Timestamp,
 ) -> Option<CrashReport> {
     let home = std::env::var("HOME").ok()?;
     let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
@@ -181,7 +181,7 @@ async fn pick_best_ips_report(
     candidates: Vec<PathBuf>,
     app_identifier: &str,
     pid: Option<u32>,
-    since: OffsetDateTime,
+    since: Timestamp,
 ) -> Option<(PathBuf, IpsReport)> {
     let mut best: Option<(PathBuf, IpsReport)> = None;
     for path in candidates {
@@ -359,29 +359,14 @@ async fn parse_ips_report(path: &Path) -> Option<IpsReport> {
     })
 }
 
-fn parse_ips_timestamp(timestamp: &str) -> Option<OffsetDateTime> {
-    use time::format_description::{parse, well_known::Rfc3339};
-
-    if let Ok(dt) = OffsetDateTime::parse(timestamp, &Rfc3339) {
-        return Some(dt);
-    }
-
-    let formats = [
-        "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory][offset_minute]",
-        "[year]-[month]-[day] [hour]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]",
-        "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory]:[offset_minute]",
-        "[year]-[month]-[day] [hour]:[minute]:[second] [offset_hour sign:mandatory]:[offset_minute]",
-    ];
-
-    for fmt in formats {
-        if let Ok(format) = parse(fmt) {
-            if let Ok(dt) = OffsetDateTime::parse(timestamp, &format) {
-                return Some(dt);
-            }
-        }
-    }
-
-    None
+fn parse_ips_timestamp(timestamp: &str) -> Option<Timestamp> {
+    timestamp
+        .parse::<Timestamp>()
+        .ok()
+        .or_else(|| Timestamp::strptime("%Y-%m-%d %H:%M:%S%.f %z", timestamp).ok())
+        .or_else(|| Timestamp::strptime("%Y-%m-%d %H:%M:%S %z", timestamp).ok())
+        .or_else(|| Timestamp::strptime("%Y-%m-%d %H:%M:%S%.f %:z", timestamp).ok())
+        .or_else(|| Timestamp::strptime("%Y-%m-%d %H:%M:%S %:z", timestamp).ok())
 }
 
 fn value_as_u32(value: &serde_json::Value) -> Option<u32> {
