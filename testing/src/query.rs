@@ -3,6 +3,7 @@ use crate::selector::{ElementRef, ElementSet, Selector};
 use crate::semantics::Role;
 
 /// Chainable query builder bound to a mounted app session.
+#[derive(Debug)]
 pub struct Query<'a> {
     pub(crate) app: &'a mut MountedApp,
     pub(crate) selector: Selector,
@@ -162,13 +163,7 @@ impl<'a> Query<'a> {
         element.drag_by(self.app, dx, dy)
     }
 
-    pub fn drag_between(
-        self,
-        from_x: f32,
-        from_y: f32,
-        to_x: f32,
-        to_y: f32,
-    ) -> bool {
+    pub fn drag_between(self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> bool {
         let element = self.app.resolve_single(&self.selector);
         element.drag_between(self.app, from_x, from_y, to_x, to_y)
     }

@@ -135,8 +135,8 @@ pub use waterui_webview as webview;
 // Asset types re-exported for convenience
 #[doc(inline)]
 pub use waterui_assets::{
-    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
-    LargeFile, LargeFileAsset, VideoAsset,
+    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
+    LargeFileAsset, VideoAsset,
 };
 #[doc(inline)]
 pub use waterui_assets_macros::{asset, assets, include_bundle};

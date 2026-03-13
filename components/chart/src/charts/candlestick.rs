@@ -5,11 +5,11 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{
-    candlestick_bounds, candlestick_geometry, draw_candlestick, interactive_signal_canvas,
+    candlestick_bounds, candlestick_geometry, draw_candlestick, interactive_cartesian_signal_canvas,
 };
 use crate::composition::ChartComposition;
 use crate::data::Candle;
-use crate::interaction::{HitResult, SelectionBindings};
+use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
 
 /// Candlestick chart for financial OHLC data.
 pub struct CandlestickChart<S: Signal<Output = Vec<Candle>>> {
@@ -17,6 +17,8 @@ pub struct CandlestickChart<S: Signal<Output = Vec<Candle>>> {
     bullish_color: Srgb,
     bearish_color: Srgb,
     selection: SelectionBindings<Candle>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
     composition: ChartComposition<Candle>,
 }
 
@@ -28,9 +30,13 @@ impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
             bullish_color: Srgb::from_hex("#22C55E"),
             bearish_color: Srgb::from_hex("#EF4444"),
             selection: SelectionBindings::default(),
+            cartesian_selection: CartesianSelectionBindings::default(),
+            cartesian_viewport: CartesianViewportBindings::default(),
             composition: ChartComposition::default(),
         }
     }
+
+    crate::interaction::chart_x_selection_methods!();
 
     crate::composition::chart_composition_methods!(Candle);
 
@@ -63,17 +69,17 @@ impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChar
     fn body(self, _env: &Environment) -> impl View {
         let bullish_color = self.bullish_color;
         let bearish_color = self.bearish_color;
-        interactive_signal_canvas(
+        interactive_cartesian_signal_canvas(
             _env,
             self.data,
-            move |ctx, data| {
-                let bounds = candlestick_bounds(data);
-                candlestick_geometry(ctx, data, bounds)
-            },
+            |data: &Vec<Candle>| candlestick_bounds(data),
+            move |ctx, data, bounds| candlestick_geometry(ctx, data, bounds),
             move |ctx, data, geometry| {
                 draw_candlestick(ctx, data, geometry.bounds, bullish_color, bearish_color);
             },
             self.selection,
+            self.cartesian_selection,
+            self.cartesian_viewport,
             self.composition,
         )
     }
