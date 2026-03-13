@@ -7,7 +7,7 @@ use color_eyre::eyre::{Result, bail};
 use futures::StreamExt;
 
 #[cfg(target_os = "macos")]
-use time::OffsetDateTime;
+use jiff::Timestamp;
 
 use crate::shell::{self, display_output};
 use crate::toolchain_checks;
@@ -49,7 +49,7 @@ use waterui_cli::project::PackageType;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
-    started_at: OffsetDateTime,
+    started_at: Timestamp,
     device_identifier: String,
     bundle_id: String,
     process_name: String,
@@ -87,7 +87,7 @@ impl CrashReportContext {
         };
 
         Ok(Some(Self {
-            started_at: OffsetDateTime::now_utc(),
+            started_at: Timestamp::now(),
             device_identifier,
             bundle_id: project.bundle_identifier().to_string(),
             process_name,
@@ -95,7 +95,7 @@ impl CrashReportContext {
     }
 
     fn refresh_start(&mut self) {
-        self.started_at = OffsetDateTime::now_utc();
+        self.started_at = Timestamp::now();
     }
 }
 
