@@ -11,7 +11,7 @@ use nami::{Binding, SignalExt};
 use regex::Regex;
 use waterui_core::{Str, View};
 use waterui_layout::stack::vstack;
-use waterui_text::text;
+use waterui_text::Text;
 
 macro_rules! impl_error {
     ($ident:ident,$message:expr) => {
@@ -111,7 +111,7 @@ where
         };
         vstack((
             self.view,
-            text(value.map(move |v| {
+            Text::computed(value.map(move |v| {
                 if let Err(reason) = self.validator.validate(v) {
                     reason.to_string().into()
                 } else {

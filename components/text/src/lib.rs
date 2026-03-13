@@ -22,4 +22,4 @@ pub mod styled;
 
 /// Core text component.
 pub mod text;
-pub use text::{Text, TextConfig, text};
+pub use text::{IntoText, Text, TextConfig, text};

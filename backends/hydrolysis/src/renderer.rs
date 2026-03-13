@@ -11,6 +11,7 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
@@ -47,11 +48,11 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
-    use crate::platform::PlatformWindow as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
+use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
-use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
@@ -2042,7 +2043,7 @@ fn measure_progress_intrinsic(
 }
 
 fn measure_text_field_intrinsic(
-    text_field: &TextFieldConfig,
+    text_field: &ResolvedTextFieldConfig,
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
@@ -2050,7 +2051,7 @@ fn measure_text_field_intrinsic(
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = f64::from(label_size.height).max(INPUT_LABEL_HEIGHT);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-    let prompt = text_field.prompt.content().get();
+    let prompt = text_field.prompt.content.get();
     let value = text_field.value.get();
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
@@ -2298,7 +2299,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<SliderConfig>);
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);
-        $macro!(Native<TextFieldConfig>);
+        $macro!(Native<ResolvedTextFieldConfig>);
         $macro!(Native<SecureFieldConfig>);
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
@@ -3051,7 +3052,7 @@ impl HydroNativeView for Native<ProgressConfig> {
     }
 }
 
-impl HydroNativeView for Native<TextFieldConfig> {
+impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
         HydrolysisRenderer::render_text_field(state, ctx, view, env);
     }
@@ -3074,7 +3075,7 @@ impl HydroNativeView for Native<TextFieldConfig> {
                     AccessibilityNodeRole::MultilineTextInput
                 },
             ));
-            let prompt_signal = text_field.prompt.content();
+            let prompt_signal = text_field.prompt.content.clone();
             let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
             let default_label = renderer
                 .accessibility_label_from_view(&text_field.label, env)
@@ -6378,7 +6379,7 @@ impl HydrolysisRenderer {
     fn render_text_field(
         state: &mut HydroState,
         ctx: RenderContext,
-        text_field: Native<TextFieldConfig>,
+        text_field: Native<ResolvedTextFieldConfig>,
         env: &Environment,
     ) {
         let mut text_field = text_field.into_inner();
@@ -6409,8 +6410,8 @@ impl HydrolysisRenderer {
         let scene = unsafe { ctx.scene() };
         draw_input_field(scene, ctx.transform, field_rect);
 
-        let prompt_signal = text_field.prompt.content();
-        let (prompt, value, preedit, caret_opacity) = {
+        let prompt_signal = text_field.prompt.content.clone();
+        let (prompt, value, preedit, caret_opacity): (Str, Str, Str, f32) = {
             let renderer = unsafe { ctx.renderer() };
             let is_focused =
                 renderer.focused_text_input.get() == Some(renderer.text_input_targets.len());
@@ -9285,9 +9286,8 @@ impl HydrolysisRenderer {
         if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_engine.register_existing_target(
-            target.with_bounds_depth_and_group(bounds, depth, group_id),
-        );
+        self.gesture_engine
+            .register_existing_target(target.with_bounds_depth_and_group(bounds, depth, group_id));
     }
 
     fn allocate_gesture_group_id(&mut self) -> usize {
@@ -9540,6 +9540,10 @@ impl HydrolysisRenderer {
         }
         if let Some(content) = passthrough_content(view) {
             return self.accessibility_label_from_view_with_budget(content, env, remaining - 1);
+        }
+        if let Some(label) = view.downcast_ref::<SemanticLabel>() {
+            let styled = self.read_signal(&label.__text().__resolve(env).content);
+            return Some(styled.to_plain().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
             return Some(label.as_str().to_owned());
@@ -11114,11 +11118,8 @@ mod tests {
             }
         };
 
-        let mut platform = crate::platform::OffscreenWindow::new(
-            160,
-            160,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let mut platform =
+            crate::platform::OffscreenWindow::new(160, 160, wgpu::TextureFormat::Rgba8Unorm);
         let mut renderer = {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())

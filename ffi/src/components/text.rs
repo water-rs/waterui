@@ -230,7 +230,7 @@ ffi_reactive!(Font, *mut WuiFont);
 impl IntoFFI for Text {
     type FFI = WuiText;
     fn into_ffi(self) -> Self::FFI {
-        self.config().into_ffi()
+        self.__into_ffi_without_env().into_ffi()
     }
 }
 

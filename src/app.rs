@@ -1,10 +1,13 @@
 //! A `WaterUI` application representation.
 
-use nami::signal::IntoComputed;
+use nami::{Computed, signal::IntoComputed};
 use waterui_core::{Environment, handler::ViewBuilder};
 use waterui_str::Str;
 
-use crate::window::Window;
+use crate::{
+    component::menu::{Menu, MenuBarView},
+    window::Window,
+};
 
 /// Represents a `WaterUI` application.
 #[derive(Debug)]
@@ -13,6 +16,8 @@ pub struct App {
     main_window: Window,
     /// Additional application windows.
     windows: Vec<Window>,
+    /// Optional system menu bar menus.
+    pub menu_bar: Computed<Vec<Menu>>,
     /// The application environment containing injected services.
     pub env: Environment,
 }
@@ -36,6 +41,7 @@ impl App {
         Self {
             main_window,
             windows: iter.collect(),
+            menu_bar: Computed::constant(Vec::new()),
             env,
         }
     }
@@ -71,19 +77,26 @@ impl App {
         self
     }
 
+    /// Sets the application system menu bar.
+    #[must_use]
+    pub fn menu_bar(mut self, menus: impl MenuBarView) -> Self {
+        self.menu_bar = menus.into_menus();
+        self
+    }
+
     /// Consume the app and return all windows with the main window first.
     #[must_use]
     pub fn into_windows(self) -> Vec<Window> {
         self.into_parts().0
     }
 
-    /// Consume the app and return `(windows, env)`.
+    /// Consume the app and return `(windows, menu_bar, env)`.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Window>, Environment) {
+    pub fn into_parts(self) -> (Vec<Window>, Computed<Vec<Menu>>, Environment) {
         let mut windows = Vec::with_capacity(1 + self.windows.len());
         windows.push(self.main_window);
         windows.extend(self.windows);
-        (windows, self.env)
+        (windows, self.menu_bar, self.env)
     }
 
     /// Set the title of the main application window.

@@ -10,7 +10,7 @@ use core::ops::RangeInclusive;
 
 use nami::{Binding, SignalExt};
 use time::{Date, Duration, Month, OffsetDateTime, Weekday};
-use waterui_controls::button;
+use waterui_controls::{IntoLabel, button};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, View};
 use waterui_layout::frame::Frame;
@@ -44,8 +44,8 @@ impl MultiDatePicker {
 
     /// Sets the label for the multi-date picker.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.label = AnyView::new(label.into_label());
         self
     }
 
@@ -68,15 +68,18 @@ impl View for MultiDatePicker {
 
         vstack((
             label,
-            Dynamic::watch(visible_month.zip(&selection), move |(month, selected_dates)| {
-                AnyView::new(build_picker_body(
-                    month,
-                    selected_dates,
-                    range.clone(),
-                    visible_month.clone(),
-                    selection.clone(),
-                ))
-            }),
+            Dynamic::watch(
+                visible_month.zip(&selection),
+                move |(month, selected_dates)| {
+                    AnyView::new(build_picker_body(
+                        month,
+                        selected_dates,
+                        range.clone(),
+                        visible_month.clone(),
+                        selection.clone(),
+                    ))
+                },
+            ),
         ))
         .spacing(10.0)
     }
@@ -173,11 +176,23 @@ fn build_month_header(
     let title = text(format!("{} {}", month_name(month.month), month.year)).headline();
 
     hstack((
-        Frame::new(month_navigation_button("<", can_go_previous, visible_month.clone(), VisibleMonth::previous)).width(40.0),
+        Frame::new(month_navigation_button(
+            "<",
+            can_go_previous,
+            visible_month.clone(),
+            VisibleMonth::previous,
+        ))
+        .width(40.0),
         spacer(),
         title,
         spacer(),
-        Frame::new(month_navigation_button(">", can_go_next, visible_month, VisibleMonth::next)).width(40.0),
+        Frame::new(month_navigation_button(
+            ">",
+            can_go_next,
+            visible_month,
+            VisibleMonth::next,
+        ))
+        .width(40.0),
     ))
     .spacing(8.0)
 }
@@ -234,7 +249,15 @@ fn calendar_rows(
             AnyView::new(
                 week.iter()
                     .copied()
-                    .map(|cell| day_cell_view(cell, month, selected_dates, range.clone(), selection.clone()))
+                    .map(|cell| {
+                        day_cell_view(
+                            cell,
+                            month,
+                            selected_dates,
+                            range.clone(),
+                            selection.clone(),
+                        )
+                    })
                     .collect::<HStack<_>>()
                     .spacing(6.0),
             )
@@ -265,15 +288,13 @@ fn day_cell_view(
         };
 
         AnyView::new(
-            Frame::new(
-                button.with_state(&selection).action(move |selected| {
-                    let mut dates = selected.get();
-                    if !dates.insert(cell.date) {
-                        dates.remove(&cell.date);
-                    }
-                    selected.set(dates);
-                }),
-            )
+            Frame::new(button.with_state(&selection).action(move |selected| {
+                let mut dates = selected.get();
+                if !dates.insert(cell.date) {
+                    dates.remove(&cell.date);
+                }
+                selected.set(dates);
+            }))
             .width(40.0)
             .height(36.0),
         )
@@ -373,7 +394,11 @@ mod tests {
 
         assert_eq!(cells.len(), 42);
         assert_eq!(cells[0].date.weekday(), Weekday::Monday);
-        assert!(cells.iter().any(|cell| cell.date.day() == 1 && cell.in_current_month));
+        assert!(
+            cells
+                .iter()
+                .any(|cell| cell.date.day() == 1 && cell.in_current_month)
+        );
     }
 
     #[test]
