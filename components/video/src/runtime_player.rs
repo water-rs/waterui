@@ -7,23 +7,32 @@ use std::{
     rc::Rc,
     sync::{
         OnceLock,
-        mpsc::{self, Receiver, Sender, TryRecvError, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError},
     },
     thread,
     time::{Duration, Instant},
 };
 
 use executor_core::spawn_local;
-use waterkit_audio::{AudioPlayer, MediaMetadata, MediaSession, PlaybackState};
+use uuid::Uuid;
+use waterkit_audio::{
+    AudioPlayer, MediaCommand, MediaMetadata, MediaSession, PlaybackState, QueueNavigationControls,
+};
 use waterkit_codec::{CodecType, DecodedFrame, Decoder};
-use waterkit_video::VideoReader;
+use waterkit_video::{
+    EmbeddedSubtitleTrack as EmbeddedSubtitleSourceTrack, PictureInPictureCommand,
+    PictureInPictureControllerState, PictureInPictureHostId, VideoReader,
+    embedded_subtitle_tracks, enter_picture_in_picture, is_picture_in_picture_active,
+    poll_picture_in_picture_command, read_embedded_subtitle_cues,
+    sync_picture_in_picture_controller,
+};
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
-    AnyView, Binding, Environment, View, binding,
+    AnyView, Binding, Environment, SignalExt as _, View, binding,
     dynamic::Dynamic,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
-use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
+use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle, wgpu};
 use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
@@ -47,8 +56,10 @@ const STREAMING_MIN_READY_BYTES: usize = 512 * 1024;
 const DOWNLOAD_PROGRESS_REPORT_INTERVAL_BYTES: usize = 64 * 1024;
 const MIN_PLAYBACK_RATE: f32 = 0.25;
 const MAX_PLAYBACK_RATE: f32 = 4.0;
+const AUDIO_FOCUS_DUCK_FACTOR: f32 = 0.2;
 const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 const BUFFER_LEVEL_REPORT_STEP_MS: u32 = 50;
+const MEDIA_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 type OnEvent = Rc<dyn Fn(Event) + 'static>;
 
@@ -165,6 +176,19 @@ fn clamp_playback_rate(rate: f32) -> f32 {
         rate.clamp(MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE)
     } else {
         1.0
+    }
+}
+
+fn effective_audio_volume(requested: Volume, audio_focus_ducked: bool) -> f32 {
+    let base_volume = if requested.is_sign_negative() {
+        0.0
+    } else {
+        requested.clamp(0.0, 1.0)
+    };
+    if audio_focus_ducked {
+        base_volume * AUDIO_FOCUS_DUCK_FACTOR
+    } else {
+        base_volume
     }
 }
 
@@ -438,6 +462,7 @@ struct PlayerBindings {
     is_playing: Binding<bool>,
     progress_display: Binding<f64>,
     seek_request: Binding<f64>,
+    picture_in_picture_request: Binding<u64>,
     duration_seconds: Binding<f64>,
     position_seconds: Binding<f64>,
     is_buffering: Binding<bool>,
@@ -463,17 +488,32 @@ impl PlayerBindings {
 #[derive(Clone)]
 struct SubtitleBindings {
     text: Binding<String>,
+    track_labels: Binding<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeSubtitleTrack {
+    label: String,
+    source: RuntimeSubtitleSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeSubtitleSource {
+    Sidecar(SubtitleTrack),
+    Embedded(EmbeddedSubtitleSourceTrack),
 }
 
 #[derive(Debug)]
 enum UiUpdate {
     Event(Event),
     Progress(f64),
+    SeekRequest(f64),
     Duration(f64),
     Position(f64),
     Buffering(bool),
     Playing(bool),
     Subtitle(String),
+    SubtitleTracks(Vec<String>),
 }
 
 fn apply_ui_update(
@@ -487,6 +527,15 @@ fn apply_ui_update(
         UiUpdate::Progress(value) => {
             if let Some(player) = player {
                 player.progress_display.set(value);
+            }
+        }
+        UiUpdate::SeekRequest(value) => {
+            if let Some(player) = player {
+                let clamped = value.clamp(0.0, 1.0);
+                player.progress_display.set(clamped);
+                player.seek_request.set(clamped);
+                let duration = player.duration_seconds.get().max(0.0);
+                player.position_seconds.set(duration * clamped);
             }
         }
         UiUpdate::Duration(value) => {
@@ -512,6 +561,11 @@ fn apply_ui_update(
         UiUpdate::Subtitle(value) => {
             if let Some(subtitle) = subtitle {
                 subtitle.text.set(value);
+            }
+        }
+        UiUpdate::SubtitleTracks(value) => {
+            if let Some(subtitle) = subtitle {
+                subtitle.track_labels.set(value);
             }
         }
     }
@@ -587,6 +641,8 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         let VideoConfig {
             source,
             subtitle_selection,
+            has_next,
+            has_previous,
             volume,
             playback_rate,
             preserve_pitch,
@@ -598,15 +654,19 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
         let on_event: OnEvent = Rc::from(on_event);
         AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
+            let subtitle_tracks = runtime_sidecar_subtitle_tracks(&item.subtitle_tracks);
             let subtitle = SubtitleBindings {
                 text: binding(String::new()),
+                track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
             };
             let (ui_updates, ui_receiver) = mpsc::channel();
             start_ui_update_pump(ui_receiver, on_event.clone(), None, Some(subtitle.clone()));
             let surface = VideoSurface::new(
                 item.source,
-                item.subtitle_tracks,
+                subtitle_tracks,
                 subtitle_selection.clone(),
+                has_next.clone(),
+                has_previous.clone(),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -616,9 +676,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 ui_updates,
                 None,
             );
-            AnyView::new(
-                overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom),
-            )
+            overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom)
         }))
     });
 
@@ -626,6 +684,8 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         let VideoPlayerConfig {
             source,
             subtitle_selection,
+            has_next,
+            has_previous,
             volume,
             playback_rate,
             preserve_pitch,
@@ -637,10 +697,12 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
         let on_event: OnEvent = Rc::from(on_event);
         AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
+            let subtitle_tracks = runtime_sidecar_subtitle_tracks(&item.subtitle_tracks);
             let player = PlayerBindings {
                 is_playing: Binding::bool(true),
                 progress_display: Binding::f64(0.0),
                 seek_request: Binding::f64(0.0),
+                picture_in_picture_request: binding(0_u64),
                 duration_seconds: Binding::f64(0.0),
                 position_seconds: Binding::f64(0.0),
                 is_buffering: Binding::bool(false),
@@ -649,6 +711,7 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             };
             let subtitle = SubtitleBindings {
                 text: binding(String::new()),
+                track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
             };
             let (ui_updates, ui_receiver) = mpsc::channel();
             start_ui_update_pump(
@@ -660,8 +723,10 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
             let surface = VideoSurface::new(
                 item.source,
-                item.subtitle_tracks.clone(),
+                subtitle_tracks.clone(),
                 subtitle_selection.clone(),
+                has_next.clone(),
+                has_previous.clone(),
                 volume.clone(),
                 playback_rate.clone(),
                 preserve_pitch.clone(),
@@ -675,16 +740,20 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
             if show_controls {
                 let progress = player.progress_control_binding();
                 let controls = player_controls(
-                    item.subtitle_tracks,
+                    subtitle.track_labels.clone(),
                     subtitle_selection.clone(),
+                    has_previous.clone(),
+                    has_next.clone(),
                     player.is_playing.clone(),
                     progress,
+                    player.picture_in_picture_request.clone(),
                     player.duration_seconds.clone(),
                     player.position_seconds.clone(),
                     player.is_buffering.clone(),
                     player.playback_rate.clone(),
                     player.preserve_pitch.clone(),
                     volume.clone(),
+                    on_event.clone(),
                 );
                 let bottom_cluster =
                     vstack((subtitle_banner(subtitle.text.clone()), controls)).spacing(12.0);
@@ -698,15 +767,70 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
     });
 }
 
-fn select_default_subtitle_track_index(tracks: &[SubtitleTrack]) -> Option<usize> {
+fn subtitle_track_label(track: &SubtitleTrack, index: usize) -> String {
+    track
+        .label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            track.language.as_deref().and_then(|language| {
+                let trimmed = language.trim();
+                (!trimmed.is_empty()).then_some(trimmed.to_owned())
+            })
+        })
+        .unwrap_or_else(|| format!("Track {}", index + 1))
+}
+
+fn runtime_sidecar_subtitle_tracks(tracks: &[SubtitleTrack]) -> Vec<RuntimeSubtitleTrack> {
     tracks
         .iter()
-        .position(|track| track.forced)
+        .enumerate()
+        .map(|(index, track)| RuntimeSubtitleTrack {
+            label: subtitle_track_label(track, index),
+            source: RuntimeSubtitleSource::Sidecar(track.clone()),
+        })
+        .collect()
+}
+
+fn embedded_subtitle_track_label(
+    track: &EmbeddedSubtitleSourceTrack,
+    embedded_index: usize,
+) -> String {
+    let language = track.language.trim();
+    if language.is_empty() || language == "und" {
+        format!("Embedded {}", embedded_index + 1)
+    } else {
+        format!("Embedded {}", language)
+    }
+}
+
+fn runtime_embedded_subtitle_tracks(
+    tracks: &[EmbeddedSubtitleSourceTrack],
+) -> Vec<RuntimeSubtitleTrack> {
+    tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| RuntimeSubtitleTrack {
+            label: embedded_subtitle_track_label(track, index),
+            source: RuntimeSubtitleSource::Embedded(track.clone()),
+        })
+        .collect()
+}
+
+fn runtime_subtitle_track_labels(tracks: &[RuntimeSubtitleTrack]) -> Vec<String> {
+    tracks.iter().map(|track| track.label.clone()).collect()
+}
+
+fn select_default_subtitle_track_index(tracks: &[RuntimeSubtitleTrack]) -> Option<usize> {
+    tracks
+        .iter()
+        .position(|track| matches!(&track.source, RuntimeSubtitleSource::Sidecar(sidecar) if sidecar.forced))
         .or_else(|| (!tracks.is_empty()).then_some(0))
 }
 
 fn resolve_selected_subtitle_index(
-    tracks: &[SubtitleTrack],
+    tracks: &[RuntimeSubtitleTrack],
     selection: SubtitleSelection,
 ) -> Result<Option<usize>, String> {
     match selection {
@@ -725,44 +849,30 @@ fn resolve_selected_subtitle_index(
     }
 }
 
-fn subtitle_track_label(track: &SubtitleTrack, index: usize) -> String {
-    if let Some(label) = track.label.as_deref()
-        && !label.trim().is_empty()
-    {
-        return label.to_owned();
-    }
-    if let Some(language) = track.language.as_deref()
-        && !language.trim().is_empty()
-    {
-        return language.to_owned();
-    }
-    format!("Track {}", index + 1)
-}
-
 fn subtitle_selection_label(
-    tracks: &[SubtitleTrack],
+    track_labels: &[String],
     selection: SubtitleSelection,
 ) -> Result<String, String> {
     match selection {
         SubtitleSelection::Auto => Ok(String::from("Subs Auto")),
         SubtitleSelection::Off => Ok(String::from("Subs Off")),
-        SubtitleSelection::Track(index) => tracks
+        SubtitleSelection::Track(index) => track_labels
             .get(index)
-            .map(|track| format!("Subs {}", subtitle_track_label(track, index)))
+            .map(|label| format!("Subs {label}"))
             .ok_or_else(|| {
                 format!(
                     "subtitle track index {index} is out of range for {} tracks",
-                    tracks.len()
+                    track_labels.len()
                 )
             }),
     }
 }
 
 fn next_subtitle_selection(
-    tracks: &[SubtitleTrack],
+    track_labels: &[String],
     selection: SubtitleSelection,
 ) -> Result<SubtitleSelection, String> {
-    if tracks.is_empty() {
+    if track_labels.is_empty() {
         return Ok(SubtitleSelection::Off);
     }
 
@@ -770,13 +880,13 @@ fn next_subtitle_selection(
         SubtitleSelection::Auto => SubtitleSelection::Off,
         SubtitleSelection::Off => SubtitleSelection::Track(0),
         SubtitleSelection::Track(index) => {
-            if index >= tracks.len() {
+            if index >= track_labels.len() {
                 return Err(format!(
                     "subtitle track index {index} is out of range for {} tracks",
-                    tracks.len()
+                    track_labels.len()
                 ));
             }
-            if index + 1 < tracks.len() {
+            if index + 1 < track_labels.len() {
                 SubtitleSelection::Track(index + 1)
             } else {
                 SubtitleSelection::Auto
@@ -800,17 +910,38 @@ fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
     })
 }
 
+fn picture_in_picture_button(request: Binding<u64>) -> impl View {
+    #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
+    {
+        return AnyView::new(
+            button("PiP")
+                .with_state(&request)
+                .action(|request| request.set(request.get().wrapping_add(1))),
+        );
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
+    {
+        let _ = request;
+        AnyView::new(())
+    }
+}
+
 fn player_controls(
-    subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_track_labels: Binding<Vec<String>>,
     subtitle_selection: Binding<SubtitleSelection>,
+    has_previous: Binding<bool>,
+    has_next: Binding<bool>,
     is_playing: Binding<bool>,
     progress: Binding<f64>,
+    picture_in_picture_request: Binding<u64>,
     duration_seconds: Binding<f64>,
     position_seconds: Binding<f64>,
     is_buffering: Binding<bool>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
     volume: Binding<Volume>,
+    on_event: OnEvent,
 ) -> impl View {
     let volume_level = Binding::mapping(
         &volume,
@@ -839,31 +970,41 @@ fn player_controls(
         },
     );
 
-    let subtitle_toggle = if subtitle_tracks.is_empty() {
-        AnyView::new(())
-    } else {
-        AnyView::new(
-            button(Dynamic::watch(subtitle_selection.clone(), {
-                let subtitle_tracks = subtitle_tracks.clone();
-                move |selection| {
-                    let label = subtitle_selection_label(&subtitle_tracks, selection)
-                        .unwrap_or_else(|message| message);
-                    AnyView::new(text(label))
-                }
-            }))
-            .with_state(&subtitle_selection)
-            .action({
-                let subtitle_tracks = subtitle_tracks.clone();
-                move |selection| {
-                    let next = next_subtitle_selection(&subtitle_tracks, selection.get())
-                        .expect("subtitle selection state must resolve");
-                    selection.set(next);
-                }
-            }),
-        )
-    };
+    let subtitle_toggle = button(Dynamic::watch(
+        subtitle_track_labels.zip(&subtitle_selection),
+        move |(track_labels, selection)| {
+            let label = subtitle_selection_label(&track_labels, selection)
+                .unwrap_or_else(|message| message);
+            text(label)
+        },
+    ))
+    .with_state(&subtitle_selection)
+    .with_state(&subtitle_track_labels)
+    .action(move |(selection, track_labels)| {
+        let next = next_subtitle_selection(&track_labels.get(), selection.get())
+            .expect("subtitle selection state must resolve");
+        selection.set(next);
+    });
+
+    let previous_button = Dynamic::watch(has_previous.clone(), {
+        let on_event = on_event.clone();
+        move |enabled| {
+            enabled.then({
+                let on_event = on_event.clone();
+                move || button("Previous").action(move || (on_event)(Event::PreviousRequested))
+            })
+        }
+    });
+
+    let next_button = Dynamic::watch(has_next.clone(), move |enabled| {
+        enabled.then({
+            let on_event = on_event.clone();
+            move || button("Next").action(move || (on_event)(Event::NextRequested))
+        })
+    });
 
     let transport = hstack((
+        previous_button,
         button("Back 10s")
             .with_state(&progress)
             .with_state(&duration_seconds)
@@ -877,24 +1018,17 @@ fn player_controls(
                 value.set((value.get() - delta).max(0.0));
             }),
         button(Dynamic::watch(is_playing.clone(), |playing| {
-            if playing {
-                AnyView::new(text("Pause"))
-            } else {
-                AnyView::new(text("Play"))
-            }
+            text(if playing { "Pause" } else { "Play" })
         }))
         .with_state(&is_playing)
         .action(|playing| playing.set(!playing.get())),
         button(Dynamic::watch(muted.clone(), |is_muted| {
-            if is_muted {
-                AnyView::new(text("Unmute"))
-            } else {
-                AnyView::new(text("Mute"))
-            }
+            text(if is_muted { "Unmute" } else { "Mute" })
         }))
         .with_state(&muted)
         .action(|is_muted| is_muted.set(!is_muted.get())),
         slider(0.0..=1.0, &volume_level),
+        picture_in_picture_button(picture_in_picture_request),
         subtitle_toggle,
         button("Forward 10s")
             .with_state(&progress)
@@ -908,11 +1042,12 @@ fn player_controls(
                 let delta = (10.0 / duration).min(1.0);
                 value.set((value.get() + delta).min(1.0));
             }),
+        next_button,
     ))
     .spacing(8.0);
 
     let playback_rate_label = Dynamic::watch(playback_rate.clone(), move |rate| {
-        AnyView::new(text(format!("Speed {:.2}x", clamp_playback_rate(rate))).footnote())
+        text(format!("Speed {:.2}x", clamp_playback_rate(rate))).footnote()
     });
 
     let speed_controls = hstack((
@@ -931,11 +1066,11 @@ fn player_controls(
             .action(|rate| rate.set(2.0)),
         slider(0.25..=2.0, &playback_rate_level),
         button(Dynamic::watch(preserve_pitch.clone(), |enabled| {
-            if enabled {
-                AnyView::new(text("Pitch Lock On"))
+            text(if enabled {
+                "Pitch Lock On"
             } else {
-                AnyView::new(text("Pitch Lock Off"))
-            }
+                "Pitch Lock Off"
+            })
         }))
         .with_state(&preserve_pitch)
         .action(|enabled| enabled.set(!enabled.get())),
@@ -958,7 +1093,7 @@ fn player_controls(
                 format_timestamp(duration),
                 status
             );
-            AnyView::new(text(label).footnote())
+            text(label).footnote()
         }
     });
 
@@ -984,15 +1119,40 @@ fn format_timestamp(seconds: f64) -> String {
     }
 }
 
+fn progress_for_position(duration: Duration, position: Duration) -> f64 {
+    if duration.is_zero() {
+        0.0
+    } else {
+        (position.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+    }
+}
+
+fn new_picture_in_picture_host_id() -> PictureInPictureHostId {
+    loop {
+        let uuid_bytes = *Uuid::new_v4().as_bytes();
+        let raw = u64::from_le_bytes(
+            uuid_bytes[..8]
+                .try_into()
+                .expect("UUID v4 byte slice must have eight bytes"),
+        );
+        if let Some(raw) = std::num::NonZeroU64::new(raw) {
+            return PictureInPictureHostId::new(raw);
+        }
+    }
+}
+
 struct VideoSurface {
+    picture_in_picture_host_id: PictureInPictureHostId,
     renderer: VideoRenderer,
 }
 
 impl VideoSurface {
     fn new(
         source: Url,
-        subtitle_tracks: Vec<SubtitleTrack>,
+        subtitle_tracks: Vec<RuntimeSubtitleTrack>,
         subtitle_selection: Binding<SubtitleSelection>,
+        has_next: Binding<bool>,
+        has_previous: Binding<bool>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -1002,11 +1162,16 @@ impl VideoSurface {
         ui_updates: Sender<UiUpdate>,
         player: Option<PlayerBindings>,
     ) -> Self {
+        let picture_in_picture_host_id = new_picture_in_picture_host_id();
         Self {
+            picture_in_picture_host_id,
             renderer: VideoRenderer::new(
+                picture_in_picture_host_id,
                 source,
                 subtitle_tracks,
                 subtitle_selection,
+                has_next,
+                has_previous,
                 volume,
                 playback_rate,
                 preserve_pitch,
@@ -1029,6 +1194,7 @@ impl core::fmt::Debug for VideoSurface {
 impl View for VideoSurface {
     fn body(self, _env: &Environment) -> impl View {
         GpuSurface::new(self.renderer)
+            .picture_in_picture_host_id(self.picture_in_picture_host_id.get())
     }
 }
 
@@ -1181,10 +1347,14 @@ impl Drop for DecoderWorker {
 }
 
 struct VideoRenderer {
+    picture_in_picture_host_id: PictureInPictureHostId,
     source: Url,
-    subtitle_tracks: Vec<SubtitleTrack>,
+    subtitle_tracks: Vec<RuntimeSubtitleTrack>,
     subtitle_selection: Binding<SubtitleSelection>,
     active_subtitle_track: Option<usize>,
+    embedded_subtitle_tracks_loaded: bool,
+    has_next: Binding<bool>,
+    has_previous: Binding<bool>,
     volume: Binding<Volume>,
     playback_rate: Binding<f32>,
     preserve_pitch: Binding<bool>,
@@ -1220,16 +1390,26 @@ struct VideoRenderer {
     last_applied_playback_rate: Option<f32>,
     last_applied_preserve_pitch: Option<bool>,
     media_session: Option<MediaSessionState>,
+    media_command_poller: Option<MediaCommandPoller>,
+    redraw_handle: Option<RedrawHandle>,
     first_frame_presented: bool,
     ready_sent: bool,
     ended_sent: bool,
     is_buffering: bool,
     playback_anchor_pts: Duration,
     playback_anchor_instant: Option<Instant>,
+    play_requested: bool,
+    pending_play_request_sync: Option<bool>,
+    resume_after_audio_focus_gain: bool,
+    audio_focus_ducked: bool,
     last_playing_state: bool,
     last_playback_rate: f32,
     last_reported_progress: f64,
+    last_handled_picture_in_picture_request: Option<u64>,
+    last_picture_in_picture_controller_state: Option<PictureInPictureControllerState>,
+    last_picture_in_picture_active: Option<bool>,
     last_handled_seek_request: Option<f64>,
+    pending_seek_request_sync: Option<f64>,
     pending_seek_request: Option<f64>,
     seek_inflight: bool,
     last_seek_restart_at: Option<Instant>,
@@ -1269,9 +1449,12 @@ impl core::fmt::Debug for VideoRenderer {
 
 impl VideoRenderer {
     fn new(
+        picture_in_picture_host_id: PictureInPictureHostId,
         source: Url,
-        subtitle_tracks: Vec<SubtitleTrack>,
+        subtitle_tracks: Vec<RuntimeSubtitleTrack>,
         subtitle_selection: Binding<SubtitleSelection>,
+        has_next: Binding<bool>,
+        has_previous: Binding<bool>,
         volume: Binding<Volume>,
         playback_rate: Binding<f32>,
         preserve_pitch: Binding<bool>,
@@ -1281,14 +1464,18 @@ impl VideoRenderer {
         ui_updates: Sender<UiUpdate>,
         player: Option<PlayerBindings>,
     ) -> Self {
-        let last_playing_state = player.as_ref().is_none_or(|p| p.is_playing.get());
+        let play_requested = player.as_ref().is_none_or(|p| p.is_playing.get());
         let last_playback_rate = clamp_playback_rate(playback_rate.get());
 
         Self {
+            picture_in_picture_host_id,
             source,
             subtitle_tracks,
             subtitle_selection,
             active_subtitle_track: None,
+            embedded_subtitle_tracks_loaded: false,
+            has_next,
+            has_previous,
             volume,
             playback_rate,
             preserve_pitch,
@@ -1324,16 +1511,26 @@ impl VideoRenderer {
             last_applied_playback_rate: None,
             last_applied_preserve_pitch: None,
             media_session: None,
+            media_command_poller: None,
+            redraw_handle: None,
             first_frame_presented: false,
             ready_sent: false,
             ended_sent: false,
             is_buffering: false,
             playback_anchor_pts: Duration::ZERO,
             playback_anchor_instant: None,
-            last_playing_state,
+            play_requested,
+            pending_play_request_sync: None,
+            resume_after_audio_focus_gain: false,
+            audio_focus_ducked: false,
+            last_playing_state: play_requested,
             last_playback_rate,
             last_reported_progress: 0.0,
+            last_handled_picture_in_picture_request: Some(0),
+            last_picture_in_picture_controller_state: None,
+            last_picture_in_picture_active: None,
             last_handled_seek_request: Some(0.0),
+            pending_seek_request_sync: None,
             pending_seek_request: None,
             seek_inflight: false,
             last_seek_restart_at: None,
@@ -1355,6 +1552,16 @@ impl VideoRenderer {
 
     fn push_ui_update(&self, update: UiUpdate) {
         let _ = self.ui_updates.send(update);
+    }
+
+    fn ensure_media_command_poller(&mut self) {
+        if self.media_command_poller.is_some() {
+            return;
+        }
+        let Some(redraw_handle) = self.redraw_handle.clone() else {
+            return;
+        };
+        self.media_command_poller = Some(MediaCommandPoller::spawn(redraw_handle));
     }
 
     fn current_color_uniform(&self) -> VideoColorUniform {
@@ -1701,15 +1908,57 @@ impl VideoRenderer {
         self.push_ui_update(UiUpdate::Subtitle(update));
     }
 
+    fn ensure_embedded_subtitle_tracks(&mut self) -> Result<(), String> {
+        if self.embedded_subtitle_tracks_loaded {
+            return Ok(());
+        }
+
+        let source_path = if let Some(path) = self.source_path.clone() {
+            path
+        } else {
+            match self.resolve_source_path()? {
+                Some(path) => path,
+                None => return Ok(()),
+            }
+        };
+
+        let embedded_tracks =
+            embedded_subtitle_tracks(&source_path).map_err(|error| error.to_string())?;
+        if !embedded_tracks.is_empty() {
+            self.subtitle_tracks
+                .extend(runtime_embedded_subtitle_tracks(&embedded_tracks));
+            self.push_ui_update(UiUpdate::SubtitleTracks(runtime_subtitle_track_labels(
+                &self.subtitle_tracks,
+            )));
+        }
+        self.embedded_subtitle_tracks_loaded = true;
+        Ok(())
+    }
+
     fn sync_selected_subtitle_track(&mut self) -> Result<(), String> {
-        let next =
-            resolve_selected_subtitle_index(&self.subtitle_tracks, self.subtitle_selection.get())?;
+        self.ensure_embedded_subtitle_tracks()?;
+        let selection = self.subtitle_selection.get();
+        let next = match resolve_selected_subtitle_index(&self.subtitle_tracks, selection) {
+            Ok(next) => next,
+            Err(message)
+                if !self.embedded_subtitle_tracks_loaded
+                    && matches!(selection, SubtitleSelection::Track(_)) =>
+            {
+                return Ok(());
+            }
+            Err(message) => return Err(message),
+        };
         if self.active_subtitle_track == next {
             return Ok(());
         }
 
         self.active_subtitle_track = next;
-        self.subtitle_asset = next.map(|_| FileAssetState::Unresolved);
+        self.subtitle_asset = next.and_then(|index| {
+            self.subtitle_tracks.get(index).and_then(|track| {
+                matches!(track.source, RuntimeSubtitleSource::Sidecar(_))
+                    .then_some(FileAssetState::Unresolved)
+            })
+        });
         self.subtitle_error_reported = false;
         self.subtitle_cues.clear();
         self.set_subtitle_text(None);
@@ -1723,7 +1972,7 @@ impl VideoRenderer {
             self.set_subtitle_text(None);
             return Ok(());
         };
-        let subtitle_source = self
+        let track = self
             .subtitle_tracks
             .get(track_index)
             .ok_or_else(|| {
@@ -1732,64 +1981,91 @@ impl VideoRenderer {
                     self.subtitle_tracks.len()
                 )
             })?
-            .source
             .clone();
         if !self.subtitle_cues.is_empty() {
             return Ok(());
         }
 
-        let Some(asset) = self.subtitle_asset.as_mut() else {
-            return Ok(());
-        };
+        match track.source {
+            RuntimeSubtitleSource::Embedded(embedded_track) => {
+                let source_path = if let Some(path) = self.source_path.clone() {
+                    path
+                } else {
+                    match self.resolve_source_path()? {
+                        Some(path) => path,
+                        None => return Ok(()),
+                    }
+                };
+                self.subtitle_cues =
+                    read_embedded_subtitle_cues(&source_path, embedded_track.track_id)
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .map(|cue| SubtitleCue {
+                            start: cue.start,
+                            end: cue.end,
+                            text: cue.text,
+                        })
+                        .collect();
+                return Ok(());
+            }
+            RuntimeSubtitleSource::Sidecar(sidecar_track) => {
+                let subtitle_source = sidecar_track.source.clone();
+                let Some(asset) = self.subtitle_asset.as_mut() else {
+                    return Ok(());
+                };
 
-        loop {
-            match asset {
-                FileAssetState::Unresolved => {
-                    if is_remote_url(&subtitle_source) {
-                        let cache_path = cached_subtitle_path(&subtitle_source);
-                        if cache_path.exists() {
-                            self.subtitle_cues = parse_subtitles_from_path(&cache_path)?;
-                            *asset = FileAssetState::Ready(cache_path);
+                loop {
+                    match asset {
+                        FileAssetState::Unresolved => {
+                            if is_remote_url(&subtitle_source) {
+                                let cache_path = cached_subtitle_path(&subtitle_source);
+                                if cache_path.exists() {
+                                    self.subtitle_cues = parse_subtitles_from_path(&cache_path)?;
+                                    *asset = FileAssetState::Ready(cache_path);
+                                    return Ok(());
+                                }
+
+                                *asset = FileAssetState::Downloading {
+                                    path: cache_path.clone(),
+                                    receiver: start_asset_download(
+                                        subtitle_source.as_str().to_owned(),
+                                        cache_path,
+                                    ),
+                                    ready: false,
+                                };
+                                return Ok(());
+                            }
+
+                            let local_path = local_source_path(&subtitle_source);
+                            self.subtitle_cues = parse_subtitles_from_path(&local_path)?;
+                            *asset = FileAssetState::Ready(local_path);
                             return Ok(());
                         }
-
-                        *asset = FileAssetState::Downloading {
-                            path: cache_path.clone(),
-                            receiver: start_asset_download(
-                                subtitle_source.as_str().to_owned(),
-                                cache_path,
-                            ),
-                            ready: false,
-                        };
-                        return Ok(());
+                        FileAssetState::Downloading { path, receiver, .. } => match receiver
+                            .try_recv()
+                        {
+                            Ok(DownloadUpdate::Progress { .. } | DownloadUpdate::Ready) => continue,
+                            Ok(DownloadUpdate::Finished) => {
+                                self.subtitle_cues = parse_subtitles_from_path(path)?;
+                                *asset = FileAssetState::Ready(path.clone());
+                                return Ok(());
+                            }
+                            Ok(DownloadUpdate::Failed(message)) => {
+                                let message = format!("subtitle download failed: {message}");
+                                *asset = FileAssetState::Failed(message.clone());
+                                return Err(message);
+                            }
+                            Err(TryRecvError::Empty) => return Ok(()),
+                            Err(TryRecvError::Disconnected) => {
+                                self.subtitle_cues = parse_subtitles_from_path(path)?;
+                                *asset = FileAssetState::Ready(path.clone());
+                                return Ok(());
+                            }
+                        },
+                        FileAssetState::Ready(_) => return Ok(()),
+                        FileAssetState::Failed(message) => return Err(message.clone()),
                     }
-
-                    let local_path = local_source_path(&subtitle_source);
-                    self.subtitle_cues = parse_subtitles_from_path(&local_path)?;
-                    *asset = FileAssetState::Ready(local_path);
-                    return Ok(());
                 }
-                FileAssetState::Downloading { path, receiver, .. } => match receiver.try_recv() {
-                    Ok(DownloadUpdate::Progress { .. } | DownloadUpdate::Ready) => continue,
-                    Ok(DownloadUpdate::Finished) => {
-                        self.subtitle_cues = parse_subtitles_from_path(path)?;
-                        *asset = FileAssetState::Ready(path.clone());
-                        return Ok(());
-                    }
-                    Ok(DownloadUpdate::Failed(message)) => {
-                        let message = format!("subtitle download failed: {message}");
-                        *asset = FileAssetState::Failed(message.clone());
-                        return Err(message);
-                    }
-                    Err(TryRecvError::Empty) => return Ok(()),
-                    Err(TryRecvError::Disconnected) => {
-                        self.subtitle_cues = parse_subtitles_from_path(path)?;
-                        *asset = FileAssetState::Ready(path.clone());
-                        return Ok(());
-                    }
-                },
-                FileAssetState::Ready(_) => return Ok(()),
-                FileAssetState::Failed(message) => return Err(message.clone()),
             }
         }
     }
@@ -2038,10 +2314,184 @@ impl VideoRenderer {
         self.source_error_reported = false;
     }
 
+    fn reconcile_play_request_from_ui(&mut self) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+
+        let ui_playing = player.is_playing.get();
+        let user_initiated_change =
+            self.pending_play_request_sync.is_none() && ui_playing != self.play_requested;
+        if let Some(pending) = self.pending_play_request_sync {
+            if ui_playing == pending {
+                self.pending_play_request_sync = None;
+            } else {
+                return;
+            }
+        }
+
+        if user_initiated_change {
+            self.resume_after_audio_focus_gain = false;
+            self.set_audio_focus_ducked(false);
+        }
+
+        self.play_requested = ui_playing;
+    }
+
+    fn set_play_requested(&mut self, playing: bool) {
+        self.play_requested = playing;
+        if self.player.is_some() {
+            self.pending_play_request_sync = Some(playing);
+            self.push_ui_update(UiUpdate::Playing(playing));
+        }
+    }
+
+    fn set_audio_focus_ducked(&mut self, ducked: bool) {
+        if self.audio_focus_ducked == ducked {
+            return;
+        }
+
+        self.audio_focus_ducked = ducked;
+        self.last_applied_volume = None;
+        self.sync_audio_volume();
+    }
+
+    fn queue_seek_request(&mut self, progress: f64, sync_player: bool) {
+        let requested = progress.clamp(0.0, 1.0);
+        self.last_handled_seek_request = Some(requested);
+        self.pending_seek_request = Some(requested);
+        if sync_player && self.player.is_some() {
+            self.pending_seek_request_sync = Some(requested);
+            self.push_ui_update(UiUpdate::SeekRequest(requested));
+        }
+    }
+
+    fn queue_navigation_controls(&self) -> QueueNavigationControls {
+        QueueNavigationControls::disabled()
+            .with_next_enabled(self.has_next.get())
+            .with_previous_enabled(self.has_previous.get())
+    }
+
+    fn handle_media_command(&mut self, command: MediaCommand) {
+        let now = Instant::now();
+        match command {
+            MediaCommand::Play => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(true);
+            }
+            MediaCommand::Pause => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(false);
+            }
+            MediaCommand::PlayPause => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(!self.play_requested);
+            }
+            MediaCommand::Stop => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(false);
+                self.queue_seek_request(0.0, true);
+            }
+            MediaCommand::Seek(position) => {
+                self.queue_seek_request(progress_for_position(self.duration, position), true);
+            }
+            MediaCommand::SeekForward(delta) => {
+                let target = self.playback_position(now).saturating_add(delta);
+                self.queue_seek_request(progress_for_position(self.duration, target), true);
+            }
+            MediaCommand::SeekBackward(delta) => {
+                let target = self.playback_position(now).saturating_sub(delta);
+                self.queue_seek_request(progress_for_position(self.duration, target), true);
+            }
+            MediaCommand::AudioFocusGained => {
+                self.set_audio_focus_ducked(false);
+                if self.resume_after_audio_focus_gain {
+                    self.resume_after_audio_focus_gain = false;
+                    self.set_play_requested(true);
+                }
+            }
+            MediaCommand::AudioFocusLost => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(false);
+            }
+            MediaCommand::AudioFocusLostTransient => {
+                self.resume_after_audio_focus_gain = self.play_requested;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(false);
+            }
+            MediaCommand::AudioFocusLostDuck => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(true);
+            }
+            MediaCommand::AudioBecomingNoisy => {
+                self.resume_after_audio_focus_gain = false;
+                self.set_audio_focus_ducked(false);
+                self.set_play_requested(false);
+            }
+            MediaCommand::Next => {
+                self.emit_event(Event::NextRequested);
+            }
+            MediaCommand::Previous => {
+                self.emit_event(Event::PreviousRequested);
+            }
+            _ => {
+                tracing::warn!("[VideoFallback] ignoring unsupported media command {command:?}");
+            }
+        }
+    }
+
+    fn poll_media_commands(&mut self) {
+        loop {
+            let command = self
+                .media_session
+                .as_ref()
+                .and_then(MediaSessionState::poll_command);
+            let Some(command) = command else {
+                break;
+            };
+            self.handle_media_command(command);
+        }
+    }
+
+    fn poll_picture_in_picture_commands(&mut self) {
+        loop {
+            let command = match poll_picture_in_picture_command(self.picture_in_picture_host_id) {
+                Ok(command) => command,
+                Err(error) => {
+                    self.emit_event(Event::Error {
+                        message: error.to_string(),
+                    });
+                    break;
+                }
+            };
+            let Some(command) = command else {
+                break;
+            };
+
+            match command {
+                PictureInPictureCommand::Play => self.handle_media_command(MediaCommand::Play),
+                PictureInPictureCommand::Pause => self.handle_media_command(MediaCommand::Pause),
+                PictureInPictureCommand::SeekForward(delta) => {
+                    self.handle_media_command(MediaCommand::SeekForward(delta));
+                }
+                PictureInPictureCommand::SeekBackward(delta) => {
+                    self.handle_media_command(MediaCommand::SeekBackward(delta));
+                }
+            }
+        }
+    }
+
+    fn should_open_decode_worker(&self) -> bool {
+        self.source_path.is_none() || self.play_requested || self.pending_seek_request.is_some()
+    }
+
     fn should_play(&self) -> bool {
-        self.player
-            .as_ref()
-            .is_none_or(|player| player.is_playing.get())
+        self.play_requested
     }
 
     fn requested_playback_rate(&self) -> f32 {
@@ -2208,6 +2658,7 @@ impl VideoRenderer {
         self.last_playing_state = should_play;
         self.sync_audio_playback_params();
         self.sync_audio_playback(should_play);
+        self.sync_picture_in_picture_controller(should_play);
     }
 
     fn sync_playback_rate(&mut self, should_play: bool) {
@@ -2227,8 +2678,16 @@ impl VideoRenderer {
 
     fn sync_media_session(&mut self, should_play: bool) {
         let position = self.playback_position(Instant::now());
+        let hold_audio_focus = should_play || self.resume_after_audio_focus_gain;
+        let queue_navigation_controls = self.queue_navigation_controls();
         if let Some(session) = self.media_session.as_mut() {
-            session.sync(should_play, position, self.last_playback_rate);
+            session.sync(
+                should_play,
+                hold_audio_focus,
+                position,
+                self.last_playback_rate,
+                queue_navigation_controls,
+            );
         }
     }
 
@@ -2259,12 +2718,7 @@ impl VideoRenderer {
             return;
         };
 
-        let requested = self.volume.get();
-        let volume = if requested.is_sign_negative() {
-            0.0
-        } else {
-            requested.clamp(0.0, 1.0)
-        };
+        let volume = effective_audio_volume(self.volume.get(), self.audio_focus_ducked);
 
         if self
             .last_applied_volume
@@ -2387,12 +2841,16 @@ impl VideoRenderer {
                     self.duration = duration;
                     self.update_ui_progress();
                     if self.media_session.is_none() {
-                        self.media_session = MediaSessionState::new(&self.source);
+                        self.media_session = MediaSessionState::new(&self.source, duration);
+                        if self.media_session.is_some() {
+                            self.ensure_media_command_poller();
+                        }
                     }
                     if !self.ready_sent {
                         self.emit_event(Event::ReadyToPlay);
                         self.ready_sent = true;
                     }
+                    self.sync_picture_in_picture_controller(should_play);
                 }
                 DecoderOutput::Seeked { progress, pts } => {
                     self.seek_inflight = false;
@@ -2462,9 +2920,7 @@ impl VideoRenderer {
                         self.seek_audio_to(Duration::ZERO, should_play);
                         self.update_ui_progress();
                     } else {
-                        if self.player.is_some() {
-                            self.push_ui_update(UiUpdate::Playing(false));
-                        }
+                        self.set_play_requested(false);
                         self.stop_decode_worker();
                         self.set_playback_position(self.duration, false);
                         self.sync_audio_playback(false);
@@ -2484,20 +2940,24 @@ impl VideoRenderer {
         }
     }
 
-    fn maybe_seek_from_ui(&mut self, should_play: bool) {
+    fn maybe_seek_from_ui(&mut self) {
         let Some(player) = self.player.as_ref() else {
             return;
         };
-        if self.decode_worker.is_none() {
-            return;
-        }
 
         let requested = player.seek_request.get().clamp(0.0, 1.0);
+        if let Some(pending) = self.pending_seek_request_sync {
+            if (requested - pending).abs() <= SEEK_EPSILON {
+                self.pending_seek_request_sync = None;
+            } else {
+                return;
+            }
+        }
+
         if self
             .last_handled_seek_request
             .is_some_and(|last| (requested - last).abs() <= SEEK_EPSILON)
         {
-            self.apply_pending_seek_if_due(should_play);
             return;
         }
         if (requested - self.last_reported_progress).abs() <= SEEK_EPSILON {
@@ -2506,9 +2966,85 @@ impl VideoRenderer {
             return;
         }
 
-        self.last_handled_seek_request = Some(requested);
-        self.pending_seek_request = Some(requested);
-        self.apply_pending_seek_if_due(should_play);
+        self.queue_seek_request(requested, false);
+    }
+
+    fn maybe_enter_picture_in_picture(&mut self) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+
+        let request = player.picture_in_picture_request.get();
+        if self.last_handled_picture_in_picture_request == Some(request) {
+            return;
+        }
+        self.last_handled_picture_in_picture_request = Some(request);
+
+        if request == 0 {
+            return;
+        }
+
+        let aspect_ratio = self.current_video_dimensions();
+        if let Err(error) = enter_picture_in_picture(self.picture_in_picture_host_id, aspect_ratio) {
+            self.emit_event(Event::Error {
+                message: error.to_string(),
+            });
+        }
+    }
+
+    fn picture_in_picture_controller_state(
+        &self,
+        should_play: bool,
+    ) -> PictureInPictureControllerState {
+        let active = self.player.is_some() && (self.ready_sent || self.first_frame_presented);
+        PictureInPictureControllerState::new(
+            self.picture_in_picture_host_id,
+            active,
+            active && should_play,
+            self.current_video_dimensions(),
+        )
+    }
+
+    fn sync_picture_in_picture_controller(&mut self, should_play: bool) {
+        let state = self.picture_in_picture_controller_state(should_play);
+        if self.last_picture_in_picture_controller_state == Some(state) {
+            return;
+        }
+        self.last_picture_in_picture_controller_state = Some(state);
+
+        if let Err(error) = sync_picture_in_picture_controller(state) {
+            self.emit_event(Event::Error {
+                message: error.to_string(),
+            });
+        }
+    }
+
+    fn clear_picture_in_picture_controller(&mut self) {
+        self.last_picture_in_picture_controller_state = None;
+        let _ = sync_picture_in_picture_controller(PictureInPictureControllerState::new(
+            self.picture_in_picture_host_id,
+            false,
+            false,
+            None,
+        ));
+    }
+
+    fn emit_picture_in_picture_event_if_needed(&mut self) {
+        let active = match is_picture_in_picture_active(self.picture_in_picture_host_id) {
+            Ok(active) => active,
+            Err(error) => {
+                self.emit_event(Event::Error {
+                    message: error.to_string(),
+                });
+                return;
+            }
+        };
+        if self.last_picture_in_picture_active == Some(active) {
+            return;
+        }
+
+        self.last_picture_in_picture_active = Some(active);
+        self.emit_event(Event::PictureInPictureChanged { active });
     }
 
     fn apply_pending_seek_if_due(&mut self, should_play: bool) {
@@ -2773,7 +3309,11 @@ impl VideoRenderer {
             }
         }
 
-        if self.decode_worker.is_none() {
+        self.reconcile_play_request_from_ui();
+        self.poll_media_commands();
+        self.poll_picture_in_picture_commands();
+
+        if self.decode_worker.is_none() && self.should_open_decode_worker() {
             self.open_decode_state();
         }
 
@@ -2784,7 +3324,11 @@ impl VideoRenderer {
         self.retry_audio_player_if_needed();
         self.sync_audio_volume();
         self.sync_audio_playback_params();
-        self.maybe_seek_from_ui(should_play);
+        self.maybe_seek_from_ui();
+        self.sync_picture_in_picture_controller(should_play);
+        self.maybe_enter_picture_in_picture();
+        self.emit_picture_in_picture_event_if_needed();
+        self.apply_pending_seek_if_due(should_play);
         self.drain_decoder_outputs(should_play);
         let now = Instant::now();
         self.sync_subtitle_text(now);
@@ -2842,6 +3386,7 @@ impl VideoRenderer {
         self.set_playback_position(decoded.pts, should_play);
         self.sync_subtitle_text(Instant::now());
         self.set_buffering(false);
+        self.sync_picture_in_picture_controller(should_play);
 
         if self.player.is_some() {
             let progress = decoded.progress;
@@ -2931,6 +3476,7 @@ impl GpuView for VideoRenderer {
     }
 
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        self.redraw_handle = Some(ctx.redraw_handle.clone());
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
     }
@@ -2996,44 +3542,122 @@ impl SubView for VideoRenderer {
 
 impl Drop for VideoRenderer {
     fn drop(&mut self) {
+        self.clear_picture_in_picture_controller();
         self.stop_decode_worker();
+        if let Some(mut poller) = self.media_command_poller.take() {
+            poller.stop();
+        }
         if let Some(player) = self.audio_player.take() {
             player.stop();
         }
     }
 }
 
+struct MediaCommandPoller {
+    stop: Sender<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MediaCommandPoller {
+    fn spawn(redraw_handle: RedrawHandle) -> Self {
+        let (stop, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            loop {
+                match receiver.recv_timeout(MEDIA_COMMAND_POLL_INTERVAL) {
+                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => redraw_handle.request_redraw(),
+                }
+            }
+        });
+
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for MediaCommandPoller {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 struct MediaSessionState {
     session: MediaSession,
+    queue_navigation_controls: QueueNavigationControls,
+    has_audio_focus: bool,
 }
 
 impl MediaSessionState {
-    fn new(source: &Url) -> Option<Self> {
+    fn new(source: &Url, duration: Duration) -> Option<Self> {
         let session = MediaSession::new().ok()?;
-        let _ = session.set_metadata(&MediaMetadata::new().with_title(source.as_str()));
-        Some(Self { session })
+        let _ = session.set_metadata(
+            &MediaMetadata::new()
+                .with_title(source.as_str())
+                .with_duration(duration),
+        );
+        Some(Self {
+            session,
+            queue_navigation_controls: QueueNavigationControls::disabled(),
+            has_audio_focus: false,
+        })
     }
 
-    fn sync(&mut self, playing: bool, position: Duration, _playback_rate: f32) {
-        if playing {
-            let _ = self.session.request_audio_focus();
-        } else {
+    fn poll_command(&self) -> Option<MediaCommand> {
+        self.session.poll_command()
+    }
+
+    fn sync(
+        &mut self,
+        playing: bool,
+        hold_audio_focus: bool,
+        position: Duration,
+        playback_rate: f32,
+        queue_navigation_controls: QueueNavigationControls,
+    ) {
+        if hold_audio_focus && !self.has_audio_focus {
+            if self.session.request_audio_focus().is_ok() {
+                self.has_audio_focus = true;
+            }
+        } else if !hold_audio_focus && self.has_audio_focus {
             let _ = self.session.abandon_audio_focus();
+            self.has_audio_focus = false;
         }
+
+        self.queue_navigation_controls = queue_navigation_controls;
 
         let playback = if playing {
             PlaybackState::playing(position)
         } else {
             PlaybackState::paused(position)
         };
+        let playback = if playing {
+            playback.with_rate(f64::from(playback_rate))
+        } else {
+            playback
+        }
+        .with_queue_navigation_controls(self.queue_navigation_controls);
         let _ = self.session.set_playback_state(&playback);
     }
 }
 
 impl Drop for MediaSessionState {
     fn drop(&mut self) {
-        let _ = self.session.set_playback_state(&PlaybackState::stopped());
-        let _ = self.session.abandon_audio_focus();
+        let _ = self.session.set_playback_state(
+            &PlaybackState::stopped()
+                .with_queue_navigation_controls(self.queue_navigation_controls),
+        );
+        if self.has_audio_focus {
+            let _ = self.session.abandon_audio_focus();
+        }
         let _ = self.session.clear();
     }
 }
@@ -3535,8 +4159,9 @@ fn detect_codec_type(config: Option<&[u8]>) -> Result<CodecType, String> {
 mod tests {
     use super::{
         PlaybackPolicy, ShaderTargetMode, VideoSampleMetadata, estimated_video_duration,
-        nearest_keyframe_index_at_or_before, next_subtitle_selection,
-        preferred_surface_hdr_for_source, resolve_selected_subtitle_index,
+        effective_audio_volume, nearest_keyframe_index_at_or_before, next_subtitle_selection,
+        preferred_surface_hdr_for_source, progress_for_position, resolve_selected_subtitle_index,
+        runtime_sidecar_subtitle_tracks, runtime_subtitle_track_labels,
         select_default_subtitle_track_index, shader_target_mode, should_enter_vod_stall_buffering,
         should_wait_for_vod_buffering,
     };
@@ -3703,17 +4328,19 @@ mod tests {
                 .language("en")
                 .forced(true),
         ];
+        let runtime_tracks = runtime_sidecar_subtitle_tracks(&tracks);
 
         let selected =
-            select_default_subtitle_track_index(&tracks).expect("track must be selected");
+            select_default_subtitle_track_index(&runtime_tracks).expect("track must be selected");
         assert_eq!(selected, 1);
     }
 
     #[test]
     fn explicit_subtitle_track_selection_rejects_out_of_range_index() {
         let tracks = vec![SubtitleTrack::new("https://example.com/subs/en.vtt").language("en")];
+        let runtime_tracks = runtime_sidecar_subtitle_tracks(&tracks);
 
-        let error = resolve_selected_subtitle_index(&tracks, SubtitleSelection::Track(7))
+        let error = resolve_selected_subtitle_index(&runtime_tracks, SubtitleSelection::Track(7))
             .expect_err("out-of-range selection must fail");
         assert!(error.contains("out of range"));
     }
@@ -3724,24 +4351,45 @@ mod tests {
             SubtitleTrack::new("https://example.com/subs/en.vtt").language("en"),
             SubtitleTrack::new("https://example.com/subs/es.vtt").language("es"),
         ];
+        let labels = runtime_subtitle_track_labels(&runtime_sidecar_subtitle_tracks(&tracks));
 
         assert_eq!(
-            next_subtitle_selection(&tracks, SubtitleSelection::Auto).expect("cycle must succeed"),
+            next_subtitle_selection(&labels, SubtitleSelection::Auto).expect("cycle must succeed"),
             SubtitleSelection::Off
         );
         assert_eq!(
-            next_subtitle_selection(&tracks, SubtitleSelection::Off).expect("cycle must succeed"),
+            next_subtitle_selection(&labels, SubtitleSelection::Off).expect("cycle must succeed"),
             SubtitleSelection::Track(0)
         );
         assert_eq!(
-            next_subtitle_selection(&tracks, SubtitleSelection::Track(0))
+            next_subtitle_selection(&labels, SubtitleSelection::Track(0))
                 .expect("cycle must succeed"),
             SubtitleSelection::Track(1)
         );
         assert_eq!(
-            next_subtitle_selection(&tracks, SubtitleSelection::Track(1))
+            next_subtitle_selection(&labels, SubtitleSelection::Track(1))
                 .expect("cycle must succeed"),
             SubtitleSelection::Auto
         );
+    }
+
+    #[test]
+    fn progress_for_position_clamps_to_duration() {
+        let duration = Duration::from_secs(10);
+
+        assert_eq!(progress_for_position(duration, Duration::ZERO), 0.0);
+        assert_eq!(progress_for_position(duration, Duration::from_secs(5)), 0.5);
+        assert_eq!(
+            progress_for_position(duration, Duration::from_secs(15)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn effective_audio_volume_respects_muted_and_ducked_states() {
+        assert_eq!(effective_audio_volume(0.8, false), 0.8);
+        assert!((effective_audio_volume(0.8, true) - 0.16).abs() <= f32::EPSILON);
+        assert_eq!(effective_audio_volume(-0.8, false), 0.0);
+        assert_eq!(effective_audio_volume(-0.8, true), 0.0);
     }
 }

@@ -131,13 +131,15 @@ fn build_manifest() -> Result<BundleManifest, String> {
 }
 
 fn syn_ident(name: &str) -> syn::Ident {
-    syn::parse_str(name).unwrap_or_else(|error| panic!("invalid generated identifier '{name}': {error}"))
+    syn::parse_str(name)
+        .unwrap_or_else(|error| panic!("invalid generated identifier '{name}': {error}"))
 }
 
 fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
     let mut current = node;
     let mut segments = asset.module_segments().into_iter().peekable();
-    let mount_ident = (!asset.mount.is_empty()).then(|| waterui_assets_plan::rust_identifier(&asset.mount));
+    let mount_ident =
+        (!asset.mount.is_empty()).then(|| waterui_assets_plan::rust_identifier(&asset.mount));
     while let Some(segment) = segments.next() {
         let is_mount_root = mount_ident
             .as_deref()
@@ -152,7 +154,9 @@ fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
 
 fn bundle_tokens(mount: Option<&str>) -> proc_macro2::TokenStream {
     match mount {
-        Some(mount_name) if !mount_name.is_empty() => quote! { ::waterui::Bundle::new(#mount_name) },
+        Some(mount_name) if !mount_name.is_empty() => {
+            quote! { ::waterui::Bundle::new(#mount_name) }
+        }
         _ => quote! { ::waterui::Bundle::main() },
     }
 }
@@ -181,7 +185,11 @@ fn asset_constructor_tokens(asset: &PlannedAsset) -> proc_macro2::TokenStream {
     }
 }
 
-fn emit_module(node: &ModuleNode, current_mount: Option<&str>, root: bool) -> proc_macro2::TokenStream {
+fn emit_module(
+    node: &ModuleNode,
+    current_mount: Option<&str>,
+    root: bool,
+) -> proc_macro2::TokenStream {
     let bundle = bundle_tokens(node.mount.as_deref().or(current_mount));
     let bundle_const = if root || node.mount.is_some() {
         quote! { pub const BUNDLE: ::waterui::Bundle = #bundle; }

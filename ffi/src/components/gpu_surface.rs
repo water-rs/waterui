@@ -282,6 +282,10 @@ pub struct WuiGpuSurface {
     /// Opaque pointer to the boxed GpuSurface.
     /// This is consumed during init and should not be used after.
     pub surface: *mut c_void,
+    /// Whether this surface should register as a picture-in-picture host.
+    pub has_picture_in_picture_host_id: bool,
+    /// Stable picture-in-picture host id when `has_picture_in_picture_host_id` is true.
+    pub picture_in_picture_host_id: u64,
 }
 
 impl IntoFFI for GpuSurface {
@@ -290,8 +294,13 @@ impl IntoFFI for GpuSurface {
     fn into_ffi(self) -> Self::FFI {
         // Box the GpuSurface for FFI transfer.
         let boxed = Box::new(self);
+        let picture_in_picture_host_id = boxed.get_picture_in_picture_host_id();
         let ptr = Box::into_raw(boxed) as *mut c_void;
-        WuiGpuSurface { surface: ptr }
+        WuiGpuSurface {
+            surface: ptr,
+            has_picture_in_picture_host_id: picture_in_picture_host_id.is_some(),
+            picture_in_picture_host_id: picture_in_picture_host_id.unwrap_or_default(),
+        }
     }
 }
 
