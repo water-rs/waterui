@@ -388,7 +388,7 @@ impl Button<SemanticLabel, fn(&Environment)> {
     ///
     /// # Arguments
     ///
-    /// * `label` - The text or view to display on the button
+    /// * `label` - The semantic label to display on the button
     ///
     /// # Example
     ///
@@ -565,14 +565,37 @@ impl<Label: View, Action> Button<Label, Action> {
 /// No-op action for buttons without a configured action.
 fn noop(_env: &Environment) {}
 
-impl<Action> From<Button<SemanticLabel, Action>> for crate::menu::Command
+fn semantic_menu_label<Label: View + 'static>(
+    label: Label,
+    accessibility_label: Option<Text>,
+) -> SemanticLabel {
+    let label = AnyView::new(label);
+    if let Some(label) = label.downcast_ref::<SemanticLabel>() {
+        return label.clone();
+    }
+    if let Some(accessibility_label) = accessibility_label {
+        return SemanticLabel::new(accessibility_label);
+    }
+    panic!(
+        "Buttons used inside Menu must either use a semantic Label or provide Button::accessibility_label(...)"
+    );
+}
+
+impl<Label, Action> From<Button<Label, Action>> for crate::menu::Command
 where
+    Label: View + 'static,
     Action: FnMut(&Environment) + 'static,
 {
-    fn from(value: Button<SemanticLabel, Action>) -> Self {
+    fn from(value: Button<Label, Action>) -> Self {
+        let Button {
+            label,
+            action,
+            style: _,
+            accessibility_label,
+        } = value;
         Self {
-            label: value.label,
-            action: shared_action_with_env(value.action),
+            label: semantic_menu_label(label, accessibility_label),
+            action: shared_action_with_env(action),
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
@@ -580,12 +603,88 @@ where
     }
 }
 
-impl<Action> From<Button<SemanticLabel, Action>> for crate::menu::MenuItem
+impl<Label, Action> From<Button<Label, Action>> for crate::menu::MenuItem
 where
+    Label: View + 'static,
     Action: FnMut(&Environment) + 'static,
 {
-    fn from(value: Button<SemanticLabel, Action>) -> Self {
+    fn from(value: Button<Label, Action>) -> Self {
         Self::Command(value.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_core::Signal;
+    use waterui_core::view::{ConfigurableView, ViewConfiguration};
+
+    #[test]
+    fn menu_command_preserves_semantic_label_from_any_view_button() {
+        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::SystemIcon::SEARCH))
+            .action(|| {})
+            .config()
+            .render();
+        let command: crate::menu::Command = rendered.into();
+        assert_eq!(
+            command
+                .label
+                .__text()
+                .__resolve(&Environment::default())
+                .content
+                .get()
+                .to_plain()
+                .as_str(),
+            "Edit"
+        );
+        let icon = command
+            .label
+            .__icon()
+            .expect("semantic label icon should be preserved");
+        assert_eq!(icon.name.as_str(), "magnifyingglass");
+    }
+
+    #[test]
+    fn menu_command_falls_back_to_accessibility_label() {
+        let rendered = ButtonConfig {
+            label: AnyView::new(()),
+            action: Box::new(|_| {}),
+            style: ButtonStyle::Automatic,
+            accessibility_label: Some(
+                Text::new("Accessible")
+                    .__resolve(&Environment::default())
+                    .content,
+            ),
+        }
+        .render();
+        let command: crate::menu::Command = rendered.into();
+        assert_eq!(
+            command
+                .label
+                .__text()
+                .__resolve(&Environment::default())
+                .content
+                .get()
+                .to_plain()
+                .as_str(),
+            "Accessible"
+        );
+        assert!(command.label.__icon().is_none());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Buttons used inside Menu must either use a semantic Label or provide Button::accessibility_label(...)"
+    )]
+    fn menu_command_requires_semantic_label_or_accessibility_label() {
+        let rendered = ButtonConfig {
+            label: AnyView::new(()),
+            action: Box::new(|_| {}),
+            style: ButtonStyle::Automatic,
+            accessibility_label: None,
+        }
+        .render();
+        let _: crate::menu::Command = rendered.into();
     }
 }
 
@@ -973,7 +1072,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
 ///
 /// # Arguments
 ///
-/// * `label` - The text or view to display on the button
+/// * `label` - The semantic label to display on the button
 ///
 /// # Example
 ///
