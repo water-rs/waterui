@@ -1,9 +1,11 @@
 //! Hit-testing and interaction types for charts.
 
-use nami::{Binding, SignalExt as _};
+use core::ops::RangeInclusive;
+
+use nami::{Binding, Computed, SignalExt as _};
 use waterui_core::{
-    Environment,
-    gesture::{DragEvent, GesturePhase, MagnificationEvent},
+    Environment, IntoSignalF32,
+    gesture::{DragEvent, GesturePhase},
     layout::Point,
 };
 
@@ -275,144 +277,472 @@ impl ChartViewport {
     }
 }
 
-/// Legacy internal zoom/pan state kept only for backend interaction smoke coverage.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ZoomPanState {
-    pub scale: f32,
-    pub offset: Point,
-    gesture_active: bool,
-    gesture_start_scale: f32,
-    gesture_start_offset: Point,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Scroll axes enabled for interactive chart viewport movement.
+pub struct ChartScrollableAxes {
+    horizontal: bool,
+    vertical: bool,
 }
 
-impl Default for ZoomPanState {
+impl ChartScrollableAxes {
+    /// Creates a scroll-axis set.
+    #[must_use]
+    pub const fn new(horizontal: bool, vertical: bool) -> Self {
+        Self {
+            horizontal,
+            vertical,
+        }
+    }
+
+    /// No interactive chart scrolling.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self::new(false, false)
+    }
+
+    /// Horizontal interactive chart scrolling.
+    #[must_use]
+    pub const fn horizontal() -> Self {
+        Self::new(true, false)
+    }
+
+    /// Vertical interactive chart scrolling.
+    #[must_use]
+    pub const fn vertical() -> Self {
+        Self::new(false, true)
+    }
+
+    /// Horizontal and vertical interactive chart scrolling.
+    #[must_use]
+    pub const fn both() -> Self {
+        Self::new(true, true)
+    }
+
+    /// Returns whether horizontal dragging should move the chart viewport.
+    #[must_use]
+    pub const fn allows_horizontal(self) -> bool {
+        self.horizontal
+    }
+
+    /// Returns whether vertical dragging should move the chart viewport.
+    #[must_use]
+    pub const fn allows_vertical(self) -> bool {
+        self.vertical
+    }
+
+    /// Returns true when interactive chart scrolling is disabled on both axes.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !self.horizontal && !self.vertical
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CartesianViewportState {
+    x_visible_length: Option<f32>,
+    y_visible_length: Option<f32>,
+    x_position: f32,
+    y_position: f32,
+}
+
+#[derive(Clone)]
+pub(crate) struct CartesianViewportBindings {
+    scrollable_axes: ChartScrollableAxes,
+    x_visible_length: Computed<Option<f32>>,
+    y_visible_length: Computed<Option<f32>>,
+    x_position: Binding<f32>,
+    y_position: Binding<f32>,
+    track_x_visible_length: bool,
+    track_y_visible_length: bool,
+    external_x_position: bool,
+    external_y_position: bool,
+}
+
+impl Default for CartesianViewportBindings {
     fn default() -> Self {
         Self {
-            scale: 1.0,
-            offset: Point::new(0.0, 0.0),
-            gesture_active: false,
-            gesture_start_scale: 1.0,
-            gesture_start_offset: Point::new(0.0, 0.0),
+            scrollable_axes: ChartScrollableAxes::none(),
+            x_visible_length: Computed::constant(None),
+            y_visible_length: Computed::constant(None),
+            x_position: Binding::f32(0.0),
+            y_position: Binding::f32(0.0),
+            track_x_visible_length: false,
+            track_y_visible_length: false,
+            external_x_position: false,
+            external_y_position: false,
         }
     }
 }
 
-impl ZoomPanState {
+impl CartesianViewportBindings {
     #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            scale: 1.0,
-            offset: Point::new(0.0, 0.0),
-            gesture_active: false,
-            gesture_start_scale: 1.0,
-            gesture_start_offset: Point::new(0.0, 0.0),
-        }
+    pub const fn is_active(&self) -> bool {
+        !self.scrollable_axes.is_empty()
+            || self.track_x_visible_length
+            || self.track_y_visible_length
+            || self.external_x_position
+            || self.external_y_position
     }
 
-    pub fn apply_drag_event(&mut self, event: &DragEvent, viewport: ChartViewport) {
-        if viewport.width <= 0.0 || viewport.height <= 0.0 {
-            return;
+    pub fn validate(&self) {
+        if self.track_x_visible_length {
+            assert!(
+                self.external_x_position,
+                "chart_x_visible_domain requires chart_x_scroll_position"
+            );
         }
-
-        match event.phase {
-            GesturePhase::Started => {
-                self.gesture_active = true;
-                self.gesture_start_offset = self.offset;
-            }
-            GesturePhase::Updated => {}
-            GesturePhase::Ended | GesturePhase::Cancelled => {
-                self.gesture_active = false;
-            }
+        if self.track_y_visible_length {
+            assert!(
+                self.external_y_position,
+                "chart_y_visible_domain requires chart_y_scroll_position"
+            );
         }
-
-        if !matches!(event.phase, GesturePhase::Started | GesturePhase::Updated) {
-            return;
+        if self.external_x_position {
+            assert!(
+                self.track_x_visible_length,
+                "chart_x_scroll_position requires chart_x_visible_domain"
+            );
         }
-
-        let pan_x = event.translation.x / viewport.width;
-        let pan_y = event.translation.y / viewport.height;
-        self.offset.x = self.gesture_start_offset.x + pan_x / self.scale;
-        self.offset.y = self.gesture_start_offset.y + pan_y / self.scale;
-        self.clamp_offset();
-    }
-
-    pub fn apply_magnification_event(
-        &mut self,
-        event: &MagnificationEvent,
-        viewport: ChartViewport,
-    ) {
-        if viewport.width <= 0.0 || viewport.height <= 0.0 {
-            return;
+        if self.external_y_position {
+            assert!(
+                self.track_y_visible_length,
+                "chart_y_scroll_position requires chart_y_visible_domain"
+            );
         }
-
-        match event.phase {
-            GesturePhase::Started => {
-                self.gesture_active = true;
-                self.gesture_start_scale = self.scale;
-                self.gesture_start_offset = self.offset;
-            }
-            GesturePhase::Updated => {}
-            GesturePhase::Ended | GesturePhase::Cancelled => {
-                self.gesture_active = false;
-            }
+        if self.scrollable_axes.allows_horizontal() {
+            assert!(
+                self.external_x_position,
+                "chart_scrollable_axes(horizontal) requires chart_x_scroll_position"
+            );
         }
-
-        if !matches!(event.phase, GesturePhase::Started | GesturePhase::Updated) {
-            return;
-        }
-
-        let new_scale = (self.gesture_start_scale * event.scale).clamp(0.5, 10.0);
-        let center = Point::new(event.center.x, event.center.y);
-        if let Some((norm_x, norm_y)) = viewport.screen_to_normalized(center) {
-            let scale_delta = new_scale / self.scale;
-            self.offset.x = norm_x - (norm_x - self.offset.x) * scale_delta;
-            self.offset.y = norm_y - (norm_y - self.offset.y) * scale_delta;
-        }
-        self.scale = new_scale;
-        self.clamp_offset();
-    }
-
-    pub fn apply_double_tap(&mut self) {
-        self.reset();
-    }
-
-    pub fn reset(&mut self) {
-        self.scale = 1.0;
-        self.offset = Point::new(0.0, 0.0);
-    }
-
-    #[must_use]
-    pub fn transform_bounds(&self, bounds: &crate::data::DataBounds) -> crate::data::DataBounds {
-        let data_width = bounds.width();
-        let data_height = bounds.height();
-        let visible_width = data_width / self.scale;
-        let visible_height = data_height / self.scale;
-        let center_x = bounds.min_x + data_width * (0.5 - self.offset.x);
-        let center_y = bounds.min_y + data_height * (0.5 - self.offset.y);
-
-        crate::data::DataBounds {
-            min_x: center_x - visible_width / 2.0,
-            max_x: center_x + visible_width / 2.0,
-            min_y: center_y - visible_height / 2.0,
-            max_y: center_y + visible_height / 2.0,
+        if self.scrollable_axes.allows_vertical() {
+            assert!(
+                self.external_y_position,
+                "chart_scrollable_axes(vertical) requires chart_y_scroll_position"
+            );
         }
     }
 
     #[must_use]
-    pub fn is_transformed(&self) -> bool {
-        (self.scale - 1.0).abs() > 0.001
-            || self.offset.x.abs() > 0.001
-            || self.offset.y.abs() > 0.001
+    pub fn with_scrollable_axes(mut self, axes: ChartScrollableAxes) -> Self {
+        self.scrollable_axes = axes;
+        self
     }
 
-    fn clamp_offset(&mut self) {
-        let max_offset = (0.5 - 0.5 / self.scale).max(0.0);
-        self.offset.x = self.offset.x.clamp(-max_offset, max_offset);
-        self.offset.y = self.offset.y.clamp(-max_offset, max_offset);
+    #[must_use]
+    pub fn with_x_visible_length(mut self, length: impl IntoSignalF32) -> Self {
+        self.x_visible_length = length.into_signal_f32().map(Some).computed();
+        self.track_x_visible_length = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_y_visible_length(mut self, length: impl IntoSignalF32) -> Self {
+        self.y_visible_length = length.into_signal_f32().map(Some).computed();
+        self.track_y_visible_length = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_x_position(mut self, binding: &Binding<f32>) -> Self {
+        self.x_position = binding.clone();
+        self.external_x_position = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_y_position(mut self, binding: &Binding<f32>) -> Self {
+        self.y_position = binding.clone();
+        self.external_y_position = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn allows_horizontal_drag(&self) -> bool {
+        self.scrollable_axes.allows_horizontal()
+    }
+
+    #[must_use]
+    pub const fn allows_vertical_drag(&self) -> bool {
+        self.scrollable_axes.allows_vertical()
+    }
+
+    #[must_use]
+    pub fn state_signal(&self) -> Computed<CartesianViewportState> {
+        self.x_visible_length
+            .zip(&self.y_visible_length)
+            .zip(&self.x_position)
+            .zip(&self.y_position)
+            .map(|(((x_visible_length, y_visible_length), x_position), y_position)| {
+                CartesianViewportState {
+                    x_visible_length,
+                    y_visible_length,
+                    x_position,
+                    y_position,
+                }
+            })
+            .computed()
+    }
+
+    #[must_use]
+    pub fn resolve_bounds(
+        &self,
+        base_bounds: crate::data::DataBounds,
+        state: CartesianViewportState,
+    ) -> crate::data::DataBounds {
+        let (min_x, max_x) = resolve_axis_window(
+            state.x_visible_length,
+            state.x_position,
+            &self.x_position,
+            base_bounds.min_x,
+            base_bounds.max_x,
+            "chart_x_visible_domain(length) requires finite length > 0",
+        );
+        let (min_y, max_y) = resolve_axis_window(
+            state.y_visible_length,
+            state.y_position,
+            &self.y_position,
+            base_bounds.min_y,
+            base_bounds.max_y,
+            "chart_y_visible_domain(length) requires finite length > 0",
+        );
+        crate::data::DataBounds::new(min_x, max_x, min_y, max_y)
+    }
+
+    pub fn set_x_position(&self, value: f32) {
+        if self.x_position.get() != value {
+            self.x_position.set(value);
+        }
+    }
+
+    pub fn set_y_position(&self, value: f32) {
+        if self.y_position.get() != value {
+            self.y_position.set(value);
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+fn resolve_axis_window(
+    requested_length: Option<f32>,
+    requested_position: f32,
+    binding: &Binding<f32>,
+    base_min: f32,
+    base_max: f32,
+    invalid_length_message: &'static str,
+) -> (f32, f32) {
+    let total_length = base_max - base_min;
+    if total_length <= 0.0 {
+        if binding.get() != base_min {
+            binding.set(base_min);
+        }
+        return (base_min, base_max);
+    }
+
+    let Some(raw_length) = requested_length else {
+        if binding.get() != base_min {
+            binding.set(base_min);
+        }
+        return (base_min, base_max);
+    };
+    assert!(
+        raw_length.is_finite() && raw_length > 0.0,
+        "{invalid_length_message}"
+    );
+
+    let visible_length = raw_length.min(total_length);
+    let max_start = base_max - visible_length;
+    let start = if max_start <= base_min {
+        base_min
+    } else {
+        requested_position.clamp(base_min, max_start)
+    };
+    if binding.get() != start {
+        binding.set(start);
+    }
+    (start, start + visible_length)
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CartesianSelectionBindings {
+    x_value: Option<Binding<Option<f32>>>,
+    x_range: Option<Binding<Option<RangeInclusive<f32>>>>,
+    y_value: Option<Binding<Option<f32>>>,
+    y_range: Option<Binding<Option<RangeInclusive<f32>>>>,
+}
+
+impl CartesianSelectionBindings {
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.x_value.is_some()
+            || self.x_range.is_some()
+            || self.y_value.is_some()
+            || self.y_range.is_some()
+    }
+
+    pub fn validate(&self) {
+        assert!(
+            !(self.x_value.is_some() && self.x_range.is_some()),
+            "chart_x_selection and chart_x_selection_range cannot be active on the same chart"
+        );
+        assert!(
+            !(self.y_value.is_some() && self.y_range.is_some()),
+            "chart_y_selection and chart_y_selection_range cannot be active on the same chart"
+        );
+    }
+
+    #[must_use]
+    pub fn with_x_value(mut self, binding: &Binding<Option<f32>>) -> Self {
+        self.x_value = Some(binding.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_x_range(mut self, binding: &Binding<Option<RangeInclusive<f32>>>) -> Self {
+        self.x_range = Some(binding.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_y_value(mut self, binding: &Binding<Option<f32>>) -> Self {
+        self.y_value = Some(binding.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_y_range(mut self, binding: &Binding<Option<RangeInclusive<f32>>>) -> Self {
+        self.y_range = Some(binding.clone());
+        self
+    }
+
+    pub fn set_x_value(&self, value: Option<f32>) {
+        if let Some(binding) = &self.x_value
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
+    }
+
+    pub fn set_x_range(&self, value: Option<RangeInclusive<f32>>) {
+        if let Some(binding) = &self.x_range
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
+    }
+
+    pub fn set_y_value(&self, value: Option<f32>) {
+        if let Some(binding) = &self.y_value
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
+    }
+
+    pub fn set_y_range(&self, value: Option<RangeInclusive<f32>>) {
+        if let Some(binding) = &self.y_range
+            && binding.get() != value
+        {
+            binding.set(value);
+        }
+    }
+
+    #[must_use]
+    pub const fn tracks_x_value(&self) -> bool {
+        self.x_value.is_some()
+    }
+
+    #[must_use]
+    pub const fn tracks_x_range(&self) -> bool {
+        self.x_range.is_some()
+    }
+
+    #[must_use]
+    pub const fn tracks_y_value(&self) -> bool {
+        self.y_value.is_some()
+    }
+
+    #[must_use]
+    pub const fn tracks_y_range(&self) -> bool {
+        self.y_range.is_some()
+    }
+}
+
+macro_rules! chart_x_selection_methods {
+    () => {
+        /// Tracks the selected x-domain value for this chart.
+        #[must_use]
+        pub fn chart_x_selection(mut self, selection: &nami::Binding<Option<f32>>) -> Self {
+            self.cartesian_selection = self.cartesian_selection.with_x_value(selection);
+            self
+        }
+
+        /// Tracks the selected x-domain range for this chart.
+        #[must_use]
+        pub fn chart_x_selection_range(
+            mut self,
+            selection: &nami::Binding<Option<core::ops::RangeInclusive<f32>>>,
+        ) -> Self {
+            self.cartesian_selection = self.cartesian_selection.with_x_range(selection);
+            self
+        }
+
+        /// Tracks the selected y-domain value for this chart.
+        #[must_use]
+        pub fn chart_y_selection(mut self, selection: &nami::Binding<Option<f32>>) -> Self {
+            self.cartesian_selection = self.cartesian_selection.with_y_value(selection);
+            self
+        }
+
+        /// Tracks the selected y-domain range for this chart.
+        #[must_use]
+        pub fn chart_y_selection_range(
+            mut self,
+            selection: &nami::Binding<Option<core::ops::RangeInclusive<f32>>>,
+        ) -> Self {
+            self.cartesian_selection = self.cartesian_selection.with_y_range(selection);
+            self
+        }
+
+        /// Enables interactive scrolling along the specified axes.
+        #[must_use]
+        pub fn chart_scrollable_axes(mut self, axes: crate::interaction::ChartScrollableAxes) -> Self {
+            self.cartesian_viewport = self.cartesian_viewport.with_scrollable_axes(axes);
+            self
+        }
+
+        /// Sets the visible x-domain length for this chart.
+        #[must_use]
+        pub fn chart_x_visible_domain(mut self, length: impl waterui_core::IntoSignalF32) -> Self {
+            self.cartesian_viewport = self.cartesian_viewport.with_x_visible_length(length);
+            self
+        }
+
+        /// Sets the visible y-domain length for this chart.
+        #[must_use]
+        pub fn chart_y_visible_domain(mut self, length: impl waterui_core::IntoSignalF32) -> Self {
+            self.cartesian_viewport = self.cartesian_viewport.with_y_visible_length(length);
+            self
+        }
+
+        /// Tracks the current visible x-domain start for this chart.
+        #[must_use]
+        pub fn chart_x_scroll_position(mut self, position: &nami::Binding<f32>) -> Self {
+            self.cartesian_viewport = self.cartesian_viewport.with_x_position(position);
+            self
+        }
+
+        /// Tracks the current visible y-domain start for this chart.
+        #[must_use]
+        pub fn chart_y_scroll_position(mut self, position: &nami::Binding<f32>) -> Self {
+            self.cartesian_viewport = self.cartesian_viewport.with_y_position(position);
+            self
+        }
+    };
+}
+
+pub(crate) use chart_x_selection_methods;
+
+#[derive(Clone)]
 pub(crate) struct SelectionBindings<T: Clone + PartialEq + 'static> {
     focused: Binding<Option<HitResult<T>>>,
     selected: Binding<Option<HitResult<T>>>,
@@ -444,6 +774,11 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.track_focus || self.track_selected
+    }
+
+    #[must_use]
+    pub const fn has_external_bindings(&self) -> bool {
+        self.external_focus || self.external_selected
     }
 
     #[must_use]
