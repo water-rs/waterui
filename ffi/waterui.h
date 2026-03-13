@@ -2393,8 +2393,18 @@ typedef struct WuiDatePicker {
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
+typedef struct Binding_Str WuiBinding_Str;
+
+typedef struct WuiNavigationSearch {
+  WuiBinding_Str *text;
+  struct WuiStr prompt;
+} WuiNavigationSearch;
+
 typedef struct WuiBar {
   struct WuiAnyView *title;
+  struct WuiAnyView *leading;
+  struct WuiAnyView *trailing;
+  struct WuiNavigationSearch *search;
   WuiComputed_Color *color;
   WuiComputed_bool *hidden;
   enum WuiNavigationTitleDisplayMode display_mode;
@@ -2418,6 +2428,37 @@ typedef struct WuiNavigationStack {
    */
   enum WuiNavigationTransition transition;
 } WuiNavigationStack;
+
+typedef struct WuiNavigationSplitLayout {
+  /**
+   * Sidebar content.
+   */
+  struct WuiAnyView *sidebar;
+  /**
+   * Placeholder content for empty regular-width selection.
+   */
+  struct WuiAnyView *placeholder;
+  /**
+   * Active detail bar state when a selection exists.
+   */
+  struct WuiBar detail_bar;
+  /**
+   * Active detail content when a selection exists.
+   */
+  struct WuiAnyView *detail_content;
+  /**
+   * Whether a detail selection currently exists.
+   */
+  bool has_detail;
+  /**
+   * Preferred sidebar width in logical points.
+   */
+  float sidebar_width;
+  /**
+   * Action that clears the current selection on compact layouts.
+   */
+  struct WuiAction *clear_selection;
+} WuiNavigationSplitLayout;
 
 typedef struct WuiTab {
   /**
@@ -3434,8 +3475,6 @@ typedef struct WuiId {
 } WuiId;
 
 typedef struct Computed_Id WuiComputed_Id;
-
-typedef struct Binding_Str WuiBinding_Str;
 
 typedef struct Binding_AnyView WuiBinding_AnyView;
 
@@ -4806,6 +4845,10 @@ struct WuiTypeId waterui_navigation_view_id(void);
 struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_navigation_stack_id(void);
+
+struct WuiNavigationSplitLayout waterui_force_as_split_navigation_container(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_split_navigation_container_id(void);
 
 /**
  * # Safety
