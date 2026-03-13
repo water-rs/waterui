@@ -1,8 +1,6 @@
 use core::any::{Any, TypeId};
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -1135,10 +1133,7 @@ impl EmbeddedGpuSurfaceRuntime {
             pipeline_cache: None,
             redraw_handle: self.redraw_handle.clone(),
         };
-        ready_now_or_panic(
-            self.surface.setup(&ctx, &mut self.env),
-            "hydrolysis embedded GpuSurface setup",
-        );
+        pollster::block_on(self.surface.setup(&ctx, &mut self.env));
         self.setup_complete = true;
     }
 
@@ -1236,19 +1231,6 @@ fn encode_compositor_uniform(corners: [[f32; 2]; 4]) -> [u8; 64] {
 
 fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-}
-
-fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
-where
-    F: core::future::Future,
-{
-    let mut future = future;
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let mut cx = Context::from_waker(core::task::Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("{scope}: future returned Pending in synchronous path"),
-    }
 }
 
 impl CustomNavigationController for HydroNavigationController {
@@ -9396,12 +9378,6 @@ impl HydrolysisRenderer {
 
         let width = (ctx.bounds.width().max(1.0).round()) as u32;
         let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let texture_size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-
         let mut subtree_scene = vello::Scene::new();
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
         renderer.dispatch_with_render_depth(content, env, ctx);
@@ -9409,7 +9385,11 @@ impl HydrolysisRenderer {
 
         let input_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_applied_filter_input"),
-            size: texture_size,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -9434,19 +9414,6 @@ impl HydrolysisRenderer {
             )
             .expect("hydrolysis AppliedFilter: failed to render subtree");
 
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_applied_filter_output"),
-            size: texture_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-
         let filter_context = FilterContext {
             device,
             queue,
@@ -9454,8 +9421,31 @@ impl HydrolysisRenderer {
             output_format: wgpu::TextureFormat::Rgba8Unorm,
             pipeline_cache: None,
         };
-        pollster::block_on(filter.setup(&filter_context));
+        match pollster::block_on(filter.setup(&filter_context)) {
+            Ok(()) => {}
+            Err(err) => {
+                panic!("hydrolysis filter setup failed: {err}");
+            }
+        }
         filter.sync_targets();
+        let (output_width, output_height) = filter.output_size(width, height);
+        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hydrolysis_applied_filter_output"),
+            size: wgpu::Extent3d {
+                width: output_width,
+                height: output_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
 
         let input = FilterInput {
             device,
@@ -9472,8 +9462,8 @@ impl HydrolysisRenderer {
             texture: &output_texture,
             view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             format: wgpu::TextureFormat::Rgba8Unorm,
-            width,
-            height,
+            width: output_width,
+            height: output_height,
         };
         let needs_redraw = match filter.render(&input, &output) {
             Ok(needs_redraw) => needs_redraw || filter.redraw_hint(),
@@ -9489,8 +9479,8 @@ impl HydrolysisRenderer {
         renderer.active_filter_images.push(image.clone());
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(width),
-                ctx.bounds.height() / f64::from(height),
+                ctx.bounds.width() / f64::from(output_width),
+                ctx.bounds.height() / f64::from(output_height),
             );
         let scene = unsafe { ctx.scene() };
         scene.draw_image(

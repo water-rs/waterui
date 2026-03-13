@@ -674,7 +674,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             let setup_future = state
                 .gpu_surface
                 .setup(&ctx, &mut unsafe { &mut *state.env }.0);
-            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render::setup");
+            pollster::block_on(setup_future);
             state.initialized = true;
             state.renderer_format = format;
             if trace_frame {
@@ -862,7 +862,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             let setup_future = state
                 .gpu_surface
                 .setup(&ctx, &mut unsafe { &mut *state.env }.0);
-            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_render_to_texture::setup");
+            pollster::block_on(setup_future);
             state.initialized = true;
             state.renderer_format = target_format;
         }
@@ -1036,10 +1036,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
                 .setup(&ctx, &mut unsafe { &mut *state.env }.0);
             trace_metal_capture_step("render_to_metal_texture: setup future created");
             trace_metal_capture_step("render_to_metal_texture: setup immediate-poll begin");
-            crate::ready_now_or_panic(
-                setup_future,
-                "waterui_gpu_surface_render_to_metal_texture::setup",
-            );
+            pollster::block_on(setup_future);
             trace_metal_capture_step("render_to_metal_texture: setup immediate-poll done");
             state.initialized = true;
             state.renderer_format = target_format;
@@ -1130,7 +1127,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(state: *mut WuiGpuSurfa
             let setup_future = state
                 .gpu_surface
                 .setup(&ctx, &mut unsafe { &mut *state.env }.0);
-            crate::ready_now_or_panic(setup_future, "waterui_gpu_surface_await_ready::setup");
+            pollster::block_on(setup_future);
             state.initialized = true;
             state.renderer_format = format;
         }

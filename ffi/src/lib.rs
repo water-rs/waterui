@@ -114,23 +114,6 @@ pub(crate) fn pop_error_scope_now(
 }
 
 #[inline]
-pub(crate) fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
-where
-    F: core::future::Future,
-{
-    use core::pin::Pin;
-    use core::task::{Context, Poll};
-
-    let mut future = future;
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let mut cx = Context::from_waker(core::task::Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("{scope}: future returned Pending in synchronous FFI path"),
-    }
-}
-
-#[inline]
 #[track_caller]
 pub unsafe fn expect_non_null<'a, T>(
     ptr: *const T,
@@ -1282,8 +1265,8 @@ use crate::components::text::WuiText;
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers};
 use waterui_core::handler::SharedAction;
-use waterui_text::styled::StyledStr;
 use waterui_icon::SystemIcon;
+use waterui_text::styled::StyledStr;
 
 opaque!(WuiSharedAction, SharedAction<()>, shared_action);
 
