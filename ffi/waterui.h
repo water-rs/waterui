@@ -77,6 +77,24 @@ typedef enum WuiEvent {
 } WuiEvent;
 
 /**
+ * FFI-safe menu item tag.
+ */
+typedef enum WuiMenuItemTag {
+  /**
+   * A leaf command.
+   */
+  WuiMenuItemTag_Command = 0,
+  /**
+   * A divider separating adjacent items.
+   */
+  WuiMenuItemTag_Divider = 1,
+  /**
+   * A nested menu.
+   */
+  WuiMenuItemTag_Menu = 2,
+} WuiMenuItemTag;
+
+/**
  * FFI-safe representation of a material blur style.
  *
  * Maps to SwiftUI's Material types on Apple platforms.
@@ -840,7 +858,7 @@ typedef struct Computed_Vec_Annotation Computed_Vec_Annotation;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_Vec_MenuItem Computed_Vec_MenuItem;
+typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -848,7 +866,7 @@ typedef struct Computed_Vec_MenuItem Computed_Vec_MenuItem;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
+typedef struct Computed_Vec_ResolvedMenuItem Computed_Vec_ResolvedMenuItem;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1733,18 +1751,121 @@ typedef struct WuiText {
   WuiComputed_HorizontalAlignment *paragraph_alignment;
 } WuiText;
 
+typedef struct WuiArraySlice_u8 {
+  uint8_t *head;
+  uintptr_t len;
+} WuiArraySlice_u8;
+
+typedef struct WuiArrayVTable_u8 {
+  void (*drop)(void*);
+  struct WuiArraySlice_u8 (*slice)(const void*);
+} WuiArrayVTable_u8;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_u8 {
+  NonNull data;
+  struct WuiArrayVTable_u8 vtable;
+} WuiArray_u8;
+
+typedef struct WuiStr {
+  struct WuiArray_u8 _0;
+} WuiStr;
+
+/**
+ * FFI representation of the SystemIcon component.
+ *
+ * Native backends render this as platform-native icons when supported.
+ *
+ * Apple currently maps this to SF Symbols. Other backends may omit `SystemIcon` support and should use
+ * cross-platform icon-pack views instead.
+ */
+typedef struct WuiSystemIcon {
+  /**
+   * The name of the system icon.
+   */
+  struct WuiStr name;
+} WuiSystemIcon;
+
+typedef struct Computed_bool WuiComputed_bool;
+
+/**
+ * FFI-safe shortcut modifier flags.
+ */
+typedef struct WuiShortcutModifiers {
+  /**
+   * Command modifier on Apple platforms.
+   */
+  bool command;
+  /**
+   * Shift modifier.
+   */
+  bool shift;
+  /**
+   * Option/alt modifier.
+   */
+  bool option;
+  /**
+   * Control modifier.
+   */
+  bool control;
+} WuiShortcutModifiers;
+
+/**
+ * FFI-safe keyboard shortcut payload.
+ */
+typedef struct WuiShortcut {
+  /**
+   * The key equivalent.
+   */
+  struct WuiStr key;
+  /**
+   * The shortcut modifiers.
+   */
+  struct WuiShortcutModifiers modifiers;
+} WuiShortcut;
+
 /**
  * FFI-safe representation of a menu item.
  */
 typedef struct WuiMenuItem {
   /**
-   * The label for the menu item.
+   * The menu node kind.
+   */
+  enum WuiMenuItemTag tag;
+  /**
+   * The resolved label for commands and nested menus.
    */
   struct WuiText label;
   /**
-   * The action handler pointer (SharedHandler wrapped for FFI).
+   * Optional icon shown alongside the label.
+   */
+  struct WuiSystemIcon *icon;
+  /**
+   * The action handler pointer for commands.
    */
   struct WuiSharedAction *action;
+  /**
+   * Reactive disabled state for commands.
+   */
+  WuiComputed_bool *disabled;
+  /**
+   * Reactive selected/checkmark state for commands.
+   */
+  WuiComputed_bool *selected;
+  /**
+   * Optional keyboard shortcut metadata for commands.
+   */
+  struct WuiShortcut *shortcut;
+  /**
+   * Nested menu items.
+   */
+  WuiComputed_MenuItems *items;
 } WuiMenuItem;
 
 typedef struct WuiArraySlice_WuiMenuItem {
@@ -1778,9 +1899,13 @@ typedef struct WuiMenu {
    */
   struct WuiAnyView *label;
   /**
-   * The menu items as a computed array.
+   * The fully resolved menu items as a computed array.
    */
   WuiComputed_MenuItems *items;
+  /**
+   * Semantic accessibility label for the menu trigger.
+   */
+  WuiComputed_StyledStr *accessibility_label;
 } WuiMenu;
 
 /**
@@ -1836,8 +1961,6 @@ typedef struct WuiIgnorableMetadataMaterialBackground {
    */
   enum WuiMaterial material;
 } WuiIgnorableMetadataMaterialBackground;
-
-typedef struct Computed_bool WuiComputed_bool;
 
 /**
  * FFI-safe representation of Hittable metadata.
@@ -1941,32 +2064,6 @@ typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 typedef struct Binding_Color WuiBinding_Color;
 
 typedef struct Computed_Color WuiComputed_Color;
-
-typedef struct WuiArraySlice_u8 {
-  uint8_t *head;
-  uintptr_t len;
-} WuiArraySlice_u8;
-
-typedef struct WuiArrayVTable_u8 {
-  void (*drop)(void*);
-  struct WuiArraySlice_u8 (*slice)(const void*);
-} WuiArrayVTable_u8;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_u8 {
-  NonNull data;
-  struct WuiArrayVTable_u8 vtable;
-} WuiArray_u8;
-
-typedef struct WuiStr {
-  struct WuiArray_u8 _0;
-} WuiStr;
 
 typedef struct WuiArraySlice_____WuiAnyView {
   struct WuiAnyView **head;
@@ -2183,6 +2280,7 @@ typedef struct WuiButton {
   struct WuiAnyView *label;
   struct WuiAction *action;
   enum WuiButtonStyle style;
+  WuiComputed_StyledStr *accessibility_label;
 } WuiButton;
 
 typedef struct WuiTextStyle {
@@ -2251,14 +2349,14 @@ typedef struct Computed_ResolvedFont WuiComputed_ResolvedFont;
 
 typedef struct Binding_StyledStr WuiBinding_StyledStr;
 
-typedef struct Computed_Vec_MenuItem WuiComputed_Vec_MenuItem;
+typedef struct Computed_Vec_ResolvedMenuItem WuiComputed_Vec_ResolvedMenuItem;
 
 typedef struct WuiTextField {
   struct WuiAnyView *label;
   WuiBinding_StyledStr *value;
   struct WuiText prompt;
   enum WuiKeyboardType keyboard;
-  WuiComputed_Vec_MenuItem *selection_menu;
+  WuiComputed_Vec_ResolvedMenuItem *selection_menu;
 } WuiTextField;
 
 typedef struct WuiToggle {
@@ -2943,20 +3041,6 @@ typedef struct WuiGpuSurfaceInput {
    */
   struct WuiGestureState gesture;
 } WuiGpuSurfaceInput;
-
-/**
- * FFI representation of the SystemIcon component.
- *
- * Native backends render this as platform-native icons:
- * - Apple: SF Symbols
- * - Android: Material Icons (with placeholder fallback)
- */
-typedef struct WuiSystemIcon {
-  /**
-   * The name of the system icon.
-   */
-  struct WuiStr name;
-} WuiSystemIcon;
 
 /**
  * FFI representation of a WebView event.
@@ -3696,6 +3780,10 @@ typedef struct WuiApp {
    * Array of windows. The first window is the main window.
    */
   struct WuiArray_WuiWindow windows;
+  /**
+   * The application menu bar as resolved menu items.
+   */
+  WuiComputed_MenuItems *menu_bar;
   /**
    * The application environment containing injected services.
    * Returned to native for use during rendering.

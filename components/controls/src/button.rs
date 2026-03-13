@@ -142,10 +142,14 @@ use core::marker::PhantomData;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
+use nami::Computed;
 use waterui_core::extract::Extractor;
-use waterui_core::handler::BoxedAction;
+use waterui_core::handler::{BoxedAction, shared_action_with_env};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
+use waterui_text::{IntoText, Text, styled::StyledStr};
+
+use crate::label::{IntoLabel, Label as SemanticLabel};
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -259,11 +263,31 @@ pub struct ButtonConfig {
     pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
+    /// Optional semantic accessibility label resolved from the button label.
+    pub accessibility_label: Option<nami::Computed<StyledStr>>,
 }
 
 impl_debug!(ButtonConfig);
 
 impl NativeView for ButtonConfig {}
+
+fn render_button_config<Label, Action>(
+    button: Button<Label, Action>,
+    env: &Environment,
+) -> ButtonConfig
+where
+    Label: View,
+    Action: FnMut(&Environment) + 'static,
+{
+    ButtonConfig {
+        label: AnyView::new(button.label),
+        action: Box::new(button.action),
+        style: button.style,
+        accessibility_label: button
+            .accessibility_label
+            .map(|label| label.__resolve(env).content),
+    }
+}
 
 impl<Label, Action> View for Button<Label, Action>
 where
@@ -271,7 +295,7 @@ where
     Action: FnMut(&Environment) + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = self.config();
+        let config = render_button_config(self, env);
         if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
             hook.apply(env, config)
         } else {
@@ -292,6 +316,7 @@ impl ViewConfiguration for ButtonConfig {
             label: self.label,
             action: self.action,
             style: self.style,
+            accessibility_label: self.accessibility_label.map(Text::computed),
         }
     }
 }
@@ -308,6 +333,7 @@ where
             label: AnyView::new(self.label),
             action: Box::new(self.action),
             style: self.style,
+            accessibility_label: None,
         }
     }
 }
@@ -330,6 +356,7 @@ pub struct Button<Label, Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
+    accessibility_label: Option<Text>,
 }
 
 impl<Label: Debug, Action> Debug for Button<Label, Action> {
@@ -347,11 +374,12 @@ impl<Label: Clone, Action: Clone> Clone for Button<Label, Action> {
             label: self.label.clone(),
             action: self.action.clone(),
             style: self.style,
+            accessibility_label: self.accessibility_label.clone(),
         }
     }
 }
 
-impl<Label: View> Button<Label, fn(&Environment)> {
+impl Button<SemanticLabel, fn(&Environment)> {
     /// Creates a new button with the specified label.
     ///
     /// The button has no action by default. Use [`action`](Self::action),
@@ -367,11 +395,14 @@ impl<Label: View> Button<Label, fn(&Environment)> {
     /// ```rust,ignore
     /// let btn = Button::new("Click me").action(|| println!("Clicked!"));
     /// ```
-    pub const fn new(label: Label) -> Self {
+    pub fn new(label: impl IntoLabel) -> Self {
+        let label = label.into_label();
+        let accessibility_label = Some(label.__text().clone());
         Self {
             label,
             action: noop,
             style: ButtonStyle::Automatic,
+            accessibility_label,
         }
     }
 
@@ -400,11 +431,12 @@ impl<Label: View> Button<Label, fn(&Environment)> {
     ///     .action(|(wv, url)| wv.go_to(url.get().as_str()));
     /// ```
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ButtonBuilder<Label, T> {
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ButtonBuilder<SemanticLabel, T> {
         ButtonBuilder {
             label: self.label,
             state: state.clone(),
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 
@@ -433,10 +465,11 @@ impl<Label: View> Button<Label, fn(&Environment)> {
     ///     .action(|(db, user)| db.save(user));
     /// ```
     #[must_use]
-    pub fn extract<E: Extractor>(self) -> ButtonExtractBuilder<Label, E> {
+    pub fn extract<E: Extractor>(self) -> ButtonExtractBuilder<SemanticLabel, E> {
         ButtonExtractBuilder {
             label: self.label,
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -459,6 +492,13 @@ impl<Label: View, Action> Button<Label, Action> {
     #[must_use]
     pub const fn style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Overrides the semantic accessibility label announced by assistive technology.
+    #[must_use]
+    pub fn accessibility_label(mut self, label: impl IntoText) -> Self {
+        self.accessibility_label = Some(label.into_text());
         self
     }
 
@@ -490,6 +530,7 @@ impl<Label: View, Action> Button<Label, Action> {
             label: self.label,
             action: move |_env: &Environment| action(),
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 
@@ -524,6 +565,30 @@ impl<Label: View, Action> Button<Label, Action> {
 /// No-op action for buttons without a configured action.
 fn noop(_env: &Environment) {}
 
+impl<Action> From<Button<SemanticLabel, Action>> for crate::menu::Command
+where
+    Action: FnMut(&Environment) + 'static,
+{
+    fn from(value: Button<SemanticLabel, Action>) -> Self {
+        Self {
+            label: value.label,
+            action: shared_action_with_env(value.action),
+            disabled: Computed::constant(false),
+            selected: Computed::constant(false),
+            shortcut: None,
+        }
+    }
+}
+
+impl<Action> From<Button<SemanticLabel, Action>> for crate::menu::MenuItem
+where
+    Action: FnMut(&Environment) + 'static,
+{
+    fn from(value: Button<SemanticLabel, Action>) -> Self {
+        Self::Command(value.into())
+    }
+}
+
 // ============================================================================
 // ButtonBuilder - for buttons with state
 // ============================================================================
@@ -555,10 +620,11 @@ pub struct ButtonBuilder<Label, State> {
     label: Label,
     state: State,
     style: ButtonStyle,
+    accessibility_label: Option<Text>,
 }
 
 // Generate with_state for state chaining: S -> (S, T)
-waterui_core::impl_stateful_builder!(ButtonBuilder<Label>; state; label, style);
+waterui_core::impl_stateful_builder!(ButtonBuilder<Label>; state; label, style, accessibility_label);
 
 impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
     /// Adds environment extraction to the button.
@@ -585,6 +651,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
             label: self.label,
             state: self.state,
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -624,6 +691,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
             label: self.label,
             action: move |_env: &Environment| action(state.clone()),
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 
@@ -654,6 +722,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
                 spawn_local(action(state.clone())).detach();
             },
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 }
@@ -678,6 +747,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
 pub struct ButtonExtractBuilder<Label, Extract> {
     label: Label,
     style: ButtonStyle,
+    accessibility_label: Option<Text>,
     _extract: PhantomData<Extract>,
 }
 
@@ -694,6 +764,7 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
         ButtonExtractBuilder {
             label: self.label,
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -715,6 +786,7 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
             label: self.label,
             state: state.clone(),
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -748,6 +820,7 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
                 action(extracted);
             },
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 
@@ -768,6 +841,7 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
                 spawn_local(action(extracted)).detach();
             },
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 }
@@ -796,6 +870,7 @@ pub struct ButtonStateExtractBuilder<Label, State, Extract> {
     label: Label,
     state: State,
     style: ButtonStyle,
+    accessibility_label: Option<Text>,
     _extract: PhantomData<Extract>,
 }
 
@@ -812,6 +887,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
             label: self.label,
             state: (self.state, state.clone()),
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -825,6 +901,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
             label: self.label,
             state: self.state,
             style: self.style,
+            accessibility_label: self.accessibility_label,
             _extract: PhantomData,
         }
     }
@@ -859,6 +936,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
                 action((state.clone(), extracted));
             },
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 
@@ -880,6 +958,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
                 spawn_local(action((state.clone(), extracted))).detach();
             },
             style: self.style,
+            accessibility_label: self.accessibility_label,
         }
     }
 }
@@ -903,6 +982,6 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
 ///
 /// button("Click me").action(|| println!("Clicked!"));
 /// ```
-pub const fn button<Label: View>(label: Label) -> Button<Label, fn(&Environment)> {
+pub fn button(label: impl IntoLabel) -> Button<SemanticLabel, fn(&Environment)> {
     Button::new(label)
 }

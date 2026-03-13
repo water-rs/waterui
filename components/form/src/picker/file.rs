@@ -2,7 +2,7 @@
 
 use alloc::{string::ToString, vec::Vec};
 use nami::Binding;
-use waterui_controls::Button;
+use waterui_controls::{Button, IntoLabel};
 use waterui_core::View;
 use waterui_text::Text;
 use waterui_url::Url;
@@ -65,7 +65,7 @@ impl FilePicker<Text> {
     }
 }
 
-impl<Label: View> View for FilePicker<Label> {
+impl<Label: IntoLabel + 'static> View for FilePicker<Label> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Button::new(self.label).action_async(move || {
             let value = self.value.clone();

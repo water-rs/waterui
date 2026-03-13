@@ -166,6 +166,7 @@ cpu-time = "1.0"
 nami.workspace = true
 waterui-core.workspace = true
 waterui-str.workspace = true
+waterui-url.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media = { workspace = true, optional = true }
