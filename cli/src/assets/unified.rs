@@ -33,18 +33,25 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
     write_manifest_stamp(&manifest, &assets_dest).await?;
 
     let xcassets_dest = dest_dir.join("WaterUIAssets.xcassets");
-    fs::create_dir_all(&xcassets_dest).await?;
+    reset_dir(&xcassets_dest).await?;
     write_apple_root_contents(&xcassets_dest).await?;
+    let accent = project.manifest().theme.as_ref().and_then(|theme| theme.accent.as_deref());
 
-    if let Some(icon) = manifest.assets.iter().find(|asset| asset.role == AssetRole::AppIcon) {
+    if let Some(icon) = manifest
+        .assets
+        .iter()
+        .find(|asset| asset.role == AssetRole::AppIcon)
+    {
         write_apple_app_icon(icon, &xcassets_dest).await?;
+    } else {
+        write_generated_apple_app_icon(accent, &xcassets_dest).await?;
     }
 
     if let Some(theme) = project.manifest().theme.as_ref() {
         if !theme.is_empty() {
             write_apple_theme_json(theme, dest_dir).await?;
         }
-        write_apple_accent_color(theme.accent.as_deref(), &xcassets_dest).await?;
+        write_apple_accent_color(accent, &xcassets_dest).await?;
     } else {
         write_apple_accent_color(None, &xcassets_dest).await?;
     }
@@ -54,7 +61,9 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
 
 pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::Result<()> {
     let manifest = build_manifest(project)?;
-    let assets_dest = backend_path.join("app/src/main/assets").join(ASSET_ROOT_DIR);
+    let assets_dest = backend_path
+        .join("app/src/main/assets")
+        .join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
     write_manifest_stamp(&manifest, &assets_dest).await?;
@@ -66,7 +75,11 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
     let theme = project.manifest().theme.as_ref();
     write_android_theme_files(theme, backend_path).await?;
 
-    if let Some(icon) = manifest.assets.iter().find(|asset| asset.role == AssetRole::AppIcon) {
+    if let Some(icon) = manifest
+        .assets
+        .iter()
+        .find(|asset| asset.role == AssetRole::AppIcon)
+    {
         write_android_icon_resources(icon, theme, backend_path).await?;
     }
 
@@ -138,7 +151,9 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
     match ext.as_str() {
         "png" => {
             let image = image::load_from_memory(bytes)
-                .map_err(|error| eyre::eyre!("Failed to decode PNG '{}': {error}", source.display()))?
+                .map_err(|error| {
+                    eyre::eyre!("Failed to decode PNG '{}': {error}", source.display())
+                })?
                 .to_rgba8();
             let mut out = Vec::new();
             let encoder = image::codecs::png::PngEncoder::new_with_quality(
@@ -156,7 +171,9 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
         }
         "jpg" | "jpeg" => {
             let image = image::load_from_memory(bytes)
-                .map_err(|error| eyre::eyre!("Failed to decode JPEG '{}': {error}", source.display()))?
+                .map_err(|error| {
+                    eyre::eyre!("Failed to decode JPEG '{}': {error}", source.display())
+                })?
                 .to_rgb8();
             let mut out = Vec::new();
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85);
@@ -176,8 +193,12 @@ async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> ey
     let mut hasher = Sha256::new();
     for asset in &manifest.assets {
         hasher.update(asset.logical_path.to_string_lossy().as_bytes());
-        let bytes = std::fs::read(&asset.source_path)
-            .wrap_err_with(|| format!("Failed to read '{}' for asset stamp", asset.source_path.display()))?;
+        let bytes = std::fs::read(&asset.source_path).wrap_err_with(|| {
+            format!(
+                "Failed to read '{}' for asset stamp",
+                asset.source_path.display()
+            )
+        })?;
         hasher.update(&bytes);
     }
     let stamp = hex::encode(hasher.finalize());
@@ -221,7 +242,12 @@ fn detect_font_family(path: &Path) -> eyre::Result<String> {
                 .find(|name| name.name_id == ttf_parser::name_id::FAMILY)
         })
         .and_then(|name| name.to_string())
-        .ok_or_else(|| eyre::eyre!("Font '{}' does not contain a readable family name", path.display()))?;
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Font '{}' does not contain a readable family name",
+                path.display()
+            )
+        })?;
     Ok(family)
 }
 
@@ -331,6 +357,22 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
 }
 
 async fn write_apple_app_icon(icon: &PlannedAsset, xcassets_dest: &Path) -> eyre::Result<()> {
+    let source = load_icon_image(&icon.source_path)?;
+    write_apple_app_icon_from_source(&source, xcassets_dest).await
+}
+
+async fn write_generated_apple_app_icon(
+    accent: Option<&str>,
+    xcassets_dest: &Path,
+) -> eyre::Result<()> {
+    let source = generate_default_app_icon(accent)?;
+    write_apple_app_icon_from_source(&source, xcassets_dest).await
+}
+
+async fn write_apple_app_icon_from_source(
+    source: &image::DynamicImage,
+    xcassets_dest: &Path,
+) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct ImageItem<'a> {
         idiom: &'a str,
@@ -353,7 +395,6 @@ async fn write_apple_app_icon(icon: &PlannedAsset, xcassets_dest: &Path) -> eyre
 
     let appicon_dir = xcassets_dest.join("AppIcon.appiconset");
     reset_dir(&appicon_dir).await?;
-    let source = load_icon_image(&icon.source_path)?;
 
     let specs = [
         ("iphone", "20x20", "2x", 40_u32),
@@ -423,7 +464,11 @@ async fn write_android_icon_resources(
     fs::create_dir_all(&drawable_dir).await?;
 
     let foreground = render_android_foreground(&source);
-    write_png(&foreground, &drawable_dir.join("ic_launcher_foreground.png")).await?;
+    write_png(
+        &foreground,
+        &drawable_dir.join("ic_launcher_foreground.png"),
+    )
+    .await?;
 
     for (dir, size) in ANDROID_MIPMAP_DIRS {
         let target_dir = backend_path.join("app/src/main/res").join(dir);
@@ -436,10 +481,30 @@ async fn write_android_icon_resources(
     Ok(())
 }
 
+fn generate_default_app_icon(accent: Option<&str>) -> eyre::Result<image::DynamicImage> {
+    let [red, green, blue] = parse_rgb(accent.unwrap_or("#0A84FF"))?;
+    let mut image = image::RgbaImage::from_pixel(1024, 1024, image::Rgba([red, green, blue, 255]));
+
+    let circle_radius = 320_i32;
+    let center = 512_i32;
+    for y in 0..1024_i32 {
+        for x in 0..1024_i32 {
+            let dx = x - center;
+            let dy = y - center;
+            if dx * dx + dy * dy <= circle_radius * circle_radius {
+                image.put_pixel(x as u32, y as u32, image::Rgba([255, 255, 255, 235]));
+            }
+        }
+    }
+
+    Ok(image::DynamicImage::ImageRgba8(image))
+}
+
 fn render_android_foreground(source: &image::DynamicImage) -> image::DynamicImage {
     let canvas_size = 432_u32;
     let icon_size = 312_u32;
-    let mut canvas = image::RgbaImage::from_pixel(canvas_size, canvas_size, image::Rgba([0, 0, 0, 0]));
+    let mut canvas =
+        image::RgbaImage::from_pixel(canvas_size, canvas_size, image::Rgba([0, 0, 0, 0]));
     let resized = source
         .resize_exact(icon_size, icon_size, image::imageops::FilterType::Lanczos3)
         .to_rgba8();
@@ -448,7 +513,10 @@ fn render_android_foreground(source: &image::DynamicImage) -> image::DynamicImag
     image::DynamicImage::ImageRgba8(canvas)
 }
 
-async fn write_android_theme_files(theme: Option<&ThemeConfig>, backend_path: &Path) -> eyre::Result<()> {
+async fn write_android_theme_files(
+    theme: Option<&ThemeConfig>,
+    backend_path: &Path,
+) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
     let values_night_dir = backend_path.join(ANDROID_VALUES_NIGHT_DIR);
     fs::create_dir_all(&values_dir).await?;
@@ -464,18 +532,35 @@ async fn write_android_theme_files(theme: Option<&ThemeConfig>, backend_path: &P
 
 fn build_android_colors_xml(theme: Option<&ThemeConfig>) -> eyre::Result<String> {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
-    let background = theme.and_then(|value| value.accent.as_deref()).unwrap_or("#0A84FF");
+    let background = theme
+        .and_then(|value| value.accent.as_deref())
+        .unwrap_or("#0A84FF");
     validate_hex_color(background)?;
-    let _ = writeln!(&mut xml, "    <color name=\"ic_launcher_background\">{background}</color>");
+    let _ = writeln!(
+        &mut xml,
+        "    <color name=\"ic_launcher_background\">{background}</color>"
+    );
     if let Some(theme) = theme {
         write_android_color(&mut xml, "waterui_background", theme.background.as_deref())?;
         write_android_color(&mut xml, "waterui_surface", theme.surface.as_deref())?;
-        write_android_color(&mut xml, "waterui_surface_variant", theme.surface_variant.as_deref())?;
+        write_android_color(
+            &mut xml,
+            "waterui_surface_variant",
+            theme.surface_variant.as_deref(),
+        )?;
         write_android_color(&mut xml, "waterui_border", theme.border.as_deref())?;
         write_android_color(&mut xml, "waterui_foreground", theme.foreground.as_deref())?;
-        write_android_color(&mut xml, "waterui_muted_foreground", theme.muted_foreground.as_deref())?;
+        write_android_color(
+            &mut xml,
+            "waterui_muted_foreground",
+            theme.muted_foreground.as_deref(),
+        )?;
         write_android_color(&mut xml, "waterui_accent", theme.accent.as_deref())?;
-        write_android_color(&mut xml, "waterui_accent_foreground", theme.accent_foreground.as_deref())?;
+        write_android_color(
+            &mut xml,
+            "waterui_accent_foreground",
+            theme.accent_foreground.as_deref(),
+        )?;
     }
     xml.push_str("</resources>\n");
     Ok(xml)
@@ -495,14 +580,54 @@ fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
         "<resources>\n    <style name=\"Theme.WaterUIApp\" parent=\"Theme.Material3.DayNight.NoActionBar\">\n",
     );
     if let Some(theme) = theme {
-        maybe_theme_item(&mut xml, "android:colorBackground", theme.background.as_deref(), "waterui_background");
-        maybe_theme_item(&mut xml, "colorSurface", theme.surface.as_deref(), "waterui_surface");
-        maybe_theme_item(&mut xml, "colorSurfaceVariant", theme.surface_variant.as_deref(), "waterui_surface_variant");
-        maybe_theme_item(&mut xml, "colorOutline", theme.border.as_deref(), "waterui_border");
-        maybe_theme_item(&mut xml, "colorOnSurface", theme.foreground.as_deref(), "waterui_foreground");
-        maybe_theme_item(&mut xml, "colorOnSurfaceVariant", theme.muted_foreground.as_deref(), "waterui_muted_foreground");
-        maybe_theme_item(&mut xml, "colorPrimary", theme.accent.as_deref(), "waterui_accent");
-        maybe_theme_item(&mut xml, "colorOnPrimary", theme.accent_foreground.as_deref(), "waterui_accent_foreground");
+        maybe_theme_item(
+            &mut xml,
+            "android:colorBackground",
+            theme.background.as_deref(),
+            "waterui_background",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorSurface",
+            theme.surface.as_deref(),
+            "waterui_surface",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorSurfaceVariant",
+            theme.surface_variant.as_deref(),
+            "waterui_surface_variant",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorOutline",
+            theme.border.as_deref(),
+            "waterui_border",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorOnSurface",
+            theme.foreground.as_deref(),
+            "waterui_foreground",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorOnSurfaceVariant",
+            theme.muted_foreground.as_deref(),
+            "waterui_muted_foreground",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorPrimary",
+            theme.accent.as_deref(),
+            "waterui_accent",
+        );
+        maybe_theme_item(
+            &mut xml,
+            "colorOnPrimary",
+            theme.accent_foreground.as_deref(),
+            "waterui_accent_foreground",
+        );
     }
     xml.push_str("    </style>\n</resources>\n");
     xml
@@ -510,7 +635,10 @@ fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
 
 fn maybe_theme_item(xml: &mut String, attr: &str, value: Option<&str>, color_name: &str) {
     if value.is_some() {
-        let _ = writeln!(xml, "        <item name=\"{attr}\">@color/{color_name}</item>");
+        let _ = writeln!(
+            xml,
+            "        <item name=\"{attr}\">@color/{color_name}</item>"
+        );
     }
 }
 
@@ -537,7 +665,11 @@ fn component_string(value: u8) -> String {
 }
 
 fn load_icon_image(path: &Path) -> eyre::Result<image::DynamicImage> {
-    if path.extension().and_then(OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
+    if path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+    {
         return load_svg_icon_image(path);
     }
 
@@ -558,8 +690,12 @@ fn load_svg_icon_image(path: &Path) -> eyre::Result<image::DynamicImage> {
     };
     options.fontdb_mut().load_system_fonts();
 
-    let tree = usvg::Tree::from_data(&svg_data, &options)
-        .map_err(|error| eyre::eyre!("Failed to parse SVG app icon source '{}': {error}", path.display()))?;
+    let tree = usvg::Tree::from_data(&svg_data, &options).map_err(|error| {
+        eyre::eyre!(
+            "Failed to parse SVG app icon source '{}': {error}",
+            path.display()
+        )
+    })?;
     let size = tree.size();
     if (size.width() - size.height()).abs() > f32::EPSILON {
         eyre::bail!(
@@ -571,14 +707,26 @@ fn load_svg_icon_image(path: &Path) -> eyre::Result<image::DynamicImage> {
     }
 
     let raster_size = size.to_int_size();
-    let mut pixmap = tiny_skia::Pixmap::new(raster_size.width(), raster_size.height())
-        .ok_or_else(|| eyre::eyre!("Failed to allocate raster surface for SVG app icon '{}'", path.display()))?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(raster_size.width(), raster_size.height()).ok_or_else(|| {
+            eyre::eyre!(
+                "Failed to allocate raster surface for SVG app icon '{}'",
+                path.display()
+            )
+        })?;
     resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-    let png = pixmap
-        .encode_png()
-        .map_err(|error| eyre::eyre!("Failed to encode rasterized SVG app icon '{}': {error}", path.display()))?;
-    let image = image::load_from_memory(&png)
-        .map_err(|error| eyre::eyre!("Failed to decode rasterized SVG app icon '{}': {error}", path.display()))?;
+    let png = pixmap.encode_png().map_err(|error| {
+        eyre::eyre!(
+            "Failed to encode rasterized SVG app icon '{}': {error}",
+            path.display()
+        )
+    })?;
+    let image = image::load_from_memory(&png).map_err(|error| {
+        eyre::eyre!(
+            "Failed to decode rasterized SVG app icon '{}': {error}",
+            path.display()
+        )
+    })?;
     ensure_square_icon_dimensions(path, image.width(), image.height())?;
     Ok(image)
 }
