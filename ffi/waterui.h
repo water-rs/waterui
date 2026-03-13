@@ -226,6 +226,9 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_BufferingEnded = 4,
   WuiVideoEventType_BufferLevel = 5,
   WuiVideoEventType_PlaybackMetrics = 6,
+  WuiVideoEventType_PictureInPictureChanged = 7,
+  WuiVideoEventType_NextRequested = 8,
+  WuiVideoEventType_PreviousRequested = 9,
 } WuiVideoEventType;
 
 typedef enum WuiProgressStyle {
@@ -917,24 +920,10 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
- * A point in normalized unit coordinate space (0.0 to 1.0).
+ * Normalized coordinates (0.0-1.0) for positioning.
  *
- * Unit points are used to specify gradient start/end points and centers
- * in a resolution-independent way. The point (0.0, 0.0) is the top-left
- * corner and (1.0, 1.0) is the bottom-right corner.
- *
- * # Predefined Constants
- *
- * Common positions are available as constants:
- * - `UnitPoint::TOP_LEADING` - Top-left corner
- * - `UnitPoint::TOP` - Top center
- * - `UnitPoint::TOP_TRAILING` - Top-right corner
- * - `UnitPoint::LEADING` - Left center
- * - `UnitPoint::CENTER` - Center
- * - `UnitPoint::TRAILING` - Right center
- * - `UnitPoint::BOTTOM_LEADING` - Bottom-left corner
- * - `UnitPoint::BOTTOM` - Bottom center
- * - `UnitPoint::BOTTOM_TRAILING` - Bottom-right corner
+ * Used to specify both anchor points on views and target positions in parent.
+ * Values outside 0.0-1.0 are valid and will position outside bounds.
  */
 typedef struct UnitPoint UnitPoint;
 
@@ -2516,7 +2505,11 @@ typedef struct WuiLivePhoto {
 
 typedef struct Computed_Str WuiComputed_Str;
 
+typedef struct Computed_f64 WuiComputed_f64;
+
 typedef struct Binding_Volume WuiBinding_Volume;
+
+typedef struct Binding_f32 WuiBinding_f32;
 
 /**
  * FFI representation of a video event.
@@ -2527,6 +2520,7 @@ typedef struct WuiVideoEvent {
   uint32_t buffered_ms;
   float av_drift_ms;
   uint64_t dropped_video_frames;
+  bool picture_in_picture_active;
 } WuiVideoEvent;
 
 /**
@@ -2551,9 +2545,45 @@ typedef struct WuiVideo {
    */
   WuiComputed_Str *source;
   /**
+   * The media title shown in system media controls.
+   */
+  WuiComputed_Str *title;
+  /**
+   * The media artist shown in system media controls.
+   */
+  WuiComputed_Str *artist;
+  /**
+   * The media album shown in system media controls.
+   */
+  WuiComputed_Str *album;
+  /**
+   * Artwork URL shown in system media controls.
+   */
+  WuiComputed_Str *artwork_url;
+  /**
+   * Preferred playback duration in seconds, or `-1.0` when unknown.
+   */
+  WuiComputed_f64 *duration_seconds;
+  /**
+   * Whether the active queue has a next item.
+   */
+  WuiBinding_bool *has_next;
+  /**
+   * Whether the active queue has a previous item.
+   */
+  WuiBinding_bool *has_previous;
+  /**
    * The volume of the video.
    */
   WuiBinding_Volume *volume;
+  /**
+   * Playback speed (1.0 = normal speed).
+   */
+  WuiBinding_f32 *playback_rate;
+  /**
+   * Whether native playback should preserve pitch when rate changes.
+   */
+  WuiBinding_bool *preserve_pitch;
   /**
    * The aspect ratio mode for video playback.
    */
@@ -2578,9 +2608,45 @@ typedef struct WuiVideoPlayer {
    */
   WuiComputed_Str *source;
   /**
+   * The media title shown in system media controls.
+   */
+  WuiComputed_Str *title;
+  /**
+   * The media artist shown in system media controls.
+   */
+  WuiComputed_Str *artist;
+  /**
+   * The media album shown in system media controls.
+   */
+  WuiComputed_Str *album;
+  /**
+   * Artwork URL shown in system media controls.
+   */
+  WuiComputed_Str *artwork_url;
+  /**
+   * Preferred playback duration in seconds, or `-1.0` when unknown.
+   */
+  WuiComputed_f64 *duration_seconds;
+  /**
+   * Whether the active queue has a next item.
+   */
+  WuiBinding_bool *has_next;
+  /**
+   * Whether the active queue has a previous item.
+   */
+  WuiBinding_bool *has_previous;
+  /**
    * The volume of the video player.
    */
   WuiBinding_Volume *volume;
+  /**
+   * Playback speed (1.0 = normal speed).
+   */
+  WuiBinding_f32 *playback_rate;
+  /**
+   * Whether native playback should preserve pitch when rate changes.
+   */
+  WuiBinding_bool *preserve_pitch;
   /**
    * The aspect ratio mode for video playback.
    */
@@ -2682,8 +2748,6 @@ typedef struct WuiTable {
   WuiComputed_Vec_TableColumn *columns;
 } WuiTable;
 
-typedef struct Computed_f64 WuiComputed_f64;
-
 typedef struct WuiProgress {
   struct WuiAnyView *label;
   struct WuiAnyView *value_label;
@@ -2704,6 +2768,14 @@ typedef struct WuiGpuSurface {
    * This is consumed during init and should not be used after.
    */
   void *surface;
+  /**
+   * Whether this surface should register as a picture-in-picture host.
+   */
+  bool has_picture_in_picture_host_id;
+  /**
+   * Stable picture-in-picture host id when `has_picture_in_picture_host_id` is true.
+   */
+  uint64_t picture_in_picture_host_id;
 } WuiGpuSurface;
 
 /**
@@ -3368,8 +3440,6 @@ typedef struct Binding_Str WuiBinding_Str;
 typedef struct Binding_AnyView WuiBinding_AnyView;
 
 typedef struct Computed_AnyView WuiComputed_AnyView;
-
-typedef struct Binding_f32 WuiBinding_f32;
 
 /**
  * C-compatible date representation using year, month (1-12), and day (1-31).

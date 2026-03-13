@@ -37,7 +37,8 @@ impl Bundle {
 
     #[must_use]
     pub fn path(&self, logical_path: &str) -> PathBuf {
-        let mut root = assets_root().unwrap_or_else(|error| panic!("WaterUI assets root unavailable: {error}"));
+        let mut root = assets_root()
+            .unwrap_or_else(|error| panic!("WaterUI assets root unavailable: {error}"));
         if !self.prefix.is_empty() {
             root.push(self.prefix);
         }

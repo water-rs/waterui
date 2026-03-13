@@ -968,10 +968,10 @@ mod winit_runner {
     use waterui::window::{Window, WindowState};
     use waterui_core::Environment;
     use waterui_core::layout::{Point, Rect, Size};
-    use winit::platform::wayland::EventLoopExtWayland;
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+    use winit::platform::wayland::EventLoopExtWayland;
     use winit::window::{Window as NativeWindow, WindowId};
 
     use crate::platform::{InputEvent, KeyState, PlatformWindow, WinitWindow};

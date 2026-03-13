@@ -106,11 +106,20 @@ pub struct BundleManifest {
 #[derive(Debug, Error)]
 pub enum PlannerError {
     #[error("Failed to read Water.toml at '{path}': {source}")]
-    ReadWaterToml { path: PathBuf, source: std::io::Error },
+    ReadWaterToml {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("Invalid Water.toml at '{path}': {source}")]
-    InvalidWaterToml { path: PathBuf, source: toml::de::Error },
+    InvalidWaterToml {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
     #[error("Failed to read Rust source '{path}': {source}")]
-    ReadSource { path: PathBuf, source: std::io::Error },
+    ReadSource {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("Failed to parse Rust source '{path}': {source}")]
     ParseSource { path: PathBuf, source: syn::Error },
     #[error("include_bundle mount '{name}' already exists")]
@@ -125,7 +134,9 @@ pub enum PlannerError {
         first: PathBuf,
         second: PathBuf,
     },
-    #[error("Generated Rust asset path collision at '{module_path}' between '{first}' and '{second}'")]
+    #[error(
+        "Generated Rust asset path collision at '{module_path}' between '{first}' and '{second}'"
+    )]
     ModuleCollision {
         module_path: String,
         first: PathBuf,
@@ -181,10 +192,8 @@ pub fn read_assets_path(crate_root: &Path) -> Result<String, PlannerError> {
         path: path.clone(),
         source,
     })?;
-    let water: WaterToml = toml::from_str(&text).map_err(|source| PlannerError::InvalidWaterToml {
-        path,
-        source,
-    })?;
+    let water: WaterToml =
+        toml::from_str(&text).map_err(|source| PlannerError::InvalidWaterToml { path, source })?;
     Ok(water.package.assets_path)
 }
 
@@ -254,7 +263,9 @@ pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifes
     for mount in &mounts {
         let namespace = rust_identifier(&mount.name);
         if root_namespaces.contains(&namespace) {
-            return Err(PlannerError::MountNamespaceConflict { name: mount.name.clone() });
+            return Err(PlannerError::MountNamespaceConflict {
+                name: mount.name.clone(),
+            });
         }
         collect_mount_assets(
             &mount.name,
@@ -402,8 +413,7 @@ fn is_ignored_metadata_file(name: &str) -> bool {
 fn is_rust_keyword(ident: &str) -> bool {
     matches!(
         ident,
-        "as"
-            | "break"
+        "as" | "break"
             | "const"
             | "continue"
             | "crate"
@@ -471,12 +481,14 @@ struct IncludeBundleVisitor<'a> {
 impl Visit<'_> for IncludeBundleVisitor<'_> {
     fn visit_macro(&mut self, mac: &syn::Macro) {
         if mac.path.is_ident("include_bundle") {
-            let args = mac.parse_body::<IncludeBundleArgs>().unwrap_or_else(|error| {
-                panic!(
-                    "Failed to parse include_bundle! in '{}': {error}",
-                    self.source_path.display()
-                )
-            });
+            let args = mac
+                .parse_body::<IncludeBundleArgs>()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Failed to parse include_bundle! in '{}': {error}",
+                        self.source_path.display()
+                    )
+                });
             let root = self.crate_root.join(args.path.value());
             self.mounts.push(BundleMount {
                 name: args.mount.to_string(),

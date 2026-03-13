@@ -40,9 +40,9 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-mod data;
 #[cfg(feature = "std")]
 mod bundle;
+mod data;
 mod error;
 mod kind;
 mod large_file;
@@ -50,7 +50,9 @@ mod large_file;
 mod url;
 
 #[cfg(feature = "std")]
-pub use bundle::{AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset};
+pub use bundle::{
+    AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset,
+};
 pub use data::Data;
 pub use error::AssetError;
 pub use kind::AssetKind;
@@ -58,7 +60,9 @@ pub use large_file::LargeFile;
 
 /// Prelude for common imports.
 pub mod prelude {
-    #[cfg(feature = "std")]
-    pub use crate::{AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset};
     pub use crate::{AssetError, AssetKind, Data, LargeFile};
+    #[cfg(feature = "std")]
+    pub use crate::{
+        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset,
+    };
 }
