@@ -12,6 +12,8 @@ use alloc::string::String;
 use waterui_graphics::color::Color;
 
 /// Picker form component module.
+pub mod calendar;
+pub use calendar::Calendar;
 pub mod picker;
 pub mod valid;
 

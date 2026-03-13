@@ -131,11 +131,11 @@ fn main() -> impl View {
 
 ```rust
 use waterui_text::{Text, locale::{DateFormatter, Locale}};
-use time::Date;
+use jiff::civil::Date;
 
 // Create a date formatter respecting locale
 let formatter = DateFormatter { locale: Locale("en-US".into()) };
-let date = binding(Date::from_calendar_date(2025, 1, 1).unwrap());
+let date = binding(Date::new(2025, 1, 1).unwrap());
 
 // Format date with custom formatter
 let formatted = Text::format(date, formatter);
