@@ -24,6 +24,7 @@ use accesskit::{
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
+use waterui::ViewExt;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
     AccessibilityState,
@@ -40,7 +41,7 @@ use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
 use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
-use waterui::metadata::context_menu::ContextMenu;
+use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui::navigation::{
@@ -50,19 +51,19 @@ use waterui::navigation::{
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
 use waterui::widget::Divider;
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui::window::{Window, WindowManager, WindowState, WindowStyle};
 use waterui_backend_core::ViewDispatcher;
 use waterui_canvas::Canvas;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
 use waterui_controls::label::Label as SemanticLabel;
-use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction};
+use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
     Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
@@ -72,7 +73,7 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::views::Views;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, LocalStateScope, LocalStateStore, Metadata, Native,
-    Retain, Str, View,
+    Retain, Str, View, impl_extractor,
 };
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
@@ -238,12 +239,14 @@ pub struct HydrolysisRenderer {
     next_gesture_group_id: usize,
     cursor_targets: Vec<CursorTarget>,
     hover_targets: Vec<HoverTarget>,
+    context_menu_targets: Vec<ContextMenuTarget>,
     text_input_targets: Vec<TextInputTarget>,
     text_selection_slots: Vec<Rc<RefCell<TextSelectionSlot>>>,
     text_selection_cursor: usize,
     active_text_selection_drag: Option<usize>,
     last_text_selection_click: Option<TextSelectionClickState>,
     active_text_context_menu: Option<ActiveTextContextMenu>,
+    active_popup_menu_group: Option<PopupMenuStateGroup>,
     scroll_targets: Vec<ScrollTarget>,
     hit_test_opacity: f32,
     render_depth: usize,
@@ -329,6 +332,56 @@ struct HoverTarget {
     on_move: Option<PointerAction>,
     on_exit: Option<HoverAction>,
 }
+
+#[derive(Clone)]
+struct ContextMenuTarget {
+    bounds: vello::kurbo::Rect,
+    depth: usize,
+    order: usize,
+    items: nami::Computed<Vec<ResolvedMenuItem>>,
+}
+
+#[derive(Clone)]
+enum PopupMenuNode {
+    Command {
+        label: SemanticLabel,
+        plain_label: String,
+        action: SharedAction<()>,
+        disabled: bool,
+    },
+    Divider,
+    Menu {
+        label: SemanticLabel,
+        plain_label: String,
+        items: Vec<PopupMenuNode>,
+    },
+}
+
+#[derive(Clone)]
+struct PopupMenuStateGroup(Rc<RefCell<Vec<Binding<WindowState>>>>);
+
+impl PopupMenuStateGroup {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    fn push(&self, state: Binding<WindowState>) {
+        self.0.borrow_mut().push(state);
+    }
+
+    fn truncate(&self, len: usize) {
+        let mut states = self.0.borrow_mut();
+        for state in states.drain(len..) {
+            state.set(WindowState::Closed);
+        }
+    }
+
+    fn close_all(&self) {
+        self.truncate(0);
+    }
+}
+
+impl_extractor!(PopupMenuStateGroup);
 
 #[derive(Clone)]
 enum TextInputModel {
@@ -2129,6 +2182,158 @@ fn text_context_menu_overlay_bounds(
     vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
+    items.iter().cloned().map(popup_menu_node).collect()
+}
+
+fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
+    match item {
+        ResolvedMenuItem::Command(command) => {
+            let mut styled = command.label.content.get();
+            if command.selected.get() {
+                styled = StyledStr::plain("✓ ") + styled;
+            }
+            let plain_label = styled.to_plain().to_string();
+            let text = Text::new(styled);
+            let label = if let Some(icon) = command.icon.clone() {
+                SemanticLabel::new(text).icon(icon)
+            } else {
+                SemanticLabel::new(text)
+            };
+            PopupMenuNode::Command {
+                label,
+                plain_label,
+                action: command.action,
+                disabled: command.disabled.get(),
+            }
+        }
+        ResolvedMenuItem::Divider => PopupMenuNode::Divider,
+        ResolvedMenuItem::Menu(menu) => {
+            let styled = menu.label.content.get() + StyledStr::plain(" ›");
+            let plain_label = styled.to_plain().to_string();
+            let text = Text::new(styled);
+            let label = if let Some(icon) = menu.icon.clone() {
+                SemanticLabel::new(text).icon(icon)
+            } else {
+                SemanticLabel::new(text)
+            };
+            PopupMenuNode::Menu {
+                label,
+                plain_label,
+                items: popup_menu_nodes(&menu.items.get()),
+            }
+        }
+    }
+}
+
+fn popup_menu_size(nodes: &[PopupMenuNode]) -> (f64, f64) {
+    let max_label_chars = nodes
+        .iter()
+        .filter_map(|node| match node {
+            PopupMenuNode::Command { plain_label, .. }
+            | PopupMenuNode::Menu { plain_label, .. } => Some(plain_label.chars().count()),
+            PopupMenuNode::Divider => None,
+        })
+        .max()
+        .unwrap_or(0) as f32;
+    let width = (TEXT_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0
+        + max_label_chars * TEXT_CONTEXT_MENU_WIDTH_PER_CHAR)
+        .clamp(TEXT_CONTEXT_MENU_MIN_WIDTH, TEXT_CONTEXT_MENU_MAX_WIDTH);
+    let height =
+        (nodes.len() as f32 * TEXT_CONTEXT_MENU_ROW_HEIGHT).max(TEXT_CONTEXT_MENU_ROW_HEIGHT);
+    (f64::from(width), f64::from(height))
+}
+
+fn popup_menu_window(
+    nodes: Vec<PopupMenuNode>,
+    origin: LayoutPoint,
+    group: PopupMenuStateGroup,
+    depth: usize,
+) -> (Window, Binding<WindowState>) {
+    let state = Binding::container(WindowState::Normal);
+    let (width, height) = popup_menu_size(&nodes);
+    let popup_origin_x = origin.x;
+    let popup_origin_y = origin.y;
+    let group_for_content = group.clone();
+    let state_for_content = state.clone();
+    let nodes_for_content = nodes.clone();
+    let popup_content = move || {
+        let mut rows = Vec::with_capacity(nodes_for_content.len());
+        for (index, node) in nodes_for_content.clone().into_iter().enumerate() {
+            match node {
+                PopupMenuNode::Command {
+                    label,
+                    action,
+                    disabled,
+                    ..
+                } => {
+                    let button = Button::new(label)
+                        .style(ButtonStyle::Borderless)
+                        .extract::<PopupMenuStateGroup>()
+                        .extract::<Environment>()
+                        .action(move |(group, env)| {
+                            if disabled {
+                                return;
+                            }
+                            group.close_all();
+                            action.call(&env);
+                        });
+                    rows.push(AnyView::new(button));
+                }
+                PopupMenuNode::Divider => rows.push(AnyView::new(Divider)),
+                PopupMenuNode::Menu { label, items, .. } => {
+                    let next_depth = depth + 1;
+                    let child_origin = LayoutPoint::new(
+                        popup_origin_x + width as f32,
+                        popup_origin_y + TEXT_CONTEXT_MENU_ROW_HEIGHT * index as f32,
+                    );
+                    let button = Button::new(label)
+                        .style(ButtonStyle::Borderless)
+                        .extract::<PopupMenuStateGroup>()
+                        .extract::<Environment>()
+                        .action(move |(group, env)| {
+                            if items.is_empty() {
+                                return;
+                            }
+                            group.truncate(next_depth);
+                            let (window, child_state) = popup_menu_window(
+                                items.clone(),
+                                child_origin,
+                                group.clone(),
+                                next_depth,
+                            );
+                            group.push(child_state);
+                            env.get::<WindowManager>()
+                                .expect(
+                                    "hydrolysis popup menus require WindowManager in environment",
+                                )
+                                .show(window);
+                        });
+                    rows.push(AnyView::new(button));
+                }
+            }
+        }
+        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+            rows.into_iter().collect();
+        AnyView::new(
+            menu_content
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0)
+                .with(group_for_content.clone()),
+        )
+    };
+    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+        .style(WindowStyle::Borderless)
+        .resizable(false)
+        .with_state(state_for_content);
+    popup.closable = false;
+    popup.frame.set(LayoutRect::new(
+        origin,
+        LayoutSize::new(width as f32, height as f32),
+    ));
+    (popup, state)
+}
+
 fn execute_text_context_menu_action(
     action: &TextContextMenuAction,
     model: &TextInputModel,
@@ -2729,6 +2934,22 @@ fn measure_button_intrinsic(
     )
 }
 
+fn measure_menu_intrinsic(
+    menu: &ResolvedMenu,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let label_size = measure_view_intrinsic(&menu.label, state, env);
+    let (padding_x, padding_y) = button_padding(ButtonStyle::Borderless);
+    let content_width = f64::from(label_size.width) + padding_x * 2.0;
+    let content_height = f64::from(label_size.height) + padding_y * 2.0;
+    let (min_width, min_height) = button_min_size(ButtonStyle::Borderless);
+    LayoutSize::new(
+        content_width.max(min_width) as f32,
+        content_height.max(min_height) as f32,
+    )
+}
+
 fn measure_toggle_intrinsic(
     toggle: &ToggleConfig,
     state: &mut HydroState,
@@ -3044,6 +3265,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ListConfig>);
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
+        $macro!(Native<ResolvedMenu>);
         $macro!(Native<ToggleConfig>);
         $macro!(Native<SliderConfig>);
         $macro!(Native<StepperConfig>);
@@ -3679,6 +3901,49 @@ impl HydroNativeView for Native<ButtonConfig> {
                 },
             ));
             let default_label = renderer.accessibility_label_from_view(&button.label, env);
+            let label = renderer.resolve_accessibility_label(env, default_label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let activation_point = accessibility_activation_point(bounds);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    point: activation_point,
+                }),
+            );
+        }
+    }
+}
+
+impl HydroNativeView for Native<ResolvedMenu> {
+    fn render(state: &mut HydroState, ctx: RenderContext, view: Self, env: &Environment) {
+        HydrolysisRenderer::render_menu(state, ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        measure_menu_intrinsic(view.as_inner(), state, env)
+    }
+
+    fn accessibility(_state: &mut HydroState, ctx: RenderContext, view: &Self, env: &Environment) {
+        #[cfg(feature = "accessibility")]
+        {
+            let menu = view.as_inner();
+            let renderer = unsafe { ctx.renderer() };
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
+            );
+            let default_label = Some(
+                renderer
+                    .read_signal(&menu.accessibility_label)
+                    .to_plain()
+                    .to_string(),
+            );
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -4612,12 +4877,14 @@ impl HydrolysisRenderer {
             next_gesture_group_id: 0,
             cursor_targets: Vec::new(),
             hover_targets: Vec::new(),
+            context_menu_targets: Vec::new(),
             text_input_targets: Vec::new(),
             text_selection_slots: Vec::new(),
             text_selection_cursor: 0,
             active_text_selection_drag: None,
             last_text_selection_click: None,
             active_text_context_menu: None,
+            active_popup_menu_group: None,
             scroll_targets: Vec::new(),
             hit_test_opacity: 1.0,
             render_depth: 0,
@@ -4705,6 +4972,7 @@ impl HydrolysisRenderer {
         Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
+        dispatcher.register::<Metadata<ResolvedContextMenu>>(Self::render_context_menu_metadata);
         Self::register_passthrough_metadata::<Draggable>(dispatcher);
         Self::register_passthrough_metadata::<DropDestination>(dispatcher);
         Self::register_passthrough_metadata::<Background>(dispatcher);
@@ -4815,6 +5083,7 @@ impl HydrolysisRenderer {
         } else {
             self.clear_text_caret_animation();
             self.dismiss_active_text_context_menu();
+            self.dismiss_active_popup_menu();
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -4848,6 +5117,65 @@ impl HydrolysisRenderer {
                 state.set(WindowState::Closed);
             }
         }
+    }
+
+    fn dismiss_active_popup_menu(&mut self) {
+        if let Some(group) = self.active_popup_menu_group.take() {
+            group.close_all();
+        }
+    }
+
+    fn topmost_context_menu_target_at_point(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<ContextMenuTarget> {
+        self.context_menu_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .max_by(|(left_index, left), (right_index, right)| {
+                Self::target_hit_priority(left.depth, left.order, *left_index).cmp(
+                    &Self::target_hit_priority(right.depth, right.order, *right_index),
+                )
+            })
+            .map(|(_, target)| target.clone())
+    }
+
+    fn show_popup_menu_nodes(
+        &mut self,
+        nodes: Vec<PopupMenuNode>,
+        origin: LayoutPoint,
+        env: &Environment,
+    ) -> bool {
+        if nodes.is_empty() {
+            return false;
+        }
+        self.dismiss_active_popup_menu();
+        let group = PopupMenuStateGroup::new();
+        let (window, state) = popup_menu_window(nodes, origin, group.clone(), 0);
+        group.push(state);
+        env.get::<WindowManager>()
+            .expect("hydrolysis popup menus require WindowManager in environment")
+            .show(window);
+        self.active_popup_menu_group = Some(group);
+        true
+    }
+
+    fn register_context_menu_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        items: nami::Computed<Vec<ResolvedMenuItem>>,
+    ) {
+        if self.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.next_hit_test_order();
+        self.context_menu_targets.push(ContextMenuTarget {
+            bounds,
+            depth: self.render_depth,
+            order,
+            items,
+        });
     }
 
     fn active_text_context_menu_target(&self) -> Option<usize> {
@@ -7417,6 +7745,42 @@ impl HydrolysisRenderer {
         }
     }
 
+    fn render_menu(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        menu: Native<ResolvedMenu>,
+        env: &Environment,
+    ) {
+        let menu = menu.into_inner();
+        let ResolvedMenu {
+            label,
+            items,
+            accessibility_label: _,
+        } = menu;
+        let style = ButtonStyle::Borderless;
+        {
+            let scene = unsafe { ctx.scene() };
+            draw_button_chrome(scene, ctx.transform, ctx.bounds, style);
+        }
+
+        let (padding_x, padding_y) = button_padding(style);
+        let label_bounds = inset_rect(ctx.bounds, padding_x, padding_y);
+        if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
+            Self::dispatch_in_rect_without_accessibility(ctx, env, label, label_bounds);
+        } else {
+            Self::dispatch_any_without_accessibility(ctx, env, label);
+        }
+
+        let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let anchor = LayoutPoint::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+        let items = items;
+        let renderer_ptr = ctx.renderer_ptr;
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_pointer_target(hit_bounds, move |_point, env| unsafe {
+            (&mut *renderer_ptr).show_popup_menu_nodes(popup_menu_nodes(&items.get()), anchor, env)
+        });
+    }
+
     fn render_toggle(
         _state: &mut HydroState,
         ctx: RenderContext,
@@ -9526,6 +9890,19 @@ impl HydrolysisRenderer {
         Self::dispatch_any(ctx, env, content);
     }
 
+    fn render_context_menu_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: Metadata<ResolvedContextMenu>,
+        env: &Environment,
+    ) {
+        let Metadata { content, value } = metadata;
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let renderer = unsafe { ctx.renderer() };
+        renderer.register_context_menu_target(bounds, value.items);
+        Self::dispatch_any(ctx, env, content);
+    }
+
     fn render_passthrough_metadata<T: MetadataKey>(
         _state: &mut HydroState,
         ctx: RenderContext,
@@ -9711,6 +10088,7 @@ impl HydrolysisRenderer {
         self.gesture_engine.clear_targets();
         self.cursor_targets.clear();
         self.hover_targets.clear();
+        self.context_menu_targets.clear();
         self.text_input_targets.clear();
         self.scroll_targets.clear();
         self.scene.reset();
@@ -10546,6 +10924,7 @@ impl HydrolysisRenderer {
         if button != PointerButton::Secondary {
             self.dismiss_active_text_context_menu();
         }
+        self.dismiss_active_popup_menu();
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -10629,6 +11008,19 @@ impl HydrolysisRenderer {
         }
 
         if button != PointerButton::Primary {
+            if button == PointerButton::Secondary
+                && let Some(target) = self.topmost_context_menu_target_at_point(point)
+            {
+                if self.set_focused_text_input(focused) {
+                    rebuild_requested = true;
+                }
+                let changed = self.show_popup_menu_nodes(
+                    popup_menu_nodes(&target.items.get()),
+                    LayoutPoint::new(point.x as f32, point.y as f32),
+                    env,
+                );
+                return rebuild_requested || changed;
+            }
             if self.set_focused_text_input(focused) {
                 rebuild_requested = true;
             }
@@ -11018,8 +11410,10 @@ impl HydrolysisRenderer {
                     _ => false,
                 },
                 KeyCode::Named(value) if value == "Escape" => {
-                    let changed = self.active_text_context_menu.is_some();
+                    let changed = self.active_text_context_menu.is_some()
+                        || self.active_popup_menu_group.is_some();
                     self.dismiss_active_text_context_menu();
+                    self.dismiss_active_popup_menu();
                     changed
                 }
                 _ => false,
@@ -11053,8 +11447,10 @@ impl HydrolysisRenderer {
                     self.move_focused_caret_to_boundary(true, modifiers.shift)
                 }
                 KeyCode::Named(value) if value == "Escape" => {
-                    let changed = self.active_text_context_menu.is_some();
+                    let changed = self.active_text_context_menu.is_some()
+                        || self.active_popup_menu_group.is_some();
                     self.dismiss_active_text_context_menu();
+                    self.dismiss_active_popup_menu();
                     changed
                 }
                 KeyCode::Character(text) => {
@@ -12160,6 +12556,7 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
         Cursor,
         IgnoreSafeArea,
         ContextMenu,
+        ResolvedContextMenu,
         Draggable,
         DropDestination,
         Background
@@ -12304,6 +12701,7 @@ fn normalize_layout_view_with_budget(
         Cursor,
         IgnoreSafeArea,
         ContextMenu,
+        ResolvedContextMenu,
         Draggable,
         DropDestination,
         Background
