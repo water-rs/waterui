@@ -17,4 +17,4 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui.workspace = true
 waterui-ffi.workspace = true
-time = "0.3"
+jiff.workspace = true
