@@ -16,6 +16,8 @@ pub struct Args {
     fix: bool,
 }
 
+const MAX_AUTO_FIX_PASSES: usize = 3;
+
 fn print_missing_item(item: &DoctorItem) {
     let is_fixable = item.is_fixable();
     if let Some(message) = &item.message {
@@ -29,6 +31,62 @@ fn print_missing_item(item: &DoctorItem) {
     } else {
         warn!("{} [manual]", item.name);
     }
+}
+
+async fn install_fixable_items(items: Vec<DoctorItem>) {
+    for item in items {
+        let name = item.name;
+        if let Some(install_fn) = item.install_fn {
+            let should_install = if shell::is_interactive() {
+                Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt(format!("Install {name}?"))
+                    .default(true)
+                    .interact()
+                    .unwrap_or(false)
+            } else {
+                true
+            };
+
+            if !should_install {
+                note!("Skipped installation for {name}");
+                continue;
+            }
+
+            let spinner = shell::spinner(format!("Installing {name}..."));
+            let result = install_fn().await;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+
+            match result {
+                Ok(()) => success!("Installed {name}"),
+                Err(e) => error!("Failed to install {name}: {e}"),
+            }
+        }
+    }
+}
+
+fn collect_remaining_missing(items: Vec<DoctorItem>) -> (usize, usize, Vec<DoctorItem>) {
+    let mut remaining_missing = 0usize;
+    let mut remaining_manual = 0usize;
+    let mut remaining_fixable = Vec::new();
+
+    for item in items {
+        if item.status != CheckStatus::Missing {
+            continue;
+        }
+        remaining_missing += 1;
+        let fixable = item.is_fixable();
+        if !fixable {
+            remaining_manual += 1;
+        }
+        print_missing_item(&item);
+        if fixable {
+            remaining_fixable.push(item);
+        }
+    }
+
+    (remaining_missing, remaining_manual, remaining_fixable)
 }
 
 /// Run the doctor command.
@@ -75,75 +133,71 @@ pub async fn run(args: Args) -> Result<()> {
         if fixable_items.is_empty() {
             note!("Nothing to fix automatically. Please fix issues manually.");
         } else {
-            header!("Attempting to fix {} issue(s)...", fixable_items.len());
+            let mut pending_fixable = fixable_items;
+            let mut pass = 1usize;
 
-            for item in fixable_items {
-                let name = item.name;
-                if let Some(install_fn) = item.install_fn {
-                    let should_install = if shell::is_interactive() {
-                        Confirm::with_theme(&ColorfulTheme::default())
-                            .with_prompt(format!("Install {name}?"))
-                            .default(true)
-                            .interact()
-                            .unwrap_or(false)
+            loop {
+                if pass == 1 {
+                    header!("Attempting to fix {} issue(s)...", pending_fixable.len());
+                } else {
+                    header!(
+                        "Attempting to fix {} additional issue(s)... (pass {pass}/{MAX_AUTO_FIX_PASSES})",
+                        pending_fixable.len()
+                    );
+                }
+
+                install_fixable_items(pending_fixable).await;
+
+                line!();
+                let verify_spinner = shell::spinner("Re-running diagnostics...");
+                let verification_items = doctor().await;
+                if let Some(pb) = verify_spinner {
+                    pb.finish_and_clear();
+                }
+
+                let (remaining_missing, remaining_manual, next_fixable) =
+                    collect_remaining_missing(verification_items);
+
+                if remaining_missing == 0 {
+                    success!("All detected issues were fixed.");
+                    break;
+                }
+
+                if next_fixable.is_empty() {
+                    if remaining_manual > 0 {
+                        warn!(
+                            "{remaining_missing} issue(s) remain, including {remaining_manual} issue(s) that require manual steps."
+                        );
+                        note!(
+                            "Follow the [manual] next-step guidance above, then run `water doctor` again."
+                        );
                     } else {
-                        true
-                    };
-
-                    if !should_install {
-                        note!("Skipped installation for {name}");
-                        continue;
+                        warn!(
+                            "{remaining_missing} fixable issue(s) still remain. Re-run `water doctor --fix` or inspect failure logs above."
+                        );
                     }
-
-                    let spinner = shell::spinner(format!("Installing {name}..."));
-                    let result = install_fn().await;
-                    if let Some(pb) = spinner {
-                        pb.finish_and_clear();
-                    }
-
-                    match result {
-                        Ok(()) => {
-                            success!("Installed {name}");
-                        }
-                        Err(e) => {
-                            error!("Failed to install {name}: {e}");
-                        }
-                    }
+                    break;
                 }
-            }
 
-            line!();
-            let verify_spinner = shell::spinner("Re-running diagnostics...");
-            let verification_items = doctor().await;
-            if let Some(pb) = verify_spinner {
-                pb.finish_and_clear();
-            }
-
-            let mut remaining_missing = 0usize;
-            let mut remaining_manual = 0usize;
-            for item in verification_items {
-                if item.status == CheckStatus::Missing {
-                    remaining_missing += 1;
-                    if !item.is_fixable() {
-                        remaining_manual += 1;
+                if pass >= MAX_AUTO_FIX_PASSES {
+                    warn!(
+                        "{remaining_missing} issue(s) remain after {MAX_AUTO_FIX_PASSES} auto-fix pass(es)."
+                    );
+                    if remaining_manual > 0 {
+                        note!(
+                            "Some remaining issues require manual steps. Follow the [manual] guidance above, then re-run `water doctor --fix`."
+                        );
+                    } else {
+                        note!(
+                            "Remaining issues are still fixable. Re-run `water doctor --fix` to continue."
+                        );
                     }
-                    print_missing_item(&item);
+                    break;
                 }
-            }
 
-            if remaining_missing == 0 {
-                success!("All detected issues were fixed.");
-            } else if remaining_manual > 0 {
-                warn!(
-                    "{remaining_missing} issue(s) remain, including {remaining_manual} issue(s) that require manual steps."
-                );
-                note!(
-                    "Follow the [manual] next-step guidance above, then run `water doctor` again."
-                );
-            } else {
-                warn!(
-                    "{remaining_missing} fixable issue(s) still remain. Re-run `water doctor --fix` or inspect failure logs above."
-                );
+                pending_fixable = next_fixable;
+                pass += 1;
+                line!();
             }
         }
     } else if !fixable_items.is_empty() {

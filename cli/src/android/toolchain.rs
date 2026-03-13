@@ -3,11 +3,14 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
+    process::{self, Output},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use color_eyre::eyre;
 
 use crate::{
+    android::platform::{ALL_ABIS, AndroidAbi},
     brew::Brew,
     toolchain::{
         Installation, Toolchain, ToolchainError,
@@ -15,11 +18,20 @@ use crate::{
         linux::{has_supported_package_manager, install_java_jdk},
         winget::{WingetInstallError, ensure_package_installed},
     },
-    utils::{run_command_os, run_command_output_os, which},
+    utils::{command, run_command, run_command_output_os, which},
 };
 
-/// Complete Android toolchain including SDK, NDK, platform-tools, Java, and CMake.
-pub type AndroidToolchain = (AndroidSdk, AndroidNdk, AndroidPlatformTools, Java, Cmake);
+/// Complete Android toolchain including SDK, platforms, NDK, Rust targets, platform-tools, Java, and CMake.
+pub type AndroidToolchain = (
+    AndroidSdk,
+    AndroidSdkPlatforms,
+    AndroidBuildTools,
+    AndroidNdk,
+    AndroidRustTargets,
+    AndroidPlatformTools,
+    Java,
+    Cmake,
+);
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -28,6 +40,18 @@ pub struct AndroidSdk;
 /// Android Platform-Tools (`adb`) toolchain component.
 #[derive(Debug, Clone, Default)]
 pub struct AndroidPlatformTools;
+
+/// Android SDK platform packages (`platforms/android-*`) used for compilation.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidSdkPlatforms;
+
+/// Android SDK build-tools packages (`build-tools;*`) used for D8/Kotlin dexing.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidBuildTools;
+
+/// Rust targets required for Android cross-compilation.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidRustTargets;
 
 /// An Android NDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -40,6 +64,17 @@ pub struct Java;
 /// Kotlin toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
 pub struct Kotlin;
+
+const fn is_linux_arm_host() -> bool {
+    cfg!(target_os = "linux")
+        && (cfg!(target_arch = "aarch64")
+            || cfg!(target_arch = "arm")
+            || cfg!(target_arch = "arm64ec"))
+}
+
+fn android_linux_arm_manual_suggestion() -> &'static str {
+    "Automatic Android SDK/NDK installation is disabled on ARM Linux hosts. Provide compatible Android tools manually, or use an x86_64 Linux/macOS/Windows host for Android builds."
+}
 
 /// Host-specific Android Studio installation guidance.
 #[must_use]
@@ -87,6 +122,24 @@ pub const fn android_ndk_install_suggestion() -> &'static str {
     "Install Android NDK with `sdkmanager --install \"ndk;<version>\"` (or Android Studio SDK Manager), then set `ANDROID_NDK_ROOT` if using a custom location."
 }
 
+/// Guidance for installing Android SDK platforms needed by build/package workflows.
+#[must_use]
+pub const fn android_platforms_install_suggestion() -> &'static str {
+    "Install Android SDK platform packages with `sdkmanager --install \"platforms;android-<api>\"` (or Android Studio SDK Manager)."
+}
+
+/// Guidance for installing Android SDK Build-Tools needed by build/package workflows.
+#[must_use]
+pub const fn android_build_tools_install_suggestion() -> &'static str {
+    "Install Android SDK Build-Tools with `sdkmanager --install \"build-tools;<version>\"` (or Android Studio SDK Manager)."
+}
+
+/// Guidance for installing Rust Android targets needed by Android build/package workflows.
+#[must_use]
+pub const fn android_rust_targets_install_suggestion() -> &'static str {
+    "Install Rust Android targets with `rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-androideabi i686-linux-android`."
+}
+
 /// Host-specific Java installation guidance for Android Gradle builds.
 #[must_use]
 pub const fn java_install_suggestion() -> &'static str {
@@ -123,6 +176,54 @@ fn sdkmanager_search_names() -> &'static [&'static str] {
     }
 }
 
+fn sdkmanager_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "sdkmanager.bat"
+    } else {
+        "sdkmanager"
+    }
+}
+
+fn cmdline_tools_host_tag() -> Option<&'static str> {
+    if cfg!(target_os = "windows") {
+        Some("win")
+    } else if cfg!(target_os = "macos") {
+        Some("mac")
+    } else if cfg!(target_os = "linux") {
+        Some("linux")
+    } else {
+        None
+    }
+}
+
+fn default_android_sdk_path() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        let localappdata = env::var("LOCALAPPDATA").ok()?;
+        return Some(PathBuf::from(localappdata).join("Android/Sdk"));
+    }
+
+    if cfg!(target_os = "macos") {
+        let home = env::var("HOME").ok()?;
+        return Some(PathBuf::from(home).join("Library/Android/sdk"));
+    }
+
+    if cfg!(target_os = "linux") {
+        let home = env::var("HOME").ok()?;
+        return Some(PathBuf::from(home).join("Android/Sdk"));
+    }
+
+    None
+}
+
+fn configured_android_sdk_path() -> Option<PathBuf> {
+    for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+        if let Ok(raw) = env::var(key) {
+            return Some(PathBuf::from(raw));
+        }
+    }
+    default_android_sdk_path()
+}
+
 fn sdkmanager_candidates_under_sdk_root(sdk_root: &Path) -> Vec<PathBuf> {
     if cfg!(target_os = "windows") {
         vec![
@@ -139,11 +240,234 @@ fn sdkmanager_candidates_under_sdk_root(sdk_root: &Path) -> Vec<PathBuf> {
     }
 }
 
+fn parse_latest_cmdline_tools_archive(repository_xml: &str) -> Option<String> {
+    let host_tag = cmdline_tools_host_tag()?;
+    let prefix = format!("commandlinetools-{host_tag}-");
+    let suffix = "_latest.zip";
+
+    let mut cursor = 0usize;
+    let mut best: Option<(u64, String)> = None;
+
+    while let Some(offset) = repository_xml[cursor..].find(&prefix) {
+        let start = cursor + offset + prefix.len();
+        let remainder = &repository_xml[start..];
+        let Some(suffix_offset) = remainder.find(suffix) else {
+            cursor = start;
+            continue;
+        };
+
+        let build_id = &remainder[..suffix_offset];
+        let filename = format!("{prefix}{build_id}{suffix}");
+        cursor = start + suffix_offset + suffix.len();
+
+        if build_id.is_empty() || !build_id.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+
+        let Ok(build_id) = build_id.parse::<u64>() else {
+            continue;
+        };
+
+        match best {
+            Some((current, _)) if build_id <= current => {}
+            _ => best = Some((build_id, filename)),
+        }
+    }
+
+    best.map(|(_, filename)| filename)
+}
+
+async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
+    use zenwave::{Client, Method, redirect::FollowRedirect};
+
+    const REPOSITORY_URL: &str = "https://dl.google.com/android/repository/repository2-3.xml";
+    const REPOSITORY_PREFIX: &str = "https://dl.google.com/android/repository/";
+
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client.method(Method::GET, REPOSITORY_URL).await?;
+    if !response.status().is_success() {
+        return Err(eyre::eyre!(
+            "Failed to query Android SDK repository metadata: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response.into_body().into_bytes().await?;
+    let repository_xml = String::from_utf8_lossy(&bytes).into_owned();
+    let archive_name = parse_latest_cmdline_tools_archive(&repository_xml)
+        .ok_or_else(|| eyre::eyre!("Could not locate Android command-line tools archive"))?;
+    Ok(format!("{REPOSITORY_PREFIX}{archive_name}"))
+}
+
+async fn download_file_with_redirect(url: &str, destination: &Path) -> eyre::Result<()> {
+    use zenwave::{Client, Method, redirect::FollowRedirect};
+
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client.method(Method::GET, url).await?;
+    if !response.status().is_success() {
+        return Err(eyre::eyre!(
+            "Failed to download {url}: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response.into_body().into_bytes().await?;
+    let destination = destination.to_path_buf();
+    smol::unblock(move || std::fs::write(destination, &bytes)).await?;
+    Ok(())
+}
+
+fn find_cmdline_tools_dir(root: &Path) -> eyre::Result<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let sdkmanager_name = sdkmanager_binary_name();
+
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let is_sdkmanager = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(sdkmanager_name));
+            if !is_sdkmanager {
+                continue;
+            }
+
+            let bin_dir = path.parent().ok_or_else(|| {
+                eyre::eyre!(
+                    "Invalid Android command-line tools archive layout (missing bin directory)"
+                )
+            })?;
+            let cmdline_tools_dir = bin_dir.parent().ok_or_else(|| {
+                eyre::eyre!(
+                    "Invalid Android command-line tools archive layout (missing cmdline-tools root)"
+                )
+            })?;
+            return Ok(cmdline_tools_dir.to_path_buf());
+        }
+    }
+
+    Err(eyre::eyre!(
+        "Android command-line tools archive does not contain sdkmanager"
+    ))
+}
+
+async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
+    let latest_dir = sdk_root.join("cmdline-tools/latest");
+    let sdkmanager = latest_dir.join("bin").join(sdkmanager_binary_name());
+    if sdkmanager.exists() {
+        return Ok(());
+    }
+
+    let cmdline_tools_root = sdk_root.join("cmdline-tools");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after UNIX_EPOCH")
+        .as_nanos();
+    let temp_dir =
+        cmdline_tools_root.join(format!(".water-cmdline-tools-{}-{nonce}", process::id()));
+    let extract_dir = temp_dir.join("extract");
+    let archive_path = temp_dir.join("commandline-tools.zip");
+
+    {
+        let cmdline_tools_root = cmdline_tools_root.clone();
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || {
+            std::fs::create_dir_all(&cmdline_tools_root)?;
+            std::fs::create_dir_all(&extract_dir)?;
+            Ok::<_, eyre::Report>(())
+        })
+        .await?;
+    }
+
+    let archive_url = latest_cmdline_tools_archive_url().await?;
+    download_file_with_redirect(&archive_url, &archive_path).await?;
+
+    {
+        let archive_path = archive_path.clone();
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || {
+            let archive_file = std::fs::File::open(&archive_path)?;
+            let mut archive = zip::ZipArchive::new(archive_file)?;
+            archive.extract(&extract_dir)?;
+            Ok::<_, eyre::Report>(())
+        })
+        .await?;
+    }
+
+    let extracted_cmdline_dir = {
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || find_cmdline_tools_dir(&extract_dir)).await?
+    };
+
+    if latest_dir.exists() {
+        let latest_dir = latest_dir.clone();
+        smol::unblock(move || std::fs::remove_dir_all(latest_dir)).await?;
+    }
+
+    {
+        let extracted_cmdline_dir = extracted_cmdline_dir.clone();
+        let latest_dir = latest_dir.clone();
+        smol::unblock(move || std::fs::rename(extracted_cmdline_dir, latest_dir)).await?;
+    }
+
+    if sdkmanager.exists() {
+        let temp_dir = temp_dir.clone();
+        let _ = smol::unblock(move || std::fs::remove_dir_all(temp_dir)).await;
+        Ok(())
+    } else {
+        Err(eyre::eyre!(
+            "Android command-line tools were extracted but sdkmanager is still missing"
+        ))
+    }
+}
+
 fn looks_like_android_sdk_root(path: &Path) -> bool {
     path.join("cmdline-tools").exists()
         || path.join("platform-tools").exists()
         || path.join("platforms").exists()
         || path.join("ndk").exists()
+}
+
+fn find_android_jar_in_sdk(sdk_root: &Path) -> Option<PathBuf> {
+    let platforms_dir = sdk_root.join("platforms");
+    if !platforms_dir.exists() {
+        return None;
+    }
+
+    let mut platforms = std::fs::read_dir(&platforms_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    platforms.sort_by(|left, right| {
+        let left_api = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("android-"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let right_api = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("android-"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        right_api.cmp(&left_api)
+    });
+
+    for platform in platforms {
+        let android_jar = platform.join("android.jar");
+        if android_jar.exists() {
+            return Some(android_jar);
+        }
+    }
+    None
 }
 
 fn derive_sdk_root_from_sdkmanager_path(path: &Path) -> Option<PathBuf> {
@@ -207,6 +531,17 @@ fn parse_sdkmanager_package_id(line: &str) -> Option<&str> {
     Some(package_id)
 }
 
+fn parse_android_platform_api_level(package_id: &str) -> Option<u32> {
+    package_id
+        .strip_prefix("platforms;android-")?
+        .parse::<u32>()
+        .ok()
+}
+
+fn parse_android_build_tools_version(package_id: &str) -> Option<&str> {
+    package_id.strip_prefix("build-tools;")
+}
+
 fn parse_numeric_prefix(segment: &str) -> u64 {
     let digits: String = segment
         .chars()
@@ -248,6 +583,34 @@ fn compare_sdk_package_ids(left: &str, right: &str) -> Ordering {
     }
 }
 
+fn find_d8_jar_in_sdk(sdk_root: &Path) -> Option<PathBuf> {
+    let build_tools_dir = sdk_root.join("build-tools");
+    if !build_tools_dir.exists() {
+        return None;
+    }
+
+    let mut build_tools_versions = std::fs::read_dir(&build_tools_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let version = path.file_name()?.to_str()?;
+            Some((format!("build-tools;{version}"), path))
+        })
+        .collect::<Vec<_>>();
+    build_tools_versions.sort_by(|(left, _), (right, _)| compare_sdk_package_ids(left, right));
+
+    while let Some((_, version_dir)) = build_tools_versions.pop() {
+        let d8_jar = version_dir.join("lib/d8.jar");
+        if d8_jar.exists() {
+            return Some(d8_jar);
+        }
+    }
+
+    None
+}
+
 async fn resolve_sdkmanager_and_root() -> eyre::Result<(PathBuf, PathBuf)> {
     let sdkmanager_path = AndroidSdk::sdkmanager_path()
         .await
@@ -262,43 +625,127 @@ async fn resolve_sdkmanager_and_root() -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((sdkmanager_path, sdk_root))
 }
 
-async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
-    let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
-
-    let args = vec![
-        OsString::from("--sdk_root"),
-        sdk_root.into_os_string(),
-        OsString::from("--install"),
-        OsString::from(package_id),
-    ];
-    run_command_os(&sdkmanager_path, args).await?;
-    Ok(())
+fn prepend_path_entry(entry: &Path, existing: Option<OsString>) -> eyre::Result<OsString> {
+    let mut entries = vec![entry.to_path_buf()];
+    if let Some(existing) = existing {
+        entries.extend(env::split_paths(&existing));
+    }
+    env::join_paths(entries).map_err(|error| {
+        eyre::eyre!(
+            "Failed to construct PATH with required entry '{}': {error}",
+            entry.display()
+        )
+    })
 }
 
-async fn latest_ndk_package_id() -> eyre::Result<String> {
+fn sdkmanager_combined_output(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!("stdout: {} stderr: {}", stdout.trim(), stderr.trim())
+}
+
+fn sdkmanager_requires_license_acceptance(output: &Output) -> bool {
+    let lower = sdkmanager_combined_output(output).to_ascii_lowercase();
+    lower.contains("license is not accepted")
+        || lower.contains("licenses or those of the packages they depend on were not accepted")
+        || lower.contains("accept? (y/n):")
+}
+
+async fn run_sdkmanager_output_with_java(
+    args: Vec<OsString>,
+    stdin_payload: Option<&str>,
+) -> eyre::Result<Output> {
     let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
-    let args = vec![
-        OsString::from("--sdk_root"),
-        sdk_root.into_os_string(),
-        OsString::from("--list"),
-    ];
-    let output = run_command_output_os(&sdkmanager_path, args).await?;
+    let java_home = Java::detect_home()
+        .await
+        .ok_or_else(|| eyre::eyre!("Java runtime not found while invoking sdkmanager"))?;
+    let java_bin = java_home.join("bin");
+    let path_env = prepend_path_entry(&java_bin, env::var_os("PATH"))?;
+
+    let mut sdk_root_arg = OsString::from("--sdk_root=");
+    sdk_root_arg.push(&sdk_root);
+    let mut full_args = vec![sdk_root_arg];
+    full_args.extend(args);
+
+    let mut cmd = smol::process::Command::new(&sdkmanager_path);
+    cmd.args(full_args)
+        .env("ANDROID_SDK_ROOT", &sdk_root)
+        .env("ANDROID_HOME", &sdk_root)
+        .env("JAVA_HOME", &java_home)
+        .env("PATH", path_env);
+
+    if let Some(stdin_payload) = stdin_payload {
+        use smol::io::AsyncWriteExt;
+        use std::process::Stdio;
+
+        cmd.stdin(Stdio::piped());
+        let mut child = command(&mut cmd).spawn().map_err(eyre::Report::from)?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(stdin_payload.as_bytes())
+                .await
+                .map_err(eyre::Report::from)?;
+            stdin.flush().await.map_err(eyre::Report::from)?;
+        }
+        child.output().await.map_err(eyre::Report::from)
+    } else {
+        command(&mut cmd).output().await.map_err(eyre::Report::from)
+    }
+}
+
+async fn accept_sdkmanager_licenses() -> eyre::Result<()> {
+    let license_input = "y\n".repeat(128);
+    let output =
+        run_sdkmanager_output_with_java(vec![OsString::from("--licenses")], Some(&license_input))
+            .await?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(eyre::eyre!(
+        "Failed to accept Android SDK licenses. {}",
+        sdkmanager_combined_output(&output)
+    ))
+}
+
+async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
+    let install_args = vec![OsString::from("--install"), OsString::from(package_id)];
+    let mut output = run_sdkmanager_output_with_java(install_args.clone(), None).await?;
+    if sdkmanager_requires_license_acceptance(&output) {
+        accept_sdkmanager_licenses().await?;
+        output = run_sdkmanager_output_with_java(install_args, None).await?;
+    }
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(eyre::eyre!(
+        "Failed to install package `{package_id}` via sdkmanager. {}",
+        sdkmanager_combined_output(&output)
+    ))
+}
+
+async fn list_sdk_package_ids() -> eyre::Result<Vec<String>> {
+    let output = run_sdkmanager_output_with_java(vec![OsString::from("--list")], None).await?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(eyre::eyre!(
-            "Failed to list Android SDK packages via sdkmanager. stdout: {} stderr: {}",
-            stdout.trim(),
-            stderr.trim()
+            "Failed to list Android SDK packages via sdkmanager. {}",
+            sdkmanager_combined_output(&output)
         ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut ndk_packages = stdout
+    Ok(stdout
         .lines()
         .filter_map(parse_sdkmanager_package_id)
-        .filter(|package| package.starts_with("ndk;"))
         .map(ToOwned::to_owned)
+        .collect::<Vec<_>>())
+}
+
+async fn latest_ndk_package_id() -> eyre::Result<String> {
+    let mut ndk_packages = list_sdk_package_ids()
+        .await?
+        .into_iter()
+        .filter(|package| package.starts_with("ndk;"))
         .collect::<Vec<_>>();
     ndk_packages.sort_by(|left, right| compare_sdk_package_ids(left, right));
     ndk_packages.dedup();
@@ -308,40 +755,84 @@ async fn latest_ndk_package_id() -> eyre::Result<String> {
     })
 }
 
+async fn latest_android_platform_package_id() -> eyre::Result<String> {
+    list_sdk_package_ids()
+        .await?
+        .into_iter()
+        .filter_map(|package_id| {
+            parse_android_platform_api_level(&package_id).map(|api_level| (api_level, package_id))
+        })
+        .max_by_key(|(api_level, _)| *api_level)
+        .map(|(_, package_id)| package_id)
+        .ok_or_else(|| {
+            eyre::eyre!("No installable Android platform package found via `sdkmanager --list`")
+        })
+}
+
+async fn latest_android_build_tools_package_id() -> eyre::Result<String> {
+    let mut build_tools_packages = list_sdk_package_ids()
+        .await?
+        .into_iter()
+        .filter(|package_id| parse_android_build_tools_version(package_id).is_some())
+        .collect::<Vec<_>>();
+    build_tools_packages.sort_by(|left, right| compare_sdk_package_ids(left, right));
+    build_tools_packages.dedup();
+
+    build_tools_packages.pop().ok_or_else(|| {
+        eyre::eyre!("No installable Android build-tools package found via `sdkmanager --list`")
+    })
+}
+
+const fn rust_target_for_android_abi(abi: AndroidAbi) -> &'static str {
+    match abi {
+        AndroidAbi::Arm64V8a => "aarch64-linux-android",
+        AndroidAbi::X86_64 => "x86_64-linux-android",
+        AndroidAbi::ArmeabiV7a => "armv7-linux-androideabi",
+        AndroidAbi::X86 => "i686-linux-android",
+    }
+}
+
+fn required_android_rust_targets() -> Vec<&'static str> {
+    let mut targets = ALL_ABIS
+        .iter()
+        .map(|abi| rust_target_for_android_abi(*abi))
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
+async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
+    let installed = run_command("rustup", ["target", "list", "--installed"]).await?;
+    Ok(installed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn missing_android_rust_targets(installed_targets: &[String]) -> Vec<String> {
+    required_android_rust_targets()
+        .into_iter()
+        .filter(|target| {
+            !installed_targets
+                .iter()
+                .any(|installed| installed == target)
+        })
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 impl AndroidSdk {
     /// Detect the path to the Android SDK installation.
     #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
-        for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
-            if let Ok(raw) = env::var(key) {
-                let sdk_path = PathBuf::from(raw);
-                if sdk_path.exists() && looks_like_android_sdk_root(&sdk_path) {
-                    return Some(sdk_path);
-                }
-            }
-        }
-
-        if cfg!(target_os = "macos") {
-            let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Library/Android/sdk");
-            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
-                return Some(home_sdk);
-            }
-        }
-
-        if cfg!(target_os = "linux") {
-            let home_sdk = PathBuf::from(env::var("HOME").ok()?).join("Android/Sdk");
-            if home_sdk.exists() && looks_like_android_sdk_root(&home_sdk) {
-                return Some(home_sdk);
-            }
-        }
-
-        if cfg!(target_os = "windows") {
-            if let Ok(localappdata) = env::var("LOCALAPPDATA") {
-                let sdk_path = PathBuf::from(localappdata).join("Android/Sdk");
-                if sdk_path.exists() && looks_like_android_sdk_root(&sdk_path) {
-                    return Some(sdk_path);
-                }
-            }
+        if let Some(configured) = configured_android_sdk_path()
+            && configured.exists()
+            && looks_like_android_sdk_root(&configured)
+        {
+            return Some(configured);
         }
 
         if let Some(sdkmanager_path) = find_sdkmanager_on_path_env()
@@ -353,6 +844,20 @@ impl AndroidSdk {
         }
 
         None
+    }
+
+    /// Detect the highest available `android.jar` from installed SDK platforms.
+    #[must_use]
+    pub fn android_jar_path() -> Option<PathBuf> {
+        let sdk_root = Self::detect_path()?;
+        find_android_jar_in_sdk(&sdk_root)
+    }
+
+    /// Detect the highest available `d8.jar` from installed SDK build-tools.
+    #[must_use]
+    pub fn d8_jar_path() -> Option<PathBuf> {
+        let sdk_root = Self::detect_path()?;
+        find_d8_jar_in_sdk(&sdk_root)
     }
 
     /// Detect sdkmanager executable path.
@@ -425,7 +930,7 @@ pub enum FailToInstallAndroidSdk {
     #[error("Failed to install Android SDK prerequisites: {0}")]
     InstallFailed(eyre::Report),
     #[error(
-        "Android Studio was installed, but Android SDK was not provisioned yet. Open Android Studio once to complete setup, or install command-line tools and set `ANDROID_SDK_ROOT`."
+        "Android SDK setup completed, but SDK root is still not detectable. Install Android command-line tools and set `ANDROID_SDK_ROOT`."
     )]
     PostInstallSetupRequired,
     #[error(
@@ -499,6 +1004,20 @@ impl Installation for AndroidSdkInstallation {
             return Err(FailToInstallAndroidSdk::UnsupportedPlatform);
         }
 
+        let sdk_root = configured_android_sdk_path()
+            .ok_or_else(|| eyre::eyre!("Android SDK root cannot be determined on this host"))
+            .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+        {
+            let sdk_root = sdk_root.clone();
+            smol::unblock(move || std::fs::create_dir_all(&sdk_root))
+                .await
+                .map_err(eyre::Report::from)
+                .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+        }
+        ensure_cmdline_tools_available(&sdk_root)
+            .await
+            .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+
         if AndroidSdk::detect_path().is_some() {
             Ok(())
         } else {
@@ -540,11 +1059,20 @@ impl Toolchain for AndroidPlatformTools {
     type Installation = AndroidPlatformToolsInstallation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if AndroidSdk::adb_path().is_some() {
-            return Ok(());
+        if let Some(adb_path) = AndroidSdk::adb_path() {
+            return verify_android_platform_tools_executable(&adb_path).await;
         }
 
-        if AndroidSdk::sdkmanager_path().await.is_some() {
+        if is_linux_arm_host() {
+            Err(ToolchainError::unfixable(
+                "Android Platform-Tools (`adb`) is missing on this ARM Linux host",
+                format!(
+                    "{} {}",
+                    android_platform_tools_suggestion(),
+                    android_linux_arm_manual_suggestion()
+                ),
+            ))
+        } else if AndroidSdk::sdkmanager_path().await.is_some() {
             Err(ToolchainError::fixable(AndroidPlatformToolsInstallation))
         } else {
             Err(ToolchainError::unfixable(
@@ -577,6 +1105,430 @@ impl Installation for AndroidPlatformToolsInstallation {
             Err(FailToInstallAndroidPlatformTools::StillMissing)
         }
     }
+}
+
+/// Installation procedure for Android SDK platform packages.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidSdkPlatformsInstallation;
+
+/// Errors that can occur when installing Android SDK platform packages.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidSdkPlatforms {
+    #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
+    SdkManagerNotFound,
+    #[error("Failed to install Android SDK platform package via sdkmanager: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Android SDK platforms are still missing after installation.")]
+    StillMissing,
+}
+
+impl Toolchain for AndroidSdkPlatforms {
+    type Installation = AndroidSdkPlatformsInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if smol::unblock(AndroidSdk::android_jar_path).await.is_some() {
+            return Ok(());
+        }
+
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidSdkPlatformsInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android SDK platforms are missing",
+                format!(
+                    "{} {}",
+                    android_platforms_install_suggestion(),
+                    android_cmdline_tools_suggestion()
+                ),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidSdkPlatformsInstallation {
+    type Error = FailToInstallAndroidSdkPlatforms;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if AndroidSdk::sdkmanager_path().await.is_none() {
+            return Err(FailToInstallAndroidSdkPlatforms::SdkManagerNotFound);
+        }
+
+        let platform_package = latest_android_platform_package_id()
+            .await
+            .map_err(FailToInstallAndroidSdkPlatforms::InstallFailed)?;
+        install_android_sdk_package(&platform_package)
+            .await
+            .map_err(FailToInstallAndroidSdkPlatforms::InstallFailed)?;
+
+        if smol::unblock(AndroidSdk::android_jar_path).await.is_some() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidSdkPlatforms::StillMissing)
+        }
+    }
+}
+
+/// Installation procedure for Android SDK build-tools packages.
+#[derive(Debug, Clone, Default)]
+pub struct AndroidBuildToolsInstallation;
+
+/// Errors that can occur when installing Android SDK build-tools packages.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidBuildTools {
+    #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
+    SdkManagerNotFound,
+    #[error("Failed to install Android SDK build-tools package via sdkmanager: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Android SDK build-tools are still missing after installation.")]
+    StillMissing,
+}
+
+impl Toolchain for AndroidBuildTools {
+    type Installation = AndroidBuildToolsInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if smol::unblock(AndroidSdk::d8_jar_path).await.is_some() {
+            return Ok(());
+        }
+
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidBuildToolsInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Android SDK build-tools are missing",
+                format!(
+                    "{} {}",
+                    android_build_tools_install_suggestion(),
+                    android_cmdline_tools_suggestion()
+                ),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidBuildToolsInstallation {
+    type Error = FailToInstallAndroidBuildTools;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if AndroidSdk::sdkmanager_path().await.is_none() {
+            return Err(FailToInstallAndroidBuildTools::SdkManagerNotFound);
+        }
+
+        let build_tools_package = latest_android_build_tools_package_id()
+            .await
+            .map_err(FailToInstallAndroidBuildTools::InstallFailed)?;
+        install_android_sdk_package(&build_tools_package)
+            .await
+            .map_err(FailToInstallAndroidBuildTools::InstallFailed)?;
+
+        if smol::unblock(AndroidSdk::d8_jar_path).await.is_some() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidBuildTools::StillMissing)
+        }
+    }
+}
+
+/// Installation procedure for Rust Android targets.
+#[derive(Debug, Clone)]
+pub struct AndroidRustTargetsInstallation {
+    missing_targets: Vec<String>,
+}
+
+impl AndroidRustTargetsInstallation {
+    fn new(missing_targets: Vec<String>) -> Self {
+        assert!(
+            !missing_targets.is_empty(),
+            "AndroidRustTargetsInstallation requires at least one missing target"
+        );
+        Self { missing_targets }
+    }
+}
+
+/// Errors that can occur when installing Rust Android targets.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallAndroidRustTargets {
+    #[error("rustup is required to install Android Rust targets but was not found in PATH.")]
+    RustupNotFound,
+    #[error("Failed to install Rust Android target `{target}`: {source}")]
+    AddTarget {
+        /// Target triple that failed to install.
+        target: String,
+        /// Underlying command error.
+        source: eyre::Report,
+    },
+    #[error("Failed to list installed Rust targets after installation: {0}")]
+    QueryTargets(eyre::Report),
+    #[error("Android Rust targets are still missing after installation: {missing_targets}")]
+    StillMissing {
+        /// Comma-separated missing targets.
+        missing_targets: String,
+    },
+}
+
+impl Toolchain for AndroidRustTargets {
+    type Installation = AndroidRustTargetsInstallation;
+
+    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+        if which("rustup").await.is_err() {
+            return Err(ToolchainError::unfixable(
+                "rustup is not available, so Android Rust targets cannot be managed automatically",
+                "Install rustup from https://rustup.rs, then run `water doctor --fix`.",
+            ));
+        }
+
+        let installed_targets = installed_rustup_targets().await.map_err(|error| {
+            ToolchainError::unfixable(
+                format!("Failed to query installed Rust targets: {error}"),
+                "Run `rustup target list --installed`; if it fails, repair rustup with `rustup self update` or reinstall rustup.",
+            )
+        })?;
+
+        let missing_targets = missing_android_rust_targets(&installed_targets);
+        if missing_targets.is_empty() {
+            Ok(())
+        } else {
+            Err(ToolchainError::fixable(
+                AndroidRustTargetsInstallation::new(missing_targets),
+            ))
+        }
+    }
+}
+
+impl Installation for AndroidRustTargetsInstallation {
+    type Error = FailToInstallAndroidRustTargets;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if which("rustup").await.is_err() {
+            return Err(FailToInstallAndroidRustTargets::RustupNotFound);
+        }
+
+        for target in &self.missing_targets {
+            run_command("rustup", ["target", "add", target.as_str()])
+                .await
+                .map_err(|source| FailToInstallAndroidRustTargets::AddTarget {
+                    target: target.clone(),
+                    source,
+                })?;
+        }
+
+        let installed_targets = installed_rustup_targets()
+            .await
+            .map_err(FailToInstallAndroidRustTargets::QueryTargets)?;
+        let still_missing = missing_android_rust_targets(&installed_targets);
+        if still_missing.is_empty() {
+            Ok(())
+        } else {
+            Err(FailToInstallAndroidRustTargets::StillMissing {
+                missing_targets: still_missing.join(", "),
+            })
+        }
+    }
+}
+
+fn windows_jdk_candidates_from_root(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut candidates = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+            if !name.starts_with("jdk") {
+                return None;
+            }
+            let java_path = path.join("bin/java.exe");
+            if java_path.exists() {
+                Some(java_path)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+}
+
+fn detect_windows_jdk_java_path() -> Option<PathBuf> {
+    let program_files = env::var("ProgramFiles").ok()?;
+    let roots = [
+        PathBuf::from(&program_files).join("Microsoft"),
+        PathBuf::from(&program_files).join("Eclipse Adoptium"),
+        PathBuf::from(&program_files).join("Java"),
+    ];
+
+    let mut matches = roots
+        .iter()
+        .flat_map(|root| windows_jdk_candidates_from_root(root))
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.pop()
+}
+
+async fn verify_android_platform_tools_executable(
+    adb_path: &Path,
+) -> Result<(), ToolchainError<AndroidPlatformToolsInstallation>> {
+    let output = run_command_output_os(adb_path, ["version"]).await.map_err(|error| {
+        ToolchainError::unfixable(
+            format!(
+                "Android Platform-Tools (`adb`) exists but failed to spawn on this host: {error}"
+            ),
+            format!(
+                "Ensure the Android Platform-Tools binary at `{}` can start on this host, then retry `water doctor`.",
+                adb_path.display()
+            ),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_owned()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_owned()
+    } else {
+        format!("exit status {}", output.status)
+    };
+    let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
+        String::from(
+            "This host cannot execute the downloaded Android Platform-Tools binary. Install a compatible ARM Linux adb manually, or use an x86_64 Linux/macOS/Windows host for Android run/package workflows.",
+        )
+    } else {
+        format!(
+            "Ensure the Android Platform-Tools binary at `{}` can execute on this host, then retry `water doctor`.",
+            adb_path.display()
+        )
+    };
+    Err(ToolchainError::unfixable(
+        format!(
+            "Android Platform-Tools (`adb`) exists but failed to execute on this host: {detail}"
+        ),
+        suggestion,
+    ))
+}
+
+async fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+    let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
+    let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    for candidate in candidates {
+        let clang = candidate.join("bin").join(if cfg!(target_os = "windows") {
+            "aarch64-linux-android24-clang.cmd"
+        } else {
+            "aarch64-linux-android24-clang"
+        });
+        if clang.exists() {
+            return Some(clang);
+        }
+    }
+
+    None
+}
+
+async fn verify_ndk_host_toolchain_executable(
+    ndk_path: &Path,
+) -> Result<(), ToolchainError<AndroidNdkInstallation>> {
+    let clang_path = ndk_host_clang_path(ndk_path).await.ok_or_else(|| {
+        ToolchainError::unfixable(
+            "Android NDK toolchain is incomplete (`clang` was not found under toolchains/llvm/prebuilt).",
+            android_ndk_install_suggestion(),
+        )
+    })?;
+
+    let probe_source = std::env::temp_dir().join("waterui_android_ndk_probe.c");
+    {
+        let probe_source_for_write = probe_source.clone();
+        smol::unblock(move || {
+            std::fs::write(&probe_source_for_write, b"int main(void) { return 0; }
+")
+        })
+        .await
+        .map_err(|error| {
+            ToolchainError::unfixable(
+                format!(
+                    "Failed to create Android NDK probe source at {}: {error}",
+                    probe_source.display()
+                ),
+                "Ensure the temporary directory is writable, then retry `water doctor`.",
+            )
+        })?;
+    }
+
+    let probe_output = if cfg!(target_os = "windows") {
+        PathBuf::from("NUL")
+    } else {
+        PathBuf::from("/dev/null")
+    };
+    let result = run_command_output_os(
+        &clang_path,
+        [
+            OsString::from("-x"),
+            OsString::from("c"),
+            OsString::from("-c"),
+            probe_source.clone().into_os_string(),
+            OsString::from("-o"),
+            probe_output.into_os_string(),
+        ],
+    )
+    .await;
+    {
+        let probe_source = probe_source.clone();
+        let _ = smol::unblock(move || std::fs::remove_file(&probe_source)).await;
+    }
+    let output = result.map_err(|error| {
+        ToolchainError::unfixable(
+            format!(
+                "Android NDK toolchain exists but failed to spawn on this host: {error}"
+            ),
+            format!(
+                "Ensure the Android NDK toolchain binary `{}` can start on this host, then retry packaging.",
+                clang_path.display()
+            ),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_owned()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim().to_owned()
+    } else {
+        format!("exit status {}", output.status)
+    };
+    let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
+        String::from(
+            "This host cannot execute the NDK's x86_64 Linux toolchain binaries. Use an x86_64 Linux machine/VM, or install x86_64 userland emulation/runtime support so the Android clang executable can run.",
+        )
+    } else {
+        format!(
+            "Ensure the Android NDK toolchain binaries under `{}` can execute on this host, then retry packaging.",
+            clang_path.display()
+        )
+    };
+    Err(ToolchainError::unfixable(
+        format!(
+            "Android NDK toolchain exists but failed to execute on this host: {detail}"
+        ),
+        suggestion,
+    ))
 }
 
 impl Java {
@@ -625,10 +1577,20 @@ impl Java {
                     return Some(java_path);
                 }
             }
+
+            if let Some(java_path) = detect_windows_jdk_java_path() {
+                return Some(java_path);
+            }
         }
 
         if let Ok(home) = env::var("JAVA_HOME") {
-            let java_path = PathBuf::from(home).join("bin/java");
+            let java_path = PathBuf::from(home)
+                .join("bin")
+                .join(if cfg!(target_os = "windows") {
+                    "java.exe"
+                } else {
+                    "java"
+                });
             if java_path.exists() {
                 return Some(java_path);
             }
@@ -940,7 +1902,7 @@ impl Toolchain for AndroidNdk {
         if let Some(ndk_path) = Self::detect_path() {
             let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
             if llvm_dir.exists() {
-                return Ok(());
+                return verify_ndk_host_toolchain_executable(&ndk_path).await;
             }
 
             if AndroidSdk::sdkmanager_path().await.is_some() {
@@ -953,7 +1915,16 @@ impl Toolchain for AndroidNdk {
             ));
         }
 
-        if AndroidSdk::sdkmanager_path().await.is_some() {
+        if is_linux_arm_host() {
+            Err(ToolchainError::unfixable(
+                "Android NDK is missing on this ARM Linux host",
+                format!(
+                    "{} {}",
+                    android_ndk_install_suggestion(),
+                    android_linux_arm_manual_suggestion()
+                ),
+            ))
+        } else if AndroidSdk::sdkmanager_path().await.is_some() {
             Err(ToolchainError::fixable(AndroidNdkInstallation))
         } else {
             Err(ToolchainError::unfixable(

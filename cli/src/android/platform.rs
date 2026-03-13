@@ -24,6 +24,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::copy_file,
 };
 
@@ -124,45 +125,6 @@ fn ndk_clang_path(ndk_path: &Path, abi: AndroidAbi, cxx: bool) -> PathBuf {
 /// Get the NDK clang linker path for the given ABI.
 fn ndk_linker_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
     ndk_clang_path(ndk_path, abi, false)
-}
-
-/// Find the android.jar from any installed Android platform.
-/// Returns the path to android.jar from the highest installed API level.
-fn find_android_jar(sdk_path: &Path) -> Option<PathBuf> {
-    let platforms_dir = sdk_path.join("platforms");
-    if !platforms_dir.exists() {
-        return None;
-    }
-
-    // Find all installed platforms and sort by API level descending
-    let mut platforms: Vec<PathBuf> = std::fs::read_dir(&platforms_dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-
-    // Sort by API level (android-XX format) - highest first
-    platforms.sort_by(|a, b| {
-        let get_api_level = |p: &Path| -> u32 {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_prefix("android-"))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0)
-        };
-        get_api_level(b).cmp(&get_api_level(a))
-    });
-
-    // Find first platform with android.jar
-    for platform in platforms {
-        let android_jar = platform.join("android.jar");
-        if android_jar.exists() {
-            return Some(android_jar);
-        }
-    }
-
-    None
 }
 
 /// Create a wrapper `CMake` toolchain file that sets `ANDROID_ABI` before including
@@ -401,6 +363,18 @@ impl AndroidPlatform {
         let target_underscore = triple.to_string().replace('-', "_");
         let target_upper = target_underscore.to_uppercase();
 
+        let llvm_envs = WindowsArm64LlvmToolchain
+            .cargo_envs()
+            .await
+            .map_err(|error| match error {
+                ToolchainError::Fixable(_) => eyre::eyre!(
+                    "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+                ),
+                ToolchainError::Unfixable(unfixable) => {
+                    eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+                }
+            })?;
+
         // Build with RustBuild
         // Enable android-jni feature for waterui-ffi to generate JNI bindings in Rust
         let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
@@ -408,17 +382,39 @@ impl AndroidPlatform {
         if let Some(sccache_path) = options.sccache_path() {
             build = build.with_sccache(sccache_path.to_path_buf());
         }
+        for (key, value) in llvm_envs {
+            build = build.with_env(key, value);
+        }
 
-        // Detect Kotlin path before entering unsafe block (detect_path is async)
-        let kotlin_bin_dir = Kotlin::detect_path()
-            .await
-            .and_then(|p| p.parent().map(PathBuf::from));
+        let java_home = Java::detect_home().await.ok_or_else(|| {
+            eyre::eyre!(
+                "Java runtime not found. Install a JDK (or Android Studio JBR), then re-run `water doctor --fix`."
+            )
+        })?;
+        let java_bin_dir = java_home.join("bin");
+
+        let kotlin_compiler = Kotlin::detect_path().await.ok_or_else(|| {
+            eyre::eyre!(
+                "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
+            )
+        })?;
+        let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
+            eyre::eyre!(
+                "Failed to determine Kotlin bin directory from `{}`.",
+                kotlin_compiler.display()
+            )
+        })?;
+        let kotlin_home = kotlin_bin_dir.parent().map(PathBuf::from).ok_or_else(|| {
+            eyre::eyre!(
+                "Failed to determine KOTLIN_HOME from `{}`.",
+                kotlin_bin_dir.display()
+            )
+        })?;
 
         let sdk_path = AndroidSdk::detect_path().ok_or_else(|| {
             eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
         })?;
-        let sdk_path_for_jar = sdk_path.clone();
-        let android_jar = unblock(move || find_android_jar(&sdk_path_for_jar))
+        let android_jar = unblock(AndroidSdk::android_jar_path)
             .await
             .ok_or_else(|| {
                 eyre::eyre!(
@@ -441,11 +437,6 @@ impl AndroidPlatform {
             .with_env(format!("CC_{target_underscore}"), linker.as_os_str())
             .with_env(format!("CXX_{target_underscore}"), cxx.as_os_str())
             .with_env(format!("AR_{target_underscore}"), ar.as_os_str())
-            // Generic compiler envs for CMake crates that ignore target-scoped variants.
-            .with_env("CC", linker.as_os_str())
-            .with_env("CXX", cxx.as_os_str())
-            .with_env("AR", ar.as_os_str())
-            .with_env("ASM", linker.as_os_str())
             // For CMake-based builds (aws-lc-sys, etc.)
             .with_env("ANDROID_NDK", ndk_path.as_os_str())
             .with_env("ANDROID_NDK_HOME", ndk_path.as_os_str())
@@ -454,6 +445,9 @@ impl AndroidPlatform {
             .with_env("ANDROID_HOME", sdk_path.as_os_str())
             .with_env("ANDROID_SDK_ROOT", sdk_path.as_os_str())
             .with_env("ANDROID_JAR", android_jar.as_os_str())
+            .with_env("JAVA_HOME", java_home.as_os_str())
+            .with_env("KOTLIN_HOME", kotlin_home.as_os_str())
+            .with_env("KOTLINC", kotlin_compiler.as_os_str())
             // CMake toolchain wrapper
             .with_env("CMAKE_TOOLCHAIN_FILE", wrapper_toolchain.as_os_str())
             .with_env(
@@ -469,16 +463,14 @@ impl AndroidPlatform {
             .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
             .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{}", triple), "1");
 
-        // Add required toolchains to PATH for transitive native builds (CMake/asm/Kotlin).
         let current_path = std::env::var_os("PATH")
             .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
         let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
-        paths.insert(0, ndk_bin_dir(&ndk_path));
-        if let Some(kotlin_bin) = &kotlin_bin_dir {
-            paths.insert(0, kotlin_bin.clone());
-        }
-        let new_path = std::env::join_paths(paths)
-            .map_err(|e| eyre::eyre!("Failed to construct PATH for Android build tools: {e}"))?;
+        paths.insert(0, java_bin_dir);
+        paths.insert(0, kotlin_bin_dir);
+        let new_path = std::env::join_paths(paths).map_err(|error| {
+            eyre::eyre!("Failed to construct PATH for Java/Kotlin compiler resolution: {error}")
+        })?;
         build = build.with_env("PATH", new_path);
 
         let lib_dir = build.build_lib(options.is_release()).await?;
