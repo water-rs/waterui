@@ -3,7 +3,7 @@
 //! This example showcases:
 //! - `Menu` as a semantic popup menu surface
 //! - Nested menus built with normal `Menu::new(...)`
-//! - `ContextMenu` actions built from label values via `CommandExt`
+//! - `ContextMenu` and popup rows built from ordinary buttons
 
 use waterui::app::App;
 use waterui::color::Srgb;
@@ -61,39 +61,33 @@ fn toolbar_scene_section(status: &Binding<String>) -> impl View {
 }
 
 fn window_toolbar(status: &Binding<String>) -> impl View {
-    toolbar_actions(status)
-        .install(LabelDisplayMode::IconOnly)
-        .padding_with(EdgeInsets::symmetric(6.0, 8.0))
+    toolbar_actions(status).padding_with(EdgeInsets::symmetric(6.0, 8.0))
 }
 
 fn menu_section(selected: &Binding<String>) -> impl View {
     vstack((
         text("Menu Component").sub_headline(),
-        text("Tap the menu button to see nested commands and separators")
+        text("Tap the menu button to see nested buttons, submenus, and separators")
             .body()
             .foreground(MutedForeground),
         spacer().height(12.0),
         Menu::new(
             "Choose an Option",
             (
-                "Option A"
-                    .command()
+                button("Option A")
                     .with_state(selected)
                     .action(|selected| selected.set("Option A".to_string())),
-                "Option B"
-                    .command()
+                button("Option B")
                     .with_state(selected)
                     .action(|selected| selected.set("Option B".to_string())),
                 Divider,
                 Menu::new(
                     "More Options",
                     (
-                        "Option C"
-                            .command()
+                        button("Option C")
                             .with_state(selected)
                             .action(|selected| selected.set("Option C".to_string())),
-                        "Reset"
-                            .command()
+                        button("Reset")
                             .with_state(selected)
                             .action(|selected| selected.set("None".to_string())),
                     ),
@@ -154,21 +148,17 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
             .background(ORANGE_BG)
             .foreground(ORANGE_FG)
             .context_menu((
-                "Copy"
-                    .command()
+                button("Copy")
                     .with_state(context_action)
                     .action(|action| action.set("Copied!".to_string())),
-                "Cut"
-                    .command()
+                button("Cut")
                     .with_state(context_action)
                     .action(|action| action.set("Cut!".to_string())),
                 Divider,
-                "Paste"
-                    .command()
+                button("Paste")
                     .with_state(context_action)
                     .action(|action| action.set("Pasted!".to_string())),
-                "Select All"
-                    .command()
+                button("Select All")
                     .with_state(context_action)
                     .action(|action| action.set("Selected all!".to_string())),
             )),
@@ -193,12 +183,10 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(RED)
                 .context_menu((
-                    "Red Action 1"
-                        .command()
+                    button("Red Action 1")
                         .with_state(view_action)
                         .action(|action| action.set("Red Action 1".to_string())),
-                    "Red Action 2"
-                        .command()
+                    button("Red Action 2")
                         .with_state(view_action)
                         .action(|action| action.set("Red Action 2".to_string())),
                 )),
@@ -208,12 +196,10 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(GREEN)
                 .context_menu((
-                    "Green Action 1"
-                        .command()
+                    button("Green Action 1")
                         .with_state(view_action)
                         .action(|action| action.set("Green Action 1".to_string())),
-                    "Green Action 2"
-                        .command()
+                    button("Green Action 2")
                         .with_state(view_action)
                         .action(|action| action.set("Green Action 2".to_string())),
                 )),
@@ -223,12 +209,10 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(BLUE)
                 .context_menu((
-                    "Blue Action 1"
-                        .command()
+                    button("Blue Action 1")
                         .with_state(view_action)
                         .action(|action| action.set("Blue Action 1".to_string())),
-                    "Blue Action 2"
-                        .command()
+                    button("Blue Action 2")
                         .with_state(view_action)
                         .action(|action| action.set("Blue Action 2".to_string())),
                 )),
