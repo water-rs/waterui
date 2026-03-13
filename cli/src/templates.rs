@@ -246,6 +246,14 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     .unwrap_or_default(),
             )
             .replace(
+                "__IS_PLAYGROUND__",
+                if self.package_type == crate::project::PackageType::Playground {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .replace(
                 "__FFI_EXPORT__",
                 "",
             )
@@ -435,12 +443,13 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
 
 #[cfg(test)]
 mod tests {
-    use super::TemplateContext;
+    use super::{TemplateContext, embedded};
     use std::path::PathBuf;
 
     fn ctx(
         waterui_path: Option<PathBuf>,
         backend_project_path: Option<PathBuf>,
+        package_type: crate::project::PackageType,
     ) -> TemplateContext {
         TemplateContext {
             app_display_name: String::new(),
@@ -456,8 +465,25 @@ mod tests {
             ios_permissions: Vec::new(),
             accessory: false,
             preview_runtime_fingerprint: None,
-            package_type: crate::project::PackageType::App,
+            package_type,
         }
+    }
+
+    fn app_ctx() -> TemplateContext {
+        ctx(None, None, crate::project::PackageType::App)
+    }
+
+    fn playground_ctx() -> TemplateContext {
+        TemplateContext::for_support_playground(
+            "WaterUIApp",
+            "WaterUIApp",
+            "waterui_app",
+            "dev.waterui.playground",
+            PathBuf::from("../.."),
+            false,
+            None,
+        )
+        .with_backend_project_path(PathBuf::from(".water/apple"))
     }
 
     #[test]
@@ -465,6 +491,7 @@ mod tests {
         let ctx = ctx(
             Some(PathBuf::from("../..")),
             Some(PathBuf::from(".water/apple")),
+            crate::project::PackageType::App,
         );
 
         let path = ctx
@@ -483,7 +510,11 @@ mod tests {
             PathBuf::from("/waterui")
         };
 
-        let ctx = ctx(Some(abs), Some(PathBuf::from("apple")));
+        let ctx = ctx(
+            Some(abs),
+            Some(PathBuf::from("apple")),
+            crate::project::PackageType::App,
+        );
         let path = ctx
             .compute_relative_backend_path("apple")
             .expect("expected backend path");
@@ -494,6 +525,110 @@ mod tests {
             "/waterui/backends/apple"
         };
         assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn android_manifest_enables_picture_in_picture_by_default() {
+        let ctx = app_ctx();
+        let template = embedded::ANDROID
+            .get_file("app/src/main/AndroidManifest.xml.tpl")
+            .expect("android manifest template must exist")
+            .contents_utf8()
+            .expect("android manifest template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(rendered.contains("android:resizeableActivity=\"true\""));
+        assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
+        assert!(rendered.contains(
+            "android:configChanges=\"screenSize|smallestScreenSize|screenLayout|orientation\""
+        ));
+    }
+
+    #[test]
+    fn apple_project_enables_picture_in_picture_background_mode_by_default() {
+        let ctx = app_ctx();
+        let template = embedded::APPLE
+            .get_file("AppName.xcodeproj/project.pbxproj.tpl")
+            .expect("apple project template must exist")
+            .contents_utf8()
+            .expect("apple project template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(
+            rendered.contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]\" = audio;")
+        );
+        assert!(
+            rendered
+                .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
+        );
+    }
+
+    #[test]
+    fn android_main_activity_forwards_user_leave_hint_to_runtime_callback() {
+        let ctx = app_ctx();
+        let template = embedded::ANDROID
+            .get_file("app/src/main/java/MainActivity.kt.tpl")
+            .expect("android main activity template must exist")
+            .contents_utf8()
+            .expect("android main activity template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(rendered.contains("import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint"));
+        assert!(rendered.contains("override fun onUserLeaveHint()"));
+        assert!(rendered.contains("notifyVideoPictureInPictureUserLeaveHint(this)"));
+    }
+
+    #[test]
+    fn playground_android_manifest_enables_picture_in_picture_by_default() {
+        let ctx = playground_ctx();
+        let template = embedded::ANDROID
+            .get_file("app/src/main/AndroidManifest.xml.tpl")
+            .expect("android manifest template must exist")
+            .contents_utf8()
+            .expect("android manifest template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(rendered.contains("android:resizeableActivity=\"true\""));
+        assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
+    }
+
+    #[test]
+    fn playground_apple_project_enables_picture_in_picture_background_mode_by_default() {
+        let ctx = playground_ctx();
+        let template = embedded::APPLE
+            .get_file("AppName.xcodeproj/project.pbxproj.tpl")
+            .expect("apple project template must exist")
+            .contents_utf8()
+            .expect("apple project template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(
+            rendered.contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]\" = audio;")
+        );
+        assert!(
+            rendered
+                .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
+        );
+    }
+
+    #[test]
+    fn playground_apple_build_script_skips_direct_rust_build() {
+        let ctx = playground_ctx();
+        let template = embedded::APPLE
+            .get_file("build-rust.sh.tpl")
+            .expect("apple build script template must exist")
+            .contents_utf8()
+            .expect("apple build script template must be utf-8");
+
+        let rendered = ctx.render(template);
+
+        assert!(rendered.contains("playground support app is managed by water run/package"));
+        assert!(rendered.contains("if [ \"true\" = \"true\" ]; then"));
     }
 }
 
