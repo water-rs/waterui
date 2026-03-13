@@ -5,7 +5,8 @@
 use nami::Binding;
 use waterui_core::configurable;
 
-use waterui_core::{AnyView, View};
+use crate::label::IntoLabel;
+use waterui_core::AnyView;
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -87,8 +88,8 @@ impl Toggle {
     }
     #[must_use]
     /// Sets the label for the toggle.
-    pub fn label(mut self, view: impl View) -> Self {
-        self.0.label = AnyView::new(view);
+    pub fn label(mut self, view: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(view.into_label());
         self
     }
     #[must_use]
@@ -101,6 +102,6 @@ impl Toggle {
 
 /// Creates a new `Toggle` with the specified label and binding for the toggle state.
 #[must_use]
-pub fn toggle(label: impl View, toggle: &Binding<bool>) -> Toggle {
+pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
     Toggle::new(toggle).label(label)
 }

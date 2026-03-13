@@ -4,6 +4,7 @@
 
 use alloc::{string::ToString, vec::Vec};
 
+use waterui_controls::{IntoLabel, button};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Binding, Computed, Environment, Signal, View, reactive::impl_constant};
 use waterui_text::{Text, text};
@@ -38,7 +39,7 @@ impl MediaPicker<Text> {
 
 impl<Label> MediaPicker<Label>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
 {
     /// Sets the media filter for this picker.
     #[must_use]
@@ -49,7 +50,7 @@ where
 
     /// Sets a custom label for the picker button.
     #[must_use]
-    pub fn label<NewLabel: View>(self, label: NewLabel) -> MediaPicker<NewLabel> {
+    pub fn label<NewLabel: IntoLabel + 'static>(self, label: NewLabel) -> MediaPicker<NewLabel> {
         MediaPicker {
             selection: self.selection,
             filter: self.filter,
@@ -60,11 +61,9 @@ where
 
 impl<Label> View for MediaPicker<Label>
 where
-    Label: View,
+    Label: IntoLabel + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        use waterui_controls::button;
-
         let selection = self.selection.clone();
         let filter = self.filter.clone();
 

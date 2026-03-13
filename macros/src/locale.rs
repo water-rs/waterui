@@ -420,7 +420,7 @@ fn make_key(format_string: &str, context: Option<&str>) -> String {
 /// Macro for creating localized text.
 ///
 /// The `text!` macro loads translations from `i18n/` folder at compile time
-/// and generates a `LocalizedText` view that renders based on the current locale.
+/// and generates a `Text` view that renders based on the current locale.
 ///
 /// # Translation Files
 ///
@@ -555,25 +555,25 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     let default_format = key.replace("{#", "{");
     let default_format_lit = LitStr::new(&default_format, Span::call_site());
     let default_body = if all_idents.is_empty() {
-        quote! { #waterui::text::Text::new(#default_format_lit) }
+        quote! { #waterui::text::Text::__config(#default_format_lit) }
     } else {
         let content = build_format_signal(&waterui, &default_format_lit, &all_idents);
         quote! {
-            #waterui::text::Text::new(#content)
+            #waterui::text::Text::__config(#content)
         }
     };
 
-    // Generate the LocalizedText
+    // Generate the localized Text
     quote! {
         {
             // Track translation file changes to invalidate macro expansion.
             #(let _ = include_bytes!(#tracked_file_lits);)*
 
-            #waterui::locale::LocalizedText::new({
+            #waterui::text::Text::__localized_with({
                 #(#captures)*
 
-                move |locale: &#waterui::locale::Locale| {
-                    let resolve = |locale_key: &str| -> Option<#waterui::text::Text> {
+                move |_env: &#waterui::Environment, locale: &#waterui::locale::Locale| {
+                    let resolve = |locale_key: &str| -> Option<#waterui::text::TextConfig> {
                         match locale_key {
                             #(#locale_arms)*
                             _ => None,
@@ -619,7 +619,7 @@ fn generate_translation_arm(
                 quote! {
                     #locale_pattern => {
                         Some(
-                            #waterui::text::Text::new(#format_lit)
+                            #waterui::text::Text::__config(#format_lit)
                         )
                     }
                 }
@@ -628,7 +628,7 @@ fn generate_translation_arm(
                 quote! {
                     #locale_pattern => {
                         Some(
-                            #waterui::text::Text::new(#content)
+                            #waterui::text::Text::__config(#content)
                         )
                     }
                 }
@@ -711,7 +711,7 @@ fn generate_translation_arm(
                 #locale_pattern => {
                     let #locale_ident = locale.clone();
                     Some(
-                        #waterui::text::Text::new(#content)
+                        #waterui::text::Text::__config(#content)
                     )
                 }
             }
@@ -777,7 +777,7 @@ fn generate_translation_arm(
                 #locale_pattern => {
                     let #locale_ident = locale.clone();
                     Some(
-                        #waterui::text::Text::new(#content)
+                        #waterui::text::Text::__config(#content)
                     )
                 }
             }
@@ -834,4 +834,46 @@ mod tests {
             .expect_err("unknown dual plural field should fail");
         assert!(err.contains("Unknown dual plural field"));
     }
+}
+
+pub(crate) fn catalog(input: TokenStream) -> TokenStream {
+    if !input.is_empty() {
+        return syn::Error::new(Span::call_site(), "catalog! does not accept arguments")
+            .to_compile_error()
+            .into();
+    }
+
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(err) => return TokenStream::from(err),
+    };
+
+    let bundle = match TranslationBundle::load_from_manifest_dir() {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            let message = LitStr::new(&err, Span::call_site());
+            return TokenStream::from(quote! { compile_error!(#message); });
+        }
+    };
+
+    let inserts: Vec<_> = bundle
+        .tracked_files
+        .iter()
+        .filter_map(|path| {
+            let locale = path.file_stem()?.to_str()?;
+            let locale_lit = LitStr::new(locale, Span::call_site());
+            let path_lit = LitStr::new(path.to_str()?, Span::call_site());
+            Some(quote! {
+                __catalog = __catalog
+                    .add_toml(#locale_lit, include_str!(#path_lit))
+                    .expect("catalog! generated invalid translation file");
+            })
+        })
+        .collect();
+
+    TokenStream::from(quote! {{
+        let mut __catalog = #waterui::locale::TranslationCatalog::new();
+        #(#inserts)*
+        __catalog
+    }})
 }
