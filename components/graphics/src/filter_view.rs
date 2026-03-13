@@ -21,6 +21,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::any::TypeId;
 use core::future::Future;
 use core::pin::Pin;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -186,6 +187,7 @@ pub(crate) trait GpuFilterImpl: 'static {
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     fn sync_targets(&mut self);
     fn redraw_hint(&self) -> bool;
+    fn concrete_type_id(&self) -> TypeId;
 }
 
 impl<T: GpuFilter> GpuFilterImpl for T {
@@ -207,6 +209,10 @@ impl<T: GpuFilter> GpuFilterImpl for T {
 
     fn redraw_hint(&self) -> bool {
         GpuFilter::redraw_hint(self)
+    }
+
+    fn concrete_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
     }
 }
 
@@ -261,6 +267,12 @@ impl AppliedFilter {
     #[must_use]
     pub fn redraw_hint(&self) -> bool {
         self.filter.redraw_hint()
+    }
+
+    /// Returns the concrete runtime filter type id behind this erased wrapper.
+    #[must_use]
+    pub fn concrete_type_id(&self) -> TypeId {
+        self.filter.concrete_type_id()
     }
 }
 
