@@ -26,6 +26,7 @@ use crate::SignalExt;
 use crate::ViewExt;
 use nami::Computed;
 use nami::signal::IntoComputed;
+use waterui_controls::IntoLabel;
 use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::layout::StretchAxis;
@@ -116,7 +117,7 @@ impl ProgressWithTotal {
     ///
     /// * `label` - The view to use as the progress label.
     #[must_use]
-    pub fn label(self, label: impl View) -> Self {
+    pub fn label(self, label: impl IntoLabel) -> Self {
         Self(self.0.label(label))
     }
 
@@ -182,8 +183,8 @@ impl Progress {
     ///
     /// * `label` - The view to use as the progress label.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = label.anyview();
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = label.into_label().anyview();
         self
     }
 

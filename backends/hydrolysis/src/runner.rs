@@ -18,9 +18,9 @@ use crate::env::{parse_bool_env, parse_positive_u64_env};
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
 #[cfg(feature = "winit")]
 use crate::renderer::HydrolysisWindowOrigin;
+use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
 use crate::time::Instant;
 
 fn init_main_thread_executors() {
@@ -440,27 +440,31 @@ fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
     (f64::from(value) / scale_factor) as f32
 }
 
-fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) -> bool {
+fn handle_input_events<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) -> bool {
     let mut should_close = runtime.window.state.get() == waterui::window::WindowState::Closed;
     for event in runtime.platform.drain_events() {
         match event {
             InputEvent::CloseRequested => {
-                runtime.window.state.set(waterui::window::WindowState::Closed);
+                runtime
+                    .window
+                    .state
+                    .set(waterui::window::WindowState::Closed);
                 should_close = true;
             }
             InputEvent::Moved { x, y } => {
                 let frame = runtime.window.frame.get();
-                runtime
-                    .window
-                    .frame
-                    .set(waterui_core::layout::Rect::new(
-                        waterui_core::layout::Point::new(x, y),
-                        *frame.size(),
-                    ));
+                runtime.window.frame.set(waterui_core::layout::Rect::new(
+                    waterui_core::layout::Point::new(x, y),
+                    *frame.size(),
+                ));
             }
             InputEvent::Resize { width, height } => {
                 let frame = runtime.window.frame.get();
-                let logical_width = physical_to_logical_dimension(width, runtime.platform.scale_factor());
+                let logical_width =
+                    physical_to_logical_dimension(width, runtime.platform.scale_factor());
                 let logical_height =
                     physical_to_logical_dimension(height, runtime.platform.scale_factor());
                 let frame = waterui_core::layout::Rect::new(
@@ -545,7 +549,9 @@ fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &
             }
             InputEvent::Magnification { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_magnification(x, y, delta, phase, env);
+                let changed = runtime
+                    .renderer
+                    .handle_magnification(x, y, delta, phase, env);
                 schedule_redraw_or_rebuild(runtime, changed);
             }
             InputEvent::Rotation { x, y, delta, phase } => {
@@ -634,7 +640,7 @@ fn handle_input_events<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 pub fn run(app: App) {
     init_main_thread_executors();
-    let (windows, env) = app.into_parts();
+    let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -731,14 +737,15 @@ mod web_runner {
     }
 
     async fn fetch_response(path: &str) -> Response {
-        let window = web_sys::window()
-            .expect("hydrolysis web font loader requires browser window");
+        let window = web_sys::window().expect("hydrolysis web font loader requires browser window");
         let response = JsFuture::from(window.fetch_with_str(path))
             .await
-            .unwrap_or_else(|error| panic!("hydrolysis web font fetch failed for `{path}`: {error:?}"));
-        let response: Response = response
-            .dyn_into()
-            .unwrap_or_else(|_| panic!("hydrolysis web font fetch returned non-Response for `{path}`"));
+            .unwrap_or_else(|error| {
+                panic!("hydrolysis web font fetch failed for `{path}`: {error:?}")
+            });
+        let response: Response = response.dyn_into().unwrap_or_else(|_| {
+            panic!("hydrolysis web font fetch returned non-Response for `{path}`")
+        });
         assert!(
             response.ok(),
             "hydrolysis web font fetch failed for `{path}` with HTTP status {}",
@@ -749,13 +756,13 @@ mod web_runner {
 
     async fn fetch_bytes(path: &str) -> Vec<u8> {
         let response = fetch_response(path).await;
-        let array_buffer = JsFuture::from(
-            response
-                .array_buffer()
-                .unwrap_or_else(|error| panic!("hydrolysis web font response array_buffer failed for `{path}`: {error:?}")),
-        )
+        let array_buffer = JsFuture::from(response.array_buffer().unwrap_or_else(|error| {
+            panic!("hydrolysis web font response array_buffer failed for `{path}`: {error:?}")
+        }))
         .await
-        .unwrap_or_else(|error| panic!("hydrolysis web font array_buffer await failed for `{path}`: {error:?}"));
+        .unwrap_or_else(|error| {
+            panic!("hydrolysis web font array_buffer await failed for `{path}`: {error:?}")
+        });
         let bytes = Uint8Array::new(&array_buffer);
         let mut data = vec![0_u8; bytes.length() as usize];
         bytes.copy_to(&mut data);
@@ -763,8 +770,9 @@ mod web_runner {
     }
 
     async fn fetch_text(path: &str) -> String {
-        String::from_utf8(fetch_bytes(path).await)
-            .unwrap_or_else(|error| panic!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}"))
+        String::from_utf8(fetch_bytes(path).await).unwrap_or_else(|error| {
+            panic!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}")
+        })
     }
 
     async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
@@ -799,10 +807,10 @@ mod web_runner {
             .font_cx
             .collection
             .set_generic_families(GenericFamily::SansSerif, default_family_ids.iter().copied());
-        state
-            .font_cx
-            .collection
-            .set_generic_families(GenericFamily::UiSansSerif, default_family_ids.iter().copied());
+        state.font_cx.collection.set_generic_families(
+            GenericFamily::UiSansSerif,
+            default_family_ids.iter().copied(),
+        );
     }
 
     #[derive(Clone)]
@@ -916,7 +924,8 @@ mod web_runner {
                 runnable_queue: runnable_queue.clone(),
                 schedule_frame: browser_schedule.clone(),
             };
-            let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
+            let _ =
+                try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
             let (windows, env) = app.into_parts();
             let mut windows = windows.into_iter();
@@ -955,8 +964,9 @@ mod web_runner {
                 raf_callback: RefCell::new(None),
             });
             let callback_handle = handle.clone();
-            let callback = Closure::wrap(Box::new(move |_ts: f64| callback_handle.frame())
-                as Box<dyn FnMut(f64)>);
+            let callback = Closure::wrap(
+                Box::new(move |_ts: f64| callback_handle.frame()) as Box<dyn FnMut(f64)>
+            );
             *handle.raf_callback.borrow_mut() = Some(callback);
             *schedule_frame_ref.borrow_mut() = Some({
                 let handle = handle.clone();
@@ -969,8 +979,8 @@ mod web_runner {
 
 #[cfg(feature = "winit")]
 mod winit_runner {
-    use std::cell::RefCell;
     use async_task::spawn_local as spawn_local_task;
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::future::Future;
     use std::mem;
@@ -1054,7 +1064,7 @@ mod winit_runner {
         };
         let _ = try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
-        let (windows, env) = app.into_parts();
+        let (windows, _menu_bar, env) = app.into_parts();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();

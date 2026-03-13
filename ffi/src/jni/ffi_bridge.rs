@@ -91,13 +91,14 @@ fn app_to_java<'local>(env: &mut JNIEnv<'local>, app: crate::app::WuiApp) -> JOb
             .expect("Failed to set window array element");
     }
 
-    // Create AppStruct with constructor: AppStruct(Array<WindowStruct>, Long)
+    // Create AppStruct with constructor: AppStruct(Array<WindowStruct>, menuBarPtr, envPtr)
     let app_obj = env
         .new_object(
             &app_struct_class,
-            "([Ldev/waterui/android/runtime/WindowStruct;J)V",
+            "([Ldev/waterui/android/runtime/WindowStruct;JJ)V",
             &[
                 JValue::Object(&window_array),
+                JValue::Long(app.menu_bar as jlong),
                 JValue::Long(app.env as jlong),
             ],
         )
