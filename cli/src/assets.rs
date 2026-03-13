@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::project::Project;
 
+mod pipeline;
 mod unified;
 
 /// Built-in font registry mapping font names to download URLs.
