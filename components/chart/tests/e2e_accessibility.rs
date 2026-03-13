@@ -1,10 +1,11 @@
+//! XCTest-style semantic accessibility coverage for the chart components.
+
 mod support;
 
 use waterui::{Binding, View};
 use waterui_chart::{
-    AreaChart, AreaDatum, BarChart, BubbleChart, BubblePoint, CandlestickChart, Candle,
-    DataPoint, DepthChart, DepthDatum, DepthSide, HitResult, LineChart, PieChart, ScatterChart,
-    SliceDatum,
+    AreaChart, AreaDatum, BarChart, BubbleChart, BubblePoint, Candle, CandlestickChart, DataPoint,
+    DepthChart, DepthDatum, DepthSide, HitResult, LineChart, PieChart, ScatterChart, SliceDatum,
 };
 
 use support::{
@@ -63,9 +64,18 @@ fn assert_chart_semantic_flow<T, V, F>(
     let focused_hit = focused
         .get()
         .expect("focused binding should hold a hit result after hover");
-    assert_eq!(focused_hit.series, expected_series, "{name}: focused series mismatch");
-    assert_eq!(focused_hit.index, expected_index, "{name}: focused index mismatch");
-    assert_eq!(focused_hit.value, expected_value, "{name}: focused value mismatch");
+    assert_eq!(
+        focused_hit.series, expected_series,
+        "{name}: focused series mismatch"
+    );
+    assert_eq!(
+        focused_hit.index, expected_index,
+        "{name}: focused index mismatch"
+    );
+    assert_eq!(
+        focused_hit.value, expected_value,
+        "{name}: focused value mismatch"
+    );
     app.query()
         .role(waterui_testing::Role::LABEL)
         .label("focused:none")
@@ -75,7 +85,10 @@ fn assert_chart_semantic_flow<T, V, F>(
         .label_contains("focused:")
         .assert_exists();
     let focused_snapshot = app.capture_snapshot(&suite, name, "01_focused");
-    assert!(focused_snapshot.path().is_file(), "{name}: focused snapshot missing");
+    assert!(
+        focused_snapshot.path().is_file(),
+        "{name}: focused snapshot missing"
+    );
 
     assert!(
         app.query()
@@ -87,9 +100,18 @@ fn assert_chart_semantic_flow<T, V, F>(
     let selected_hit = selected
         .get()
         .expect("selected binding should hold a hit result after tap");
-    assert_eq!(selected_hit.series, expected_series, "{name}: selected series mismatch");
-    assert_eq!(selected_hit.index, expected_index, "{name}: selected index mismatch");
-    assert_eq!(selected_hit.value, expected_value, "{name}: selected value mismatch");
+    assert_eq!(
+        selected_hit.series, expected_series,
+        "{name}: selected series mismatch"
+    );
+    assert_eq!(
+        selected_hit.index, expected_index,
+        "{name}: selected index mismatch"
+    );
+    assert_eq!(
+        selected_hit.value, expected_value,
+        "{name}: selected value mismatch"
+    );
     app.query()
         .role(waterui_testing::Role::LABEL)
         .label("selected:none")
@@ -99,7 +121,10 @@ fn assert_chart_semantic_flow<T, V, F>(
         .label_contains("selected:")
         .assert_exists();
     let selected_snapshot = app.capture_snapshot(&suite, name, "02_selected");
-    assert!(selected_snapshot.path().is_file(), "{name}: selected snapshot missing");
+    assert!(
+        selected_snapshot.path().is_file(),
+        "{name}: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -267,7 +292,11 @@ fn area_chart_xctest_like_focus_and_selection_flow() {
     let data = area_data();
     let series = 0;
     let index = 4;
-    let value = AreaDatum::new(series, data.x_values[index], data.series[series].values[index]);
+    let value = AreaDatum::new(
+        series,
+        data.x_values[index],
+        data.series[series].values[index],
+    );
     assert_chart_semantic_flow(
         "area",
         area_hit_location(&data, series, index),

@@ -429,6 +429,7 @@ impl MountedApp {
         self.settle_after_change(changed)
     }
 
+    /// Clears the latest Hydrolysis-managed UI focus target.
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.driver.clear_ui_focus(&self.env);
         self.settle_after_change(changed)

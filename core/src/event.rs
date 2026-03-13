@@ -130,10 +130,7 @@ impl OnEvent {
 
     /// Creates a new event handler that reads payload from the environment.
     #[must_use]
-    pub fn new_with_env(
-        event: Event,
-        handler: impl FnMut(&crate::Environment) + 'static,
-    ) -> Self {
+    pub fn new_with_env(event: Event, handler: impl FnMut(&crate::Environment) + 'static) -> Self {
         Self {
             event,
             handler: boxed_action_with_env(handler),
