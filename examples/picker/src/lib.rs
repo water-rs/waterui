@@ -13,8 +13,8 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
-use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::file::FilePicker;
+use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
 use waterui::media::Url;
 use waterui::prelude::*;
@@ -111,12 +111,10 @@ fn main() -> impl View {
                 text("DatePicker").headline(),
                 text("Select dates and times with platform-native pickers").body(),
                 spacer(),
-                DatePicker::new(&date)
-                    .label("Date Only")
-                    .range(
-                        Date::from_calendar_date(2025, Month::January, 1).unwrap()
-                            ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
-                    ),
+                DatePicker::new(&date).label("Date Only").range(
+                    Date::from_calendar_date(2025, Month::January, 1).unwrap()
+                        ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+                ),
                 text!("Selected date: {date}"),
                 spacer(),
                 DatePicker::time(&time_only)
@@ -192,7 +190,7 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
     let selection = selection.clone();
     hstack((
         "Selected: ",
-        text(selection.map(|fruit| format!("{fruit:?}"))),
+        Text::computed(selection.map(|fruit| format!("{fruit:?}"))),
     ))
 }
 
@@ -217,7 +215,7 @@ fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
 /// Helper view to display selected files
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {
     let files = files.clone();
-    text(files.map(|urls| {
+    Text::computed(files.map(|urls| {
         if urls.is_empty() {
             "No files selected".to_string()
         } else {

@@ -11,6 +11,7 @@ use waterui_layout::{
 };
 use waterui_str::Str;
 use waterui_text::{
+    Text,
     font::{Body, Font},
     highlight::{DefaultHighlighter, Highlighter, Language},
     styled::{Style, StyledStr},
@@ -92,18 +93,23 @@ impl View for Code {
                         .bold()
                         .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
                     spacer(),
-                    text(copied.select("Copied", "Copy").animated())
-                        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-                        .on_tap(move || {
-                            copy_to_clipboard(&content_for_copy);
-                            let copied = copied.clone();
-                            spawn_local(async move {
-                                copied.set(true);
-                                sleep(Duration::from_secs(1)).await;
-                                copied.set(false);
-                            })
-                            .detach();
-                        }),
+                    Text::computed(
+                        copied
+                            .select("Copied", "Copy")
+                            .animated()
+                            .map(StyledStr::plain),
+                    )
+                    .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+                    .on_tap(move || {
+                        copy_to_clipboard(&content_for_copy);
+                        let copied = copied.clone();
+                        spawn_local(async move {
+                            copied.set(true);
+                            sleep(Duration::from_secs(1)).await;
+                            copied.set(false);
+                        })
+                        .detach();
+                    }),
                 )),
                 text(styled),
             ),

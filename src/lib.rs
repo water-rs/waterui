@@ -76,12 +76,14 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, link};
-    pub use super::component::menu::{Menu, MenuItem};
+    pub use super::component::menu::{
+        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
+    };
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{Card, Divider, card, suspense};
+    pub use super::widget::{Card, card, suspense};
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
         FlowTablePolicy, flow_markdown,
@@ -160,6 +162,7 @@ pub mod task;
 /// Inspector runtime endpoint and diagnostics streaming.
 pub mod inspector;
 
+pub use waterui_core::plugin::Plugin;
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
 
@@ -192,3 +195,17 @@ macro_rules! __export_preview {
 
 #[doc(hidden)]
 pub use pastey;
+
+/// Configures a freshly-created environment with compile-time discovered app plugins.
+///
+/// This currently installs the runtime translation catalog generated from the caller's
+/// `i18n/*.toml` files. It is intended to be used at environment creation boundaries
+/// such as backend entry points.
+#[macro_export]
+macro_rules! configure_environment {
+    ($env:expr) => {{
+        let mut __waterui_env = $env;
+        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
+        __waterui_env
+    }};
+}

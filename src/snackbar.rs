@@ -52,7 +52,7 @@ use waterui_text::text::text;
 
 use crate::ViewExt;
 use crate::background::Material;
-use crate::component::label::Label;
+use crate::component::Label;
 use crate::shape::RoundedRectangle;
 use crate::style::Shadow;
 
