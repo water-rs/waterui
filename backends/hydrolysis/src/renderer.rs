@@ -2194,12 +2194,7 @@ fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
                 styled = StyledStr::plain("✓ ") + styled;
             }
             let plain_label = styled.to_plain().to_string();
-            let text = Text::new(styled);
-            let label = if let Some(icon) = command.icon.clone() {
-                SemanticLabel::new(text).icon(icon)
-            } else {
-                SemanticLabel::new(text)
-            };
+            let label = command.semantic_label.text(Text::new(styled));
             PopupMenuNode::Command {
                 label,
                 plain_label,
@@ -2211,12 +2206,7 @@ fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.get() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
-            let text = Text::new(styled);
-            let label = if let Some(icon) = menu.icon.clone() {
-                SemanticLabel::new(text).icon(icon)
-            } else {
-                SemanticLabel::new(text)
-            };
+            let label = menu.semantic_label.text(Text::new(styled));
             PopupMenuNode::Menu {
                 label,
                 plain_label,
