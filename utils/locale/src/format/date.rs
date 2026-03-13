@@ -1,14 +1,21 @@
 //! Locale-aware date and time formatting.
 
-use icu_calendar::{Date, DateTime};
+use icu_calendar::{Date as IcuDate, DateTime as IcuDateTime};
 use icu_datetime::{
     DateFormatter, DateTimeFormatter, TimeFormatter, ZonedDateTimeFormatter,
-    options::length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
+    options::{
+        components,
+        length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
+    },
     time_zone::TimeZoneFormatterOptions,
 };
 use icu_provider::DataLocale;
 use icu_timezone::{CustomTimeZone, GmtOffset, MetazoneCalculator, TimeZoneIdMapper, ZoneVariant};
-use jiff::{civil::DateTime as JiffDateTime, tz::Dst};
+use jiff::{
+    ToSpan,
+    civil::{Date as CivilDate, DateTime as JiffDateTime, Weekday},
+    tz::Dst,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::locale::{Locale, locales};
@@ -110,12 +117,12 @@ fn to_data_locale(locale: &Locale) -> DataLocale {
     locale.0.clone().into()
 }
 
-fn to_iso_date(date: &SimpleDate) -> Option<Date<icu_calendar::Iso>> {
-    Date::try_new_iso_date(date.year, date.month, date.day).ok()
+fn to_iso_date(date: &SimpleDate) -> Option<IcuDate<icu_calendar::Iso>> {
+    IcuDate::try_new_iso_date(date.year, date.month, date.day).ok()
 }
 
-fn to_iso_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<DateTime<icu_calendar::Iso>> {
-    DateTime::try_new_iso_datetime(
+fn to_iso_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<IcuDateTime<icu_calendar::Iso>> {
+    IcuDateTime::try_new_iso_datetime(
         date.year,
         date.month,
         date.day,
@@ -126,9 +133,21 @@ fn to_iso_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<DateTime<icu_
     .ok()
 }
 
-fn to_iso_time_only(time: &SimpleTime) -> Option<DateTime<icu_calendar::Iso>> {
+fn to_iso_time_only(time: &SimpleTime) -> Option<IcuDateTime<icu_calendar::Iso>> {
     // Synthetic stable date for time-only formatting.
-    DateTime::try_new_iso_datetime(2000, 1, 1, time.hour, time.minute, time.second).ok()
+    IcuDateTime::try_new_iso_datetime(2000, 1, 1, time.hour, time.minute, time.second).ok()
+}
+
+fn to_iso_civil_datetime(date: &CivilDate) -> Option<IcuDateTime<icu_calendar::Iso>> {
+    IcuDateTime::try_new_iso_datetime(
+        i32::from(date.year()),
+        date.month().try_into().ok()?,
+        date.day().try_into().ok()?,
+        0,
+        0,
+        0,
+    )
+    .ok()
 }
 
 fn to_jiff_datetime(date: &SimpleDate, time: &SimpleTime) -> Option<JiffDateTime> {
@@ -191,6 +210,99 @@ fn report_fallback_once(flag: &AtomicBool, kind: &str, locale: &Locale, reason: 
             reason,
             "waterui-locale formatting fallback"
         );
+    }
+}
+
+/// Format a calendar month header using locale conventions.
+pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
+    let Some(date_iso) = to_iso_civil_datetime(date) else {
+        report_fallback_once(
+            &DATE_FALLBACK_LOGGED,
+            "calendar-month-year",
+            locale,
+            "invalid calendar month/year date",
+        );
+        return format!("{}-{:02}", date.year(), date.month());
+    };
+
+    let mut bag = components::Bag::default();
+    bag.year = Some(components::Year::Numeric);
+    bag.month = Some(components::Month::Long);
+
+    let data_locale = to_data_locale(locale);
+    let options = bag.into();
+    let formatter = DateTimeFormatter::try_new(&data_locale, options)
+        .or_else(|_| DateTimeFormatter::try_new(&to_data_locale(&locales::EN), bag.into()));
+
+    match formatter {
+        Ok(formatter) => formatter
+            .format(&date_iso.to_any())
+            .map(|formatted| formatted.to_string())
+            .unwrap_or_else(|err| {
+                report_fallback_once(
+                    &DATE_FALLBACK_LOGGED,
+                    "calendar-month-year",
+                    locale,
+                    &format!("ICU month/year format failed: {err}"),
+                );
+                format!("{}-{:02}", date.year(), date.month())
+            }),
+        Err(err) => {
+            report_fallback_once(
+                &DATE_FALLBACK_LOGGED,
+                "calendar-month-year",
+                locale,
+                &format!("ICU month/year formatter init failed: {err}"),
+            );
+            format!("{}-{:02}", date.year(), date.month())
+        }
+    }
+}
+
+/// Format a short localized weekday label for calendar headers.
+pub fn format_calendar_weekday(locale: &Locale, weekday: Weekday) -> String {
+    let probe_date = CivilDate::new(2024, 1, 1).expect("calendar weekday probe date must be valid")
+        + i32::from(weekday.to_monday_zero_offset()).days();
+    let Some(date_iso) = to_iso_civil_datetime(&probe_date) else {
+        report_fallback_once(
+            &DATE_FALLBACK_LOGGED,
+            "calendar-weekday",
+            locale,
+            "invalid calendar weekday probe date",
+        );
+        return weekday.to_monday_one_offset().to_string();
+    };
+
+    let mut bag = components::Bag::default();
+    bag.weekday = Some(components::Text::Short);
+
+    let data_locale = to_data_locale(locale);
+    let options = bag.into();
+    let formatter = DateTimeFormatter::try_new(&data_locale, options)
+        .or_else(|_| DateTimeFormatter::try_new(&to_data_locale(&locales::EN), bag.into()));
+
+    match formatter {
+        Ok(formatter) => formatter
+            .format(&date_iso.to_any())
+            .map(|formatted| formatted.to_string())
+            .unwrap_or_else(|err| {
+                report_fallback_once(
+                    &DATE_FALLBACK_LOGGED,
+                    "calendar-weekday",
+                    locale,
+                    &format!("ICU weekday format failed: {err}"),
+                );
+                weekday.to_monday_one_offset().to_string()
+            }),
+        Err(err) => {
+            report_fallback_once(
+                &DATE_FALLBACK_LOGGED,
+                "calendar-weekday",
+                locale,
+                &format!("ICU weekday formatter init failed: {err}"),
+            );
+            weekday.to_monday_one_offset().to_string()
+        }
     }
 }
 
