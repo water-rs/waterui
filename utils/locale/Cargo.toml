@@ -13,7 +13,6 @@ categories = ["internationalization", "localization"]
 [dependencies]
 # Core dependencies
 waterui-core.workspace = true
-waterui-text.workspace = true
 waterui-str.workspace = true
 waterkit-regional.workspace = true
 nami.workspace = true

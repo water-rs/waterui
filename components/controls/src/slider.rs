@@ -7,8 +7,9 @@
 
 use core::ops::RangeInclusive;
 
+use crate::label::IntoLabel;
 use nami::{Binding, s};
-use waterui_core::{AnyView, View, configurable, layout::StretchAxis};
+use waterui_core::{AnyView, configurable, layout::StretchAxis};
 use waterui_text::Text;
 
 /// Configuration for the [`Slider`] widget.
@@ -76,7 +77,7 @@ impl Slider {
     #[must_use]
     pub fn new(range: RangeInclusive<f64>, value: &Binding<f64>) -> Self {
         Self(SliderConfig {
-            label: AnyView::new(Text::new(s!("{:.2}", value))),
+            label: AnyView::new(Text::computed(s!("{:.2}", value))),
             min_value_label: AnyView::default(),
             max_value_label: AnyView::default(),
             range,
@@ -90,8 +91,8 @@ macro_rules! labels {
         $(
             #[must_use]
             /// Sets the label for the slider.
-            pub fn $name(mut self, $name: impl View) -> Self {
-                self.0.$name = AnyView::new($name);
+            pub fn $name(mut self, $name: impl IntoLabel) -> Self {
+                self.0.$name = AnyView::new($name.into_label());
                 self
             }
         )*

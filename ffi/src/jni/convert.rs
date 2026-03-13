@@ -1205,7 +1205,7 @@ impl ToJavaStruct for crate::components::text::WuiText {
     }
 }
 
-/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int)
+/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)
 impl ToJavaStruct for crate::components::button::WuiButton {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1213,11 +1213,12 @@ impl ToJavaStruct for crate::components::button::WuiButton {
             .expect("ButtonStruct class not found");
         env.new_object(
             &class,
-            "(JJI)V",
+            "(JJIJ)V",
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.action as jlong),
                 JValue::Int(self.style as i32),
+                JValue::Long(self.accessibility_label as jlong),
             ],
         )
         .expect("Failed to create ButtonStruct")
@@ -1887,7 +1888,7 @@ impl ToJavaStruct for crate::components::view_effect::WuiViewEffect {
     }
 }
 
-/// WuiMenu -> MenuStruct(labelPtr, itemsPtr)
+/// WuiMenu -> MenuStruct(labelPtr, itemsPtr, accessibilityLabelPtr)
 impl ToJavaStruct for crate::WuiMenu {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1895,10 +1896,11 @@ impl ToJavaStruct for crate::WuiMenu {
             .expect("MenuStruct class not found");
         env.new_object(
             &class,
-            "(JJ)V",
+            "(JJJ)V",
             &[
                 JValue::Long(self.label as jlong),
                 JValue::Long(self.items as jlong),
+                JValue::Long(self.accessibility_label as jlong),
             ],
         )
         .expect("Failed to create MenuStruct")
