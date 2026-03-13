@@ -5,6 +5,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{choropleth_geometry, draw_choropleth, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::ChoroplethData;
 use crate::interaction::{HitResult, RegionDatum, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32};
@@ -16,6 +17,7 @@ pub struct ChoroplethChart<S: Signal<Output = ChoroplethData>> {
     stroke_color: Srgb,
     show_stroke: bool,
     selection: SelectionBindings<RegionDatum>,
+    composition: ChartComposition<RegionDatum>,
 }
 
 impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
@@ -27,8 +29,11 @@ impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
             stroke_color: Srgb::new(1.0, 1.0, 1.0),
             show_stroke: true,
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(RegionDatum);
 
     #[must_use]
     pub fn stroke_width(self, width: f32) -> Self {
@@ -77,12 +82,14 @@ impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethCh
         let stroke_color = self.stroke_color;
         let show_stroke = self.show_stroke;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| choropleth_geometry(ctx, data),
             move |ctx, data, _geometry| {
                 draw_choropleth(ctx, data, stroke_width, stroke_color, show_stroke);
             },
             self.selection,
+            self.composition,
         )
     }
 }

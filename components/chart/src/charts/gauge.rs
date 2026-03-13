@@ -7,6 +7,7 @@ use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
 use crate::charts::canvas::{draw_gauge, gauge_geometry, interactive_signal_canvas};
+use crate::composition::ChartComposition;
 use crate::data::GaugeData;
 use crate::interaction::{HitResult, SelectionBindings, SliceDatum};
 use crate::params::{ArcAngles, ChartParamError, GaugeRadii};
@@ -22,6 +23,7 @@ pub struct GaugeChart<S: Signal<Output = GaugeData>> {
     value_color: Srgb,
     needle_color: Srgb,
     selection: SelectionBindings<SliceDatum>,
+    composition: ChartComposition<SliceDatum>,
 }
 
 impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
@@ -37,8 +39,11 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
             value_color: Srgb::new(0.23, 0.51, 0.96),
             needle_color: Srgb::new(0.9, 0.9, 0.9),
             selection: SelectionBindings::new(),
+            composition: ChartComposition::default(),
         }
     }
+
+    crate::composition::chart_composition_methods!(SliceDatum);
 
     #[must_use]
     pub fn arc_degrees(self, start: f32, end: f32) -> Self {
@@ -125,6 +130,7 @@ impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
         let value_color = self.value_color;
         let needle_color = self.needle_color;
         interactive_signal_canvas(
+            _env,
             self.data,
             move |ctx, data| {
                 gauge_geometry(
@@ -150,6 +156,7 @@ impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
                 );
             },
             self.selection,
+            self.composition,
         )
     }
 }

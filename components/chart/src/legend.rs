@@ -77,6 +77,7 @@ pub enum LegendOrientation {
 /// .position(LegendPosition::TopRight)
 /// .marker_size(12.0)
 /// ```
+#[derive(Debug)]
 pub struct Legend {
     items: Vec<LegendItem>,
     position: LegendPosition,

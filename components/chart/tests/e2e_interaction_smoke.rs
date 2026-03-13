@@ -1,3 +1,5 @@
+//! Focused interaction smoke coverage for chart hover, tap, and drag flows.
+
 mod support;
 
 use waterui::Binding;
@@ -99,14 +101,20 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
             "focused",
             focused_for_view.clone(),
             |hit: &HitResult<waterui_chart::SliceDatum>| {
-                format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
+                format!(
+                    "series={} index={} value={:.2}",
+                    hit.series, hit.index, hit.value.value
+                )
             },
         );
         let selected_readout = readout_view(
             "selected",
             selected_for_view.clone(),
             |hit: &HitResult<waterui_chart::SliceDatum>| {
-                format!("series={} index={} value={:.2}", hit.series, hit.index, hit.value.value)
+                format!(
+                    "series={} index={} value={:.2}",
+                    hit.series, hit.index, hit.value.value
+                )
             },
         );
         semantic_chart_shell("pie", chart, focused_readout, selected_readout)
@@ -120,7 +128,9 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
             .hover_at(location.0, location.1),
         "pie: hover_at should be handled"
     );
-    let focused_hit = focused.get().expect("pie: hover should produce a focused hit");
+    let focused_hit = focused
+        .get()
+        .expect("pie: hover should produce a focused hit");
     assert_eq!(focused_hit.series, 0);
     assert_eq!(focused_hit.index, index);
     assert_eq!(focused_hit.value, expected);
@@ -133,7 +143,9 @@ fn pie_chart_hover_and_tap_coordinate_smoke() {
             .tap_at(location.0, location.1),
         "pie: tap_at should be handled"
     );
-    let selected_hit = selected.get().expect("pie: tap should produce a selected hit");
+    let selected_hit = selected
+        .get()
+        .expect("pie: tap should produce a selected hit");
     assert_eq!(selected_hit.series, 0);
     assert_eq!(selected_hit.index, index);
     assert_eq!(selected_hit.value, expected);
