@@ -16,6 +16,7 @@ categories = ["gui", "api-bindings"]
 waterui.workspace = true
 waterui-core.workspace = true
 waterui-text.workspace = true
+waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-navigation.workspace = true
 waterui-media.workspace = true

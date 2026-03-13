@@ -5,8 +5,9 @@ use core::ops::RangeInclusive;
 
 use jiff::civil::Date;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::View;
+use waterui_controls::IntoLabel;
 use waterui_core::dynamic::Dynamic;
+use waterui_core::{AnyView, View};
 
 use crate::calendar::{
     VisibleMonth, build_calendar_body, calendar_rows, initial_visible_month, multi_day_cell_view,
@@ -43,8 +44,8 @@ impl MultiDatePicker {
 
     /// Sets the label for the multi-date picker.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.label = waterui_core::AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.label = AnyView::new(label.into_label());
         self
     }
 

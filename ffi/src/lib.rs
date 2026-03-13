@@ -192,7 +192,7 @@ macro_rules! export {
                 unsafe {
                     $crate::__init();
                 }
-                let mut env = waterui::Environment::new();
+                let mut env = waterui::configure_environment!(waterui::Environment::new());
                 $crate::waterui_video::install_platform_hooks(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
@@ -1277,9 +1277,13 @@ ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
 // ========== Metadata<ContextMenu> FFI ==========
 // Used to attach context menus to views
 
+use crate::components::icon::WuiSystemIcon;
 use crate::components::text::WuiText;
-use waterui::metadata::context_menu::{ContextMenu, MenuItem};
+use waterui::metadata::context_menu::ResolvedContextMenu;
+use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers};
 use waterui_core::handler::SharedAction;
+use waterui_text::styled::StyledStr;
+use waterui_icon::SystemIcon;
 
 opaque!(WuiSharedAction, SharedAction<()>, shared_action);
 
@@ -1300,26 +1304,153 @@ pub unsafe extern "C" fn waterui_call_shared_action(
     });
 }
 
+/// FFI-safe menu item tag.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiMenuItemTag {
+    /// A leaf command.
+    Command = 0,
+    /// A divider separating adjacent items.
+    Divider = 1,
+    /// A nested menu.
+    Menu = 2,
+}
+
+ffi_safe!(WuiMenuItemTag);
+
+/// FFI-safe shortcut modifier flags.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WuiShortcutModifiers {
+    /// Command modifier on Apple platforms.
+    pub command: bool,
+    /// Shift modifier.
+    pub shift: bool,
+    /// Option/alt modifier.
+    pub option: bool,
+    /// Control modifier.
+    pub control: bool,
+}
+
+ffi_safe!(WuiShortcutModifiers);
+
+impl IntoFFI for ShortcutModifiers {
+    type FFI = WuiShortcutModifiers;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiShortcutModifiers {
+            command: self.command,
+            shift: self.shift,
+            option: self.option,
+            control: self.control,
+        }
+    }
+}
+
+/// FFI-safe keyboard shortcut payload.
+#[repr(C)]
+pub struct WuiShortcut {
+    /// The key equivalent.
+    pub key: WuiStr,
+    /// The shortcut modifiers.
+    pub modifiers: WuiShortcutModifiers,
+}
+
+impl IntoFFI for Shortcut {
+    type FFI = WuiShortcut;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiShortcut {
+            key: self.key.into_ffi(),
+            modifiers: self.modifiers.into_ffi(),
+        }
+    }
+}
+
 /// FFI-safe representation of a menu item.
 #[repr(C)]
 pub struct WuiMenuItem {
-    /// The label for the menu item.
+    /// The menu node kind.
+    pub tag: WuiMenuItemTag,
+    /// The resolved label for commands and nested menus.
     pub label: WuiText,
-    /// The action handler pointer (SharedHandler wrapped for FFI).
+    /// Optional icon shown alongside the label.
+    pub icon: *mut WuiSystemIcon,
+    /// The action handler pointer for commands.
     pub action: *mut WuiSharedAction,
+    /// Reactive disabled state for commands.
+    pub disabled: *mut WuiComputed<bool>,
+    /// Reactive selected/checkmark state for commands.
+    pub selected: *mut WuiComputed<bool>,
+    /// Optional keyboard shortcut metadata for commands.
+    pub shortcut: *mut WuiShortcut,
+    /// Nested menu items.
+    pub items: *mut WuiComputed<MenuItems>,
 }
 
 ffi_safe!(WuiMenuItem);
 
-impl IntoFFI for MenuItem {
+#[inline]
+fn empty_menu_text() -> WuiText {
+    WuiText {
+        content: null_mut(),
+        paragraph_alignment: null_mut(),
+    }
+}
+
+#[inline]
+fn optional_menu_icon(icon: Option<SystemIcon>) -> *mut WuiSystemIcon {
+    icon.map_or_else(null_mut, |icon| Box::into_raw(Box::new(icon.into_ffi())))
+}
+
+#[inline]
+fn optional_shortcut(shortcut: Option<Shortcut>) -> *mut WuiShortcut {
+    shortcut.map_or_else(null_mut, |shortcut| {
+        Box::into_raw(Box::new(shortcut.into_ffi()))
+    })
+}
+
+impl IntoFFI for ResolvedMenuItem {
     type FFI = WuiMenuItem;
+
     fn into_ffi(self) -> Self::FFI {
-        WuiMenuItem {
-            label: self.label.into_ffi(),
-            action: self.action.into_ffi(),
+        match self {
+            ResolvedMenuItem::Command(command) => WuiMenuItem {
+                tag: WuiMenuItemTag::Command,
+                label: command.label.into_ffi(),
+                icon: optional_menu_icon(command.icon),
+                action: command.action.into_ffi(),
+                disabled: command.disabled.into_ffi(),
+                selected: command.selected.into_ffi(),
+                shortcut: optional_shortcut(command.shortcut),
+                items: null_mut(),
+            },
+            ResolvedMenuItem::Divider => WuiMenuItem {
+                tag: WuiMenuItemTag::Divider,
+                label: empty_menu_text(),
+                icon: null_mut(),
+                action: null_mut(),
+                disabled: null_mut(),
+                selected: null_mut(),
+                shortcut: null_mut(),
+                items: null_mut(),
+            },
+            ResolvedMenuItem::Menu(menu) => WuiMenuItem {
+                tag: WuiMenuItemTag::Menu,
+                label: menu.label.into_ffi(),
+                icon: optional_menu_icon(menu.icon),
+                action: null_mut(),
+                disabled: null_mut(),
+                selected: null_mut(),
+                shortcut: null_mut(),
+                items: menu.items.into_ffi(),
+            },
         }
     }
 }
+
+/// Resolved menu item arrays shared by popup menus, context menus, and text selection menus.
+pub type MenuItems = alloc::vec::Vec<ResolvedMenuItem>;
 
 /// FFI-safe representation of a context menu.
 #[repr(C)]
@@ -1328,10 +1459,7 @@ pub struct WuiContextMenu {
     pub items: *mut WuiComputed<MenuItems>,
 }
 
-/// Type alias for Vec<MenuItem> to use with ffi_computed! macro
-type MenuItems = alloc::vec::Vec<MenuItem>;
-
-impl IntoFFI for ContextMenu {
+impl IntoFFI for ResolvedContextMenu {
     type FFI = WuiContextMenu;
     fn into_ffi(self) -> Self::FFI {
         WuiContextMenu {
@@ -1344,39 +1472,40 @@ impl IntoFFI for ContextMenu {
 pub type WuiMetadataContextMenu = WuiMetadata<WuiContextMenu>;
 
 // Generate waterui_metadata_context_menu_id() and waterui_force_as_metadata_context_menu()
-ffi_metadata!(ContextMenu, WuiMetadataContextMenu, context_menu);
+ffi_metadata!(ResolvedContextMenu, WuiMetadataContextMenu, context_menu);
 
-// Computed<Vec<MenuItem>> support
 ffi_computed!(MenuItems, WuiArray<WuiMenuItem>, menu_items);
 
 // ========== Menu FFI ==========
 // Menu component that displays a dropdown menu when tapped
-
-use waterui::prelude::Menu;
 
 /// FFI-safe representation of a Menu component.
 #[repr(C)]
 pub struct WuiMenu {
     /// The label view displayed on the menu button.
     pub label: *mut WuiAnyView,
-    /// The menu items as a computed array.
+    /// The fully resolved menu items as a computed array.
     pub items: *mut WuiComputed<MenuItems>,
+    /// Semantic accessibility label for the menu trigger.
+    pub accessibility_label: *mut WuiComputed<StyledStr>,
 }
 
-impl IntoFFI for Menu {
+impl IntoFFI for ResolvedMenu {
     type FFI = WuiMenu;
     fn into_ffi(self) -> Self::FFI {
         WuiMenu {
             label: self.label.into_ffi(),
             items: self.items.into_ffi(),
+            accessibility_label: self.accessibility_label.into_ffi(),
         }
     }
 }
 
 // Generate waterui_menu_id() and waterui_force_as_menu()
-ffi_view!(Menu, WuiMenu, menu);
+ffi_view!(ResolvedMenu, WuiMenu, menu);
 
 // ========== Drag and Drop FFI ==========
+
 // Used to make views draggable or drop destinations
 
 use crate::drag_drop::{WuiDraggable, WuiDropDestination};
