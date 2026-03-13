@@ -48,6 +48,7 @@ fn main() -> impl View {
         .on_event({
             let status = status.clone();
             let is_buffering = is_buffering.clone();
+            let selected = selected.clone();
             move |event| match event {
                 video::Event::ReadyToPlay => {
                     is_buffering.set(false);
@@ -61,7 +62,20 @@ fn main() -> impl View {
                     is_buffering.set(false);
                     status.set(Str::from("Playing"));
                 }
+                video::Event::PictureInPictureChanged { active } => {
+                    status.set(if active {
+                        Str::from("Picture in Picture")
+                    } else {
+                        Str::from("Inline Playback")
+                    });
+                }
                 video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
+                video::Event::NextRequested => {
+                    selected.set((selected.get() + 1) % samples.len());
+                }
+                video::Event::PreviousRequested => {
+                    selected.set((selected.get() + samples.len() - 1) % samples.len());
+                }
                 video::Event::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from("Ended"));

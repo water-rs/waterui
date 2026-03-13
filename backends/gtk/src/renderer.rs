@@ -1172,52 +1172,51 @@ impl GtkRenderer {
             renderer.render_any(metadata.content, env)
         });
 
-// Metadata<OnEvent> - handle hover events
-dispatcher.register::<Metadata<OnEvent>>(|_state, ctx, metadata, env| {
-    let renderer = unsafe { ctx.renderer() };
-    let widget = renderer.render_any(metadata.content, env);
-    widget.set_can_target(true);
-    let expected = metadata.value.event();
-    let handler = Rc::new(RefCell::new(metadata.value));
-    let env = env.clone();
-    let motion = gtk4::EventControllerMotion::new();
-    match expected {
-        Event::HoverEnter => {
+        // Metadata<OnEvent> - handle hover events
+        dispatcher.register::<Metadata<OnEvent>>(|_state, ctx, metadata, env| {
+            let renderer = unsafe { ctx.renderer() };
+            let widget = renderer.render_any(metadata.content, env);
+            widget.set_can_target(true);
+            let expected = metadata.value.event();
+            let handler = Rc::new(RefCell::new(metadata.value));
             let env = env.clone();
-            let handler = handler.clone();
-            motion.connect_enter(move |_, _, _| {
-                if let Ok(mut on_event) = handler.try_borrow_mut() {
-                    on_event.handle(&env);
+            let motion = gtk4::EventControllerMotion::new();
+            match expected {
+                Event::HoverEnter => {
+                    let env = env.clone();
+                    let handler = handler.clone();
+                    motion.connect_enter(move |_, _, _| {
+                        if let Ok(mut on_event) = handler.try_borrow_mut() {
+                            on_event.handle(&env);
+                        }
+                    });
                 }
-            });
-        }
-        Event::HoverMove => {
-            let env = env.clone();
-            let handler = handler.clone();
-            motion.connect_motion(move |_, x, y| {
-                if let Ok(mut on_event) = handler.try_borrow_mut() {
-                    let hover_env = env.extending(HoverEvent::new(waterui_core::layout::Point::new(
-                        x as f32,
-                        y as f32,
-                    )));
-                    on_event.handle(&hover_env);
+                Event::HoverMove => {
+                    let env = env.clone();
+                    let handler = handler.clone();
+                    motion.connect_motion(move |_, x, y| {
+                        if let Ok(mut on_event) = handler.try_borrow_mut() {
+                            let hover_env = env.extending(HoverEvent::new(
+                                waterui_core::layout::Point::new(x as f32, y as f32),
+                            ));
+                            on_event.handle(&hover_env);
+                        }
+                    });
                 }
-            });
-        }
-        Event::HoverExit => {
-            let env = env.clone();
-            let handler = handler.clone();
-            motion.connect_leave(move |_| {
-                if let Ok(mut on_event) = handler.try_borrow_mut() {
-                    on_event.handle(&env);
+                Event::HoverExit => {
+                    let env = env.clone();
+                    let handler = handler.clone();
+                    motion.connect_leave(move |_| {
+                        if let Ok(mut on_event) = handler.try_borrow_mut() {
+                            on_event.handle(&env);
+                        }
+                    });
                 }
-            });
-        }
-        _ => panic!("unsupported OnEvent variant on GTK backend"),
-    }
-    widget.add_controller(motion);
-    widget
-});
+                _ => panic!("unsupported OnEvent variant on GTK backend"),
+            }
+            widget.add_controller(motion);
+            widget
+        });
 
         // Metadata<GestureObserver> - attach gesture recognizers
         dispatcher.register::<Metadata<GestureObserver>>(|_state, ctx, metadata, env| {

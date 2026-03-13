@@ -36,6 +36,7 @@
 use nami::{SignalExt, constant, signal::IntoComputed};
 use waterui_core::Computed;
 use waterui_graphics::color::Color;
+pub use waterui_layout::UnitPoint;
 
 /// A color stop in a gradient, consisting of a color and its position.
 ///
@@ -79,70 +80,6 @@ impl ColorStop {
             color: color.into_computed(),
             position: position.clamp(0.0, 1.0),
         }
-    }
-}
-
-/// A point in normalized unit coordinate space (0.0 to 1.0).
-///
-/// Unit points are used to specify gradient start/end points and centers
-/// in a resolution-independent way. The point (0.0, 0.0) is the top-left
-/// corner and (1.0, 1.0) is the bottom-right corner.
-///
-/// # Predefined Constants
-///
-/// Common positions are available as constants:
-/// - `UnitPoint::TOP_LEADING` - Top-left corner
-/// - `UnitPoint::TOP` - Top center
-/// - `UnitPoint::TOP_TRAILING` - Top-right corner
-/// - `UnitPoint::LEADING` - Left center
-/// - `UnitPoint::CENTER` - Center
-/// - `UnitPoint::TRAILING` - Right center
-/// - `UnitPoint::BOTTOM_LEADING` - Bottom-left corner
-/// - `UnitPoint::BOTTOM` - Bottom center
-/// - `UnitPoint::BOTTOM_TRAILING` - Bottom-right corner
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct UnitPoint {
-    /// Horizontal position (0.0 = left, 1.0 = right).
-    pub x: f32,
-    /// Vertical position (0.0 = top, 1.0 = bottom).
-    pub y: f32,
-}
-
-impl UnitPoint {
-    /// Top-left corner (0.0, 0.0).
-    pub const TOP_LEADING: Self = Self { x: 0.0, y: 0.0 };
-    /// Top center (0.5, 0.0).
-    pub const TOP: Self = Self { x: 0.5, y: 0.0 };
-    /// Top-right corner (1.0, 0.0).
-    pub const TOP_TRAILING: Self = Self { x: 1.0, y: 0.0 };
-    /// Left center (0.0, 0.5).
-    pub const LEADING: Self = Self { x: 0.0, y: 0.5 };
-    /// Center (0.5, 0.5).
-    pub const CENTER: Self = Self { x: 0.5, y: 0.5 };
-    /// Right center (1.0, 0.5).
-    pub const TRAILING: Self = Self { x: 1.0, y: 0.5 };
-    /// Bottom-left corner (0.0, 1.0).
-    pub const BOTTOM_LEADING: Self = Self { x: 0.0, y: 1.0 };
-    /// Bottom center (0.5, 1.0).
-    pub const BOTTOM: Self = Self { x: 0.5, y: 1.0 };
-    /// Bottom-right corner (1.0, 1.0).
-    pub const BOTTOM_TRAILING: Self = Self { x: 1.0, y: 1.0 };
-
-    /// Creates a unit point at the specified coordinates.
-    ///
-    /// # Arguments
-    ///
-    /// * `x` - Horizontal position (0.0 = left, 1.0 = right)
-    /// * `y` - Vertical position (0.0 = top, 1.0 = bottom)
-    #[must_use]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
-impl From<(f32, f32)> for UnitPoint {
-    fn from((x, y): (f32, f32)) -> Self {
-        Self::new(x, y)
     }
 }
 

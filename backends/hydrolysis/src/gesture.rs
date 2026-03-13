@@ -132,7 +132,12 @@ impl GestureBinding {
         }
     }
 
-    fn input(&mut self, input: GestureInput, env: &Environment, bounds: vello::kurbo::Rect) -> bool {
+    fn input(
+        &mut self,
+        input: GestureInput,
+        env: &Environment,
+        bounds: vello::kurbo::Rect,
+    ) -> bool {
         let detection = self.detector.input(input);
         let Some(payload) = detection.recognized else {
             return false;
@@ -159,10 +164,7 @@ fn local_gesture_point(point: GesturePoint, bounds: vello::kurbo::Rect) -> Gestu
     GesturePoint::new(point.x - bounds.x0 as f32, point.y - bounds.y0 as f32)
 }
 
-fn localize_gesture_payload(
-    payload: GesturePayload,
-    bounds: vello::kurbo::Rect,
-) -> GesturePayload {
+fn localize_gesture_payload(payload: GesturePayload, bounds: vello::kurbo::Rect) -> GesturePayload {
     match payload {
         GesturePayload::None => GesturePayload::None,
         GesturePayload::Tap(mut event) => {
@@ -258,7 +260,8 @@ impl GestureEngine {
         env: &Environment,
     ) -> bool {
         let mut changed = self.replace_active_recognizers(point, at, env);
-        changed |= self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
+        changed |=
+            self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
         changed
     }
 
@@ -451,10 +454,7 @@ impl GestureEngine {
             .any(|target| Rc::ptr_eq(&target.recognizer, &recognizer.recognizer))
     }
 
-    fn push_unique_recognizer(
-        recognizers: &mut Vec<GestureTarget>,
-        candidate: &GestureTarget,
-    ) {
+    fn push_unique_recognizer(recognizers: &mut Vec<GestureTarget>, candidate: &GestureTarget) {
         if recognizers
             .iter()
             .any(|recognizer| Rc::ptr_eq(&recognizer.recognizer, &candidate.recognizer))
