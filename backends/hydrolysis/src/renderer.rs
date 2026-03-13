@@ -711,6 +711,25 @@ struct EmbeddedGpuSurfaceRuntime {
     last_frame_time: Instant,
 }
 
+struct AppliedFilterRuntime {
+    filter: AppliedFilter,
+    setup_complete: bool,
+}
+
+impl AppliedFilterRuntime {
+    fn new(filter: AppliedFilter) -> Self {
+        Self {
+            filter,
+            setup_complete: false,
+        }
+    }
+
+    fn replace_filter(&mut self, filter: AppliedFilter) {
+        self.filter = filter;
+        self.setup_complete = false;
+    }
+}
+
 #[derive(Clone)]
 enum LayerShape {
     Rect(vello::kurbo::Rect),
@@ -9367,10 +9386,23 @@ impl HydrolysisRenderer {
         metadata: Metadata<AppliedFilter>,
         env: &Environment,
     ) {
-        let Metadata {
-            content,
-            value: mut filter,
-        } = metadata;
+        let Metadata { content, value } = metadata;
+        let incoming_filter = Rc::new(RefCell::new(Some(value)));
+        let init_filter = Rc::clone(&incoming_filter);
+        let runtime = local_shared(env, move || {
+            RefCell::new(AppliedFilterRuntime::new(
+                init_filter.borrow_mut().take().expect(
+                    "hydrolysis AppliedFilter local state initializer must run exactly once",
+                ),
+            ))
+        });
+        if let Some(filter) = incoming_filter.borrow_mut().take() {
+            let incoming_type = filter.concrete_type_id();
+            let mut runtime = runtime.borrow_mut();
+            if runtime.filter.concrete_type_id() != incoming_type {
+                runtime.replace_filter(filter);
+            }
+        }
         let renderer = unsafe { ctx.renderer() };
         let (device_ptr, queue_ptr) = renderer.state().frame_resource_ptrs();
         let device = unsafe { &*device_ptr };
@@ -9421,14 +9453,18 @@ impl HydrolysisRenderer {
             output_format: wgpu::TextureFormat::Rgba8Unorm,
             pipeline_cache: None,
         };
-        match pollster::block_on(filter.setup(&filter_context)) {
-            Ok(()) => {}
-            Err(err) => {
-                panic!("hydrolysis filter setup failed: {err}");
+        let mut runtime = runtime.borrow_mut();
+        if !runtime.setup_complete {
+            match pollster::block_on(runtime.filter.setup(&filter_context)) {
+                Ok(()) => {}
+                Err(err) => {
+                    panic!("hydrolysis filter setup failed: {err}");
+                }
             }
+            runtime.setup_complete = true;
         }
-        filter.sync_targets();
-        let (output_width, output_height) = filter.output_size(width, height);
+        runtime.filter.sync_targets();
+        let (output_width, output_height) = runtime.filter.output_size(width, height);
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_applied_filter_output"),
             size: wgpu::Extent3d {
@@ -9465,12 +9501,13 @@ impl HydrolysisRenderer {
             width: output_width,
             height: output_height,
         };
-        let needs_redraw = match filter.render(&input, &output) {
-            Ok(needs_redraw) => needs_redraw || filter.redraw_hint(),
+        let needs_redraw = match runtime.filter.render(&input, &output) {
+            Ok(needs_redraw) => needs_redraw || runtime.filter.redraw_hint(),
             Err(err) => {
                 panic!("hydrolysis filter render failed: {err}");
             }
         };
+        drop(runtime);
         if needs_redraw {
             renderer.request_rebuild();
         }
@@ -12598,6 +12635,20 @@ fn local_state_overlay_env(base: &Environment, current: &Environment) -> Environ
     current
         .get::<LocalStateScope>()
         .map_or_else(|| base.clone(), |scope| base.extending(scope.clone()))
+}
+
+fn local_shared<T: 'static>(env: &Environment, init: impl FnOnce() -> T + 'static) -> Rc<T> {
+    let scope = env
+        .get::<LocalStateScope>()
+        .unwrap_or_else(|| {
+            panic!("hydrolysis requires renderer LocalStateScope support for internal state")
+        })
+        .clone();
+    env.get::<LocalStateStore>()
+        .unwrap_or_else(|| {
+            panic!("hydrolysis requires renderer LocalStateStore support for internal state")
+        })
+        .get_or_init(&scope, init)
 }
 
 fn normalize_layout_view_with_budget(
