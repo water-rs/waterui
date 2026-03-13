@@ -21,9 +21,10 @@
 //!
 //! ## [`SystemIcon`] - Platform-Native Icons
 //!
-//! Renders platform-native icons:
+//! Renders platform-native icons where the backend provides a native system icon catalog.
 //! - Apple: SF Symbols
-//! - Android: Material Icons (with mapping)
+//!
+//! For cross-platform icons, prefer icon-pack crates such as Material, Lucide, Font Awesome, or Native packs.
 //!
 //! ```ignore
 //! use waterui_icon::SystemIcon;
@@ -57,7 +58,7 @@ use waterui_str::Str;
 /// SystemIcon component representing a platform system icon by name.
 ///
 /// On Apple platforms, this renders SF Symbols.
-/// On Android, this maps to Material Icons (with placeholder fallback for unmapped icons).
+/// Other backends may choose not to implement `SystemIcon`; for cross-platform usage, prefer icon-pack crates.
 ///
 /// # Example
 ///

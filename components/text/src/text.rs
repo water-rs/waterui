@@ -1,71 +1,27 @@
+use alloc::{
+    rc::Rc,
+    string::{String, ToString},
+};
+use core::fmt::Display;
+use core::ops::{Add, AddAssign};
+
+use nami::signal::{IntoComputed, IntoSignal};
+use nami::{Computed, Signal, SignalExt};
+use waterui_core::configurable;
+use waterui_core::dynamic::watch;
+use waterui_core::layout::HorizontalAlignment;
+use waterui_core::{AnyView, Environment, View};
+use waterui_graphics::color::Color;
+use waterui_locale::{Locale, TranslationCatalog, locale_binding};
+use waterui_str::Str;
+
 use crate::font::FontWeight;
 use crate::locale::Formatter;
 use crate::{font::Font, styled::StyledStr};
-use alloc::string::ToString;
-use core::fmt::Display;
-use core::ops::{Add, AddAssign};
-use nami::impl_constant;
-use nami::signal::IntoSignal;
-use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_core::configurable;
-use waterui_core::layout::HorizontalAlignment;
-use waterui_graphics::color::Color;
 
-configurable!(
-    /// A view that displays one or more lines of read-only text.
-    ///
-    /// ![Text](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text.svg)
-    ///
-    /// Text sizes itself to fit its content and never stretches to fill extra space.
-    /// When the available width is limited, it wraps to multiple lines automatically.
-    /// If both width and height are constrained, it truncates with "..." at the end.
-    ///
-    /// # Layout Behavior
-    ///
-    /// - **Sizing:** Fits its content naturally, like a label
-    /// - **In stacks:** Takes only the space it needs, leaving room for siblings
-    /// - **Wrapping:** Automatically wraps when width is constrained via `.frame()`
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Simple text
-    /// text("Hello, World!")
-    ///
-    /// // Styled text
-    /// text("Important").bold().title()
-    ///
-    /// // Enable wrapping with fixed width
-    /// text("Long paragraph...").frame().width(200.0)
-    ///
-    /// // Push text apart in a row
-    /// hstack((text("Name"), spacer(), text("Value")))
-    /// ```
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-
-    //
-    // Measurement Protocol (multi-pass):
-    //   Pass 1 - PROBE:    proposal(nil, nil)    → (single_line_width, line_height)
-    //   Pass 2 - WRAP:     proposal(w, nil)      → (actual_width ≤ w, wrapped_height)
-    //   Pass 3 - TRUNCATE: proposal(w, h)        → (w, h) with ellipsis if needed
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    #[derive(Debug)]
-    Text,
-    TextConfig
-);
-
+/// Native text payload consumed by platform backends.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// Configuration for text components.
-///
-/// This struct contains all the properties needed to render text,
-/// including the content string and font styling information.
 pub struct TextConfig {
     /// The rich text content to be displayed.
     pub content: Computed<StyledStr>,
@@ -73,42 +29,24 @@ pub struct TextConfig {
     pub paragraph_alignment: Computed<HorizontalAlignment>,
 }
 
-impl<T> Add<T> for Text
-where
-    T: Into<Text>,
-{
-    type Output = Self;
-    fn add(self, rhs: T) -> Self::Output {
-        let rhs = rhs.into();
-        let rhs_content = rhs.0.content;
-        self.0
-            .content
-            .zip(&rhs_content)
-            .map(|(a, b)| a + b)
-            .computed()
-            .into()
-    }
+configurable!(RawText, TextConfig);
+
+#[derive(Clone)]
+enum TextKind {
+    Raw(TextConfig),
+    Localized {
+        resolver: Rc<dyn Fn(&Environment, &Locale) -> TextConfig>,
+    },
 }
 
-impl<T> AddAssign<T> for Text
-where
-    T: Into<Text>,
-{
-    fn add_assign(&mut self, rhs: T) {
-        let rhs = rhs.into();
-        let rhs_content = rhs.0.content;
-        self.0.content = self
-            .0
-            .content
-            .zip(&rhs_content)
-            .map(|(a, b)| a + b)
-            .computed();
-    }
-}
+/// Semantic text view with integrated localization support.
+#[must_use]
+#[derive(Clone)]
+pub struct Text(TextKind);
 
-impl Clone for Text {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl core::fmt::Debug for Text {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Text").finish_non_exhaustive()
     }
 }
 
@@ -124,145 +62,341 @@ impl core::cmp::PartialOrd for Text {
     }
 }
 
+/// Conversion trait for semantic text construction.
+pub trait IntoText {
+    /// Convert a value into semantic text.
+    fn into_text(self) -> Text;
+}
+
+impl IntoText for Text {
+    fn into_text(self) -> Text {
+        self
+    }
+}
+
+impl IntoText for &'static str {
+    fn into_text(self) -> Text {
+        Text::localized(self)
+    }
+}
+
+impl IntoText for String {
+    fn into_text(self) -> Text {
+        Text::verbatim(self)
+    }
+}
+
+impl IntoText for Str {
+    fn into_text(self) -> Text {
+        Text::verbatim(self)
+    }
+}
+
+impl IntoText for StyledStr {
+    fn into_text(self) -> Text {
+        Text::computed(self)
+    }
+}
+
+impl From<&'static str> for Text {
+    fn from(value: &'static str) -> Self {
+        value.into_text()
+    }
+}
+
+impl From<String> for Text {
+    fn from(value: String) -> Self {
+        value.into_text()
+    }
+}
+
+impl From<Str> for Text {
+    fn from(value: Str) -> Self {
+        value.into_text()
+    }
+}
+
+impl From<StyledStr> for Text {
+    fn from(value: StyledStr) -> Self {
+        value.into_text()
+    }
+}
+
+impl<T> Add<T> for Text
+where
+    T: IntoText,
+{
+    type Output = Self;
+
+    fn add(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into_text();
+        let rhs_content = rhs.content();
+        Self::computed(self.content().zip(&rhs_content).map(|(a, b)| a + b))
+    }
+}
+
+impl<T> AddAssign<T> for Text
+where
+    T: IntoText,
+{
+    fn add_assign(&mut self, rhs: T) {
+        let rhs = rhs.into_text();
+        let rhs_content = rhs.content();
+        *self = Self::computed(self.content().zip(&rhs_content).map(|(a, b)| a + b));
+    }
+}
+
 impl Default for Text {
     fn default() -> Self {
-        text("")
+        Text::verbatim("")
     }
 }
 
 impl Text {
-    /// Creates a new text component.
-    pub fn new(content: impl IntoComputed<StyledStr>) -> Self {
-        Self(TextConfig {
-            content: content.into_signal().map(StyledStr::from).computed(),
-            paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
+    /// Creates semantic text using the default conversion rules.
+    #[must_use]
+    pub fn new(content: impl IntoText) -> Self {
+        content.into_text()
+    }
+
+    /// Creates raw text from a computed styled string.
+    #[must_use]
+    pub fn computed(content: impl IntoComputed<StyledStr>) -> Self {
+        Self(TextKind::Raw(Self::__config(content)))
+    }
+
+    /// Creates verbatim text that never consults the translation catalog.
+    #[must_use]
+    pub fn verbatim(content: impl Into<Str>) -> Self {
+        Self::computed(StyledStr::plain(content.into()))
+    }
+
+    /// Creates localized text that resolves through the runtime translation catalog.
+    #[must_use]
+    pub fn localized(key: &'static str) -> Self {
+        Self(TextKind::Localized {
+            resolver: Rc::new(move |env, locale| {
+                let translated = env
+                    .get::<TranslationCatalog>()
+                    .and_then(|catalog| catalog.lookup_text(locale, key))
+                    .unwrap_or_else(|| Str::from_static(key));
+                Self::__config(StyledStr::plain(translated))
+            }),
         })
     }
 
-    /// Creates a text component from any type implementing `Display`.
-    ///
-    /// This is a convenience method for creating text from values like
-    /// numbers, booleans, or other displayable types.
-    pub fn display<T: Display>(source: impl Signal<Output = T>) -> Self {
-        Self::new(source.map(|value| value.to_string()))
+    /// Creates text from a locale-aware resolver used by the `text!` macro.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __localized_with(
+        resolver: impl Fn(&Environment, &Locale) -> TextConfig + 'static,
+    ) -> Self {
+        Self(TextKind::Localized {
+            resolver: Rc::new(resolver),
+        })
     }
 
-    /// Creates a text component using a custom formatter.
+    /// Resolves semantic text into a raw config using the provided environment and locale.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __resolve_with(&self, env: &Environment, locale: &Locale) -> TextConfig {
+        match &self.0 {
+            TextKind::Raw(config) => config.clone(),
+            TextKind::Localized { resolver } => resolver(env, locale),
+        }
+    }
+
+    /// Resolves semantic text into a raw config using the environment's effective locale.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __resolve(&self, env: &Environment) -> TextConfig {
+        let locale = locale_binding(env).get();
+        self.__resolve_with(env, &locale)
+    }
+
+    /// Converts text into an FFI-ready raw config without an environment.
     ///
-    /// This allows for specialized formatting of values, such as
-    /// locale-specific number or date formatting.
+    /// # Panics
+    ///
+    /// Panics when called on localized text because localization must be resolved
+    /// from a concrete environment in the component `body(env)` path.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __into_ffi_without_env(self) -> TextConfig {
+        match self.0 {
+            TextKind::Raw(config) => config,
+            TextKind::Localized { .. } => panic!(
+                "Localized Text cannot cross FFI directly; resolve it in the component body with Text::__resolve(env) before converting to native config"
+            ),
+        }
+    }
+
+    /// Builds a raw text config from styled content.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __config(content: impl IntoComputed<StyledStr>) -> TextConfig {
+        TextConfig {
+            content: content.into_signal().map(StyledStr::from).computed(),
+            paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
+        }
+    }
+
+    /// Creates text from any displayable signal.
+    #[must_use]
+    pub fn display<T: Display>(source: impl Signal<Output = T> + Clone + 'static) -> Self {
+        Self::computed(source.map(|value| value.to_string()))
+    }
+
+    /// Creates locale-formatted text.
+    #[must_use]
     pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T> + 'static) -> Self {
-        Self::new(
+        Self::computed(
             value
                 .into_signal()
                 .map(move |value| formatter.format(&value)),
         )
     }
 
-    /// Returns the computed content of this text component.
+    /// Returns the computed content for raw text.
     ///
-    /// This provides access to the reactive text content that will
-    /// automatically update when the underlying data changes.
+    /// # Panics
+    ///
+    /// Panics for localized text because the resolved content depends on the environment.
     #[must_use]
     pub fn content(&self) -> Computed<StyledStr> {
-        self.0.content.clone()
+        match &self.0 {
+            TextKind::Raw(config) => config.content.clone(),
+            TextKind::Localized { .. } => {
+                panic!(
+                    "Text::content() is only available for raw text; localized text depends on environment locale"
+                )
+            }
+        }
     }
 
-    /// Returns the paragraph alignment for this text component.
+    /// Returns the paragraph alignment for raw text.
+    ///
+    /// # Panics
+    ///
+    /// Panics for localized text because the resolved configuration depends on the environment.
     #[must_use]
     pub fn paragraph_alignment(&self) -> Computed<HorizontalAlignment> {
-        self.0.paragraph_alignment.clone()
+        match &self.0 {
+            TextKind::Raw(config) => config.paragraph_alignment.clone(),
+            TextKind::Localized { .. } => {
+                panic!(
+                    "Text::paragraph_alignment() is only available for raw text; localized text depends on environment locale"
+                )
+            }
+        }
+    }
+
+    fn map_config(self, f: impl Fn(TextConfig) -> TextConfig + 'static) -> Self {
+        match self.0 {
+            TextKind::Raw(config) => Self(TextKind::Raw(f(config))),
+            TextKind::Localized { resolver } => Self(TextKind::Localized {
+                resolver: Rc::new(move |env, locale| f(resolver(env, locale))),
+            }),
+        }
     }
 
     /// Sets the font for this text component.
-    ///
-    /// This allows customizing the typography, including size, weight,
-    /// style, and other font properties.
     #[must_use]
-    pub fn font(mut self, font: impl IntoSignal<Font>) -> Self {
+    pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
         let font = font.into_signal();
-        self.0.content = self
-            .0
-            .content
-            .zip(&font)
-            .map(|(content, font)| content.font(font))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&font)
+                .map(|(content, font)| content.font(font))
+                .computed();
+            config
+        })
     }
 
     /// Sets the font size.
     #[must_use]
-    pub fn size(mut self, size: impl IntoSignal<f64>) -> Self {
-        // A little sad we have to do this conversion here
+    pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
         #[allow(clippy::cast_possible_truncation)]
         let size = size.into_signal().map(|s| s as f32);
-        self.0.content = self
-            .0
-            .content
-            .zip(&size)
-            .map(|(content, size)| content.size(size))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&size)
+                .map(|(content, size)| content.size(size))
+                .computed();
+            config
+        })
     }
 
     /// Sets the font weight.
     #[must_use]
-    pub fn weight(mut self, weight: impl IntoSignal<FontWeight>) -> Self {
+    pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
         let weight = weight.into_signal();
-        self.0.content = self
-            .0
-            .content
-            .zip(&weight)
-            .map(|(content, weight)| content.weight(weight))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&weight)
+                .map(|(content, weight)| content.weight(weight))
+                .computed();
+            config
+        })
     }
 
     /// Applies an underline to the text.
     #[must_use]
-    pub fn underline(mut self, underline: impl IntoSignal<bool>) -> Self {
+    pub fn underline(self, underline: impl IntoSignal<bool> + 'static) -> Self {
         let underline = underline.into_signal();
-        self.0.content = self
-            .0
-            .content
-            .zip(&underline)
-            .map(|(content, underline)| content.underline(underline))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&underline)
+                .map(|(content, underline)| content.underline(underline))
+                .computed();
+            config
+        })
     }
 
     /// Sets the text color.
-    ///
-    /// This sets an explicit color for this text, overriding any inherited
-    /// foreground color from the environment.
     #[must_use]
-    pub fn color(mut self, color: impl Into<Color>) -> Self {
+    pub fn color(self, color: impl Into<Color>) -> Self {
         let color = color.into();
-        self.0.content = self
-            .0
-            .content
-            .map(move |content| content.foreground(color.clone()))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .map({
+                    let color = color.clone();
+                    move |content| content.foreground(color.clone())
+                })
+                .computed();
+            config
+        })
     }
 
     /// Sets the background color for the text.
     #[must_use]
-    pub fn background_color(mut self, color: impl Into<Color>) -> Self {
+    pub fn background_color(self, color: impl Into<Color>) -> Self {
         let color = color.into();
-        self.0.content = self
-            .0
-            .content
-            .map(move |content| content.background_color(color.clone()))
-            .computed();
-        self
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .map({
+                    let color = color.clone();
+                    move |content| content.background_color(color.clone())
+                })
+                .computed();
+            config
+        })
     }
 
     /// Sets the paragraph alignment for multiline text layout.
     #[must_use]
-    pub fn text_align(mut self, alignment: impl IntoSignal<HorizontalAlignment>) -> Self {
-        self.0.paragraph_alignment = alignment.into_signal().computed();
-        self
+    pub fn text_align(self, alignment: impl IntoSignal<HorizontalAlignment> + 'static) -> Self {
+        let alignment = alignment.into_signal().computed();
+        self.map_config(move |mut config| {
+            config.paragraph_alignment = alignment.clone();
+            config
+        })
     }
 
     /// Sets the font to bold.
@@ -273,15 +407,15 @@ impl Text {
 
     /// Sets the italic style.
     #[must_use]
-    pub fn italic(mut self, is_italic: impl Signal<Output = bool>) -> Self {
-        let is_italic = is_italic;
-        self.0.content = self
-            .0
-            .content
-            .zip(&is_italic)
-            .map(|(content, is_italic)| content.italic(is_italic))
-            .computed();
-        self
+    pub fn italic(self, is_italic: impl Signal<Output = bool> + 'static) -> Self {
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&is_italic)
+                .map(|(content, is_italic)| content.italic(is_italic))
+                .computed();
+            config
+        })
     }
 }
 
@@ -289,7 +423,6 @@ macro_rules! impl_text_font {
     ($(($name:ident, $value:expr)),+) => {
         $(
             impl Text {
-                #[doc = concat!("Sets the font to ", stringify!($name), " style.")]
                 #[must_use]
                 pub fn $name(self) -> Self {
                     self.font($value)
@@ -307,23 +440,24 @@ impl_text_font!(
     (caption, crate::font::Caption),
     (footnote, crate::font::Footnote)
 );
-/// Creates a new text component with the given content.
-///
-/// This is a convenience function equivalent to `Text::new(text)`.
-///
-/// # Tip
-/// If you need formatted text, please use the `text!` macro instead.
+
 #[must_use]
-pub fn text(text: impl IntoComputed<StyledStr>) -> Text {
+pub fn text(text: impl IntoText) -> Text {
     Text::new(text)
 }
 
-impl<T> From<T> for Text
-where
-    T: IntoComputed<StyledStr>,
-{
-    fn from(value: T) -> Self {
-        Self::new(value)
+impl View for Text {
+    fn body(self, env: &Environment) -> impl View {
+        match self.0 {
+            TextKind::Raw(config) => AnyView::new(RawText(config)),
+            TextKind::Localized { resolver } => {
+                let locale = locale_binding(env);
+                let env = env.clone();
+                AnyView::new(watch(locale, move |locale| {
+                    RawText(resolver(&env, &locale))
+                }))
+            }
+        }
     }
 }
 
@@ -333,12 +467,11 @@ mod tests {
 
     #[test]
     fn text_align_updates_paragraph_alignment_signal() {
-        let text = Text::new(StyledStr::plain("hello")).text_align(HorizontalAlignment::Trailing);
+        let text =
+            Text::computed(StyledStr::plain("hello")).text_align(HorizontalAlignment::Trailing);
         assert_eq!(
             text.paragraph_alignment().get(),
             HorizontalAlignment::Trailing
         );
     }
 }
-
-impl_constant!(Text, TextConfig);
