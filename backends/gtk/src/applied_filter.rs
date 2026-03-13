@@ -1,6 +1,3 @@
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -22,6 +19,13 @@ struct AppliedFilterState {
     dirty: bool,
     filtered_output_revealed: bool,
     last_size: Option<(i32, i32)>,
+}
+
+struct RenderedFilterOutput {
+    width: u32,
+    height: u32,
+    rgba8: Vec<u8>,
+    needs_redraw: bool,
 }
 
 impl AppliedFilterState {
@@ -117,7 +121,7 @@ fn render_if_needed(state: &Rc<RefCell<AppliedFilterState>>) {
         None => return,
     };
     let (capture_bytes, capture_stride) = download_texture_bytes(&capture_texture);
-    let output_bytes = render_filter_output(
+    let filtered_output = render_filter_output(
         state,
         width as u32,
         height as u32,
@@ -126,11 +130,12 @@ fn render_if_needed(state: &Rc<RefCell<AppliedFilterState>>) {
     );
 
     let memory_texture = gdk4::MemoryTexture::new(
-        width,
-        height,
+        i32::try_from(filtered_output.width).expect("GTK AppliedFilter output width must fit i32"),
+        i32::try_from(filtered_output.height)
+            .expect("GTK AppliedFilter output height must fit i32"),
         gdk4::MemoryFormat::R8g8b8a8,
-        &Bytes::from_owned(output_bytes),
-        (width as usize) * 4,
+        &Bytes::from_owned(filtered_output.rgba8),
+        (filtered_output.width as usize) * 4,
     );
 
     let mut state = state.borrow_mut();
@@ -140,7 +145,7 @@ fn render_if_needed(state: &Rc<RefCell<AppliedFilterState>>) {
         state.capture_host.set_opacity(0.0);
         state.filtered_output_revealed = true;
     }
-    state.dirty = state.filter.redraw_hint();
+    state.dirty = filtered_output.needs_redraw;
 }
 
 fn capture_widget_texture(state: &Rc<RefCell<AppliedFilterState>>) -> Option<gdk4::Texture> {
@@ -181,7 +186,7 @@ fn render_filter_output(
     height: u32,
     input_rgba: &[u8],
     input_stride: usize,
-) -> Vec<u8> {
+) -> RenderedFilterOutput {
     assert!(width > 0, "GTK AppliedFilter width must be positive");
     assert!(height > 0, "GTK AppliedFilter height must be positive");
     let stride_u32 =
@@ -208,12 +213,15 @@ fn render_filter_output(
             output_format: wgpu::TextureFormat::Rgba8Unorm,
             pipeline_cache: guard.pipeline_cache.as_ref(),
         };
-        ready_now_or_panic(
-            state.filter.setup(&filter_context),
-            "gtk_applied_filter::render_filter_output::setup",
-        );
+        match pollster::block_on(state.filter.setup(&filter_context)) {
+            Ok(()) => {}
+            Err(err) => {
+                panic!("GTK AppliedFilter setup failed: {err}");
+            }
+        }
         state.setup_done = true;
     }
+    let (output_width, output_height) = state.filter.output_size(width, height);
 
     let texture_size = wgpu::Extent3d {
         width,
@@ -248,7 +256,11 @@ fn render_filter_output(
 
     let output_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("gtk_applied_filter_output"),
-        size: texture_size,
+        size: wgpu::Extent3d {
+            width: output_width,
+            height: output_height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -275,13 +287,23 @@ fn render_filter_output(
         texture: &output_texture,
         view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
         format: wgpu::TextureFormat::Rgba8Unorm,
-        width,
-        height,
+        width: output_width,
+        height: output_height,
     };
-    let needs_redraw = state.filter.render(&input, &output) || state.filter.redraw_hint();
+    let needs_redraw = match state.filter.render(&input, &output) {
+        Ok(needs_redraw) => needs_redraw || state.filter.redraw_hint(),
+        Err(err) => {
+            panic!("GTK AppliedFilter render failed: {err}");
+        }
+    };
     state.dirty = needs_redraw;
 
-    readback_texture_rgba8(device, queue, &output_texture, width, height)
+    RenderedFilterOutput {
+        width: output_width,
+        height: output_height,
+        rgba8: readback_texture_rgba8(device, queue, &output_texture, output_width, output_height),
+        needs_redraw,
+    }
 }
 
 fn readback_texture_rgba8(
@@ -353,17 +375,4 @@ fn readback_texture_rgba8(
     drop(mapped);
     buffer.unmap();
     output
-}
-
-fn ready_now_or_panic<F>(future: F, scope: &'static str) -> F::Output
-where
-    F: Future,
-{
-    let mut future = future;
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let mut cx = Context::from_waker(core::task::Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("{scope}: future returned Pending in synchronous path"),
-    }
 }

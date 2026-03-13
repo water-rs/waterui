@@ -555,7 +555,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.effect_wrapper.erased.setup(&ctx);
-            crate::ready_now_or_panic(setup_future, "waterui_view_effect_render::setup");
+            pollster::block_on(setup_future);
             state.initialized = true;
         }
 
