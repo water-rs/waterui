@@ -101,9 +101,13 @@ impl Menu {
     #[doc(hidden)]
     #[must_use]
     pub fn __resolve_with(self, env: &Environment, locale: &Locale) -> ResolvedNestedMenu {
+        let label = self.label;
+        let resolved_label = label.__text().__resolve_with(env, locale);
+        let icon = label.__icon();
         ResolvedNestedMenu {
-            label: self.label.__text().__resolve_with(env, locale),
-            icon: self.label.__icon(),
+            label: resolved_label,
+            semantic_label: label,
+            icon,
             items: resolve_menu_items_with_locale(self.items, env, locale),
         }
     }
@@ -155,9 +159,13 @@ impl Command {
     #[doc(hidden)]
     #[must_use]
     pub fn __resolve_with(self, env: &Environment, locale: &Locale) -> ResolvedCommand {
+        let label = self.label;
+        let resolved_label = label.__text().__resolve_with(env, locale);
+        let icon = label.__icon();
         ResolvedCommand {
-            label: self.label.__text().__resolve_with(env, locale),
-            icon: self.label.__icon(),
+            label: resolved_label,
+            semantic_label: label,
+            icon,
             action: self.action,
             disabled: self.disabled,
             selected: self.selected,
@@ -540,6 +548,8 @@ pub fn resolve_menu_bar_items(
 pub struct ResolvedCommand {
     /// Resolved text config for native menu presentation.
     pub label: TextConfig,
+    /// The full semantic label retained for self-drawn menu renderers.
+    pub semantic_label: Label,
     /// Optional platform icon shown alongside the label.
     pub icon: Option<SystemIcon>,
     /// Shared action invoked by the native backend.
@@ -560,6 +570,8 @@ impl_constant!(ResolvedCommand);
 pub struct ResolvedNestedMenu {
     /// Resolved text config for the nested menu title.
     pub label: TextConfig,
+    /// The full semantic label retained for self-drawn menu renderers.
+    pub semantic_label: Label,
     /// Optional platform icon shown alongside the title.
     pub icon: Option<SystemIcon>,
     /// Resolved nested menu items.

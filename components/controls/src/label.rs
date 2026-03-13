@@ -117,7 +117,8 @@ impl Label {
     ///
     /// If the icon is a direct [`SystemIcon`], native menus can reuse its
     /// semantic representation. Other icon views remain fully supported for
-    /// ordinary UI rendering but do not currently project into semantic menus.
+    /// ordinary UI rendering and hydrolysis popup menus, but native semantic
+    /// menus currently only project [`SystemIcon`].
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
         self.icon = Some(LabelIcon::new(icon));
