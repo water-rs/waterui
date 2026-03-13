@@ -3,6 +3,7 @@
 use core::ops::RangeInclusive;
 
 use nami::Binding;
+use waterui_controls::IntoLabel;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -146,8 +147,8 @@ impl DatePicker {
 
     /// Sets the label for the date picker.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 
@@ -178,23 +179,15 @@ impl DatePickerRangeValue for PrimitiveDateTime {
 }
 
 fn map_date_binding(date: &Binding<Date>) -> Binding<PrimitiveDateTime> {
-    Binding::mapping(
-        date,
-        start_of_day,
-        |binding, value| {
-            binding.set(value.date());
-        },
-    )
+    Binding::mapping(date, start_of_day, |binding, value| {
+        binding.set(value.date());
+    })
 }
 
 fn map_time_binding(time: &Binding<Time>) -> Binding<PrimitiveDateTime> {
-    Binding::mapping(
-        time,
-        anchor_time,
-        |binding, value| {
-            binding.set(value.time());
-        },
-    )
+    Binding::mapping(time, anchor_time, |binding, value| {
+        binding.set(value.time());
+    })
 }
 
 fn full_picker_range() -> RangeInclusive<PrimitiveDateTime> {

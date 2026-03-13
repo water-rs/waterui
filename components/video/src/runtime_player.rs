@@ -19,7 +19,7 @@ use waterkit_codec::{CodecType, DecodedFrame, Decoder};
 use waterkit_video::VideoReader;
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
-    AnyView, Binding, Environment, View,
+    AnyView, Binding, Environment, SignalExt, View,
     dynamic::Dynamic,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
@@ -28,7 +28,7 @@ use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
 };
-use waterui_text::text;
+use waterui_text::{Text, styled::StyledStr, text};
 
 use crate::Url;
 use crate::video::{AspectRatio, Event, PlaybackPolicy, VideoConfig, VideoPlayerConfig, Volume};
@@ -699,22 +699,22 @@ fn player_controls(
                 let delta = (10.0 / duration).min(1.0);
                 value.set((value.get() - delta).max(0.0));
             }),
-        button(Dynamic::watch(is_playing.clone(), |playing| {
+        button(Text::computed(is_playing.clone().map(|playing| {
             if playing {
-                AnyView::new(text("Pause"))
+                StyledStr::plain("Pause")
             } else {
-                AnyView::new(text("Play"))
+                StyledStr::plain("Play")
             }
-        }))
+        })))
         .with_state(&is_playing)
         .action(|playing| playing.set(!playing.get())),
-        button(Dynamic::watch(muted.clone(), |is_muted| {
+        button(Text::computed(muted.clone().map(|is_muted| {
             if is_muted {
-                AnyView::new(text("Unmute"))
+                StyledStr::plain("Unmute")
             } else {
-                AnyView::new(text("Mute"))
+                StyledStr::plain("Mute")
             }
-        }))
+        })))
         .with_state(&muted)
         .action(|is_muted| is_muted.set(!is_muted.get())),
         slider(0.0..=1.0, &volume_level),
@@ -752,13 +752,13 @@ fn player_controls(
             .with_state(&playback_rate)
             .action(|rate| rate.set(2.0)),
         slider(0.25..=2.0, &playback_rate_level),
-        button(Dynamic::watch(preserve_pitch.clone(), |enabled| {
+        button(Text::computed(preserve_pitch.clone().map(|enabled| {
             if enabled {
-                AnyView::new(text("Pitch Lock On"))
+                StyledStr::plain("Pitch Lock On")
             } else {
-                AnyView::new(text("Pitch Lock Off"))
+                StyledStr::plain("Pitch Lock Off")
             }
-        }))
+        })))
         .with_state(&preserve_pitch)
         .action(|enabled| enabled.set(!enabled.get())),
     ))

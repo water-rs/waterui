@@ -15,7 +15,8 @@ use waterui_graphics::color::Color;
 pub mod picker;
 pub mod valid;
 
-use waterui_core::{AnyView, Binding, Str, View};
+use waterui_controls::IntoLabel;
+use waterui_core::{Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
 ///
@@ -87,7 +88,7 @@ pub trait FormBuilder: Sized {
     /// # Returns
     ///
     /// A view that renders the form's UI components, automatically bound to the data
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View;
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View;
 
     /// Creates a new binding with the default value for this form.
     ///
@@ -132,7 +133,7 @@ fn map_string_binding(binding: &Binding<String>) -> Binding<Str> {
 impl FormBuilder for Str {
     type View = waterui_controls::TextField;
 
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
         with_optional_prompt(
             waterui_controls::TextField::new(binding).label(label),
             placeholder,
@@ -143,7 +144,7 @@ impl FormBuilder for Str {
 impl FormBuilder for String {
     type View = waterui_controls::TextField;
 
-    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
         let str_binding = map_string_binding(binding);
         with_optional_prompt(
             waterui_controls::TextField::new(&str_binding).label(label),
@@ -155,7 +156,7 @@ impl FormBuilder for String {
 // Other components don't have prompt
 impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
-    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         waterui_controls::Stepper::new(binding)
             .label(label)
             .range(Self::MIN..=Self::MAX)
@@ -164,28 +165,28 @@ impl FormBuilder for i32 {
 
 impl FormBuilder for bool {
     type View = waterui_controls::Toggle;
-    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         waterui_controls::Toggle::new(binding).label(label)
     }
 }
 
 impl FormBuilder for Color {
     type View = picker::ColorPicker;
-    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         picker::ColorPicker::new(binding).label(label)
     }
 }
 
 impl FormBuilder for f64 {
     type View = waterui_controls::Slider;
-    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(0.0..=1.0, binding).label(label)
     }
 }
 
 impl FormBuilder for f32 {
     type View = waterui_controls::Slider;
-    fn view(binding: &Binding<Self>, label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(
             0.0..=1.0,
             #[allow(clippy::cast_possible_truncation)]
@@ -274,7 +275,7 @@ pub use secure::{SecureField, secure};
 /// A view that renders interactive form controls for all fields in the bound data structure
 #[must_use]
 pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
-    T::view(binding, AnyView::default(), Str::default())
+    T::view(binding, Str::default(), Str::default())
 }
 
 #[cfg(test)]

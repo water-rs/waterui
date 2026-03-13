@@ -5,8 +5,12 @@
 #![no_std]
 extern crate alloc;
 
+pub mod label;
+pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
 pub mod menu;
-pub use menu::{Menu, MenuItem};
+pub use menu::{
+    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, Shortcut, ShortcutModifiers,
+};
 pub mod slider;
 
 pub use slider::Slider;

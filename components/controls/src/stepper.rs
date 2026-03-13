@@ -4,10 +4,11 @@
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
+use crate::label::IntoLabel;
 use alloc::{rc::Rc, string::ToString};
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{AnyView, View, configurable};
-use waterui_text::{styled::StyledStr, text};
+use waterui_core::{AnyView, configurable};
+use waterui_text::{Text, styled::StyledStr};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -77,7 +78,7 @@ impl Stepper {
         Self(StepperConfig {
             value: value.clone(),
             step: 1i32.into_computed(),
-            label: AnyView::new(text(value.clone().map(|value| value.to_string()))),
+            label: AnyView::new(Text::computed(value.clone().map(|value| value.to_string()))),
             range: i32::MIN..=i32::MAX,
         })
     }
@@ -91,8 +92,8 @@ impl Stepper {
     ///
     /// By default, the label is the value of the binding formatted as a string.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 
@@ -105,7 +106,7 @@ impl Stepper {
         formatter: impl 'static + Fn(i32) -> T,
     ) -> Self {
         let formatter = Rc::new(formatter);
-        self.0.label = AnyView::new(text(
+        self.0.label = AnyView::new(Text::computed(
             self.0
                 .value
                 .clone()

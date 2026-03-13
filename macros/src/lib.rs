@@ -15,6 +15,11 @@ pub fn text(input: TokenStream) -> TokenStream {
     locale::text(input)
 }
 
+#[proc_macro]
+pub fn catalog(input: TokenStream) -> TokenStream {
+    locale::catalog(input)
+}
+
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
 ///
 /// This macro generates a complete `FormBuilder` implementation that creates a vertical
@@ -101,7 +106,7 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
         quote! {
             <#field_type as crate::FormBuilder>::view(
                 &projected.#field_name,
-                ::waterui::AnyView::new(#label_text),
+                #label_text,
                 ::waterui::Str::from(#placeholder)
             )
         }

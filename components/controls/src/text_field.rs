@@ -4,56 +4,15 @@
 use core::num::NonZeroUsize;
 
 use alloc::vec::Vec;
-use nami::{Binding, Computed, signal::IntoComputed};
+use nami::{Binding, Computed};
 use waterui_core::Str;
 use waterui_core::configurable;
-use waterui_core::{AnyView, View, layout::StretchAxis};
+use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
+use waterui_locale::locale_binding;
+use waterui_text::{Text, TextConfig, styled::StyledStr};
 
-use waterui_text::{Text, styled::StyledStr};
-
-use crate::menu::MenuItem;
-
-configurable!(
-    /// A single-line text input field.
-    ///
-    /// TextField lets users enter and edit text.
-    ///
-    /// # Layout Behavior
-    ///
-    /// TextField **expands horizontally** to fill available space, but has a fixed height.
-    /// In an `HStack`, it will take up all remaining width after other views are sized.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Basic text field
-    /// TextField::new(&name)
-    ///
-    /// // With label and placeholder
-    /// field("Username", &username)
-    ///     .prompt("Enter your name")
-    ///
-    /// // In a form (TextField fills remaining space)
-    /// hstack((
-    ///     text("Email:"),
-    ///     TextField::new(&email),
-    /// ))
-    /// ```
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-
-    // Height: Fixed intrinsic (platform-determined)
-    // Width: Reports minimum usable width, expands during layout phase
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    TextField,
-    TextFieldConfig,
-    StretchAxis::Horizontal
-);
+use crate::label::IntoLabel;
+use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 
 /// Configuration options for a `TextField`.
 #[non_exhaustive]
@@ -76,6 +35,33 @@ pub struct TextFieldConfig {
     /// Currently only `Some(1)` is supported across backends.
     pub line_limit: Option<NonZeroUsize>,
 }
+
+/// Native-resolved text field payload.
+#[derive(Debug)]
+pub struct ResolvedTextFieldConfig {
+    /// The label displayed for the text field.
+    pub label: AnyView,
+    /// The binding to the text value.
+    pub value: Binding<StyledStr>,
+    /// The resolved placeholder text shown when the field is empty.
+    pub prompt: TextConfig,
+    /// The type of keyboard to use for input.
+    pub keyboard: KeyboardType,
+    /// Optional selected-text menu items resolved for the effective locale.
+    pub selection_menu: Computed<Vec<ResolvedMenuItem>>,
+    /// Reserved for future multi-line support.
+    pub line_limit: Option<NonZeroUsize>,
+}
+
+configurable!(
+    ResolvedTextField,
+    ResolvedTextFieldConfig,
+    StretchAxis::Horizontal
+);
+
+/// A single-line text input field.
+#[derive(Debug)]
+pub struct TextField(TextFieldConfig);
 
 #[derive(Debug, Default)]
 #[non_exhaustive]
@@ -114,10 +100,11 @@ impl TextField {
             line_limit: NonZeroUsize::new(1),
         })
     }
+
     /// Sets the label for the text field.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 
@@ -151,14 +138,35 @@ impl TextField {
 
     /// Sets custom selected-text menu items for this text field.
     #[must_use]
-    pub fn selection_menu(mut self, items: impl IntoComputed<Vec<MenuItem>>) -> Self {
-        self.0.selection_menu = items.into_computed();
+    pub fn selection_menu(mut self, items: impl MenuView) -> Self {
+        self.0.selection_menu = items.into_menu_items();
         self
     }
 }
 
+impl View for TextField {
+    fn body(self, env: &Environment) -> impl View {
+        let locale = locale_binding(env).get();
+        let prompt_env = env.clone();
+        let selection_menu = resolve_menu_items(self.0.selection_menu, env);
+
+        AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
+            label: self.0.label,
+            value: self.0.value,
+            prompt: self.0.prompt.__resolve_with(&prompt_env, &locale),
+            keyboard: self.0.keyboard,
+            selection_menu,
+            line_limit: self.0.line_limit,
+        }))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
 /// Creates a new [`TextField`] with the specified label and value binding.
-pub fn field(label: impl View, value: &Binding<Str>) -> TextField {
+pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
     TextField::new(value).label(label)
 }
 

@@ -15,17 +15,16 @@
 use core::any::type_name;
 
 use alloc::{rc::Rc, vec::Vec};
-use nami::{impl_constant, signal::IntoSignal, Computed, Signal, SignalExt};
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
+    Native, NativeView,
     id::SelfId,
     view::{ConfigurableView, Hook, ViewConfiguration},
     views::{ForEach, SharedAnyViews},
-    Native, NativeView,
 };
 use waterui_text::Text;
 
-use crate::{views::Views, AnyView, Environment, View};
-
+use crate::{AnyView, Environment, View, views::Views};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -168,13 +167,13 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
 // Default Table View Implementation
 // ============================================================================
 
-use crate::component::list::{List as UiList, ListItem};
 use crate::ViewExt;
+use crate::component::list::{List as UiList, ListItem};
 use nami::collection::List as ReactiveList;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use waterui_core::dynamic::watch;
 use waterui_graphics::color::Grey;
-use waterui_layout::stack::{hstack, vstack, HorizontalAlignment};
+use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
 
 #[derive(Clone)]
 struct TableRowCountSignal {
