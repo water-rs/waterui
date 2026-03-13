@@ -8,10 +8,10 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_line, interactive_signal_canvas, point_bounds, point_geometry};
+use crate::charts::canvas::{draw_line, interactive_cartesian_signal_canvas, point_bounds, point_geometry};
 use crate::composition::ChartComposition;
 use crate::data::DataPoint;
-use crate::interaction::{HitResult, SelectionBindings};
+use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
 /// Line chart visualization.
@@ -25,6 +25,8 @@ pub struct LineChart<S: Signal<Output = Vec<DataPoint>>> {
     show_fill: bool,
     fill_opacity: f32,
     selection: SelectionBindings<DataPoint>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
     composition: ChartComposition<DataPoint>,
 }
 
@@ -38,9 +40,13 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
             show_fill: false,
             fill_opacity: 0.3,
             selection: SelectionBindings::default(),
+            cartesian_selection: CartesianSelectionBindings::default(),
+            cartesian_viewport: CartesianViewportBindings::default(),
             composition: ChartComposition::default(),
         }
     }
+
+    crate::interaction::chart_x_selection_methods!();
 
     crate::composition::chart_composition_methods!(DataPoint);
 
@@ -102,11 +108,11 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
         let line_width = self.line_width;
         let show_fill = self.show_fill;
         let fill_opacity = self.fill_opacity;
-        interactive_signal_canvas(
+        interactive_cartesian_signal_canvas(
             _env,
             self.data,
-            move |ctx, data| {
-                let bounds = point_bounds(data);
+            |data: &Vec<DataPoint>| point_bounds(data),
+            move |ctx, data, bounds| {
                 point_geometry(ctx, data, bounds, (line_width * 2.5).max(8.0))
             },
             move |ctx, data, geometry| {
@@ -121,6 +127,8 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
                 );
             },
             self.selection,
+            self.cartesian_selection,
+            self.cartesian_viewport,
             self.composition,
         )
     }

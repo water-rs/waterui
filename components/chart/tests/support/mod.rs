@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityRole;
@@ -16,8 +18,18 @@ pub const CHART_WIDTH: f32 = 240.0;
 pub const CHART_HEIGHT: f32 = 180.0;
 pub const SNAPSHOT_SUITE: &str = "semantic-selection";
 
-const CHART_PADDING_RATIO: f32 = 0.1;
+pub const CHART_PADDING_RATIO: f32 = 0.1;
 const PIE_PADDING_RATIO: f32 = 0.06;
+
+pub fn horizontal_drag_domain_delta(visible_length: f32, from_x: f32, to_x: f32) -> f32 {
+    (from_x - to_x) * CHART_WIDTH / (CHART_WIDTH * (1.0 - CHART_PADDING_RATIO * 2.0))
+        * visible_length
+}
+
+pub fn vertical_drag_domain_delta(visible_length: f32, from_y: f32, to_y: f32) -> f32 {
+    (from_y - to_y) * CHART_HEIGHT / (CHART_HEIGHT * (1.0 - CHART_PADDING_RATIO * 2.0))
+        * visible_length
+}
 
 pub fn point_series() -> Vec<DataPoint> {
     (0..24)
@@ -138,6 +150,7 @@ pub fn semantic_chart_shell<V: View, F: View, S: View>(
     .background(Srgb::BLACK)
 }
 
+/// Builds a compact readout label view from a chart interaction binding.
 pub fn readout_view<T, S>(
     prefix: &'static str,
     signal: S,
@@ -166,7 +179,11 @@ pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> Str
         "{name}: accessibility image element did not appear"
     );
     app.assert_exists(selector.clone());
-    let element = app.query().role(Role::IMAGE).label(chart_label(name)).single();
+    let element = app
+        .query()
+        .role(Role::IMAGE)
+        .label(chart_label(name))
+        .single();
     let bounds = element.bounds();
     assert!(
         bounds.width() > 0.0 && bounds.height() > 0.0,
@@ -176,7 +193,9 @@ pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> Str
 }
 
 pub fn assert_label_exists(app: &mut MountedApp, label: &str) {
-    let selector = Selector::default().role(Role::LABEL).label(label.to_owned());
+    let selector = Selector::default()
+        .role(Role::LABEL)
+        .label(label.to_owned());
     assert!(
         app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
         "expected label to appear: {label}"
@@ -204,7 +223,12 @@ pub fn expected_readout<T: Clone>(
 ) -> String {
     readout_text(
         prefix,
-        Some(HitResult::new(series, index, value, ChartAnchor::new(0.0, 0.0))),
+        Some(HitResult::new(
+            series,
+            index,
+            value,
+            ChartAnchor::new(0.0, 0.0),
+        )),
         formatter,
     )
 }
@@ -317,11 +341,7 @@ pub fn bubble_hit_location(data: &[BubblePoint], index: usize) -> (f32, f32) {
 pub fn candlestick_hit_location(data: &[Candle], index: usize) -> (f32, f32) {
     let bounds = normalize_bounds(DataBounds::from_candles(data).with_padding(0.05));
     let candle = data[index];
-    normalized_plot_point(
-        bounds,
-        candle.timestamp,
-        (candle.open + candle.close) * 0.5,
-    )
+    normalized_plot_point(bounds, candle.timestamp, (candle.open + candle.close) * 0.5)
 }
 
 pub fn depth_hit_location(data: &DepthData, side: DepthSide, index: usize) -> (f32, f32) {
