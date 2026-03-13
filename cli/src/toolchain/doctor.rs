@@ -9,7 +9,10 @@ use crate::{
     android::{
         device::AndroidDevice,
         platform::AndroidPlatform,
-        toolchain::{AndroidNdk, AndroidPlatformTools, AndroidSdk, Java, Kotlin},
+        toolchain::{
+            AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
+            AndroidSdkPlatforms, Java, Kotlin,
+        },
     },
     apple::{
         device::AppleSimulator,
@@ -241,6 +244,42 @@ pub async fn doctor() -> Vec<DoctorItem> {
         }
 
         // Check Android NDK for build/package flows.
+        match AndroidSdkPlatforms.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android SDK Platforms")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android SDK Platforms",
+                    "Required for Android build/package workflows",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android SDK Platforms",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+
+        // Check Android SDK build-tools (d8) for build/package flows.
+        match AndroidBuildTools.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android SDK Build-Tools (d8)")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android SDK Build-Tools (d8)",
+                    "Required for Android build/package workflows",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android SDK Build-Tools (d8)",
+                    unfixable_message(&error),
+                ));
+            }
+        }
+
+        // Check Android NDK for build/package flows.
         match AndroidNdk.check().await {
             Ok(()) => items.push(DoctorItem::ok("Android NDK")),
             Err(ToolchainError::Fixable(installation)) => {
@@ -257,6 +296,24 @@ pub async fn doctor() -> Vec<DoctorItem> {
                 ));
             }
         }
+
+        // Check Rust Android targets for Rust cross-compilation.
+        match AndroidRustTargets.check().await {
+            Ok(()) => items.push(DoctorItem::ok("Android Rust Targets")),
+            Err(ToolchainError::Fixable(installation)) => {
+                items.push(DoctorItem::fixable(
+                    "Android Rust Targets",
+                    "Required for Android Rust cross-compilation",
+                    installation,
+                ));
+            }
+            Err(ToolchainError::Unfixable(error)) => {
+                items.push(DoctorItem::missing(
+                    "Android Rust Targets",
+                    unfixable_message(&error),
+                ));
+            }
+        }
     } else {
         items.push(DoctorItem::missing(
             "Android Platform-Tools (adb)",
@@ -264,6 +321,18 @@ pub async fn doctor() -> Vec<DoctorItem> {
         ));
         items.push(DoctorItem::missing(
             "Android NDK",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+        items.push(DoctorItem::missing(
+            "Android SDK Platforms",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+        items.push(DoctorItem::missing(
+            "Android SDK Build-Tools (d8)",
+            "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
+        ));
+        items.push(DoctorItem::missing(
+            "Android Rust Targets",
             "Blocked: Android SDK / `sdkmanager` is not ready yet. Fix Android SDK first.",
         ));
     }
@@ -357,13 +426,19 @@ pub async fn doctor() -> Vec<DoctorItem> {
         }
     }
 
-    // Kotlin compiler is optional for standard Android builds.
+    // Kotlin compiler is required for Android helper sources used by build scripts.
     match Kotlin.check().await {
         Ok(()) => items.push(DoctorItem::ok("Kotlin")),
-        Err(_) => items.push(DoctorItem::skipped_with_message(
-            "Kotlin",
-            "Optional: external `kotlinc` is not required for standard Android builds.",
-        )),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "Kotlin",
+                "Required for Android Kotlin helper compilation",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(error)) => {
+            items.push(DoctorItem::missing("Kotlin", unfixable_message(&error)));
+        }
     }
 
     match Wasm32UnknownUnknownTarget.check().await {
