@@ -5,6 +5,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
+use jiff::Timestamp;
 use serde::Deserialize;
 use smol::{
     Timer,
@@ -14,7 +15,6 @@ use smol::{
     spawn,
     stream::StreamExt,
 };
-use time::OffsetDateTime;
 use tracing::{debug as trace_debug, info, warn};
 
 use std::path::Path;
@@ -224,7 +224,7 @@ async fn poll_for_crash_report(
     bundle_id: &str,
     process_name: &str,
     pid: Option<u32>,
-    since: OffsetDateTime,
+    since: Timestamp,
     timeout: Duration,
 ) -> Option<debug::CrashReport> {
     trace_debug!(
@@ -481,7 +481,7 @@ impl Device for AppleSimulator {
 
         info!("Launching app on apple simulator {}", self.name);
 
-        let start_time = OffsetDateTime::now_utc();
+        let start_time = Timestamp::now();
         let start_instant = Instant::now();
 
         let bundle_id = artifact.bundle_id().to_string();

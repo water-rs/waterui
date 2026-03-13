@@ -14,7 +14,7 @@ use smol::{
 };
 
 #[cfg(target_os = "macos")]
-use time::OffsetDateTime;
+use jiff::Timestamp;
 
 #[cfg(target_os = "macos")]
 use tracing::debug as trace_debug;
@@ -549,7 +549,7 @@ async fn poll_for_crash_report(
     bundle_id: &str,
     process_name: &str,
     pid: Option<u32>,
-    since: OffsetDateTime,
+    since: Timestamp,
     timeout: Duration,
 ) -> Option<debug::CrashReport> {
     trace_debug!(
@@ -851,7 +851,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
     cmd.arg(artifact_path);
 
     // Spawn the open command
-    let start_time = OffsetDateTime::now_utc();
+    let start_time = Timestamp::now();
     let start_instant = Instant::now();
     let mut child = cmd
         .spawn()

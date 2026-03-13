@@ -77,7 +77,8 @@ The `FormBuilder` trait is the foundation of the form system. It maps Rust types
 | `i32` | `Stepper` | Integer stepper with +/- buttons |
 | `f32`, `f64` | `Slider` | Numeric slider (0.0-1.0 range by default) |
 | `Color` | `ColorPicker` | Platform-native color selection |
-| `Date`, `Time`, `PrimitiveDateTime` | `DatePicker` | Typed date/time selection |
+| `Date`, `Time`, `DateTime` | `DatePicker` | Typed date/time selection |
+| `Date` | `Calendar` | Single-date month-grid selection |
 | `BTreeSet<Date>` | `MultiDatePicker` | Multiple date selection |
 | `Secure` | `SecureField` | Masked password input with memory zeroing |
 
@@ -245,22 +246,18 @@ Use the constructor that matches your binding type:
 ```rust
 use waterui::prelude::*;
 use waterui_form::picker::{DatePicker, DatePickerType};
-use time::{Date, Month, PrimitiveDateTime, Time};
+use jiff::civil::{Date, DateTime, Time};
 
 fn event_form() -> impl View {
-    let event_date = binding(Date::from_calendar_date(2025, Month::June, 15).unwrap());
-    let event_time = binding(Time::from_hms(14, 30, 0).unwrap());
-    let event_datetime = binding(PrimitiveDateTime::new(
-        Date::from_calendar_date(2025, Month::June, 15).unwrap(),
-        Time::from_hms(14, 30, 45).unwrap(),
-    ));
+    let event_date = binding(Date::new(2025, 6, 15).unwrap());
+    let event_time = binding(Time::new(14, 30, 0, 0).unwrap());
+    let event_datetime = binding(DateTime::new(2025, 6, 15, 14, 30, 45, 0).unwrap());
 
     vstack((
         DatePicker::new(&event_date)
             .label("Date Only")
             .range(
-                Date::from_calendar_date(2025, Month::January, 1).unwrap()
-                    ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+                Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
             ),
         DatePicker::time(&event_time)
             .label("Time Only")
@@ -278,6 +275,27 @@ Available picker types:
 - `DatePickerType::HourMinuteAndSecond` - Time with seconds
 - `DatePickerType::DateHourAndMinute` - Date and time (default)
 - `DatePickerType::DateHourMinuteAndSecond` - Date and time with seconds
+
+### Calendar
+
+Use `Calendar` for a month-grid calendar with single-date selection:
+
+```rust
+use waterui::prelude::*;
+use waterui_form::Calendar;
+use jiff::civil::Date;
+
+fn trip_calendar() -> impl View {
+    let trip_date = binding(Date::new(2025, 6, 15).unwrap());
+
+    vstack((
+        Calendar::new(&trip_date)
+            .label("Trip Date")
+            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
+        text!("Selected date: {trip_date}"),
+    ))
+}
+```
 
 ### Color Picker
 
@@ -307,7 +325,7 @@ Use `MultiDatePicker` for selecting multiple dates:
 use waterui::prelude::*;
 use waterui_form::picker::multi_date::MultiDatePicker;
 use std::collections::BTreeSet;
-use time::{Date, Month};
+use jiff::civil::Date;
 
 fn availability_calendar() -> impl View {
     let available_dates = binding(BTreeSet::<Date>::new());
@@ -316,8 +334,7 @@ fn availability_calendar() -> impl View {
         MultiDatePicker::new(&available_dates)
             .label("Select Available Dates")
             .range(
-                Date::from_calendar_date(2025, Month::January, 1).unwrap()
-                    ..=Date::from_calendar_date(2025, Month::December, 31).unwrap(),
+                Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
             ),
         text(available_dates.map(|dates| {
             format!("Selected {} dates", dates.len())
@@ -367,6 +384,7 @@ impl FormBuilder for TwoColumnForm {
 
 ### Picker Module
 
+- **`Calendar`** - Single-date month-grid calendar view
 - **`Picker`** - Generic picker for selecting from a list
 - **`ColorPicker`** - Platform-native color selection
 - **`DatePicker`** - Date and time selection with multiple styles
@@ -409,7 +427,7 @@ None. The crate works out-of-the-box with no feature flags.
 ### External Dependencies
 
 - **`nami`** - Fine-grained reactivity system (provides `Binding`, `Computed`)
-- **`time`** - Date/time types for `DatePicker`
+- **`jiff`** - Civil date/time types for `DatePicker` and `Calendar`
 - **`zeroize`** - Secure memory zeroing for `Secure` type
 - **`bcrypt`** - Password hashing for `Secure::hash()`
 - **`regex`** - Pattern matching for validation
