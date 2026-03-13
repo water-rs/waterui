@@ -84,8 +84,8 @@ pub use data::{
     SeriesStyle,
 };
 pub use interaction::{
-    AreaDatum, ChartAnchor, ChartViewport, DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum,
-    RegionDatum, SliceDatum,
+    AreaDatum, ChartAnchor, ChartScrollableAxes, ChartViewport, DepthDatum, DepthSide, GridDatum,
+    HitResult, RadarDatum, RegionDatum, SliceDatum,
 };
 pub use params::{
     ArcAngles, ChartParamError, DonutInnerRadius, GaugeRadii, PositiveF32, UnitInterval,

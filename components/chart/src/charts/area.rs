@@ -3,15 +3,17 @@
 use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{area_bounds, area_geometry, draw_area, interactive_signal_canvas};
+use crate::charts::canvas::{area_bounds, area_geometry, draw_area, interactive_cartesian_signal_canvas};
 use crate::composition::ChartComposition;
 use crate::data::AreaData;
-use crate::interaction::{AreaDatum, HitResult, SelectionBindings};
+use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, AreaDatum, HitResult, SelectionBindings};
 
 /// Stacked area chart for cumulative data visualization.
 pub struct AreaChart<S: Signal<Output = AreaData>> {
     data: S,
     selection: SelectionBindings<AreaDatum>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
     composition: ChartComposition<AreaDatum>,
 }
 
@@ -21,9 +23,13 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
         Self {
             data,
             selection: SelectionBindings::new(),
+            cartesian_selection: CartesianSelectionBindings::default(),
+            cartesian_viewport: CartesianViewportBindings::default(),
             composition: ChartComposition::default(),
         }
     }
+
+    crate::interaction::chart_x_selection_methods!();
 
     crate::composition::chart_composition_methods!(AreaDatum);
 
@@ -42,17 +48,17 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 
 impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
     fn body(self, _env: &Environment) -> impl View {
-        interactive_signal_canvas(
+        interactive_cartesian_signal_canvas(
             _env,
             self.data,
-            move |ctx, data| {
-                let bounds = area_bounds(data);
-                area_geometry(ctx, data, bounds)
-            },
+            area_bounds,
+            move |ctx, data, bounds| area_geometry(ctx, data, bounds),
             move |ctx, data, geometry| {
                 draw_area(ctx, data, geometry.bounds);
             },
             self.selection,
+            self.cartesian_selection,
+            self.cartesian_viewport,
             self.composition,
         )
     }
