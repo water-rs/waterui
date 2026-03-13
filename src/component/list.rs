@@ -13,7 +13,7 @@ use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use nami::SignalExt;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    id::Identifiable, layout::StretchAxis, AnyView, Environment, Native, NativeView, View,
+    AnyView, Environment, Native, NativeView, View, id::Identifiable, layout::StretchAxis,
 };
 
 /// A list reorder operation.
@@ -297,7 +297,10 @@ where
     __S: Clone + 'static,
 {
     #[must_use]
-    pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> ListStatefulBuilder<V, (__S, __T)> {
+    pub fn with_state<__T: Clone + 'static>(
+        self,
+        state: &__T,
+    ) -> ListStatefulBuilder<V, (__S, __T)> {
         ListStatefulBuilder {
             contents: self.contents,
             editing: self.editing,

@@ -4,10 +4,10 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{depth_bounds, depth_geometry, draw_depth, interactive_signal_canvas};
+use crate::charts::canvas::{depth_bounds, depth_geometry, draw_depth, interactive_cartesian_signal_canvas};
 use crate::composition::ChartComposition;
 use crate::data::DepthData;
-use crate::interaction::{DepthDatum, HitResult, SelectionBindings};
+use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, DepthDatum, HitResult, SelectionBindings};
 
 /// Depth chart for order book visualization.
 pub struct DepthChart<S: Signal<Output = DepthData>> {
@@ -15,6 +15,8 @@ pub struct DepthChart<S: Signal<Output = DepthData>> {
     bid_color: Srgb,
     ask_color: Srgb,
     selection: SelectionBindings<DepthDatum>,
+    cartesian_selection: CartesianSelectionBindings,
+    cartesian_viewport: CartesianViewportBindings,
     composition: ChartComposition<DepthDatum>,
 }
 
@@ -26,9 +28,13 @@ impl<S: Signal<Output = DepthData>> DepthChart<S> {
             bid_color: Srgb::from_hex("#22C55E"),
             ask_color: Srgb::from_hex("#EF4444"),
             selection: SelectionBindings::default(),
+            cartesian_selection: CartesianSelectionBindings::default(),
+            cartesian_viewport: CartesianViewportBindings::default(),
             composition: ChartComposition::default(),
         }
     }
+
+    crate::interaction::chart_x_selection_methods!();
 
     crate::composition::chart_composition_methods!(DepthDatum);
 
@@ -68,17 +74,17 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
     fn body(self, _env: &Environment) -> impl View {
         let bid_color = self.bid_color;
         let ask_color = self.ask_color;
-        interactive_signal_canvas(
+        interactive_cartesian_signal_canvas(
             _env,
             self.data,
-            move |ctx, data| {
-                let bounds = depth_bounds(data);
-                depth_geometry(ctx, data, bounds)
-            },
+            depth_bounds,
+            move |ctx, data, bounds| depth_geometry(ctx, data, bounds),
             move |ctx, data, geometry| {
                 draw_depth(ctx, data, geometry.bounds, bid_color, ask_color);
             },
             self.selection,
+            self.cartesian_selection,
+            self.cartesian_viewport,
             self.composition,
         )
     }

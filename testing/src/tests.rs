@@ -10,12 +10,12 @@ use vello::kurbo::Shape;
 use waterui::Computed;
 use waterui::View as _;
 use waterui::ViewExt as _;
-use waterui::graphics::SceneViewMergeToParent;
-use waterui::theme;
 use waterui::color::ResolvedColor;
+use waterui::component::{text, vstack};
+use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::{Scene2D, SceneContent, SceneView};
-use waterui::component::{text, vstack};
+use waterui::theme;
 use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
@@ -212,7 +212,11 @@ fn ui_test_snapshot_renders_text_after_canvas() {
                 ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
             })
             .size(240.0, 180.0),
-            text("W").size(48.0).color(Srgb::WHITE).body().padding_with(6.0),
+            text("W")
+                .size(48.0)
+                .color(Srgb::WHITE)
+                .body()
+                .padding_with(6.0),
         ))
         .spacing(6.0)
         .background(Srgb::BLACK)
