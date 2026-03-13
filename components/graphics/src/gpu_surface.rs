@@ -1060,10 +1060,7 @@ impl GpuSurface {
             pipeline_cache: guard.pipeline_cache.as_ref(),
             redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(
-            self.setup(&ctx, env),
-            "gpu_surface::render_offscreen::setup",
-        );
+        crate::pollster::block_on(self.setup(&ctx, env));
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface"),
@@ -1169,10 +1166,7 @@ impl GpuSurface {
             pipeline_cache: guard.pipeline_cache.as_ref(),
             redraw_handle: RedrawHandle::new(),
         };
-        crate::ready_now_or_panic(
-            self.setup(&ctx, env),
-            "gpu_surface::render_offscreen_hdr::setup",
-        );
+        crate::pollster::block_on(self.setup(&ctx, env));
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface_hdr"),
