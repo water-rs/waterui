@@ -15,7 +15,10 @@ use waterui_layout::Divider;
 use waterui_locale::{Locale, locale_binding};
 use waterui_text::{TextConfig, styled::StyledStr};
 
-use crate::label::{IntoLabel, Label};
+use crate::{
+    button::Button,
+    label::{IntoLabel, Label},
+};
 
 /// Keyboard shortcut modifiers used by commands and system menus.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -310,7 +313,11 @@ impl From<Menu> for MenuItem {
     }
 }
 
-/// Converts static or reactive menu content into menu items.
+/// Converts semantic menu content into menu items.
+///
+/// This trait is implemented for the supported menu content building blocks:
+/// [`Command`], [`Menu`], [`Divider`], ordinary [`Button`] values, and
+/// containers such as tuples, arrays, vectors, and [`Option`].
 pub trait MenuView {
     /// Converts this value into reactive menu items.
     fn into_menu_items(self) -> Computed<Vec<MenuItem>>;
@@ -341,7 +348,36 @@ impl MenuView for Computed<Vec<MenuItem>> {
     }
 }
 
-impl<T: Into<MenuItem>> MenuView for T {
+impl MenuView for MenuItem {
+    fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
+        Computed::constant(vec![self])
+    }
+}
+
+impl MenuView for Command {
+    fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
+        Computed::constant(vec![MenuItem::Command(self)])
+    }
+}
+
+impl MenuView for Menu {
+    fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
+        Computed::constant(vec![MenuItem::Menu(self)])
+    }
+}
+
+impl MenuView for Divider {
+    fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
+        let _ = self;
+        Computed::constant(vec![MenuItem::Divider])
+    }
+}
+
+impl<LabelView, Action> MenuView for Button<LabelView, Action>
+where
+    LabelView: View + 'static,
+    Action: FnMut(&Environment) + 'static,
+{
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
         Computed::constant(vec![self.into()])
     }
@@ -389,15 +425,29 @@ fn extend_menus(mut left: Vec<Menu>, right: Vec<Menu>) -> Vec<Menu> {
     left
 }
 
-impl<T: Into<MenuItem>> MenuView for Vec<T> {
+impl<T: MenuView> MenuView for Vec<T> {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        Computed::constant(self.into_iter().map(Into::into).collect())
+        self.into_iter()
+            .fold(Computed::constant(Vec::new()), |items, item| {
+                let right = item.into_menu_items();
+                items
+                    .zip(&right)
+                    .map(|(left, right)| extend_menu_items(left, right))
+                    .computed()
+            })
     }
 }
 
-impl<T: Into<MenuItem>, const N: usize> MenuView for [T; N] {
+impl<T: MenuView, const N: usize> MenuView for [T; N] {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        Computed::constant(self.into_iter().map(Into::into).collect())
+        self.into_iter()
+            .fold(Computed::constant(Vec::new()), |items, item| {
+                let right = item.into_menu_items();
+                items
+                    .zip(&right)
+                    .map(|(left, right)| extend_menu_items(left, right))
+                    .computed()
+            })
     }
 }
 
@@ -607,3 +657,48 @@ pub struct ResolvedMenu {
 }
 
 raw_view!(ResolvedMenu, StretchAxis::None);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::button::button;
+    use nami::Signal;
+    use waterui_icon::SystemIcon;
+
+    #[test]
+    fn menu_view_accepts_plain_buttons() {
+        let items = button(Label::new("Search").icon(SystemIcon::SEARCH))
+            .action(|| {})
+            .into_menu_items()
+            .get();
+        assert_eq!(items.len(), 1);
+        let MenuItem::Command(command) = &items[0] else {
+            panic!("button menu content should resolve to a command");
+        };
+        assert_eq!(
+            command
+                .label
+                .__text()
+                .__resolve(&Environment::default())
+                .content
+                .get()
+                .to_plain()
+                .as_str(),
+            "Search"
+        );
+    }
+
+    #[test]
+    fn menu_view_flattens_vectors_of_supported_items() {
+        let items: Vec<MenuItem> = vec![
+            button("Edit").action(|| {}).into(),
+            Divider.into(),
+            Menu::new("More", (button("Duplicate").action(|| {}),)).into(),
+        ];
+        let items = items.into_menu_items().get();
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[0], MenuItem::Command(_)));
+        assert!(matches!(items[1], MenuItem::Divider));
+        assert!(matches!(items[2], MenuItem::Menu(_)));
+    }
+}
