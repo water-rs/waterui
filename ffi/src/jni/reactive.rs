@@ -832,6 +832,62 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedPicke
     array.into_raw()
 }
 
+fn menu_item_to_java<'local>(env: &mut JNIEnv<'local>, ffi: crate::WuiMenuItem) -> JObject<'local> {
+    let menu_item_class = env
+        .find_class("dev/waterui/android/runtime/MenuItemStruct")
+        .expect("MenuItemStruct class not found");
+
+    let label_ptr = ffi.label.content as jlong;
+    if !ffi.label.paragraph_alignment.is_null() {
+        unsafe {
+            drop(Box::from_raw(ffi.label.paragraph_alignment));
+        }
+    }
+
+    // Android currently drops semantic menu SystemIcon payloads. Cross-platform icon-pack icons are not wired
+    // into the semantic menu tree yet.
+    if !ffi.icon.is_null() {
+        unsafe {
+            drop(Box::from_raw(ffi.icon));
+        }
+    }
+
+    let (key_equivalent, command, shift, option, control) = if ffi.shortcut.is_null() {
+        (JObject::null(), false, false, false, false)
+    } else {
+        let shortcut = unsafe { Box::from_raw(ffi.shortcut) };
+        let key = env
+            .new_string(unsafe { shortcut.key.as_str() })
+            .expect("Failed to create shortcut key string");
+        (
+            JObject::from(key),
+            shortcut.modifiers.command,
+            shortcut.modifiers.shift,
+            shortcut.modifiers.option,
+            shortcut.modifiers.control,
+        )
+    };
+
+    env.new_object(
+        &menu_item_class,
+        "(IJJJJLjava/lang/String;ZZZZJ)V",
+        &[
+            JValue::Int(ffi.tag as jint),
+            JValue::Long(label_ptr),
+            JValue::Long(ffi.action as jlong),
+            JValue::Long(ffi.disabled as jlong),
+            JValue::Long(ffi.selected as jlong),
+            JValue::Object(&key_equivalent),
+            JValue::Bool(if command { 1 } else { 0 }),
+            JValue::Bool(if shift { 1 } else { 0 }),
+            JValue::Bool(if option { 1 } else { 0 }),
+            JValue::Bool(if control { 1 } else { 0 }),
+            JValue::Long(ffi.items as jlong),
+        ],
+    )
+    .expect("Failed to create MenuItemStruct")
+}
+
 /// Read MenuItems computed value and return Java array of MenuItemStruct.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedMenuItems<'local>(
@@ -861,19 +917,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedMenuI
         .expect("Failed to create menu items array");
 
     for (i, item) in items_vec.into_iter().enumerate() {
-        let ffi = item.into_ffi();
-        // MenuItemStruct(labelPtr: Long, actionPtr: Long)
-        // WuiMenuItem has label: WuiText (Computed<StyledStr> ptr) and action: *mut WuiSharedAction
-        let label_ptr = ffi.label.content as jlong;
-        let action_ptr = ffi.action as jlong;
-
-        let item_obj = env
-            .new_object(
-                &menu_item_class,
-                "(JJ)V",
-                &[JValue::Long(label_ptr), JValue::Long(action_ptr)],
-            )
-            .expect("Failed to create MenuItemStruct");
+        let item_obj = menu_item_to_java(&mut env, item.into_ffi());
 
         env.set_object_array_element(&array, i as jsize, &item_obj)
             .expect("Failed to set menu item array element");
@@ -1699,6 +1743,45 @@ unsafe extern "C" fn watcher_call_picker_items(
     );
 }
 
+unsafe extern "C" fn watcher_call_menu_items(
+    data: *mut (),
+    value: crate::array::WuiArray<crate::WuiMenuItem>,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let mut env = watcher_data
+        .jvm
+        .attach_current_thread()
+        .expect("Failed to attach JVM thread");
+
+    let items_slice = value.as_slice();
+    let menu_item_class = env
+        .find_class("dev/waterui/android/runtime/MenuItemStruct")
+        .expect("MenuItemStruct class not found");
+
+    let array = env
+        .new_object_array(
+            items_slice.len() as jsize,
+            &menu_item_class,
+            JObject::null(),
+        )
+        .expect("Failed to create menu items array");
+
+    for (i, item) in items_slice.iter().enumerate() {
+        let item_obj = menu_item_to_java(&mut env, item.clone());
+        env.set_object_array_element(&array, i as jsize, &item_obj)
+            .expect("Failed to set menu item array element");
+    }
+
+    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    invoke_callback(
+        &mut env,
+        &watcher_data.callback,
+        &unsafe { JObject::from_raw(array.into_raw()) },
+        &metadata,
+    );
+}
+
 /// Call function for TableCols watcher.
 unsafe extern "C" fn watcher_call_table_cols(
     data: *mut (),
@@ -1872,6 +1955,7 @@ jni_create_watcher_typed!(StyledStr, watcher_call_styled_str);
 jni_create_watcher_typed!(ResolvedColor, watcher_call_resolved_color);
 jni_create_watcher_typed!(ResolvedFont, watcher_call_resolved_font);
 jni_create_watcher_typed!(PickerItems, watcher_call_picker_items);
+jni_create_watcher_typed!(MenuItems, watcher_call_menu_items);
 jni_create_watcher_typed!(WindowState, watcher_call_window_state);
 jni_create_watcher_typed!(TableCols, watcher_call_table_cols);
 jni_create_watcher_typed!(Region, watcher_call_region);
