@@ -12,7 +12,7 @@ use waterui_core::{
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::Divider;
-use waterui_locale::{Locale, locale_binding};
+use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
@@ -103,15 +103,15 @@ impl Menu {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn __resolve_with(self, env: &Environment, locale: &Locale) -> ResolvedNestedMenu {
+    pub fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
         let label = self.label;
-        let resolved_label = label.__text().__resolve_with(env, locale);
+        let resolved_label = label.__text().resolve(env);
         let icon = label.__icon();
         ResolvedNestedMenu {
             label: resolved_label,
             semantic_label: label,
             icon,
-            items: resolve_menu_items_with_locale(self.items, env, locale),
+            items: resolve_menu_items(self.items, env),
         }
     }
 }
@@ -119,7 +119,7 @@ impl Menu {
 impl View for Menu {
     fn body(self, env: &Environment) -> impl View {
         let label = self.label;
-        let accessibility_label = label.__text().__resolve(env).content;
+        let accessibility_label = label.__text().resolve(env).content;
         AnyView::new(ResolvedMenu {
             label: AnyView::new(label),
             items: resolve_menu_items(self.items, env),
@@ -161,9 +161,9 @@ impl Command {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn __resolve_with(self, env: &Environment, locale: &Locale) -> ResolvedCommand {
+    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
-        let resolved_label = label.__text().__resolve_with(env, locale);
+        let resolved_label = label.__text().resolve(env);
         let icon = label.__icon();
         ResolvedCommand {
             label: resolved_label,
@@ -284,13 +284,11 @@ impl_constant!(MenuItem);
 impl MenuItem {
     #[doc(hidden)]
     #[must_use]
-    pub fn __resolve_with(self, env: &Environment, locale: &Locale) -> ResolvedMenuItem {
+    pub fn resolve(self, env: &Environment) -> ResolvedMenuItem {
         match self {
-            Self::Command(command) => {
-                ResolvedMenuItem::Command(command.__resolve_with(env, locale))
-            }
+            Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
             Self::Divider => ResolvedMenuItem::Divider,
-            Self::Menu(menu) => ResolvedMenuItem::Menu(menu.__resolve_with(env, locale)),
+            Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
         }
     }
 }
@@ -536,27 +534,8 @@ macro_rules! impl_tuple_menu_bar_view {
 
 menu_tuples!(impl_tuple_menu_bar_view);
 
-fn resolve_menu_items_now(
-    items: Vec<MenuItem>,
-    env: &Environment,
-    locale: &Locale,
-) -> Vec<ResolvedMenuItem> {
-    items
-        .into_iter()
-        .map(|item| item.__resolve_with(env, locale))
-        .collect()
-}
-
-fn resolve_menu_items_with_locale(
-    items: Computed<Vec<MenuItem>>,
-    env: &Environment,
-    locale: &Locale,
-) -> Computed<Vec<ResolvedMenuItem>> {
-    let env = env.clone();
-    let locale = locale.clone();
-    items
-        .map(move |items| resolve_menu_items_now(items, &env, &locale))
-        .computed()
+fn resolve_menu_items_now(items: Vec<MenuItem>, env: &Environment) -> Vec<ResolvedMenuItem> {
+    items.into_iter().map(|item| item.resolve(env)).collect()
 }
 
 #[doc(hidden)]
@@ -569,7 +548,7 @@ pub fn resolve_menu_items(
     let env = env.clone();
     items
         .zip(&locale)
-        .map(move |(items, locale)| resolve_menu_items_now(items, &env, &locale))
+        .map(move |(items, _locale)| resolve_menu_items_now(items, &env))
         .computed()
 }
 
@@ -583,10 +562,10 @@ pub fn resolve_menu_bar_items(
     let env = env.clone();
     menus
         .zip(&locale)
-        .map(move |(menus, locale)| {
+        .map(move |(menus, _locale)| {
             menus
                 .into_iter()
-                .map(|menu| ResolvedMenuItem::Menu(menu.__resolve_with(&env, &locale)))
+                .map(|menu| ResolvedMenuItem::Menu(menu.resolve(&env)))
                 .collect()
         })
         .computed()
@@ -679,7 +658,7 @@ mod tests {
             command
                 .label
                 .__text()
-                .__resolve(&Environment::default())
+                .resolve(&Environment::default())
                 .content
                 .get()
                 .to_plain()
