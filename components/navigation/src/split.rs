@@ -101,6 +101,30 @@ impl NavigationSplitLayout {
             self.sidebar_width,
         )
     }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn sidebar(&self) -> &AnyViewBuilder<AnyView> {
+        &self.sidebar
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn placeholder(&self) -> &AnyViewBuilder<AnyView> {
+        &self.placeholder
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn detail(&self) -> Option<&NavigationView> {
+        self.detail.as_ref()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
+    }
 }
 
 /// Adaptive master-detail navigation container.

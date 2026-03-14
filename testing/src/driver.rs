@@ -1,14 +1,12 @@
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow, PointerButton};
-use waterui::component::table::TableConfig;
+use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton, TouchPhase};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::view::Hook;
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 
 use crate::semantics::NodeId;
-use crate::snapshot::{Snapshot, readback_texture_rgba8};
+use crate::snapshot::Snapshot;
 
 pub(crate) trait A11yDriver {
     fn pump(
@@ -35,39 +33,29 @@ pub(crate) struct DriverPumpResult {
     pub(crate) ui_focus: Option<NodeId>,
 }
 
-#[derive(Debug)]
 pub(crate) struct HydrolysisA11yDriver {
-    platform: OffscreenWindow,
-    renderer: HydrolysisRenderer,
-    needs_rebuild: bool,
+    width: u32,
+    height: u32,
+    runtime: Option<HeadlessRuntime>,
 }
 
 impl HydrolysisA11yDriver {
     pub(crate) fn new(width: u32, height: u32) -> Self {
-        let mut platform =
-            OffscreenWindow::new(width.max(1), height.max(1), wgpu::TextureFormat::Rgba8Unorm);
-        let renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
-        };
-
         Self {
-            platform,
-            renderer,
-            needs_rebuild: true,
+            width,
+            height,
+            runtime: None,
         }
     }
 
-    fn schedule_redraw_or_rebuild(&mut self, changed: bool) -> bool {
-        if !changed {
-            return false;
-        }
-        if self.renderer.take_rebuild_request() {
-            self.needs_rebuild = true;
-            return true;
-        }
-        self.renderer.request_redraw();
-        true
+    fn runtime(
+        &mut self,
+        content: &AnyViewBuilder<AnyView>,
+        env: &Environment,
+    ) -> &mut HeadlessRuntime {
+        self.runtime.get_or_insert_with(|| {
+            HeadlessRuntime::new(env.clone(), content.clone(), self.width, self.height)
+        })
     }
 }
 
@@ -78,117 +66,109 @@ impl A11yDriver for HydrolysisA11yDriver {
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult {
-        let surface = self.platform.surface();
-        let (width, height) = surface.size();
-        let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-
-        self.renderer
-            .set_frame_resources(surface.device(), surface.queue());
-
-        let animation_dirty = self.renderer.advance_animations();
-        if animation_dirty {
-            self.renderer.request_redraw();
-        }
-
-        let should_rebuild = self.needs_rebuild || self.renderer.take_rebuild_request();
-        if should_rebuild {
-            self.renderer.begin_rebuild_frame();
-            let content = self
-                .renderer
-                .with_local_state_env(env, |_local_env| content.build());
-            self.renderer.reset_scene();
-            self.renderer.dispatch(content, env, bounds);
-            self.renderer.finish_rebuild_frame();
-            self.needs_rebuild = false;
-        }
-
-        let frame = surface
-            .acquire()
-            .expect("waterui-testing driver failed to acquire offscreen frame");
-        self.renderer.render_scene_to_texture(
-            surface.device(),
-            surface.queue(),
-            frame.view(),
-            surface.format(),
-            width,
-            height,
-            vello::peniko::Color::TRANSPARENT,
-        );
-        let snapshot = capture_snapshot.then(|| Snapshot {
-            width,
-            height,
-            rgba8: readback_texture_rgba8(
-                surface.device(),
-                surface.queue(),
-                frame.texture(),
-                width,
-                height,
-            ),
-        });
-        self.renderer.clear_frame_resources();
-        surface.present(frame);
-
-        if self.renderer.take_rebuild_request() {
-            self.needs_rebuild = true;
-        }
+        let result = self.runtime(content, env).pump(capture_snapshot);
 
         DriverPumpResult {
-            rebuilt: should_rebuild || animation_dirty,
-            tree_update: self.renderer.take_accessibility_tree_update(),
-            snapshot,
-            ui_focus: self.renderer.focused_ui_node().map(NodeId::from),
+            rebuilt: result.rebuilt,
+            tree_update: result.tree_update,
+            snapshot: result.snapshot.map(|snapshot| Snapshot {
+                width: snapshot.width,
+                height: snapshot.height,
+                rgba8: snapshot.rgba8,
+            }),
+            ui_focus: result.ui_focus.map(NodeId::from),
         }
     }
 
     fn perform_action(&mut self, request: AccessibilityActionRequest, env: &Environment) -> bool {
-        let changed = self.renderer.handle_accessibility_action(request, env);
-        if changed {
-            self.needs_rebuild = true;
-        }
-        changed
+        let _ = env;
+        self.runtime
+            .as_mut()
+            .expect("waterui-testing driver action requested before runtime initialization")
+            .perform_accessibility_action(request)
     }
 
-    fn hover_at(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let changed = self.renderer.handle_pointer_move(x, y, env);
-        self.schedule_redraw_or_rebuild(changed)
+    fn hover_at(&mut self, x: f32, y: f32, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing hover requested before runtime initialization");
+        runtime.push_input_event(InputEvent::PointerMove { x, y });
+        true
     }
 
-    fn pointer_down(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let changed = self
-            .renderer
-            .handle_pointer_down(x, y, PointerButton::Primary, env);
-        self.schedule_redraw_or_rebuild(changed)
+    fn pointer_down(&mut self, x: f32, y: f32, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing pointer down requested before runtime initialization");
+        runtime.push_input_event(InputEvent::PointerDown {
+            x,
+            y,
+            button: PointerButton::Primary,
+        });
+        true
     }
 
-    fn pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let changed = self.renderer.handle_pointer_move(x, y, env);
-        self.schedule_redraw_or_rebuild(changed)
+    fn pointer_move(&mut self, x: f32, y: f32, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing pointer move requested before runtime initialization");
+        runtime.push_input_event(InputEvent::PointerMove { x, y });
+        true
     }
 
-    fn pointer_up(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let changed = self
-            .renderer
-            .handle_pointer_up(x, y, PointerButton::Primary, env);
-        self.schedule_redraw_or_rebuild(changed)
+    fn pointer_up(&mut self, x: f32, y: f32, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing pointer up requested before runtime initialization");
+        runtime.push_input_event(InputEvent::PointerUp {
+            x,
+            y,
+            button: PointerButton::Primary,
+        });
+        true
     }
 
-    fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool {
-        let changed = self.renderer.apply_magnification_gesture(x, y, factor, env);
-        self.schedule_redraw_or_rebuild(changed)
+    fn magnify_at(&mut self, x: f32, y: f32, factor: f32, _env: &Environment) -> bool {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("waterui-testing magnify requested before runtime initialization");
+        runtime.push_input_event(InputEvent::Magnification {
+            x,
+            y,
+            delta: 0.0,
+            phase: TouchPhase::Started,
+        });
+        runtime.push_input_event(InputEvent::Magnification {
+            x,
+            y,
+            delta: factor - 1.0,
+            phase: TouchPhase::Moved,
+        });
+        runtime.push_input_event(InputEvent::Magnification {
+            x,
+            y,
+            delta: 0.0,
+            phase: TouchPhase::Ended,
+        });
+        true
     }
 
     fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
-        let changed = self.renderer.clear_ui_focus();
-        self.schedule_redraw_or_rebuild(changed)
+        self.runtime
+            .as_mut()
+            .expect("waterui-testing clear_ui_focus requested before runtime initialization")
+            .clear_ui_focus()
     }
 
     fn ui_focus(&self) -> Option<NodeId> {
-        self.renderer.focused_ui_node().map(NodeId::from)
+        self.runtime
+            .as_ref()
+            .and_then(HeadlessRuntime::focused_ui_node)
+            .map(NodeId::from)
     }
-}
-
-pub(crate) fn install_native_component_hooks(env: &mut Environment) {
-    env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
-        Native::new(config)
-    }));
 }
