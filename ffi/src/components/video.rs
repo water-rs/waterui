@@ -131,9 +131,7 @@ impl IntoFFI for VideoEvent {
                 error_message: waterui::Str::from(message).into_ffi(),
                 ..WuiVideoEvent::empty(WuiVideoEventType::Error)
             },
-            VideoEvent::NextRequested => {
-                WuiVideoEvent::empty(WuiVideoEventType::NextRequested)
-            }
+            VideoEvent::NextRequested => WuiVideoEvent::empty(WuiVideoEventType::NextRequested),
             VideoEvent::PreviousRequested => {
                 WuiVideoEvent::empty(WuiVideoEventType::PreviousRequested)
             }
@@ -189,7 +187,10 @@ impl IntoFFI for VideoConfig {
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
         let source = self.source;
-        let source_str = source.clone().map(|item| item.source.inner()).into_computed();
+        let source_str = source
+            .clone()
+            .map(|item| item.source.inner())
+            .into_computed();
         let title = source
             .clone()
             .map(|item| item.metadata.title().unwrap_or_default().to_owned())
@@ -207,7 +208,11 @@ impl IntoFFI for VideoConfig {
             .map(|item| item.metadata.artwork_url().unwrap_or_default().to_owned())
             .into_computed();
         let duration_seconds = source
-            .map(|item| item.metadata.duration().map_or(-1.0, |duration| duration.as_secs_f64()))
+            .map(|item| {
+                item.metadata
+                    .duration()
+                    .map_or(-1.0, |duration| duration.as_secs_f64())
+            })
             .into_computed();
 
         WuiVideo {
@@ -277,7 +282,10 @@ impl IntoFFI for VideoPlayerConfig {
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
         let source = self.source;
-        let source_str = source.clone().map(|item| item.source.inner()).into_computed();
+        let source_str = source
+            .clone()
+            .map(|item| item.source.inner())
+            .into_computed();
         let title = source
             .clone()
             .map(|item| item.metadata.title().unwrap_or_default().to_owned())
@@ -295,7 +303,11 @@ impl IntoFFI for VideoPlayerConfig {
             .map(|item| item.metadata.artwork_url().unwrap_or_default().to_owned())
             .into_computed();
         let duration_seconds = source
-            .map(|item| item.metadata.duration().map_or(-1.0, |duration| duration.as_secs_f64()))
+            .map(|item| {
+                item.metadata
+                    .duration()
+                    .map_or(-1.0, |duration| duration.as_secs_f64())
+            })
             .into_computed();
 
         WuiVideoPlayer {

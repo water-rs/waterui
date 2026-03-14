@@ -56,9 +56,7 @@ pub fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
             has_avif_compat = true;
             break;
         }
-        if first_heif_compat.is_none()
-            && is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]])
-        {
+        if first_heif_compat.is_none() && is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]]) {
             first_heif_compat = Some(range.clone());
         }
     }

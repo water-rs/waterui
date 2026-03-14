@@ -16,9 +16,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::take;
 
+use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jint, jlong, jobject, jobjectArray, jsize};
-use jni::JNIEnv;
 
 use crate::reactive::{WuiBinding, WuiComputed, WuiWatcherGuard};
 
@@ -281,9 +281,9 @@ jni_binding_str!(str);
 jni_binding_str!(secure);
 
 fn styled_str_from_java(env: &mut JNIEnv, styled: &JObject) -> waterui_text::styled::StyledStr {
+    use crate::IntoRust;
     use crate::color::WuiColor;
     use crate::components::text::WuiFont;
-    use crate::IntoRust;
     use waterui_text::styled::{Style, StyledStr};
 
     let chunks_obj = env
@@ -458,8 +458,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'l
     month: jint,
     day: jint,
 ) {
-    use crate::components::form::WuiDate;
     use crate::IntoRust;
+    use crate::components::form::WuiDate;
     use waterui_form::picker::date::Date;
 
     let binding = unsafe {
@@ -595,8 +595,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTim
     minute: jint,
     second: jint,
 ) {
-    use crate::components::form::WuiDateTime;
     use crate::IntoRust;
+    use crate::components::form::WuiDateTime;
     use jiff::civil::DateTime;
 
     let binding = unsafe {
@@ -676,8 +676,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::color::WuiResolvedColor;
     use crate::IntoFFI;
+    use crate::color::WuiResolvedColor;
     use waterui::Signal;
     use waterui_graphics::color::ResolvedColor;
 
@@ -994,8 +994,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedTable
     computed_ptr: jlong,
 ) -> jobjectArray {
     use crate::IntoFFI;
-    use waterui::prelude::table::TableColumn;
     use waterui::Signal;
+    use waterui::prelude::table::TableColumn;
 
     let computed = unsafe {
         &*require_jlong_ptr::<WuiComputed<Vec<TableColumn>>>(
@@ -1122,8 +1122,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedVideo
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::components::video::Video;
     use crate::IntoFFI;
+    use crate::components::video::Video;
     use waterui::Signal;
 
     let computed = unsafe {
@@ -1175,7 +1175,11 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateV
     use waterui_form::picker::date::Date;
 
     let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<Vec<Date>>>(computed_ptr, "readComputedDateVec", "computed")
+        &*require_jlong_ptr::<WuiComputed<Vec<Date>>>(
+            computed_ptr,
+            "readComputedDateVec",
+            "computed",
+        )
     };
     let dates = computed.get();
     let classes = crate::jni::java_classes();

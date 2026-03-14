@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use waterui::{Binding, SignalExt, View};
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui_form::secure::Secure;
+use waterui::{Binding, SignalExt, View};
 use waterui_form::secure;
+use waterui_form::secure::Secure;
 use waterui_testing::{MountedApp, Role, Selector};
 
 fn secure_view() -> impl View {
@@ -12,9 +12,7 @@ fn secure_view() -> impl View {
 
     vstack((
         secure("Password", &password),
-        Text::display(
-            password.map(|password: Secure| format!("len:{}", password.expose().len())),
-        ),
+        Text::display(password.map(|password: Secure| format!("len:{}", password.expose().len()))),
     ))
 }
 

@@ -169,13 +169,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
 
         absolute((
             padded_chart,
-            axis_overlay(
-                y_show_grid,
-                x_show_grid,
-                y_ticks,
-                x_ticks,
-                &padding,
-            ),
+            axis_overlay(y_show_grid, x_show_grid, y_ticks, x_ticks, &padding),
             axis_titles(y_label, x_label),
         ))
     }

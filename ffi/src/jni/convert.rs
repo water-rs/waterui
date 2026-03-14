@@ -9,9 +9,9 @@ extern crate std;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use jni::JNIEnv;
 use jni::objects::{JObject, JString, JValue};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
-use jni::JNIEnv;
 use waterui::Str;
 
 use super::java_classes;
@@ -60,11 +60,7 @@ pub trait JniPrimitive: Sized + 'static {
 impl JniPrimitive for bool {
     type Jni = jboolean;
     fn to_jni(self) -> Self::Jni {
-        if self {
-            1
-        } else {
-            0
-        }
+        if self { 1 } else { 0 }
     }
     fn from_jni(val: Self::Jni) -> Self {
         val != 0
@@ -109,11 +105,7 @@ impl ToJava for bool {
     type JavaType<'local> = jboolean;
 
     fn to_java<'local>(&self, _env: &mut JNIEnv<'local>) -> Self::JavaType<'local> {
-        if *self {
-            1
-        } else {
-            0
-        }
+        if *self { 1 } else { 0 }
     }
 }
 
