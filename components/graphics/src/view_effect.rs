@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use core::any::TypeId;
 use core::future::Future;
 use core::pin::Pin;
 
@@ -215,6 +216,7 @@ pub(crate) trait EffectRendererImpl: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> SetupFuture<'a>;
     fn render(&mut self, input: &EffectInput, output: &EffectOutput);
     fn needs_redraw(&self) -> bool;
+    fn concrete_type_id(&self) -> TypeId;
 }
 
 impl<T: EffectRenderer> EffectRendererImpl for T {
@@ -228,6 +230,10 @@ impl<T: EffectRenderer> EffectRendererImpl for T {
 
     fn needs_redraw(&self) -> bool {
         EffectRenderer::needs_redraw(self)
+    }
+
+    fn concrete_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
     }
 }
 
@@ -402,6 +408,12 @@ impl ViewEffectErased {
         self.effect.needs_redraw()
     }
 
+    /// Returns the concrete runtime effect type id behind this erased wrapper.
+    #[must_use]
+    pub fn concrete_type_id(&self) -> TypeId {
+        self.effect.concrete_type_id()
+    }
+
     /// Returns the output size configuration.
     #[must_use]
     pub fn output_size(&self) -> OutputSize {
@@ -418,6 +430,16 @@ impl ViewEffectErased {
     #[must_use]
     pub fn take_content(&mut self) -> waterui_core::AnyView {
         core::mem::take(&mut self.content)
+    }
+
+    /// Replaces the child view content while preserving the effect renderer.
+    pub fn replace_content(&mut self, content: waterui_core::AnyView) {
+        self.content = content;
+    }
+
+    /// Updates the output size configuration while preserving the effect renderer.
+    pub fn set_output_size(&mut self, output_size: OutputSize) {
+        self.output_size = output_size;
     }
 }
 
