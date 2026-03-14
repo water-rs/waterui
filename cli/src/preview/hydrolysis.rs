@@ -16,8 +16,7 @@ const HYDROLYSIS_PREVIEW_OUTPUT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_OUTPUT";
 const HYDROLYSIS_PREVIEW_WIDTH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_WIDTH";
 const HYDROLYSIS_PREVIEW_HEIGHT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_HEIGHT";
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
-const HYDROLYSIS_PREVIEW_SYMBOL_TEMPLATE: &str =
-    include_str!("hydrolysis_preview_symbol.rs.tpl");
+const HYDROLYSIS_PREVIEW_SYMBOL_TEMPLATE: &str = include_str!("hydrolysis_preview_symbol.rs.tpl");
 
 /// Render a preview via the managed Hydrolysis backend binary.
 pub async fn render_preview_with_hydrolysis(
@@ -103,10 +102,12 @@ async fn run_preview_binary(
     child.env(HYDROLYSIS_PREVIEW_WIDTH_ENV, width.to_string());
     child.env(HYDROLYSIS_PREVIEW_HEIGHT_ENV, height.to_string());
 
-    let output = child
-        .output()
-        .await
-        .wrap_err_with(|| format!("Failed to run hydrolysis preview binary {}", binary_path.display()))?;
+    let output = child.output().await.wrap_err_with(|| {
+        format!(
+            "Failed to run hydrolysis preview binary {}",
+            binary_path.display()
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

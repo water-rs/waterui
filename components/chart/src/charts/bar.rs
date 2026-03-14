@@ -8,10 +8,14 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{bar_bounds, bar_geometry, draw_bar, interactive_cartesian_signal_canvas};
+use crate::charts::canvas::{
+    bar_bounds, bar_geometry, draw_bar, interactive_cartesian_signal_canvas,
+};
 use crate::composition::ChartComposition;
 use crate::data::DataPoint;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 
 /// Bar chart visualization.
 pub struct BarChart<S: Signal<Output = Vec<DataPoint>>> {

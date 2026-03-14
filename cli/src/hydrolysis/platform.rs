@@ -213,7 +213,9 @@ pub async fn package_hydrolysis(
     }
 
     if !is_hydrolysis_native_platform(platform) {
-        bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows for binary packaging");
+        bail!(
+            "Hydrolysis backend is only supported on macOS, Linux, and Windows for binary packaging"
+        );
     }
 
     let profile = if options.is_debug() {
@@ -468,11 +470,24 @@ async fn write_hydrolysis_web_shell(project: &Project, site_root: &Path) -> eyre
         .chars()
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
-    let ctx = TemplateContext::for_project_manifest(project.manifest(), project.crate_name(), app_name);
+    let ctx =
+        TemplateContext::for_project_manifest(project.manifest(), project.crate_name(), app_name);
 
-    fs::write(site_root.join("index.html"), ctx.render(HYDROLYSIS_WEB_INDEX_TEMPLATE)).await?;
-    fs::write(site_root.join("bootstrap.js"), ctx.render(HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE)).await?;
-    fs::write(site_root.join("style.css"), ctx.render(HYDROLYSIS_WEB_STYLE_TEMPLATE)).await?;
+    fs::write(
+        site_root.join("index.html"),
+        ctx.render(HYDROLYSIS_WEB_INDEX_TEMPLATE),
+    )
+    .await?;
+    fs::write(
+        site_root.join("bootstrap.js"),
+        ctx.render(HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE),
+    )
+    .await?;
+    fs::write(
+        site_root.join("style.css"),
+        ctx.render(HYDROLYSIS_WEB_STYLE_TEMPLATE),
+    )
+    .await?;
     Ok(())
 }
 
@@ -505,7 +520,13 @@ async fn serve_http_request(
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or("/");
     if method != "GET" && method != "HEAD" {
-        write_response(stream, 405, "text/plain; charset=utf-8", b"Method Not Allowed").await?;
+        write_response(
+            stream,
+            405,
+            "text/plain; charset=utf-8",
+            b"Method Not Allowed",
+        )
+        .await?;
         return Ok(());
     }
 
@@ -523,8 +544,7 @@ async fn serve_http_request(
             return Ok(());
         }
         Err(error) => {
-            return Err(error)
-                .wrap_err_with(|| format!("Failed to read {}", file_path.display()));
+            return Err(error).wrap_err_with(|| format!("Failed to read {}", file_path.display()));
         }
     };
     let mime = mime_type_for_path(&file_path);
@@ -538,7 +558,11 @@ async fn serve_http_request(
 fn resolve_site_path(site_root: &Path, request_path: &str) -> eyre::Result<PathBuf> {
     let request_path = request_path.split('?').next().unwrap_or("/");
     let trimmed = request_path.trim_start_matches('/');
-    let relative = if trimmed.is_empty() { "index.html" } else { trimmed };
+    let relative = if trimmed.is_empty() {
+        "index.html"
+    } else {
+        trimmed
+    };
 
     let mut resolved = site_root.to_path_buf();
     for segment in relative.split('/') {

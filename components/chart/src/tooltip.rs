@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::{Computed, SignalExt as _};
-use waterui_core::dynamic::Dynamic;
 use waterui_core::Str;
+use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
@@ -247,10 +247,13 @@ where
     Dynamic::watch(hit.zip(&chart_frame), move |(hit, frame)| {
         hit.map(|hit| {
             let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
-            let tooltip = Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
-            AnyView::new(absolute((
-                tooltip.position_anchor(UnitPoint::BOTTOM_LEADING, x, y),
-            )))
+            let tooltip =
+                Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
+            AnyView::new(absolute((tooltip.position_anchor(
+                UnitPoint::BOTTOM_LEADING,
+                x,
+                y,
+            ),)))
         })
         .unwrap_or_else(|| AnyView::new(()))
     })

@@ -253,10 +253,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     "false"
                 },
             )
-            .replace(
-                "__FFI_EXPORT__",
-                "",
-            )
+            .replace("__FFI_EXPORT__", "")
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
     }
@@ -576,7 +573,9 @@ mod tests {
 
         let rendered = ctx.render(template);
 
-        assert!(rendered.contains("import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint"));
+        assert!(rendered.contains(
+            "import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint"
+        ));
         assert!(rendered.contains("override fun onUserLeaveHint()"));
         assert!(rendered.contains("notifyVideoPictureInPictureUserLeaveHint(this)"));
     }
@@ -1159,7 +1158,9 @@ pub mod hydrolysis {
                     "hydrolysis",
                     WATERUI_HYDROLYSIS_VERSION,
                     &["winit"],
-                    Some(NativeBackendDependencyPathKind::BackendsSubdir("hydrolysis")),
+                    Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                        "hydrolysis",
+                    )),
                 ),
             ),
         );
@@ -1191,7 +1192,9 @@ pub mod hydrolysis {
                     "hydrolysis",
                     WATERUI_HYDROLYSIS_VERSION,
                     &["web"],
-                    Some(NativeBackendDependencyPathKind::BackendsSubdir("hydrolysis")),
+                    Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                        "hydrolysis",
+                    )),
                 ),
             ),
         );

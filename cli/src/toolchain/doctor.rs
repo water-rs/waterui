@@ -21,10 +21,13 @@ use crate::{
     device::Device,
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{
-        Installation, Toolchain, ToolchainError, UnfixableToolchain, cmake::Cmake,
-        linux::LinuxSystemToolchain, rust::RustToolchain, sccache::Sccache,
-        windows_arm64_llvm::WindowsArm64LlvmToolchain,
+        Installation, Toolchain, ToolchainError, UnfixableToolchain,
+        cmake::Cmake,
+        linux::LinuxSystemToolchain,
+        rust::RustToolchain,
+        sccache::Sccache,
         web::{Wasm32UnknownUnknownTarget, WasmPack},
+        windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
 };
 

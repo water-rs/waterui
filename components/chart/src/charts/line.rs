@@ -8,10 +8,14 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{draw_line, interactive_cartesian_signal_canvas, point_bounds, point_geometry};
+use crate::charts::canvas::{
+    draw_line, interactive_cartesian_signal_canvas, point_bounds, point_geometry,
+};
 use crate::composition::ChartComposition;
 use crate::data::DataPoint;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
 /// Line chart visualization.
@@ -112,9 +116,7 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
             _env,
             self.data,
             |data: &Vec<DataPoint>| point_bounds(data),
-            move |ctx, data, bounds| {
-                point_geometry(ctx, data, bounds, (line_width * 2.5).max(8.0))
-            },
+            move |ctx, data, bounds| point_geometry(ctx, data, bounds, (line_width * 2.5).max(8.0)),
             move |ctx, data, geometry| {
                 draw_line(
                     ctx,

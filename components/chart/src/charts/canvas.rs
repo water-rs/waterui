@@ -13,8 +13,7 @@ use waterui_core::{
     Environment, Metadata,
     event::{Event, HoverEvent, OnEvent},
     gesture::{
-        DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, TapEvent,
-        TapGesture,
+        DragEvent, DragGesture, GestureObserver, GesturePhase, GesturePoint, TapEvent, TapGesture,
     },
     layout::{Point, Rect, Size},
 };
@@ -29,8 +28,8 @@ use crate::{
     },
     interaction::{
         AreaDatum, CartesianSelectionBindings, CartesianViewportBindings, ChartViewport,
-        DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum, RegionDatum,
-        SelectionBindings, SliceDatum,
+        DepthDatum, DepthSide, GridDatum, HitResult, RadarDatum, RegionDatum, SelectionBindings,
+        SliceDatum,
     },
     local_state::{local_binding, local_shared},
 };
@@ -359,7 +358,11 @@ where
     })
 }
 
-fn cartesian_x_from_point<T>(geometry: &CartesianGeometry<T>, point: Point, clamp: bool) -> Option<f32> {
+fn cartesian_x_from_point<T>(
+    geometry: &CartesianGeometry<T>,
+    point: Point,
+    clamp: bool,
+) -> Option<f32> {
     let viewport = geometry.viewport;
     if viewport.width <= 0.0 {
         return None;
@@ -375,7 +378,11 @@ fn cartesian_x_from_point<T>(geometry: &CartesianGeometry<T>, point: Point, clam
     Some(geometry.bounds.min_x + geometry.bounds.width() * normalized_x)
 }
 
-fn cartesian_y_from_point<T>(geometry: &CartesianGeometry<T>, point: Point, clamp: bool) -> Option<f32> {
+fn cartesian_y_from_point<T>(
+    geometry: &CartesianGeometry<T>,
+    point: Point,
+    clamp: bool,
+) -> Option<f32> {
     let viewport = geometry.viewport;
     if viewport.height <= 0.0 {
         return None;
@@ -443,34 +450,38 @@ where
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
         let cartesian_viewport = cartesian_viewport.clone();
-        Canvas::with_signal(signal.zip(&viewport_state), move |ctx, (data, viewport_state)| {
-            let current_base_bounds = normalize_bounds(bounds_of(&data));
-            *base_bounds.borrow_mut() = current_base_bounds;
-            let visible_bounds = cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
-            let built_geometry = build_geometry(ctx, &data, visible_bounds);
-            *geometry.borrow_mut() = Some(built_geometry.clone());
-            let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
-            if chart_frame.get() != current_chart_frame {
-                chart_frame.set(current_chart_frame);
-            }
-            let current_plot_area = built_geometry.viewport();
-            if plot_area_frame.get() != current_plot_area {
-                plot_area_frame.set(current_plot_area);
-            }
-            let (progress, animating) = {
-                let mut transition = transition.borrow_mut();
-                let progress = transition.progress_for(&data);
-                let animating = transition.is_animating();
-                (progress, animating)
-            };
-            if animating {
-                ctx.request_next_frame();
-            }
-            ctx.save();
-            ctx.set_global_alpha(progress);
-            draw(ctx, &data, &built_geometry);
-            ctx.restore();
-        })
+        Canvas::with_signal(
+            signal.zip(&viewport_state),
+            move |ctx, (data, viewport_state)| {
+                let current_base_bounds = normalize_bounds(bounds_of(&data));
+                *base_bounds.borrow_mut() = current_base_bounds;
+                let visible_bounds =
+                    cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
+                let built_geometry = build_geometry(ctx, &data, visible_bounds);
+                *geometry.borrow_mut() = Some(built_geometry.clone());
+                let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
+                if chart_frame.get() != current_chart_frame {
+                    chart_frame.set(current_chart_frame);
+                }
+                let current_plot_area = built_geometry.viewport();
+                if plot_area_frame.get() != current_plot_area {
+                    plot_area_frame.set(current_plot_area);
+                }
+                let (progress, animating) = {
+                    let mut transition = transition.borrow_mut();
+                    let progress = transition.progress_for(&data);
+                    let animating = transition.is_animating();
+                    (progress, animating)
+                };
+                if animating {
+                    ctx.request_next_frame();
+                }
+                ctx.save();
+                ctx.set_global_alpha(progress);
+                draw(ctx, &data, &built_geometry);
+                ctx.restore();
+            },
+        )
     };
     let canvas = Metadata::new(
         canvas,
