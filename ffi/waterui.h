@@ -810,14 +810,6 @@ typedef struct Computed_Id Computed_Id;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
 typedef struct Computed_MenuItems Computed_MenuItems;
 
 /**
@@ -1017,8 +1009,6 @@ typedef struct WuiLifeCycleHookHandler WuiLifeCycleHookHandler;
 
 typedef struct WuiMoveAction WuiMoveAction;
 
-typedef struct WuiNavigationSplitDetail WuiNavigationSplitDetail;
-
 /**
  * Wrapper for OnEvent to avoid orphan rule issues.
  */
@@ -1056,8 +1046,6 @@ typedef struct WuiWatcher_Font WuiWatcher_Font;
 typedef struct WuiWatcher_HorizontalAlignment WuiWatcher_HorizontalAlignment;
 
 typedef struct WuiWatcher_Id WuiWatcher_Id;
-
-typedef struct WuiWatcher_LivePhotoSource WuiWatcher_LivePhotoSource;
 
 typedef struct WuiWatcher_MenuItems WuiWatcher_MenuItems;
 
@@ -2598,6 +2586,10 @@ typedef struct WuiNavigationStack {
   enum WuiNavigationTransition transition;
 } WuiNavigationStack;
 
+typedef struct WuiNavigationSplitDetail {
+  uint8_t _private[0];
+} WuiNavigationSplitDetail;
+
 typedef struct WuiId {
   /**
    * The inner integer value of the ID.
@@ -2705,12 +2697,6 @@ typedef struct WuiNavigationController {
    */
   void (*drop)(void*);
 } WuiNavigationController;
-
-typedef struct Computed_LivePhotoSource WuiComputed_LivePhotoSource;
-
-typedef struct WuiLivePhoto {
-  WuiComputed_LivePhotoSource *source;
-} WuiLivePhoto;
 
 typedef struct Computed_Str WuiComputed_Str;
 
@@ -3681,11 +3667,6 @@ typedef struct WuiArray_WuiPickerItem {
   NonNull data;
   struct WuiArrayVTable_WuiPickerItem vtable;
 } WuiArray_WuiPickerItem;
-
-typedef struct WuiLivePhotoSource {
-  struct WuiStr image;
-  struct WuiStr video;
-} WuiLivePhotoSource;
 
 typedef struct WuiShapeKind {
   int32_t tag;
@@ -4989,10 +4970,6 @@ struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *v
 
 struct WuiTypeId waterui_navigation_stack_id(void);
 
-/**
- * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
- */
 void waterui_drop_split_navigation_detail(struct WuiNavigationSplitDetail *value);
 
 /**
@@ -5101,10 +5078,6 @@ bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
  * - `env` must be a valid pointer to a `WuiEnv`
  */
 void waterui_navigation_pop(const struct WuiEnv *env);
-
-struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
-
-struct WuiTypeId waterui_live_photo_id(void);
 
 struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
 
@@ -7025,47 +6998,6 @@ struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(void *data
                                                                                    struct WuiArray_WuiPickerItem,
                                                                                    struct WuiWatcherMetadata*),
                                                                       void (*drop)(void*));
-
-/**
- * Reads the current value from a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- */
-struct WuiLivePhotoSource waterui_read_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed);
-
-/**
- * Watches for changes in a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher pointer will be consumed and freed when the returned guard is dropped.
- */
-struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed,
-                                                                 struct WuiWatcher_LivePhotoSource *watcher);
-
-/**
- * Drops a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-void waterui_drop_computed_live_photo_source(WuiComputed_LivePhotoSource *computed);
-
-/**
- * Clones a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-WuiComputed_LivePhotoSource *waterui_clone_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed);
-
-/**
- * Creates a watcher from native callbacks.
- * # Safety
- * All function pointers must be valid.
- */
-struct WuiWatcher_LivePhotoSource *waterui_new_watcher_live_photo_source(void *data,
-                                                                         void (*call)(void*,
-                                                                                      struct WuiLivePhotoSource,
-                                                                                      struct WuiWatcherMetadata*),
-                                                                         void (*drop)(void*));
 
 /**
  * Creates a new watcher guard from raw data and a drop function.

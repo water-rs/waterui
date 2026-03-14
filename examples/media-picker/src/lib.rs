@@ -8,9 +8,9 @@
 
 use waterui::app::App;
 use waterui::component::Dynamic;
-use waterui::media::Media;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
-use waterui::prelude::theme_color::{Accent, MutedForeground, Surface};
+use waterui::media::{LivePhoto, Media};
+use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
@@ -192,7 +192,7 @@ fn media_view(media: Media) -> AnyView {
         Media::LivePhoto(source) => {
             tracing::debug!("Displaying live photo");
             vstack((
-                live_photo_view(source),
+                LivePhoto::new(source),
                 text("Live Photo")
                     .body()
                     .foreground(MutedForeground)
@@ -213,43 +213,6 @@ fn video_view(url: Url) -> impl View {
             .foreground(MutedForeground)
             .padding_with(8.0),
     ))
-}
-
-fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {
-    let is_playing = binding(false);
-    let image_url = source.image.clone();
-    let video_url = source.video.clone();
-
-    let is_playing_for_watch = is_playing.clone();
-    Dynamic::watch(is_playing_for_watch, move |playing| {
-        if playing {
-            Video::new(video_url.clone())
-                .loops(false)
-                .on_event({
-                    let is_playing = is_playing.clone();
-                    move |event| match event {
-                        video::Event::Ended | video::Event::Error { .. } => {
-                            is_playing.set(false);
-                        }
-                        _ => {}
-                    }
-                })
-                .anyview()
-        } else {
-            Photo::new(image_url.clone())
-                .with_state(&is_playing)
-                .on_tap(|p| p.set(true))
-                .overlay(
-                    button(text("Play"))
-                        .with_state(&is_playing)
-                        .action(|p| p.set(true))
-                        .padding_with(10.0)
-                        .background(Color::from(Surface)),
-                )
-                .anyview()
-        }
-    })
-    .anyview()
 }
 
 fn validate_media_result(media: &Media, expected_filter: &MediaFilter) -> Result<(), String> {
