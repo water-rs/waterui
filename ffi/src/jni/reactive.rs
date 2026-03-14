@@ -16,9 +16,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::take;
 
-use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jint, jlong, jobject, jobjectArray, jsize};
+use jni::JNIEnv;
 
 use crate::reactive::{WuiBinding, WuiComputed, WuiWatcherGuard};
 
@@ -227,42 +227,30 @@ fn create_date_time_struct<'local>(
 }
 
 // ============================================================================
-// String-based Binding Macros (Str, Secure use byte array conversion)
+// String-based Binding Macros (Str, Secure use direct Java String conversion)
 // ============================================================================
 
-/// Helper for reading a Str binding as byte array
-fn read_binding_str_to_bytes(env: &mut JNIEnv, binding_ptr: jlong) -> jobject {
+/// Helper for reading a Str binding as Java String.
+fn read_binding_str_to_java_string(env: &mut JNIEnv, binding_ptr: jlong) -> jobject {
     use nami::Signal;
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
     let s: waterui::Str = binding.get();
-    let bytes = s.as_bytes();
-    let byte_array = env
-        .new_byte_array(bytes.len() as i32)
-        .expect("Failed to create byte array");
-    env.set_byte_array_region(&byte_array, 0, unsafe {
-        core::slice::from_raw_parts(bytes.as_ptr() as *const i8, bytes.len())
-    })
-    .expect("Failed to set byte array region");
-    byte_array.into_raw()
+    env.new_string(s.as_str())
+        .expect("read_binding_str_to_java_string: failed to create Java string")
+        .into_raw()
 }
 
-/// Helper for setting a Str binding from byte array
-fn set_binding_str_from_bytes(env: &mut JNIEnv, binding_ptr: jlong, bytes: &JByteArray) {
+/// Helper for setting a Str binding from Java String.
+fn set_binding_str_from_java_string(env: &mut JNIEnv, binding_ptr: jlong, value: &JString) {
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
-    let len = env
-        .get_array_length(bytes)
-        .expect("set_binding_str_from_bytes: failed to read byte array length")
-        as usize;
-    let mut buf = alloc::vec![0i8; len];
-    env.get_byte_array_region(bytes, 0, &mut buf)
-        .expect("set_binding_str_from_bytes: failed to read byte array content");
-    let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
-    let s = waterui::Str::from_utf8(bytes)
-        .expect("set_binding_str_from_bytes: input byte array is not valid UTF-8");
+    let text = env
+        .get_string(value)
+        .expect("set_binding_str_from_java_string: failed to read Java string");
+    let s = waterui::Str::from(text.to_string_lossy().into_owned());
     binding.set(s);
 }
 
-/// Generates JNI read/set functions for Str-based binding types (using byte array).
+/// Generates JNI read/set functions for Str-based binding types (using Java String).
 macro_rules! jni_binding_str {
     ($name:tt) => {
         pastey::paste! {
@@ -272,7 +260,7 @@ macro_rules! jni_binding_str {
                 _class: JClass<'local>,
                 binding_ptr: jlong,
             ) -> jobject {
-                read_binding_str_to_bytes(&mut env, binding_ptr)
+                read_binding_str_to_java_string(&mut env, binding_ptr)
             }
 
             #[unsafe(no_mangle)]
@@ -280,9 +268,9 @@ macro_rules! jni_binding_str {
                 mut env: JNIEnv<'local>,
                 _class: JClass<'local>,
                 binding_ptr: jlong,
-                bytes: JByteArray<'local>,
+                value: JString<'local>,
             ) {
-                set_binding_str_from_bytes(&mut env, binding_ptr, &bytes);
+                set_binding_str_from_java_string(&mut env, binding_ptr, &value);
             }
         }
     };
@@ -293,9 +281,9 @@ jni_binding_str!(str);
 jni_binding_str!(secure);
 
 fn styled_str_from_java(env: &mut JNIEnv, styled: &JObject) -> waterui_text::styled::StyledStr {
-    use crate::IntoRust;
     use crate::color::WuiColor;
     use crate::components::text::WuiFont;
+    use crate::IntoRust;
     use waterui_text::styled::{Style, StyledStr};
 
     let chunks_obj = env
@@ -470,8 +458,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'l
     month: jint,
     day: jint,
 ) {
-    use crate::IntoRust;
     use crate::components::form::WuiDate;
+    use crate::IntoRust;
     use waterui_form::picker::date::Date;
 
     let binding = unsafe {
@@ -607,8 +595,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTim
     minute: jint,
     second: jint,
 ) {
-    use crate::IntoRust;
     use crate::components::form::WuiDateTime;
+    use crate::IntoRust;
     use jiff::civil::DateTime;
 
     let binding = unsafe {
@@ -688,8 +676,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResol
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::IntoFFI;
     use crate::color::WuiResolvedColor;
+    use crate::IntoFFI;
     use waterui::Signal;
     use waterui_graphics::color::ResolvedColor;
 
@@ -1006,8 +994,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedTable
     computed_ptr: jlong,
 ) -> jobjectArray {
     use crate::IntoFFI;
-    use waterui::Signal;
     use waterui::prelude::table::TableColumn;
+    use waterui::Signal;
 
     let computed = unsafe {
         &*require_jlong_ptr::<WuiComputed<Vec<TableColumn>>>(
@@ -1134,8 +1122,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedVideo
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
-    use crate::IntoFFI;
     use crate::components::video::Video;
+    use crate::IntoFFI;
     use waterui::Signal;
 
     let computed = unsafe {
