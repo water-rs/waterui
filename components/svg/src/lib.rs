@@ -1,7 +1,7 @@
-//! SVG rendering for WaterUI.
+//! SVG rendering for `WaterUI`.
 //!
 //! This crate provides `Svg`, a view for rendering SVG content using GPU-accelerated
-//! rendering via SceneView.
+//! rendering via `SceneView`.
 //!
 //! SVG rendering is backed by Vello for direct GPU vector rendering.
 
