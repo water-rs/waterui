@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::AssetError;
 #[cfg(feature = "std")]
-use crate::url::ensure_http_allowed;
+use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 /// Large file, memory-mapped for efficient access.
 ///
@@ -108,8 +108,6 @@ impl LargeFile {
     /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
     /// Returns `AssetError::Mmap` if memory mapping fails.
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
-        ensure_http_allowed(url)?;
-
         // Download to temp file
         let cache_path = download_to_cache(url).await?;
 
@@ -200,7 +198,6 @@ impl AsRef<[u8]> for LargeFile {
 #[cfg(feature = "std")]
 async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> {
     use sha2::{Digest, Sha256};
-    use zenwave::{Client, Method, redirect::FollowRedirect};
 
     // Compute cache path based on URL hash
     let mut hasher = Sha256::new();
@@ -250,72 +247,18 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
     }
 
     tracing::info!("Downloading asset: {url}");
-
-    // Download
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client
-        .method(Method::GET, url)
-        .await
-        .map_err(|e| AssetError::network(url, None, e.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(AssetError::network(
-            url,
-            Some(response.status().as_u16()),
-            "HTTP request failed",
-        ));
-    }
-
-    let bytes = response
-        .into_body()
-        .into_bytes()
-        .await
-        .map_err(|e| AssetError::network(url, None, e.to_string()))?;
-
-    // Write to cache atomically to avoid leaving partial files.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let temp_path = cache_dir.join(format!("{hash}.tmp-{}-{nonce}", std::process::id()));
-    smol::unblock({
-        let temp_path = temp_path.clone();
-        move || std::fs::write(&temp_path, &bytes)
-    })
-    .await
-    .map_err(|e| AssetError::io(format!("Failed to write temp cache file: {e}")))?;
-
-    let rename_result = smol::unblock({
-        let temp_path = temp_path.clone();
-        let cache_path = cache_path.clone();
-        move || std::fs::rename(&temp_path, &cache_path)
-    })
-    .await;
-
-    if let Err(e) = rename_result {
-        let _ = smol::unblock({
-            let temp_path = temp_path.clone();
-            move || std::fs::remove_file(&temp_path)
-        })
-        .await;
-        let cache_exists = smol::unblock({
-            let cache_path = cache_path.clone();
-            move || cache_path.exists()
-        })
-        .await;
-        if cache_exists {
+    let bytes = download_remote_bytes(url).await?;
+    match write_bytes_atomically(&cache_path, &bytes).await? {
+        AtomicWriteOutcome::Written => {
+            tracing::debug!("Cached asset: {url} -> {}", cache_path.display());
+        }
+        AtomicWriteOutcome::ReusedExisting => {
             tracing::debug!(
                 "Asset cache race detected, reusing {}",
                 cache_path.display()
             );
-            return Ok(cache_path);
         }
-        return Err(AssetError::io(format!(
-            "Failed to finalize cache file: {e}"
-        )));
     }
-
-    tracing::debug!("Cached asset: {url} -> {}", cache_path.display());
 
     Ok(cache_path)
 }
