@@ -7,6 +7,7 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::Signal;
 use waterui_controls::text_field::TextField;
+use waterui_core::id::Id;
 use waterui_core::Environment;
 use waterui_navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
@@ -474,14 +475,50 @@ impl GtkComponent for NavigationSplitLayout {
         sidebar.set_hexpand(true);
         sidebar.set_vexpand(true);
         paned.set_start_child(Some(&sidebar));
-        let detail = if let Some(detail) = self.detail {
-            renderer.render(detail, env)
-        } else {
-            renderer.render_any(self.placeholder.build(), env)
+        let detail_host = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        detail_host.set_hexpand(true);
+        detail_host.set_vexpand(true);
+        paned.set_end_child(Some(&detail_host));
+
+        let placeholder = self.placeholder;
+        let selection = self.selection;
+        let detail = self.detail;
+        let env = env.clone();
+
+        let rebuild_detail = {
+            let detail_host = detail_host.clone();
+            let env = env.clone();
+            move |selected: Option<Id>| {
+                let detail_host = detail_host.clone();
+                let env = env.clone();
+                let placeholder = placeholder.clone();
+                let detail = detail.clone();
+                glib::idle_add_local_once(move || {
+                    while let Some(child) = detail_host.first_child() {
+                        detail_host.remove(&child);
+                    }
+
+                    let mut fresh_renderer = GtkRenderer::new();
+                    let widget = if let Some(selected) = selected {
+                        fresh_renderer.render(detail.build(selected), &env)
+                    } else {
+                        fresh_renderer.render_any(placeholder.build(), &env)
+                    };
+                    widget.set_hexpand(true);
+                    widget.set_vexpand(true);
+                    detail_host.append(&widget);
+                });
+            }
         };
-        detail.set_hexpand(true);
-        detail.set_vexpand(true);
-        paned.set_end_child(Some(&detail));
+
+        rebuild_detail(selection.get());
+        let selection_guard = selection
+            .clone()
+            .computed()
+            .watch(move |ctx: nami::watcher::Context<Option<Id>>| {
+                rebuild_detail(ctx.into_value());
+            });
+        crate::util::store_watcher_guard(&paned, Box::new(selection_guard));
         paned.upcast()
     }
 }

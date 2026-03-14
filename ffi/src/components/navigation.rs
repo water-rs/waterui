@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 
-use crate::action::WuiAction;
 use crate::array::WuiArray;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
@@ -12,7 +11,7 @@ use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
 use waterui_navigation::{
     Bar, CustomNavigationController, NavigationController, NavigationSearch, NavigationSplitLayout,
-    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView,
+    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView, split::NavigationSplitDetailBuilder,
 };
 
 into_ffi! {
@@ -140,51 +139,95 @@ pub struct WuiNavigationSplitLayout {
     pub sidebar: *mut WuiAnyView,
     /// Placeholder content for empty regular-width selection.
     pub placeholder: *mut WuiAnyView,
-    /// Active detail bar state when a selection exists.
-    pub detail_bar: WuiBar,
-    /// Active detail content when a selection exists.
-    pub detail_content: *mut WuiAnyView,
-    /// Whether a detail selection currently exists.
-    pub has_detail: bool,
+    /// The currently selected detail identifier encoded as i32 (0 means no selection).
+    pub selection: *mut WuiBinding<i32>,
+    /// Resolver handle for building detail content from a selected id.
+    pub detail: *mut WuiNavigationSplitDetail,
     /// Preferred sidebar width in logical points.
     pub sidebar_width: f32,
-    /// Action that clears the current selection on compact layouts.
-    pub clear_selection: *mut WuiAction,
+}
+
+#[repr(C)]
+pub struct WuiNavigationSplitDetail {
+    _private: [u8; 0],
+}
+
+impl crate::IntoFFI for NavigationSplitDetailBuilder {
+    type FFI = *mut WuiNavigationSplitDetail;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(self)) as *mut WuiNavigationSplitDetail
+    }
+}
+
+impl crate::IntoRust for *mut WuiNavigationSplitDetail {
+    type Rust = NavigationSplitDetailBuilder;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        unsafe { *Box::from_raw(self as *mut NavigationSplitDetailBuilder) }
+    }
+}
+
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_split_navigation_detail(value: *mut WuiNavigationSplitDetail) {
+    let _ = unsafe { crate::IntoRust::into_rust(value) };
+}
+
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavigationDetail<'local>(
+    _env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    ptr: crate::jni::jlong,
+) {
+    use crate::jni::convert::jlong_to_ptr_mut;
+    let ptr: *mut WuiNavigationSplitDetail = unsafe { jlong_to_ptr_mut(ptr) };
+    let _ = unsafe { crate::IntoRust::into_rust(ptr) };
+}
+
+/// Resolves the active detail navigation view for a selected split identifier.
+///
+/// # Safety
+///
+/// - `handler` must be a valid pointer to a `WuiNavigationSplitDetail`.
+/// - `selected` must encode a valid non-zero split selection id.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_split_navigation_detail_content(
+    handler: *mut WuiNavigationSplitDetail,
+    selected: crate::id::WuiId,
+) -> WuiNavigationView {
+    let handler = unsafe {
+        crate::expect_non_null(
+            handler as *const NavigationSplitDetailBuilder,
+            "waterui_split_navigation_detail_content",
+            "handler",
+        )
+    };
+    let selected = unsafe { crate::IntoRust::into_rust(selected) };
+    IntoFFI::into_ffi(handler.build(selected))
 }
 
 impl IntoFFI for NavigationSplitLayout {
     type FFI = WuiNavigationSplitLayout;
 
     fn into_ffi(self) -> Self::FFI {
-        let (sidebar, placeholder, detail, sidebar_width, clear_selection) = self.into_parts();
-        let (detail_bar, detail_content, has_detail) = match detail {
-            Some(detail) => {
-                let detail = detail.into_ffi();
-                (detail.bar, detail.content, true)
-            }
-            None => (
-                WuiBar {
-                    title: core::ptr::null_mut(),
-                    leading: core::ptr::null_mut(),
-                    trailing: core::ptr::null_mut(),
-                    search: core::ptr::null_mut(),
-                    color: core::ptr::null_mut(),
-                    hidden: core::ptr::null_mut(),
-                    display_mode: NavigationTitleDisplayMode::Automatic.into_ffi(),
-                },
-                core::ptr::null_mut(),
-                false,
-            ),
-        };
+        let (sidebar, placeholder, selection, detail, sidebar_width) = self.into_parts();
+        let selection = WuiBinding(nami::Binding::mapping(
+            &selection,
+            |value| value.map(i32::from).unwrap_or(0),
+            |binding, value| {
+                binding.set(core::num::NonZeroI32::new(value).map(waterui_core::id::Id::from));
+            },
+        ))
+        .into_ffi();
 
         WuiNavigationSplitLayout {
             sidebar: sidebar.build().into_ffi(),
             placeholder: placeholder.build().into_ffi(),
-            detail_bar,
-            detail_content,
-            has_detail,
+            selection,
+            detail: detail.into_ffi(),
             sidebar_width,
-            clear_selection: clear_selection.into_ffi(),
         }
     }
 }
