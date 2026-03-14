@@ -461,9 +461,10 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
 
         let zip_path = zip_path.to_path_buf();
         let extract_dir_clone = extract_dir.clone();
+        let zip_path_for_extraction = zip_path.clone();
 
         smol::unblock(move || {
-            let file = std::fs::File::open(&zip_path)?;
+            let file = std::fs::File::open(&zip_path_for_extraction)?;
             let mut archive = zip::ZipArchive::new(file)?;
             archive.extract(&extract_dir_clone)?;
             Ok::<_, eyre::Report>(())
@@ -479,9 +480,24 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
         }
     }
 
+    remove_extracted_font_archive(zip_path).await?;
+
     // Find a font file (.ttf or .otf)
     let font_file = find_font_file(&extract_dir, name).await?;
     Ok(font_file)
+}
+
+async fn remove_extracted_font_archive(zip_path: &Path) -> eyre::Result<()> {
+    match fs::remove_file(zip_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).wrap_err_with(|| {
+            format!(
+                "Failed to remove extracted font archive at {}",
+                zip_path.display()
+            )
+        }),
+    }
 }
 
 /// Copies Font Awesome icons.json to the fontawesome cache directory.
