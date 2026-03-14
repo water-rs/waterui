@@ -352,7 +352,9 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
             runtime.renderer.set_window_bounds(bounds);
-            let content = runtime.window.build_content();
+            let content = runtime
+                .renderer
+                .with_local_state_env(env, |_local_env| runtime.window.build_content());
             runtime.renderer.dispatch_with_transform(
                 content,
                 env,

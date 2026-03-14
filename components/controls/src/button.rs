@@ -285,7 +285,7 @@ where
         style: button.style,
         accessibility_label: button
             .accessibility_label
-            .map(|label| label.__resolve(env).content),
+            .map(|label| label.resolve(env).content),
     }
 }
 
@@ -630,7 +630,7 @@ mod tests {
             command
                 .label
                 .__text()
-                .__resolve(&Environment::default())
+                .resolve(&Environment::default())
                 .content
                 .get()
                 .to_plain()
@@ -652,7 +652,7 @@ mod tests {
             style: ButtonStyle::Automatic,
             accessibility_label: Some(
                 Text::new("Accessible")
-                    .__resolve(&Environment::default())
+                    .resolve(&Environment::default())
                     .content,
             ),
         }
@@ -662,7 +662,7 @@ mod tests {
             command
                 .label
                 .__text()
-                .__resolve(&Environment::default())
+                .resolve(&Environment::default())
                 .content
                 .get()
                 .to_plain()

@@ -42,11 +42,11 @@ pub use plural::{PluralCategory, select_plural};
 #[must_use]
 pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> {
     if let Some(context) = env.get::<regional::RegionalContext>().cloned() {
-        return nami::Binding::container(context.locale().clone());
+        return nami::Binding::custom(nami::Container::new(context.locale().clone()));
     }
 
     if let Some(locale) = env.get::<Locale>().cloned() {
-        return nami::Binding::container(locale);
+        return nami::Binding::custom(nami::Container::new(locale));
     }
 
     system::runtime_locale_binding()

@@ -29,7 +29,7 @@ struct NoopDriver;
 impl A11yDriver for NoopDriver {
     fn pump(
         &mut self,
-        _content: AnyView,
+        _content: &AnyViewBuilder<AnyView>,
         _env: &Environment,
         _capture_snapshot: bool,
     ) -> DriverPumpResult {
