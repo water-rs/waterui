@@ -4,7 +4,7 @@ use core::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use fixed_decimal::FixedDecimal;
-use icu_decimal::FixedDecimalFormatter;
+use icu_decimal::{FixedDecimalFormatter, options::FixedDecimalFormatterOptions};
 use icu_provider::DataLocale;
 
 use crate::locale::{Locale, locales};
@@ -16,34 +16,36 @@ fn data_locale(locale: &Locale) -> DataLocale {
 }
 
 fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
-    match FixedDecimalFormatter::try_new(&data_locale(locale), Default::default()) {
+    match FixedDecimalFormatter::try_new(
+        &data_locale(locale),
+        FixedDecimalFormatterOptions::default(),
+    ) {
         Ok(formatter) => Some(formatter),
-        Err(primary_error) => {
-            match FixedDecimalFormatter::try_new(&data_locale(&locales::EN), Default::default()) {
-                Ok(formatter) => Some(formatter),
-                Err(fallback_error) => {
-                    if NUMBER_FORMATTER_FALLBACK_LOGGED
-                        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        eprintln!(
-                            "[waterui-locale] number formatter unavailable for locale {}: primary={primary_error}; fallback_en={fallback_error}",
-                            locale.canonical_tag()
-                        );
-                    }
-                    None
+        Err(primary_error) => match FixedDecimalFormatter::try_new(
+            &data_locale(&locales::EN),
+            FixedDecimalFormatterOptions::default(),
+        ) {
+            Ok(formatter) => Some(formatter),
+            Err(fallback_error) => {
+                if NUMBER_FORMATTER_FALLBACK_LOGGED
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    tracing::warn!(
+                        locale = locale.canonical_tag(),
+                        primary_error = %primary_error,
+                        fallback_error = %fallback_error,
+                        "waterui-locale number formatter unavailable"
+                    );
                 }
+                None
             }
-        }
+        },
     }
 }
 
 fn to_fixed_decimal(n: f64) -> FixedDecimal {
     debug_assert!(n.is_finite(), "to_fixed_decimal expects a finite number");
-
-    if n.fract() == 0.0 && n.abs() <= i64::MAX as f64 {
-        return FixedDecimal::from(n as i64);
-    }
 
     // Preserve up to 15 fractional digits while avoiding scientific notation.
     let mut buf = format!("{n:.15}");
@@ -60,11 +62,8 @@ fn to_fixed_decimal(n: f64) -> FixedDecimal {
         return parsed;
     }
 
-    // Fallback with two decimal places.
-    let scaled = (n * 100.0).round() as i64;
-    let mut dec = FixedDecimal::from(scaled);
-    dec.multiply_pow10(-2);
-    dec
+    FixedDecimal::from_str(&format!("{n:.2}"))
+        .expect("fixed decimal fallback formatting should always produce a parseable decimal")
 }
 
 /// Format a number with locale-appropriate separators.
@@ -83,6 +82,7 @@ fn to_fixed_decimal(n: f64) -> FixedDecimal {
 /// // French: 1 234,56
 /// assert_eq!(format_number(&locales::FR, 1234.56), "1 234,56");
 /// ```
+#[must_use]
 pub fn format_number(locale: &Locale, n: f64) -> String {
     if n.is_nan() {
         return "NaN".to_string();
@@ -96,10 +96,10 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
     }
 
     let decimal = to_fixed_decimal(n);
-    match decimal_formatter(locale) {
-        Some(formatter) => formatter.format(&decimal).to_string(),
-        None => n.to_string(),
-    }
+    decimal_formatter(locale).map_or_else(
+        || n.to_string(),
+        |formatter| formatter.format(&decimal).to_string(),
+    )
 }
 
 /// Format a number as a percentage.
@@ -112,6 +112,7 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
 /// // 0.75 → "75%"
 /// assert_eq!(format_percent(&locales::EN, 0.75), "75%");
 /// ```
+#[must_use]
 pub fn format_percent(locale: &Locale, n: f64) -> String {
     let percent_value = n * 100.0;
     let formatted = format_number(locale, percent_value);
@@ -159,8 +160,7 @@ impl Currency {
             Self::USD => "$",
             Self::EUR => "€",
             Self::GBP => "£",
-            Self::JPY => "¥",
-            Self::CNY => "¥",
+            Self::JPY | Self::CNY => "¥",
         }
     }
 
@@ -181,6 +181,7 @@ impl Currency {
 ///
 /// Note: This handles symbol placement and locale number formatting;
 /// no exchange-rate conversion is performed.
+#[must_use]
 pub fn format_currency(locale: &Locale, amount: f64, currency: Currency) -> String {
     let formatted_amount = format_number(locale, amount);
     let symbol = currency.symbol();
