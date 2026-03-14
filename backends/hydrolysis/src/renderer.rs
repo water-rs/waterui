@@ -730,6 +730,39 @@ impl AppliedFilterRuntime {
     }
 }
 
+struct ViewEffectRuntime {
+    effect: ViewEffectErased,
+    setup_complete: bool,
+}
+
+impl ViewEffectRuntime {
+    fn new(effect: ViewEffectErased) -> Self {
+        Self {
+            effect,
+            setup_complete: false,
+        }
+    }
+
+    fn replace_effect(&mut self, effect: ViewEffectErased) {
+        self.effect = effect;
+        self.setup_complete = false;
+    }
+}
+
+struct SceneViewRuntime {
+    content: Box<dyn waterui_graphics::SceneContent>,
+}
+
+impl SceneViewRuntime {
+    fn new(content: Box<dyn waterui_graphics::SceneContent>) -> Self {
+        Self { content }
+    }
+
+    fn replace_content(&mut self, content: Box<dyn waterui_graphics::SceneContent>) {
+        self.content = content;
+    }
+}
+
 #[derive(Clone)]
 enum LayerShape {
     Rect(vello::kurbo::Rect),
@@ -9134,21 +9167,39 @@ impl HydrolysisRenderer {
         _state: &mut HydroState,
         ctx: RenderContext,
         scene_view: Native<SceneView>,
-        _env: &Environment,
+        env: &Environment,
     ) {
-        let mut scene_view = scene_view.into_inner();
+        let scene_view = scene_view.into_inner();
+        let incoming_content = Rc::new(RefCell::new(Some(scene_view.into_content())));
+        let init_content = Rc::clone(&incoming_content);
+        let runtime = local_shared(env, move || {
+            RefCell::new(SceneViewRuntime::new(
+                init_content
+                    .borrow_mut()
+                    .take()
+                    .expect("hydrolysis SceneView local state initializer must run exactly once"),
+            ))
+        });
+        if let Some(content) = incoming_content.borrow_mut().take() {
+            let incoming_type = content.concrete_type_id();
+            let mut runtime = runtime.borrow_mut();
+            if runtime.content.concrete_type_id() != incoming_type {
+                runtime.replace_content(content);
+            }
+        }
         let rebuild_handle = {
             let renderer = unsafe { ctx.renderer() };
             renderer.rebuild_handle()
         };
-        scene_view
-            .content_mut()
+        let mut runtime = runtime.borrow_mut();
+        runtime
+            .content
             .set_invalidator(Some(Rc::new(move || rebuild_handle.set(true))));
 
         let scene = unsafe { ctx.scene() };
         let mut scene2d = VelloScene2D::new(scene);
         #[allow(clippy::cast_precision_loss)]
-        let needs_next_frame = scene_view.content_mut().build_scene(
+        let needs_next_frame = runtime.content.build_scene(
             &mut scene2d,
             ctx.bounds.width() as f32,
             ctx.bounds.height() as f32,
@@ -9165,7 +9216,26 @@ impl HydrolysisRenderer {
         effect: Native<ViewEffectErased>,
         env: &Environment,
     ) {
-        let mut effect = effect.into_inner();
+        let incoming_effect = Rc::new(RefCell::new(Some(effect.into_inner())));
+        let init_effect = Rc::clone(&incoming_effect);
+        let runtime = local_shared(env, move || {
+            RefCell::new(ViewEffectRuntime::new(
+                init_effect
+                    .borrow_mut()
+                    .take()
+                    .expect("hydrolysis ViewEffect local state initializer must run exactly once"),
+            ))
+        });
+        let mut runtime = runtime.borrow_mut();
+        if let Some(mut effect) = incoming_effect.borrow_mut().take() {
+            let incoming_type = effect.concrete_type_id();
+            if runtime.effect.concrete_type_id() != incoming_type {
+                runtime.replace_effect(effect);
+            } else {
+                runtime.effect.replace_content(effect.take_content());
+                runtime.effect.set_output_size(effect.output_size());
+            }
+        }
         let renderer = unsafe { ctx.renderer() };
         let (device_ptr, queue_ptr) = renderer.state().frame_resource_ptrs();
         let device = unsafe { &*device_ptr };
@@ -9173,14 +9243,14 @@ impl HydrolysisRenderer {
 
         let input_width = (ctx.bounds.width().max(1.0).round()) as u32;
         let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let output_size = effect.output_size();
+        let output_size = runtime.effect.output_size();
         let (output_width, output_height) = output_size.compute(input_width, input_height);
         assert!(
             !(output_width == 0 || output_height == 0),
             "hydrolysis ViewEffect requires non-zero output dimensions"
         );
 
-        let subtree = Self::render_subtree_scene(ctx, env, effect.take_content());
+        let subtree = Self::render_subtree_scene(ctx, env, runtime.effect.take_content());
 
         let input_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_view_effect_input"),
@@ -9220,7 +9290,10 @@ impl HydrolysisRenderer {
             output_format: wgpu::TextureFormat::Rgba8Unorm,
             pipeline_cache: None,
         };
-        pollster::block_on(effect.setup(&setup_context));
+        if !runtime.setup_complete {
+            pollster::block_on(runtime.effect.setup(&setup_context));
+            runtime.setup_complete = true;
+        }
 
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hydrolysis_view_effect_output"),
@@ -9257,8 +9330,10 @@ impl HydrolysisRenderer {
             width: output_width,
             height: output_height,
         };
-        effect.render(&input, &output);
-        if effect.needs_redraw() {
+        runtime.effect.render(&input, &output);
+        let needs_redraw = runtime.effect.needs_redraw();
+        drop(runtime);
+        if needs_redraw {
             renderer.request_rebuild();
         }
 
