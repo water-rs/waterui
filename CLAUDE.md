@@ -178,6 +178,10 @@ Uses `nami` crate for fine-grained reactivity:
 - Views automatically update when reactive values change
 
 <important>
+    WaterUI uses precise fine-grained reactivity, not React-style rebuild semantics. Do not assume view reconstruction is cheap or semantically harmless. If a view is rebuilt, its local identity and state are expected to be lost. Dynamic behavior must flow through `Binding`, `Computed`, and stable view identity rather than relying on recreating views with new plain values.
+</important>
+
+<important>
     You are not allowed to use `.get()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
 </important>
 
