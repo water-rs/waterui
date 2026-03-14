@@ -177,8 +177,8 @@ impl IntoFFI for NavigationSplitLayout {
         };
 
         WuiNavigationSplitLayout {
-            sidebar: self.sidebar.into_ffi(),
-            placeholder: self.placeholder.into_ffi(),
+            sidebar: self.sidebar.build().into_ffi(),
+            placeholder: self.placeholder.build().into_ffi(),
             detail_bar,
             detail_content,
             has_detail,
