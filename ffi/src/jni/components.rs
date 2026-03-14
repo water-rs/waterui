@@ -2193,7 +2193,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropHandler<'
         require_state_ptr::<crate::drag_drop::WuiDropDestination>(drop_dest_ptr, "callDropHandler")
             as *const crate::drag_drop::WuiDropDestination;
     let wui_env = require_env_const(env_ptr, "callDropHandler");
-    let value: waterui::Str = env
+    let value: String = env
         .get_string(&data_value)
         .expect("WatcherJni.callDropHandler: failed to read data_value")
         .into();

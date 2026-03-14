@@ -499,20 +499,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             }
         };
 
-        // Get input texture
-        let input_texture: &wgpu::Texture = if let Some(ref imported) = state.imported_texture {
-            imported
-        } else if let Some(ref capture) = state.capture_texture {
-            capture
-        } else {
-            panic!("waterui_applied_filter_render: no input texture available");
-        };
-
-        let input_format = if state.imported_texture.is_some() {
-            unsafe { state.imported_format.unwrap_unchecked() }
-        } else {
-            state.capture_format
-        };
+        let input_format = current_applied_filter_input_format(state);
 
         if !ensure_applied_filter_setup(state, input_format) {
             tracing::error!("[AppliedFilter] render requested before successful setup");
@@ -521,6 +508,15 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
                 needs_redraw: false,
             };
         }
+
+        // Get input texture after setup so mutable borrows of `state` are finished.
+        let input_texture: &wgpu::Texture = if let Some(ref imported) = state.imported_texture {
+            imported
+        } else if let Some(ref capture) = state.capture_texture {
+            capture
+        } else {
+            panic!("waterui_applied_filter_render: no input texture available");
+        };
 
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("AppliedFilter Input View"),
