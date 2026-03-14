@@ -156,6 +156,10 @@ pub struct WuiViewEffectState {
     effect_wrapper: ViewEffectRendererWrapper,
     /// Whether setup() has been called
     initialized: bool,
+    /// Input format used for the most recent successful setup.
+    setup_input_format: Option<wgpu::TextureFormat>,
+    /// Output format used for the most recent successful setup.
+    setup_output_format: Option<wgpu::TextureFormat>,
     /// Current input dimensions (from child view)
     input_width: u32,
     input_height: u32,
@@ -334,6 +338,8 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             capture_format,
             effect_wrapper,
             initialized: false,
+            setup_input_format: None,
+            setup_output_format: None,
             input_width,
             input_height,
             output_width,
@@ -545,19 +551,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
             state.capture_format
         };
 
-        // Call setup on first render
-        if !state.initialized {
-            let ctx = EffectContext {
-                device: &state.device,
-                queue: &state.queue,
-                input_format,
-                output_format: state.output_config.format,
-                pipeline_cache: state.pipeline_cache.as_ref(),
-            };
-            let setup_future = state.effect_wrapper.erased.setup(&ctx);
-            pollster::block_on(setup_future);
-            state.initialized = true;
-        }
+        ensure_view_effect_setup(state, input_format);
 
         // Get output texture
         let output = match state.output_surface.get_current_texture() {
@@ -637,6 +631,29 @@ pub unsafe extern "C" fn waterui_view_effect_render(
         Ok(result) => result,
         Err(_) => abort_on_panic("waterui_view_effect_render"),
     }
+}
+
+fn ensure_view_effect_setup(state: &mut WuiViewEffectState, input_format: wgpu::TextureFormat) {
+    let output_format = state.output_config.format;
+    if state.initialized
+        && state.setup_input_format == Some(input_format)
+        && state.setup_output_format == Some(output_format)
+    {
+        return;
+    }
+
+    let ctx = EffectContext {
+        device: &state.device,
+        queue: &state.queue,
+        input_format,
+        output_format,
+        pipeline_cache: state.pipeline_cache.as_ref(),
+    };
+    let setup_future = state.effect_wrapper.erased.setup(&ctx);
+    pollster::block_on(setup_future);
+    state.initialized = true;
+    state.setup_input_format = Some(input_format);
+    state.setup_output_format = Some(output_format);
 }
 
 /// Get a pointer to the capture texture for the child view to render into.
