@@ -1,21 +1,32 @@
-use std::cell::RefCell;
-#[cfg(not(feature = "winit"))]
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::Duration;
 #[cfg(feature = "winit")]
 use std::{process::Command, str};
 
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
+};
+use executor_core::{
+    LocalExecutor,
+    async_task::{AsyncTask, Runnable},
+    try_init_local_executor,
+};
 use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
+use waterui::graphics::Color;
 use waterui::window::{Window, WindowBackground, WindowManager};
+use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(feature = "winit")]
@@ -217,6 +228,80 @@ fn elapsed_or_zero(started_at: Option<Instant>) -> Duration {
     started_at.map_or(Duration::ZERO, |value| value.elapsed())
 }
 
+fn readback_texture_rgba8(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    const BYTES_PER_PIXEL: u32 = 4;
+    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("hydrolysis-headless-readback"),
+        size: u64::from(padded_bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("hydrolysis-headless-readback-encoder"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender
+            .send(result)
+            .expect("hydrolysis headless readback channel receiver dropped");
+    });
+
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    receiver
+        .recv()
+        .expect("hydrolysis headless readback callback dropped")
+        .expect("hydrolysis headless failed to map readback buffer");
+
+    let mapped = slice.get_mapped_range();
+    let mut pixels = vec![0_u8; (width * height * BYTES_PER_PIXEL) as usize];
+    for row in 0..height as usize {
+        let source_start = row * padded_bytes_per_row as usize;
+        let source_end = source_start + unpadded_bytes_per_row as usize;
+        let destination_start = row * unpadded_bytes_per_row as usize;
+        let destination_end = destination_start + unpadded_bytes_per_row as usize;
+        pixels[destination_start..destination_end]
+            .copy_from_slice(&mapped[source_start..source_end]);
+    }
+    drop(mapped);
+    readback.unmap();
+    pixels
+}
+
 #[cfg(feature = "winit")]
 fn probe_accessibility_runtime() -> bool {
     let output = Command::new("busctl")
@@ -281,6 +366,19 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadlessSnapshot {
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct RenderWindowResult {
+    rebuilt: bool,
+    snapshot: Option<HeadlessSnapshot>,
+}
+
 fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, changed: bool) {
     if !changed {
         return;
@@ -317,11 +415,21 @@ fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Colo
 }
 
 fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Environment) {
+    let _ = render_window_with_capture(runtime, env, false);
+}
+
+fn render_window_with_capture<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    capture_snapshot: bool,
+) -> RenderWindowResult {
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(feature = "winit")]
     runtime
         .renderer
         .set_accessibility_root_label(runtime.window.title.get().as_str());
+    let mut snapshot = None;
+    let mut rebuilt = false;
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
@@ -370,6 +478,7 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
                 .renderer
                 .sync_active_interactions_after_layout(runtime.pointer_position);
             runtime.needs_rebuild = false;
+            rebuilt = true;
             if let Some((x, y)) = runtime.pointer_position {
                 if runtime.renderer.sync_pointer_hover_state(x, y, env) {
                     if runtime.renderer.take_rebuild_request() {
@@ -398,6 +507,19 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
             height,
             clear_color,
         );
+        if capture_snapshot {
+            snapshot = Some(HeadlessSnapshot {
+                width,
+                height,
+                rgba8: readback_texture_rgba8(
+                    surface.device(),
+                    surface.queue(),
+                    frame.texture(),
+                    width,
+                    height,
+                ),
+            });
+        }
         runtime.renderer.clear_frame_resources();
         let render_duration = elapsed_or_zero(render_started_at);
         let present_started_at = diagnostics_enabled.then(Instant::now);
@@ -432,6 +554,8 @@ fn render_window<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>, env: &Enviro
     if runtime.renderer.take_redraw_request() {
         runtime.platform.request_redraw();
     }
+
+    RenderWindowResult { rebuilt, snapshot }
 }
 
 fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
@@ -446,6 +570,18 @@ fn handle_input_events<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
+    handle_input_events_with(runtime, env, |_runtime, env| env.clone())
+}
+
+fn handle_input_events_with<P, F>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    input_env: F,
+) -> bool
+where
+    P: PlatformWindow,
+    F: Fn(&RuntimeWindow<P>, &Environment) -> Environment,
+{
     let mut should_close = runtime.window.state.get() == waterui::window::WindowState::Closed;
     for event in runtime.platform.drain_events() {
         match event {
@@ -478,7 +614,10 @@ fn handle_input_events<P: PlatformWindow>(
             }
             InputEvent::PointerDown { x, y, button } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_pointer_down(x, y, button, env);
+                let changed =
+                    runtime
+                        .renderer
+                        .handle_pointer_down(x, y, button, &input_env(runtime, env));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_down",
@@ -492,7 +631,10 @@ fn handle_input_events<P: PlatformWindow>(
             }
             InputEvent::PointerUp { x, y, button } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_pointer_up(x, y, button, env);
+                let changed =
+                    runtime
+                        .renderer
+                        .handle_pointer_up(x, y, button, &input_env(runtime, env));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_up",
@@ -506,7 +648,9 @@ fn handle_input_events<P: PlatformWindow>(
             }
             InputEvent::PointerMove { x, y } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_pointer_move(x, y, env);
+                let changed = runtime
+                    .renderer
+                    .handle_pointer_move(x, y, &input_env(runtime, env));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_move",
@@ -518,7 +662,9 @@ fn handle_input_events<P: PlatformWindow>(
                 schedule_redraw_or_rebuild(runtime, changed);
             }
             InputEvent::PointerCancel => {
-                let changed = runtime.renderer.handle_pointer_cancel(env);
+                let changed = runtime
+                    .renderer
+                    .handle_pointer_cancel(&input_env(runtime, env));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "pointer_cancel",
@@ -637,6 +783,272 @@ fn handle_input_events<P: PlatformWindow>(
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
     should_close
+}
+
+fn advance_runtime<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    now: Instant,
+) -> Option<Instant> {
+    runtime
+        .platform
+        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    if runtime.renderer.poll_gpu_surface_redraw_handles() {
+        runtime.platform.request_redraw();
+    }
+    if runtime.renderer.handle_gesture_tick(now, env) {
+        runtime.needs_rebuild = true;
+    }
+    if runtime.renderer.advance_animations() {
+        runtime.needs_rebuild = true;
+    }
+    if runtime.renderer.take_rebuild_request() {
+        runtime.needs_rebuild = true;
+    }
+    let next_deadline = runtime.renderer.next_gesture_deadline();
+    if runtime.needs_rebuild {
+        runtime.platform.request_redraw();
+    }
+    next_deadline
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct HeadlessPlatformWindow {
+    inner: OffscreenWindow,
+    pending_events: VecDeque<InputEvent>,
+    redraw_requested: Cell<bool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessPlatformWindow {
+    fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            inner: OffscreenWindow::new(width, height, format),
+            pending_events: VecDeque::new(),
+            redraw_requested: Cell::new(false),
+        }
+    }
+
+    fn push_event(&mut self, event: InputEvent) {
+        self.pending_events.push_back(event);
+    }
+
+    fn take_redraw_request(&self) -> bool {
+        self.redraw_requested.replace(false)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PlatformWindow for HeadlessPlatformWindow {
+    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+        self.inner.surface()
+    }
+
+    fn apply_properties(&mut self, window: &Window) {
+        self.inner.apply_properties(window);
+    }
+
+    fn drain_events(&mut self) -> Vec<InputEvent> {
+        self.pending_events.drain(..).collect()
+    }
+
+    fn request_redraw(&self) {
+        self.redraw_requested.set(true);
+    }
+
+    fn scale_factor(&self) -> f64 {
+        self.inner.scale_factor()
+    }
+
+    fn sync_text_input_state(&mut self, state: Option<crate::platform::TextInputState>) {
+        self.inner.sync_text_input_state(state);
+    }
+
+    fn set_cursor_style(&mut self, style: waterui::cursor::CursorStyle) {
+        self.inner.set_cursor_style(style);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+struct HeadlessMainThreadExecutor {
+    runnable_tx: mpsc::Sender<Runnable>,
+    runnable_rx: Rc<mpsc::Receiver<Runnable>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for HeadlessMainThreadExecutor {
+    fn default() -> Self {
+        let (runnable_tx, runnable_rx) = mpsc::channel();
+        Self {
+            runnable_tx,
+            runnable_rx: Rc::new(runnable_rx),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessMainThreadExecutor {
+    fn drain(&self) -> bool {
+        let mut ran = false;
+        loop {
+            let Ok(runnable) = self.runnable_rx.try_recv() else {
+                return ran;
+            };
+            ran = true;
+            runnable.run();
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LocalExecutor for HeadlessMainThreadExecutor {
+    type Task<T: 'static> = AsyncTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: std::future::Future + 'static,
+    {
+        let runnable_tx = self.runnable_tx.clone();
+        let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
+            let _ = runnable_tx.send(runnable);
+        });
+        runnable.schedule();
+        AsyncTask::from(task)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct HeadlessPumpResult {
+    pub rebuilt: bool,
+    #[cfg(feature = "accessibility")]
+    pub tree_update: Option<AccessibilityTreeUpdate>,
+    pub snapshot: Option<HeadlessSnapshot>,
+    #[cfg(feature = "accessibility")]
+    pub ui_focus: Option<accesskit::NodeId>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct HeadlessRuntime {
+    env: Environment,
+    runtime: RuntimeWindow<HeadlessPlatformWindow>,
+    local_executor: HeadlessMainThreadExecutor,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessRuntime {
+    #[must_use]
+    pub fn new(
+        env: Environment,
+        content: AnyViewBuilder<AnyView>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        init_main_thread_executors();
+        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        install_native_component_hooks(&mut env);
+        env.insert(HydrolysisTextContextMenuMode::Overlay);
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::default(),
+        ));
+
+        let local_executor = HeadlessMainThreadExecutor::default();
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor(
+            local_executor.clone(),
+        ));
+
+        let content_builder = content.clone();
+        let window =
+            Window::new("", move || content_builder.build()).background(Color::transparent());
+        window.frame.set(waterui_core::layout::Rect::new(
+            waterui_core::layout::Point::zero(),
+            waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
+        ));
+
+        let mut platform = HeadlessPlatformWindow::new(
+            width.max(1),
+            height.max(1),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        platform.apply_properties(&window);
+        let renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+
+        Self {
+            env,
+            runtime: RuntimeWindow::new(
+                window,
+                platform,
+                renderer,
+                RenderDiagnosticsConfig {
+                    enabled: false,
+                    interval: Duration::from_secs(1),
+                    slow_frame_threshold: Duration::from_millis(16),
+                },
+            ),
+            local_executor,
+        }
+    }
+
+    pub fn push_input_event(&mut self, event: InputEvent) {
+        self.runtime.platform.push_event(event);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
+        let changed = self
+            .runtime
+            .renderer
+            .handle_accessibility_action(request, &self.env);
+        if changed {
+            self.runtime.needs_rebuild = true;
+            self.runtime.platform.request_redraw();
+        }
+        changed
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub fn clear_ui_focus(&mut self) -> bool {
+        let changed = self.runtime.renderer.clear_ui_focus();
+        if changed {
+            self.runtime.needs_rebuild = true;
+            self.runtime.platform.request_redraw();
+        }
+        changed
+    }
+
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn focused_ui_node(&self) -> Option<accesskit::NodeId> {
+        self.runtime.renderer.focused_ui_node()
+    }
+
+    pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {
+        let drained_before = self.local_executor.drain();
+        let _ = handle_input_events(&mut self.runtime, &self.env);
+        let _ = advance_runtime(&mut self.runtime, &self.env, Instant::now());
+        let should_render = capture_snapshot
+            || self.runtime.needs_rebuild
+            || self.runtime.platform.take_redraw_request();
+        let render_result = should_render
+            .then(|| render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot));
+        let drained_after = self.local_executor.drain();
+
+        HeadlessPumpResult {
+            rebuilt: render_result.as_ref().is_some_and(|result| result.rebuilt)
+                || drained_before
+                || drained_after,
+            #[cfg(feature = "accessibility")]
+            tree_update: self.runtime.renderer.take_accessibility_tree_update(),
+            snapshot: render_result.and_then(|result| result.snapshot),
+            #[cfg(feature = "accessibility")]
+            ui_focus: self.runtime.renderer.focused_ui_node(),
+        }
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
@@ -1222,204 +1634,9 @@ mod winit_runner {
             runtime: &mut RuntimeWindow<WinitWindow>,
             env: &Environment,
         ) -> bool {
-            let mut should_close = runtime.window.state.get() == WindowState::Closed;
-            for event in runtime.platform.drain_events() {
-                match event {
-                    InputEvent::CloseRequested => {
-                        runtime.window.state.set(WindowState::Closed);
-                        should_close = true;
-                    }
-                    InputEvent::Moved { x, y } => {
-                        let frame = runtime.window.frame.get();
-                        runtime
-                            .window
-                            .frame
-                            .set(Rect::new(Point::new(x, y), *frame.size()));
-                    }
-                    InputEvent::Resize { width, height } => {
-                        let frame = runtime.window.frame.get();
-                        let logical_width = Self::physical_to_logical_dimension(
-                            width,
-                            runtime.platform.scale_factor(),
-                        );
-                        let logical_height = Self::physical_to_logical_dimension(
-                            height,
-                            runtime.platform.scale_factor(),
-                        );
-                        let frame = waterui_core::layout::Rect::new(
-                            frame.origin(),
-                            Size::new(logical_width, logical_height),
-                        );
-                        runtime.window.frame.set(frame);
-                        runtime.needs_rebuild = true;
-                    }
-                    InputEvent::PointerDown { x, y, button } => {
-                        runtime.pointer_position = Some((x, y));
-                        let input_env = env.extending(Self::current_window_origin(runtime));
-                        let changed = runtime
-                            .renderer
-                            .handle_pointer_down(x, y, button, &input_env);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "pointer_down",
-                            x,
-                            y,
-                            button = ?button,
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed);
-                    }
-                    InputEvent::PointerUp { x, y, button } => {
-                        runtime.pointer_position = Some((x, y));
-                        let input_env = env.extending(Self::current_window_origin(runtime));
-                        let changed = runtime.renderer.handle_pointer_up(x, y, button, &input_env);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "pointer_up",
-                            x,
-                            y,
-                            button = ?button,
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::PointerMove { x, y } => {
-                        runtime.pointer_position = Some((x, y));
-                        let input_env = env.extending(Self::current_window_origin(runtime));
-                        let changed = runtime.renderer.handle_pointer_move(x, y, &input_env);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "pointer_move",
-                            x,
-                            y,
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::PointerCancel => {
-                        let input_env = env.extending(Self::current_window_origin(runtime));
-                        let changed = runtime.renderer.handle_pointer_cancel(&input_env);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "pointer_cancel",
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::Scroll {
-                        x,
-                        y,
-                        dx,
-                        dy,
-                        is_line_delta,
-                    } => {
-                        runtime.pointer_position = Some((x, y));
-                        let changed = runtime.renderer.handle_scroll(x, y, dx, dy, is_line_delta);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "scroll",
-                            x,
-                            y,
-                            dx,
-                            dy,
-                            is_line_delta,
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::Magnification { x, y, delta, phase } => {
-                        runtime.pointer_position = Some((x, y));
-                        let changed = runtime
-                            .renderer
-                            .handle_magnification(x, y, delta, phase, env);
-                        schedule_redraw_or_rebuild(runtime, changed);
-                    }
-                    InputEvent::Rotation { x, y, delta, phase } => {
-                        runtime.pointer_position = Some((x, y));
-                        let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
-                        schedule_redraw_or_rebuild(runtime, changed);
-                    }
-                    InputEvent::TextInput { text } => {
-                        let changed = runtime.renderer.handle_text_input(text.as_str());
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "text_input",
-                            text = text.as_str(),
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        if changed {
-                            runtime.needs_rebuild = true;
-                        }
-                    }
-                    InputEvent::Key {
-                        key,
-                        state: KeyState::Pressed,
-                        modifiers,
-                    } => {
-                        let changed = runtime.renderer.handle_key(&key, modifiers);
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "key_pressed",
-                            key = ?key,
-                            modifiers = ?modifiers,
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::ImePreedit { text } => {
-                        let changed = runtime.renderer.handle_ime_preedit(text.as_str());
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "ime_preedit",
-                            text = text.as_str(),
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::ImeCommit { text } => {
-                        let changed = runtime.renderer.handle_ime_commit(text.as_str());
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "ime_commit",
-                            text = text.as_str(),
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::ImeDisabled => {
-                        let changed = runtime.renderer.handle_ime_disabled();
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::input",
-                            event = "ime_disabled",
-                            changed,
-                            "runner dispatched input event"
-                        );
-                        schedule_redraw_or_rebuild(runtime, changed)
-                    }
-                    InputEvent::Key {
-                        state: KeyState::Released,
-                        ..
-                    } => {}
-                }
-            }
-            runtime
-                .platform
-                .sync_text_input_state(runtime.renderer.focused_text_input_state());
-            if let Some((x, y)) = runtime.pointer_position {
-                runtime
-                    .platform
-                    .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-            }
-            should_close
+            handle_input_events_with(runtime, env, |runtime, env| {
+                env.extending(Self::current_window_origin(runtime))
+            })
         }
 
         fn remove_closed_windows(&mut self, event_loop: &ActiveEventLoop) {
@@ -1512,29 +1729,11 @@ mod winit_runner {
             let now = Instant::now();
             let mut next_gesture_deadline: Option<Instant> = None;
             for runtime in self.windows.values_mut() {
-                runtime
-                    .platform
-                    .sync_text_input_state(runtime.renderer.focused_text_input_state());
-                if runtime.renderer.poll_gpu_surface_redraw_handles() {
-                    runtime.platform.request_redraw();
-                }
-                if runtime.renderer.handle_gesture_tick(now, &self.env) {
-                    runtime.needs_rebuild = true;
-                }
-                if runtime.renderer.advance_animations() {
-                    runtime.needs_rebuild = true;
-                }
-                if runtime.renderer.take_rebuild_request() {
-                    runtime.needs_rebuild = true;
-                }
-                if let Some(deadline) = runtime.renderer.next_gesture_deadline() {
+                if let Some(deadline) = advance_runtime(runtime, &self.env, now) {
                     next_gesture_deadline = Some(match next_gesture_deadline {
                         Some(existing) => existing.min(deadline),
                         None => deadline,
                     });
-                }
-                if runtime.needs_rebuild {
-                    runtime.platform.request_redraw();
                 }
             }
             if let Some(deadline) = next_gesture_deadline {
