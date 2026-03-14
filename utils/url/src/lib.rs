@@ -35,8 +35,9 @@ mod parser;
 pub use error::ParseError;
 
 use alloc::borrow::Cow;
-
 use alloc::string::{String, ToString};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use core::fmt;
 use nami_core::Signal;
 use waterui_str::Str;
@@ -273,8 +274,7 @@ impl Url {
     pub fn from_data(mime_type: &str, data: &[u8]) -> Self {
         use alloc::format;
 
-        // Base64 encode the data
-        let encoded = base64_encode(data);
+        let encoded = STANDARD.encode(data);
         let url_str = format!("data:{mime_type};base64,{encoded}");
 
         let inner = Str::from(url_str);
@@ -697,39 +697,6 @@ impl Signal for Fetched {
     }
 }
 
-// Simple base64 encoding for data URLs
-fn base64_encode(data: &[u8]) -> String {
-    use alloc::vec::Vec;
-
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = Vec::with_capacity(data.len().div_ceil(3) * 4);
-
-    for chunk in data.chunks(3) {
-        let mut buf = [0u8; 3];
-        for (i, &byte) in chunk.iter().enumerate() {
-            buf[i] = byte;
-        }
-
-        result.push(TABLE[(buf[0] >> 2) as usize]);
-        result.push(TABLE[(((buf[0] & 0x03) << 4) | (buf[1] >> 4)) as usize]);
-
-        if chunk.len() > 1 {
-            result.push(TABLE[(((buf[1] & 0x0f) << 2) | (buf[2] >> 6)) as usize]);
-        } else {
-            result.push(b'=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(TABLE[(buf[2] & 0x3f) as usize]);
-        } else {
-            result.push(b'=');
-        }
-    }
-
-    String::from_utf8(result).expect("base64 encoding should produce valid utf8")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -977,13 +944,13 @@ mod tests {
 
     #[test]
     fn test_base64_encoding() {
-        let encoded = base64_encode(b"hello");
+        let encoded = STANDARD.encode(b"hello");
         assert_eq!(encoded, "aGVsbG8=");
 
-        let encoded2 = base64_encode(b"hi");
+        let encoded2 = STANDARD.encode(b"hi");
         assert_eq!(encoded2, "aGk=");
 
-        let encoded3 = base64_encode(b"test");
+        let encoded3 = STANDARD.encode(b"test");
         assert_eq!(encoded3, "dGVzdA==");
     }
 
