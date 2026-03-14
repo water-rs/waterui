@@ -9,9 +9,9 @@ extern crate std;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use jni::JNIEnv;
-use jni::objects::{JByteArray, JObject, JString, JValue};
+use jni::objects::{JObject, JString, JValue};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
+use jni::JNIEnv;
 use waterui::Str;
 
 use super::java_classes;
@@ -60,7 +60,11 @@ pub trait JniPrimitive: Sized + 'static {
 impl JniPrimitive for bool {
     type Jni = jboolean;
     fn to_jni(self) -> Self::Jni {
-        if self { 1 } else { 0 }
+        if self {
+            1
+        } else {
+            0
+        }
     }
     fn from_jni(val: Self::Jni) -> Self {
         val != 0
@@ -105,7 +109,11 @@ impl ToJava for bool {
     type JavaType<'local> = jboolean;
 
     fn to_java<'local>(&self, _env: &mut JNIEnv<'local>) -> Self::JavaType<'local> {
-        if *self { 1 } else { 0 }
+        if *self {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -276,33 +284,23 @@ pub fn double_to_boxed_java<'local>(env: &mut JNIEnv<'local>, value: f64) -> JOb
 // ============================================================================
 
 impl ToJava for Str {
-    type JavaType<'local> = JByteArray<'local>;
+    type JavaType<'local> = JString<'local>;
 
     fn to_java<'local>(&self, env: &mut JNIEnv<'local>) -> Self::JavaType<'local> {
-        // Convert Str to byte array (UTF-8 encoded)
-        let bytes = self.as_bytes();
-        let java_bytes = env
-            .new_byte_array(bytes.len() as i32)
-            .expect("Failed to create byte array");
-        env.set_byte_array_region(&java_bytes, 0, bytemuck::cast_slice(bytes))
-            .expect("Failed to set byte array region");
-        java_bytes
+        env.new_string(self.as_str())
+            .expect("Failed to create Java string from Str")
     }
 }
 
 impl FromJava for Str {
-    type JavaType<'local> = JByteArray<'local>;
+    type JavaType<'local> = JString<'local>;
 
     unsafe fn from_java<'local>(env: &mut JNIEnv<'local>, java: Self::JavaType<'local>) -> Self {
-        let len = env
-            .get_array_length(&java)
-            .expect("Failed to get array length") as usize;
-        let mut bytes = vec![0u8; len];
-        env.get_byte_array_region(&java, 0, bytemuck::cast_slice_mut(&mut bytes))
-            .expect("Failed to get byte array region");
-
-        // Safety: We trust the Java side sends valid UTF-8
-        unsafe { Str::from_utf8_unchecked(bytes) }
+        let text: String = env
+            .get_string(&java)
+            .expect("Failed to get Java string")
+            .into();
+        Str::from(text)
     }
 }
 
@@ -1033,20 +1031,17 @@ fn create_path_command_struct<'local>(
 // ToJavaStruct implementations for View types
 // ============================================================================
 
-/// WuiStr -> PlainStruct(textBytes: ByteArray)
+/// WuiStr -> PlainStruct(text: String)
 impl ToJavaStruct for crate::WuiStr {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let bytes = self.0.as_slice();
-        let java_bytes = env
-            .new_byte_array(bytes.len() as i32)
-            .expect("Failed to create byte array");
-        env.set_byte_array_region(&java_bytes, 0, bytemuck::cast_slice(bytes))
-            .expect("Failed to set byte array region");
+        let text = env
+            .new_string(unsafe { self.as_str() })
+            .expect("Failed to create plain text string");
 
         let class = env
             .find_class("dev/waterui/android/runtime/PlainStruct")
             .expect("PlainStruct class not found");
-        env.new_object(&class, "([B)V", &[JValue::Object(&java_bytes)])
+        env.new_object(&class, "(Ljava/lang/String;)V", &[JValue::Object(&text)])
             .expect("Failed to create PlainStruct")
     }
 }
