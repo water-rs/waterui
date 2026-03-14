@@ -80,6 +80,15 @@ use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
+
+#[cfg(feature = "std")]
+fn trigger_impact_haptic(intensity: Intensity) {
+    spawn(async move {
+        let _ = Haptic::impact(intensity).await;
+    })
+    .detach();
+}
+
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
     /// Attaches metadata to a view.
@@ -974,10 +983,7 @@ pub trait ViewExt: View + Sized {
         mut action: impl FnMut() + 'static,
     ) -> Metadata<GestureObserver> {
         self.gesture(TapGesture::new(), move || {
-            spawn(async move {
-                let _ = Haptic::impact(intensity).await;
-            })
-            .detach();
+            trigger_impact_haptic(intensity);
             action();
         })
     }
@@ -987,6 +993,32 @@ pub trait ViewExt: View + Sized {
     #[must_use]
     fn on_tap_haptic_default(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
         self.on_tap_haptic(Intensity::MEDIUM, action)
+    }
+
+    /// Adds a long-press gesture recognizer and triggers haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    fn on_long_press_haptic(
+        self,
+        minimum_duration_ms: u32,
+        intensity: Intensity,
+        mut action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(LongPressGesture::new(minimum_duration_ms), move || {
+            trigger_impact_haptic(intensity);
+            action();
+        })
+    }
+
+    /// Adds a long-press gesture recognizer with medium haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    fn on_long_press_haptic_default(
+        self,
+        minimum_duration_ms: u32,
+        action: impl FnMut() + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.on_long_press_haptic(minimum_duration_ms, Intensity::MEDIUM, action)
     }
 
     /// Applies a shadow effect to this view.
@@ -1628,6 +1660,74 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
             ),
             state,
         }
+    }
+
+    /// Adds a tap gesture recognizer that receives the accumulated state and triggers haptic feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn on_tap_haptic(
+        self,
+        intensity: Intensity,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(TapGesture::new()).action(move || {
+                    trigger_impact_haptic(intensity);
+                    action(state_for_handler.clone());
+                }),
+            ),
+            state,
+        }
+    }
+
+    /// Adds a tap gesture recognizer with medium haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn on_tap_haptic_default(
+        self,
+        action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        self.on_tap_haptic(Intensity::MEDIUM, action)
+    }
+
+    /// Adds a long-press gesture recognizer that receives the accumulated state and triggers haptic feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn on_long_press_haptic(
+        self,
+        minimum_duration_ms: u32,
+        intensity: Intensity,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(LongPressGesture::new(minimum_duration_ms)).action(
+                    move || {
+                        trigger_impact_haptic(intensity);
+                        action(state_for_handler.clone());
+                    },
+                ),
+            ),
+            state,
+        }
+    }
+
+    /// Adds a long-press gesture recognizer with medium haptic impact feedback.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn on_long_press_haptic_default(
+        self,
+        minimum_duration_ms: u32,
+        action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        self.on_long_press_haptic(minimum_duration_ms, Intensity::MEDIUM, action)
     }
 
     /// Observes a gesture with the accumulated state.
