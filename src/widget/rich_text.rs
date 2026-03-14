@@ -685,7 +685,7 @@ fn ordered_list_start(start: Option<u64>) -> usize {
         .unwrap_or(1)
 }
 
-fn map_table_alignment(alignment: Alignment) -> MarkdownTableAlignment {
+const fn map_table_alignment(alignment: Alignment) -> MarkdownTableAlignment {
     match alignment {
         Alignment::None => MarkdownTableAlignment::None,
         Alignment::Left => MarkdownTableAlignment::Left,
@@ -1111,7 +1111,7 @@ fn main() {
                 .find(|el| matches!(el, RichTextElement::Link { .. }));
             assert!(link.is_some(), "Should have a Link element");
 
-            if let Some(RichTextElement::Link { label, url }) = link {
+            if let Some(RichTextElement::Link { label, url: _ }) = link {
                 let label_text = label.to_plain();
                 assert_eq!(
                     &*label_text, "WaterUI on GitHub",

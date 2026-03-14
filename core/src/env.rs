@@ -64,7 +64,7 @@ pub struct Environment {
 enum EnvironmentState {
     Map(BTreeMap<TypeId, Rc<dyn Any>>),
     Overlay {
-        parent: Rc<EnvironmentState>,
+        parent: Rc<Self>,
         key: TypeId,
         entry: EnvironmentEntry,
     },

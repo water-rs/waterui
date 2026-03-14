@@ -61,13 +61,12 @@ impl InspectorServerConfig {
     /// - `WATERUI_INSPECTOR_WARN_RATIO` (default `0.90`)
     /// - `WATERUI_INSPECTOR_FLUSH_INTERVAL_MS` (default `50`)
     pub fn from_env() -> Result<Option<Self>, String> {
-        let token = match std::env::var("WATERUI_INSPECTOR_TOKEN")
+        let Some(token) = std::env::var("WATERUI_INSPECTOR_TOKEN")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-        {
-            Some(token) => token,
-            None => return Ok(None),
+        else {
+            return Ok(None);
         };
 
         let host = match std::env::var("WATERUI_INSPECTOR_HOST") {
