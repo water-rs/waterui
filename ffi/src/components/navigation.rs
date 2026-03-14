@@ -156,7 +156,8 @@ impl IntoFFI for NavigationSplitLayout {
     type FFI = WuiNavigationSplitLayout;
 
     fn into_ffi(self) -> Self::FFI {
-        let (detail_bar, detail_content, has_detail) = match self.detail {
+        let (sidebar, placeholder, detail, sidebar_width, clear_selection) = self.into_parts();
+        let (detail_bar, detail_content, has_detail) = match detail {
             Some(detail) => {
                 let detail = detail.into_ffi();
                 (detail.bar, detail.content, true)
@@ -177,13 +178,13 @@ impl IntoFFI for NavigationSplitLayout {
         };
 
         WuiNavigationSplitLayout {
-            sidebar: self.sidebar.build().into_ffi(),
-            placeholder: self.placeholder.build().into_ffi(),
+            sidebar: sidebar.build().into_ffi(),
+            placeholder: placeholder.build().into_ffi(),
             detail_bar,
             detail_content,
             has_detail,
-            sidebar_width: self.sidebar_width,
-            clear_selection: self.clear_selection.into_ffi(),
+            sidebar_width,
+            clear_selection: clear_selection.into_ffi(),
         }
     }
 }

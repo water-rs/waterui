@@ -18,6 +18,7 @@ use waterui::{
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::{DatePickerConfig, DatePickerType};
+use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::picker::{PickerConfig, PickerItem, PickerStyle};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
@@ -173,7 +174,7 @@ into_ffi! {SecureFieldConfig,
 
 /// C-compatible date representation using year, month (1-12), and day (1-31).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct WuiDate {
     /// Year (e.g., 2024)
     pub year: i32,
@@ -307,3 +308,14 @@ into_ffi! {DatePickerConfig,
 }
 
 ffi_view!(DatePickerConfig, WuiDatePicker, date_picker);
+
+into_ffi! {MultiDatePickerConfig,
+    pub struct WuiMultiDatePicker {
+        label: *mut WuiAnyView,
+        value: *mut WuiBinding<Vec<Date>>,
+        range: WuiRange<WuiDate>,
+        decorated: *mut WuiComputed<Vec<Date>>,
+    }
+}
+
+ffi_view!(MultiDatePickerConfig, WuiMultiDatePicker, multi_date_picker);

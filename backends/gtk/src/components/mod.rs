@@ -13,6 +13,7 @@ pub mod gradient;
 pub mod lazy_container;
 pub mod list;
 pub mod menu;
+pub mod multi_date_picker;
 pub mod navigation;
 pub mod picker;
 pub mod progress;
