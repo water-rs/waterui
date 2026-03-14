@@ -18,11 +18,11 @@ use alloc::boxed::Box;
 use alloc::string::String;
 
 use crate::Url;
-use crate::image::Image;
 use executor_core::spawn_local;
 use futures::StreamExt;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::{Environment, View};
+use waterui_image::Image;
 
 /// A photo component that displays an image from a URL.
 ///
@@ -150,7 +150,7 @@ async fn fetch_and_decode_streaming(
         let bytes = blocking::unblock(move || std::fs::read(&path))
             .await
             .map_err(|error| error.to_string())?;
-        let image = Image::from_encoded(&bytes).map_err(|error| error.to_string())?;
+        let image = Image::from_encoded(&bytes)?;
         on_decoded_frame(image);
         return Ok(());
     }

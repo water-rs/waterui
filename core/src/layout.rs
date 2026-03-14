@@ -81,7 +81,7 @@ impl StretchAxis {
 // Alignment Guides
 // ============================================================================
 
-/// Stable identifier for an alignment key across FFI boundaries.
+/// Stable identifier for a built-in alignment guide in the layout runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AlignmentKeyId {
     low: u64,
@@ -122,12 +122,6 @@ impl AlignmentKeyId {
             ]),
         }
     }
-
-    /// Creates an identifier from a type name.
-    #[must_use]
-    pub const fn from_type_name(name: &str) -> Self {
-        Self::from_name(name)
-    }
 }
 
 const fn fnv1a_128(bytes: &[u8]) -> u128 {
@@ -142,18 +136,6 @@ const fn fnv1a_128(bytes: &[u8]) -> u128 {
         i += 1;
     }
     hash
-}
-
-/// Key trait for horizontal alignment guides.
-pub trait HorizontalAlignmentKey: 'static {
-    /// Returns the default local-space guide value for the provided dimensions.
-    fn default_value(dimensions: &ViewDimensions) -> f32;
-}
-
-/// Key trait for vertical alignment guides.
-pub trait VerticalAlignmentKey: 'static {
-    /// Returns the default local-space guide value for the provided dimensions.
-    fn default_value(dimensions: &ViewDimensions) -> f32;
 }
 
 #[derive(Clone, Copy)]
@@ -185,34 +167,8 @@ impl HorizontalAlignment {
         default_value: trailing_alignment_default,
     };
 
-    /// Creates a custom horizontal alignment guide from a key type.
     #[must_use]
-    pub fn custom<K: HorizontalAlignmentKey>() -> Self {
-        Self {
-            stable_id: AlignmentKeyId::from_type_name(core::any::type_name::<K>()),
-            default_value: K::default_value,
-        }
-    }
-
-    /// Reconstructs an alignment handle from a stable identifier.
-    #[must_use]
-    pub fn from_stable_id(stable_id: AlignmentKeyId) -> Self {
-        if stable_id == Self::Leading.stable_id {
-            Self::Leading
-        } else if stable_id == Self::Center.stable_id {
-            Self::Center
-        } else if stable_id == Self::Trailing.stable_id {
-            Self::Trailing
-        } else {
-            Self {
-                stable_id,
-                default_value: opaque_horizontal_alignment_default,
-            }
-        }
-    }
-
-    #[must_use]
-    /// Returns the stable identifier carried across layout and FFI boundaries.
+    /// Returns the stable identifier for this built-in horizontal alignment.
     pub const fn stable_id(self) -> AlignmentKeyId {
         self.stable_id
     }
@@ -288,38 +244,8 @@ impl VerticalAlignment {
         default_value: last_baseline_alignment_default,
     };
 
-    /// Creates a custom vertical alignment guide from a key type.
     #[must_use]
-    pub fn custom<K: VerticalAlignmentKey>() -> Self {
-        Self {
-            stable_id: AlignmentKeyId::from_type_name(core::any::type_name::<K>()),
-            default_value: K::default_value,
-        }
-    }
-
-    /// Reconstructs an alignment handle from a stable identifier.
-    #[must_use]
-    pub fn from_stable_id(stable_id: AlignmentKeyId) -> Self {
-        if stable_id == Self::Top.stable_id {
-            Self::Top
-        } else if stable_id == Self::Center.stable_id {
-            Self::Center
-        } else if stable_id == Self::Bottom.stable_id {
-            Self::Bottom
-        } else if stable_id == Self::FirstBaseline.stable_id {
-            Self::FirstBaseline
-        } else if stable_id == Self::LastBaseline.stable_id {
-            Self::LastBaseline
-        } else {
-            Self {
-                stable_id,
-                default_value: opaque_vertical_alignment_default,
-            }
-        }
-    }
-
-    #[must_use]
-    /// Returns the stable identifier carried across layout and FFI boundaries.
+    /// Returns the stable identifier for this built-in vertical alignment.
     pub const fn stable_id(self) -> AlignmentKeyId {
         self.stable_id
     }
@@ -350,14 +276,6 @@ impl Debug for VerticalAlignment {
             .field("stable_id", &self.stable_id)
             .finish_non_exhaustive()
     }
-}
-
-fn opaque_horizontal_alignment_default(_dimensions: &ViewDimensions) -> f32 {
-    panic!("opaque horizontal alignment default requested without Rust key metadata")
-}
-
-fn opaque_vertical_alignment_default(_dimensions: &ViewDimensions) -> f32 {
-    panic!("opaque vertical alignment default requested without Rust key metadata")
 }
 
 /// Combined two-dimensional alignment used by layout containers.
@@ -585,93 +503,38 @@ impl<'a> PlacedSubview<'a> {
     }
 }
 
-struct LeadingAlignmentKey;
-struct CenterHorizontalAlignmentKey;
-struct TrailingAlignmentKey;
-struct TopAlignmentKey;
-struct CenterVerticalAlignmentKey;
-struct BottomAlignmentKey;
-struct FirstBaselineAlignmentKey;
-struct LastBaselineAlignmentKey;
-
-impl HorizontalAlignmentKey for LeadingAlignmentKey {
-    fn default_value(_dimensions: &ViewDimensions) -> f32 {
-        0.0
-    }
+const fn leading_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    let _ = dimensions;
+    0.0
 }
 
-impl HorizontalAlignmentKey for CenterHorizontalAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.width * 0.5
-    }
+const fn center_horizontal_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.width * 0.5
 }
 
-impl HorizontalAlignmentKey for TrailingAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.width
-    }
+const fn trailing_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.width
 }
 
-impl VerticalAlignmentKey for TopAlignmentKey {
-    fn default_value(_dimensions: &ViewDimensions) -> f32 {
-        0.0
-    }
+const fn top_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    let _ = dimensions;
+    0.0
 }
 
-impl VerticalAlignmentKey for CenterVerticalAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.height * 0.5
-    }
+const fn center_vertical_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.height * 0.5
 }
 
-impl VerticalAlignmentKey for BottomAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.height
-    }
+const fn bottom_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.height
 }
 
-impl VerticalAlignmentKey for FirstBaselineAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.height
-    }
+const fn first_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.height
 }
 
-impl VerticalAlignmentKey for LastBaselineAlignmentKey {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.height
-    }
-}
-
-fn leading_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    LeadingAlignmentKey::default_value(dimensions)
-}
-
-fn center_horizontal_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    CenterHorizontalAlignmentKey::default_value(dimensions)
-}
-
-fn trailing_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    TrailingAlignmentKey::default_value(dimensions)
-}
-
-fn top_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    TopAlignmentKey::default_value(dimensions)
-}
-
-fn center_vertical_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    CenterVerticalAlignmentKey::default_value(dimensions)
-}
-
-fn bottom_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    BottomAlignmentKey::default_value(dimensions)
-}
-
-fn first_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    FirstBaselineAlignmentKey::default_value(dimensions)
-}
-
-fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
-    LastBaselineAlignmentKey::default_value(dimensions)
+const fn last_baseline_alignment_default(dimensions: &ViewDimensions) -> f32 {
+    dimensions.size.height
 }
 
 // ============================================================================

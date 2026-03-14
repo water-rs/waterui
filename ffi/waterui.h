@@ -122,6 +122,23 @@ typedef enum WuiMaterial {
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
 
+/**
+ * FFI-safe horizontal paragraph alignment.
+ */
+typedef enum WuiHorizontalAlignment {
+  WuiHorizontalAlignment_Leading = 0,
+  WuiHorizontalAlignment_Center = 1,
+  WuiHorizontalAlignment_Trailing = 2,
+} WuiHorizontalAlignment;
+
+typedef enum WuiVerticalAlignment {
+  WuiVerticalAlignment_Top = 0,
+  WuiVerticalAlignment_Center = 1,
+  WuiVerticalAlignment_Bottom = 2,
+  WuiVerticalAlignment_FirstBaseline = 3,
+  WuiVerticalAlignment_LastBaseline = 4,
+} WuiVerticalAlignment;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -136,15 +153,6 @@ typedef enum WuiButtonStyle {
   WuiButtonStyle_Bordered,
   WuiButtonStyle_BorderedProminent,
 } WuiButtonStyle;
-
-/**
- * FFI-safe horizontal paragraph alignment.
- */
-typedef enum WuiHorizontalAlignment {
-  WuiHorizontalAlignment_Leading = 0,
-  WuiHorizontalAlignment_Center = 1,
-  WuiHorizontalAlignment_Trailing = 2,
-} WuiHorizontalAlignment;
 
 typedef enum WuiFontWeight {
   WuiFontWeight_Thin,
@@ -2121,7 +2129,7 @@ typedef struct WuiSize {
 } WuiSize;
 
 typedef struct WuiHorizontalGuide {
-  struct WuiTypeId alignment;
+  enum WuiHorizontalAlignment alignment;
   float value;
 } WuiHorizontalGuide;
 
@@ -2148,7 +2156,7 @@ typedef struct WuiArray_WuiHorizontalGuide {
 } WuiArray_WuiHorizontalGuide;
 
 typedef struct WuiVerticalGuide {
-  struct WuiTypeId alignment;
+  enum WuiVerticalAlignment alignment;
   float value;
 } WuiVerticalGuide;
 
@@ -4643,22 +4651,6 @@ void waterui_drop_layout(struct WuiLayout *value);
  * `Spacer` is a raw view that stretches to fill available space.
  */
 struct WuiTypeId waterui_spacer_id(void);
-
-struct WuiTypeId waterui_horizontal_alignment_leading_id(void);
-
-struct WuiTypeId waterui_horizontal_alignment_center_id(void);
-
-struct WuiTypeId waterui_horizontal_alignment_trailing_id(void);
-
-struct WuiTypeId waterui_vertical_alignment_top_id(void);
-
-struct WuiTypeId waterui_vertical_alignment_center_id(void);
-
-struct WuiTypeId waterui_vertical_alignment_bottom_id(void);
-
-struct WuiTypeId waterui_vertical_alignment_first_baseline_id(void);
-
-struct WuiTypeId waterui_vertical_alignment_last_baseline_id(void);
 
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 

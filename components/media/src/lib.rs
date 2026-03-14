@@ -93,8 +93,6 @@ pub use filtrate::Filter;
 /// URL types for working with media resources
 pub mod url;
 pub use url::Url;
-/// Image view primitives and supporting types.
-pub mod image;
 pub(crate) mod image_codec {
     pub use waterui_image::codec::*;
 }
