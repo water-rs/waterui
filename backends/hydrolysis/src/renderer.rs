@@ -3638,17 +3638,22 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let split = view.as_inner();
         let sidebar = {
-            let sidebar_view = normalize_layout_view(split.sidebar.build(), env);
+            let sidebar_view = normalize_layout_view(split.sidebar().build(), env);
             measure_view_intrinsic(&sidebar_view, state, env)
         };
+<<<<<<< HEAD
         let detail = if let Some(selected) = split.selection.get() {
             measure_navigation_view_intrinsic(&split.detail.build(selected), state, env)
+=======
+        let detail = if let Some(detail) = split.detail() {
+            measure_navigation_view_intrinsic(detail, state, env)
+>>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
         } else {
-            let placeholder_view = normalize_layout_view(split.placeholder.build(), env);
+            let placeholder_view = normalize_layout_view(split.placeholder().build(), env);
             measure_view_intrinsic(&placeholder_view, state, env)
         };
         LayoutSize::new(
-            (f64::from(split.sidebar_width) + f64::from(detail.width)) as f32,
+            (f64::from(split.sidebar_width()) + f64::from(detail.width)) as f32,
             f64::from(sidebar.height.max(detail.height)) as f32,
         )
     }
@@ -6687,6 +6692,7 @@ impl HydrolysisRenderer {
         split: Native<NavigationSplitLayout>,
         env: &Environment,
     ) {
+<<<<<<< HEAD
         let split = split.into_inner();
         let compact = ctx.bounds.width() < split_compact_threshold(f64::from(split.sidebar_width));
         let selected = {
@@ -6696,6 +6702,13 @@ impl HydrolysisRenderer {
 
         if compact && let Some(selected) = selected {
             let detail = split.detail.build(selected);
+=======
+        let (sidebar, placeholder, detail, sidebar_width, clear_selection) =
+            split.into_inner().into_parts();
+        let compact = ctx.bounds.width() < split_compact_threshold(f64::from(sidebar_width));
+
+        if compact && let Some(detail) = detail {
+>>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), ctx.bounds);
             let back_button_rect = navigation_back_button_rect(ctx.bounds);
             {
@@ -6708,7 +6721,12 @@ impl HydrolysisRenderer {
                     &vello::kurbo::RoundedRect::from_rect(back_button_rect, 6.0),
                 );
             }
+<<<<<<< HEAD
             let selection = split.selection.clone();
+=======
+            let clear_selection = Rc::new(RefCell::new(clear_selection));
+            let env = env.clone();
+>>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
             let renderer = unsafe { ctx.renderer() };
             renderer.register_pointer_target(
                 transformed_rect(ctx.hit_transform, back_button_rect),
@@ -6720,7 +6738,7 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let sidebar_width = f64::from(split.sidebar_width).min(ctx.bounds.width() * 0.5);
+        let sidebar_width = f64::from(sidebar_width).min(ctx.bounds.width() * 0.5);
         let sidebar_rect = vello::kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
@@ -6729,12 +6747,17 @@ impl HydrolysisRenderer {
         );
         let detail_rect =
             vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
+<<<<<<< HEAD
         Self::dispatch_in_rect(ctx, env, split.sidebar.build(), sidebar_rect);
         if let Some(selected) = selected {
             let detail = split.detail.build(selected);
+=======
+        Self::dispatch_in_rect(ctx, env, sidebar.build(), sidebar_rect);
+        if let Some(detail) = detail {
+>>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), detail_rect);
         } else {
-            Self::dispatch_in_rect(ctx, env, split.placeholder.build(), detail_rect);
+            Self::dispatch_in_rect(ctx, env, placeholder.build(), detail_rect);
         }
     }
 

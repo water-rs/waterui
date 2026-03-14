@@ -59,6 +59,12 @@ impl<'a> Query<'a> {
     }
 
     #[must_use]
+    pub fn hidden(mut self, hidden: bool) -> Self {
+        self.selector = self.selector.hidden(hidden);
+        self
+    }
+
+    #[must_use]
     pub fn all(self) -> ElementSet {
         self.app.resolve_elements(&self.selector)
     }
