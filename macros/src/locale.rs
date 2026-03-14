@@ -4,7 +4,7 @@
 //! The macro loads translation files from the `i18n/` folder at compile time.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -98,7 +98,7 @@ impl TranslationBundle {
     fn parse_plural_field(
         table: &toml::value::Table,
         key: &str,
-        source: &PathBuf,
+        source: &Path,
         translation_key: &str,
     ) -> std::result::Result<Option<String>, String> {
         match table.get(key) {
@@ -113,7 +113,7 @@ impl TranslationBundle {
 
     fn parse_toml(
         content: &str,
-        source: &PathBuf,
+        source: &Path,
     ) -> std::result::Result<BTreeMap<String, TranslationValue>, String> {
         let table: toml::Table = toml::from_str(content)
             .map_err(|err| format!("Failed to parse '{}': {err}", source.display()))?;
@@ -364,7 +364,7 @@ fn build_zip_expr_and_pattern(
     (expr, pattern)
 }
 
-fn build_signal_map(waterui: &TokenStream2, idents: &[Ident], body: TokenStream2) -> TokenStream2 {
+fn build_signal_map(waterui: &TokenStream2, idents: &[Ident], body: &TokenStream2) -> TokenStream2 {
     match idents.len() {
         0 => quote! { #waterui::reactive::constant(#body) },
         1 => {
@@ -398,12 +398,12 @@ fn build_format_signal(
     idents: &[Ident],
 ) -> TokenStream2 {
     let body = quote! { #waterui::reactive::__alloc::format!(#format_str) };
-    build_signal_map(waterui, idents, body)
+    build_signal_map(waterui, idents, &body)
 }
 
 fn unique_ident(base: &str, existing: &[Ident]) -> Ident {
     let mut name = base.to_string();
-    while existing.iter().any(|ident| ident.to_string() == name) {
+    while existing.iter().any(|ident| *ident == name) {
         name.push('_');
     }
     Ident::new(&name, Span::call_site())
@@ -411,10 +411,10 @@ fn unique_ident(base: &str, existing: &[Ident]) -> Ident {
 
 /// Generate the translation key from format string and optional context.
 fn make_key(format_string: &str, context: Option<&str>) -> String {
-    match context {
-        Some(ctx) => format!("{format_string}#{ctx}"),
-        None => format_string.to_string(),
-    }
+    context.map_or_else(
+        || format_string.to_string(),
+        |ctx| format!("{format_string}#{ctx}"),
+    )
 }
 
 /// Macro for creating localized text.
@@ -705,7 +705,7 @@ fn generate_translation_arm(
                     _ => #waterui::reactive::__alloc::format!(#other_format_lit),
                 }
             };
-            let content = build_signal_map(waterui, all_idents, body);
+            let content = build_signal_map(waterui, all_idents, &body);
 
             quote! {
                 #locale_pattern => {
@@ -771,7 +771,7 @@ fn generate_translation_arm(
                     _ => #waterui::reactive::__alloc::format!(#other_other_lit),
                 }
             };
-            let content = build_signal_map(waterui, all_idents, body);
+            let content = build_signal_map(waterui, all_idents, &body);
 
             quote! {
                 #locale_pattern => {
