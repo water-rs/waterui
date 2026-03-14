@@ -1,7 +1,8 @@
+use crate::components::text::WuiHorizontalAlignment;
 use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
-    AlignmentKeyId, HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size,
-    StretchAxis, SubView, VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
+    VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
     scroll::Axis,
@@ -23,53 +24,6 @@ pub struct WuiFixedContainer {
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
     WuiTypeId::of::<waterui::component::spacer::Spacer>()
-}
-
-fn alignment_key_id(id: AlignmentKeyId) -> WuiTypeId {
-    WuiTypeId {
-        low: id.low(),
-        high: id.high(),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_horizontal_alignment_leading_id() -> WuiTypeId {
-    alignment_key_id(HorizontalAlignment::Leading.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_horizontal_alignment_center_id() -> WuiTypeId {
-    alignment_key_id(HorizontalAlignment::Center.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_horizontal_alignment_trailing_id() -> WuiTypeId {
-    alignment_key_id(HorizontalAlignment::Trailing.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_vertical_alignment_top_id() -> WuiTypeId {
-    alignment_key_id(VerticalAlignment::Top.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_vertical_alignment_center_id() -> WuiTypeId {
-    alignment_key_id(VerticalAlignment::Center.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_vertical_alignment_bottom_id() -> WuiTypeId {
-    alignment_key_id(VerticalAlignment::Bottom.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_vertical_alignment_first_baseline_id() -> WuiTypeId {
-    alignment_key_id(VerticalAlignment::FirstBaseline.stable_id())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_vertical_alignment_last_baseline_id() -> WuiTypeId {
-    alignment_key_id(VerticalAlignment::LastBaseline.stable_id())
 }
 
 ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);
@@ -295,10 +249,53 @@ impl IntoRust for WuiSize {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WuiVerticalAlignment {
+    Top = 0,
+    #[default]
+    Center = 1,
+    Bottom = 2,
+    FirstBaseline = 3,
+    LastBaseline = 4,
+}
+
+impl IntoFFI for VerticalAlignment {
+    type FFI = WuiVerticalAlignment;
+
+    fn into_ffi(self) -> Self::FFI {
+        if self == VerticalAlignment::Top {
+            WuiVerticalAlignment::Top
+        } else if self == VerticalAlignment::Bottom {
+            WuiVerticalAlignment::Bottom
+        } else if self == VerticalAlignment::FirstBaseline {
+            WuiVerticalAlignment::FirstBaseline
+        } else if self == VerticalAlignment::LastBaseline {
+            WuiVerticalAlignment::LastBaseline
+        } else {
+            WuiVerticalAlignment::Center
+        }
+    }
+}
+
+impl IntoRust for WuiVerticalAlignment {
+    type Rust = VerticalAlignment;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            WuiVerticalAlignment::Top => VerticalAlignment::Top,
+            WuiVerticalAlignment::Center => VerticalAlignment::Center,
+            WuiVerticalAlignment::Bottom => VerticalAlignment::Bottom,
+            WuiVerticalAlignment::FirstBaseline => VerticalAlignment::FirstBaseline,
+            WuiVerticalAlignment::LastBaseline => VerticalAlignment::LastBaseline,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct WuiHorizontalGuide {
-    alignment: WuiTypeId,
+    alignment: WuiHorizontalAlignment,
     value: f32,
 }
 
@@ -306,20 +303,14 @@ impl IntoRust for WuiHorizontalGuide {
     type Rust = (HorizontalAlignment, f32);
 
     unsafe fn into_rust(self) -> Self::Rust {
-        (
-            HorizontalAlignment::from_stable_id(AlignmentKeyId::new(
-                self.alignment.low,
-                self.alignment.high,
-            )),
-            self.value,
-        )
+        (unsafe { self.alignment.into_rust() }, self.value)
     }
 }
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct WuiVerticalGuide {
-    alignment: WuiTypeId,
+    alignment: WuiVerticalAlignment,
     value: f32,
 }
 
@@ -327,13 +318,7 @@ impl IntoRust for WuiVerticalGuide {
     type Rust = (VerticalAlignment, f32);
 
     unsafe fn into_rust(self) -> Self::Rust {
-        (
-            VerticalAlignment::from_stable_id(AlignmentKeyId::new(
-                self.alignment.low,
-                self.alignment.high,
-            )),
-            self.value,
-        )
+        (unsafe { self.alignment.into_rust() }, self.value)
     }
 }
 
@@ -351,20 +336,14 @@ impl IntoFFI for ViewDimensions {
         let horizontal_guides = self
             .explicit_horizontal_guides()
             .map(|(alignment, value)| WuiHorizontalGuide {
-                alignment: WuiTypeId {
-                    low: alignment.stable_id().low(),
-                    high: alignment.stable_id().high(),
-                },
+                alignment: alignment.into_ffi(),
                 value,
             })
             .collect::<Vec<_>>();
         let vertical_guides = self
             .explicit_vertical_guides()
             .map(|(alignment, value)| WuiVerticalGuide {
-                alignment: WuiTypeId {
-                    low: alignment.stable_id().low(),
-                    high: alignment.stable_id().high(),
-                },
+                alignment: alignment.into_ffi(),
                 value,
             })
             .collect::<Vec<_>>();
