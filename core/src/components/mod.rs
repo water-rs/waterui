@@ -31,7 +31,7 @@ pub struct With<V, T> {
 
 impl<V: View, T: 'static> View for With<V, T> {
     fn body(self, _env: &crate::Environment) -> impl View {
-        let With {
+        let Self {
             view,
             value: _value,
         } = self;
