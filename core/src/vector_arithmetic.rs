@@ -53,7 +53,7 @@ impl<A: Add<Output = A>, B: Add<Output = B>> Add for AnimatablePair<A, B> {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        AnimatablePair(self.0 + other.0, self.1 + other.1)
+        Self(self.0 + other.0, self.1 + other.1)
     }
 }
 
@@ -61,7 +61,7 @@ impl<A: Sub<Output = A>, B: Sub<Output = B>> Sub for AnimatablePair<A, B> {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
-        AnimatablePair(self.0 - other.0, self.1 - other.1)
+        Self(self.0 - other.0, self.1 - other.1)
     }
 }
 
@@ -69,7 +69,7 @@ impl<A: Mul<f64, Output = A>, B: Mul<f64, Output = B>> Mul<f64> for AnimatablePa
     type Output = Self;
 
     fn mul(self, scalar: f64) -> Self {
-        AnimatablePair(self.0 * scalar, self.1 * scalar)
+        Self(self.0 * scalar, self.1 * scalar)
     }
 }
 
@@ -79,7 +79,7 @@ impl<A: Mul<f64, Output = A>, B: Mul<f64, Output = B>> Mul<f64> for AnimatablePa
 
 /// A 2D point or size that can be animated.
 ///
-/// Wraps `[f32; 2]` to provide VectorArithmetic implementation.
+/// Wraps `[f32; 2]` to provide `VectorArithmetic` implementation.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Point2(pub [f32; 2]);
 

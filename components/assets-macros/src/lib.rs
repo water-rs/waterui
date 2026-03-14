@@ -24,8 +24,7 @@ struct AssetInput {
 impl Parse for AssetInput {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
-        let mut embed = false;
-        if input.peek(Token![,]) {
+        let embed = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             let key: Ident = input.parse()?;
             if key != "embed" {
@@ -36,8 +35,10 @@ impl Parse for AssetInput {
             }
             input.parse::<Token![=]>()?;
             let value: LitBool = input.parse()?;
-            embed = value.value();
-        }
+            value.value()
+        } else {
+            false
+        };
         Ok(Self { path, embed })
     }
 }
@@ -64,7 +65,7 @@ impl Parse for IncludeBundleInput {
 #[derive(Default, Clone)]
 struct ModuleNode {
     mount: Option<String>,
-    children: BTreeMap<String, ModuleNode>,
+    children: BTreeMap<String, Self>,
     assets: Vec<PlannedAsset>,
 }
 
@@ -100,10 +101,9 @@ fn syn_ident(name: &str) -> syn::Ident {
 
 fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
     let mut current = node;
-    let mut segments = asset.module_segments().into_iter().peekable();
     let mount_ident =
         (!asset.mount.is_empty()).then(|| waterui_assets_plan::rust_identifier(&asset.mount));
-    while let Some(segment) = segments.next() {
+    for segment in asset.module_segments() {
         let is_mount_root = mount_ident
             .as_deref()
             .is_some_and(|mount| mount == segment.as_str());
@@ -237,9 +237,8 @@ pub fn asset(input: TokenStream) -> TokenStream {
         );
     }
 
-    let extension = match get_extension(&path_str) {
-        Some(ext) => ext,
-        None => return compile_error("Could not determine file extension", path_span),
+    let Some(extension) = get_extension(&path_str) else {
+        return compile_error("Could not determine file extension", path_span);
     };
 
     let kind = AssetKind::from_extension(extension);

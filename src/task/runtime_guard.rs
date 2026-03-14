@@ -387,7 +387,7 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
 
 fn detect_max_refresh_rate_hz() -> f64 {
     match waterkit_screen::max_refresh_rate_hz() {
-        Ok(hz) if hz.is_finite() && hz > 0.0 => hz as f64,
+        Ok(hz) if hz.is_finite() && hz > 0.0 => f64::from(hz),
         Ok(hz) => {
             tracing::debug!(
                 target: "waterui::runtime_guard",
