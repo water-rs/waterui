@@ -22,6 +22,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use waterui_build_support::{rust_const_name, rust_fn_name};
 
 /// Font Awesome version
 const FA_VERSION: &str = "7.1.0";
@@ -127,8 +128,8 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
     style_icons.sort_by_key(|(name, _)| *name);
 
     for (icon_name, icon_data) in style_icons {
-        let const_name = to_const_name(icon_name);
-        let fn_name = to_fn_name(icon_name);
+        let const_name = rust_const_name(icon_name);
+        let fn_name = rust_fn_name(icon_name);
         let codepoint =
             u32::from_str_radix(&icon_data.unicode, 16).expect("Invalid unicode codepoint");
 
@@ -241,35 +242,4 @@ fn get_cache_dir() -> PathBuf {
         .join(".water")
         .join("cache")
         .join("fontawesome")
-}
-
-fn to_const_name(name: &str) -> String {
-    let name = if name.chars().next().map_or(false, |c| c.is_numeric()) {
-        format!("ICON_{}", name)
-    } else {
-        name.to_string()
-    };
-    name.replace('-', "_").to_uppercase()
-}
-
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
-    "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
-];
-
-fn to_fn_name(name: &str) -> String {
-    let name = if name.chars().next().map_or(false, |c| c.is_numeric()) {
-        format!("icon_{}", name)
-    } else {
-        name.to_string()
-    };
-    let snake = name.replace('-', "_");
-    if RUST_KEYWORDS.contains(&snake.as_str()) {
-        format!("r#{}", snake)
-    } else {
-        snake
-    }
 }

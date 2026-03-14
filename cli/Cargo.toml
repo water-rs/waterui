@@ -62,6 +62,8 @@ waterui-assets.workspace = true
 waterui-assets-plan.workspace = true
 waterui-preview-protocol = { path = "../components/preview-protocol" }
 waterui-inspector-protocol = { path = "../components/inspector-protocol" }
+tempfile = "3.26"
+walkdir = "2.5"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
@@ -70,9 +72,6 @@ core-foundation = "0.10"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
-
-[dev-dependencies]
-tempfile = "3.26"
 
 [lints]
 workspace = true

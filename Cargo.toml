@@ -126,6 +126,7 @@ waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-p
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { version = "0.2.1", path = "testing" }
 waterui = { version = "0.2.1", path = "." }
+waterui-build-support = { version = "0.1.0", path = "utils/build-support" }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }

@@ -29,6 +29,7 @@ hex = "0.4"
 
 # Async filesystem
 smol = "2.0"
+tempfile = "3.26"
 
 # Home directory
 dirs = "5.0"
