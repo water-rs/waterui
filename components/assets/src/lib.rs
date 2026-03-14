@@ -47,6 +47,8 @@ mod error;
 mod kind;
 mod large_file;
 #[cfg(feature = "std")]
+mod remote;
+#[cfg(feature = "std")]
 mod url;
 
 #[cfg(feature = "std")]
@@ -57,6 +59,10 @@ pub use data::Data;
 pub use error::AssetError;
 pub use kind::AssetKind;
 pub use large_file::LargeFile;
+#[cfg(feature = "std")]
+pub use remote::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+#[cfg(feature = "std")]
+pub use url::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 
 /// Prelude for common imports.
 pub mod prelude {

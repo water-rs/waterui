@@ -3,7 +3,6 @@
 //! Provides `asset!`, `assets!`, and `include_bundle!`.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -13,7 +12,7 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
-use waterui_assets::AssetKind;
+use waterui_assets::{AssetKind, is_loopback_http_url, is_remote_url};
 use waterui_assets_plan::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
 
 /// Input to the `asset!` macro.
@@ -67,42 +66,6 @@ struct ModuleNode {
     mount: Option<String>,
     children: BTreeMap<String, ModuleNode>,
     assets: Vec<PlannedAsset>,
-}
-
-/// Determine if a path is a remote URL.
-fn is_remote_url(path: &str) -> bool {
-    path.starts_with("https://") || path.starts_with("http://")
-}
-
-/// Determine if a URL is loopback HTTP (allowed).
-fn is_loopback_http(path: &str) -> bool {
-    extract_http_host(path)
-        .and_then(normalize_host)
-        .is_some_and(is_loopback_host)
-}
-
-fn extract_http_host(path: &str) -> Option<&str> {
-    let remainder = path.strip_prefix("http://")?;
-    let authority = remainder.split(['/', '?', '#']).next()?;
-    authority.rsplit('@').next()
-}
-
-fn normalize_host(authority: &str) -> Option<&str> {
-    if authority.is_empty() {
-        return None;
-    }
-
-    if let Some(host) = authority.strip_prefix('[') {
-        let closing = host.find(']')?;
-        return Some(&host[..closing]);
-    }
-
-    authority.split(':').next()
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 fn get_extension(path: &str) -> Option<&str> {
@@ -263,7 +226,11 @@ pub fn asset(input: TokenStream) -> TokenStream {
     let path_str = input.path.value();
     let path_span = input.path.span();
 
-    if path_str.starts_with("http://") && !is_loopback_http(&path_str) {
+    if path_str
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        && !is_loopback_http_url(&path_str)
+    {
         return compile_error(
             "HTTP not allowed (use HTTPS). Only loopback hosts permit HTTP.",
             path_span,
@@ -357,7 +324,7 @@ mod tests {
             "http://127.1.2.3:9000/file.bin",
             "http://[::1]/file.bin",
         ] {
-            assert!(is_loopback_http(url), "expected to allow {url}");
+            assert!(is_loopback_http_url(url), "expected to allow {url}");
         }
     }
 
@@ -369,7 +336,7 @@ mod tests {
             "http://127.0.0.1.evil.com/file.bin",
             "http://[::2]/file.bin",
         ] {
-            assert!(!is_loopback_http(url), "expected to reject {url}");
+            assert!(!is_loopback_http_url(url), "expected to reject {url}");
         }
     }
 }
