@@ -1172,7 +1172,7 @@ impl EmbeddedGpuSurfaceRuntime {
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) {
-        if self.setup_complete {
+        if self.setup_complete && self.output_format == surface_format {
             return;
         }
 
@@ -12738,15 +12738,11 @@ impl HydrolysisRenderer {
         }));
         let scope = local_env
             .get::<LocalStateScope>()
-            .unwrap_or_else(|| {
-                panic!("hydrolysis local state environment missing LocalStateScope")
-            })
+            .unwrap_or_else(|| panic!("hydrolysis local state environment missing LocalStateScope"))
             .clone();
         let store = local_env
             .get::<LocalStateStore>()
-            .unwrap_or_else(|| {
-                panic!("hydrolysis local state environment missing LocalStateStore")
-            })
+            .unwrap_or_else(|| panic!("hydrolysis local state environment missing LocalStateStore"))
             .clone();
         with_local_binding_factory(
             Rc::new(move |type_id, init| store.get_or_init_dynamic(&scope, type_id, init)),
