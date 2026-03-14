@@ -20,6 +20,7 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jint, jlong, jobject, jobjectArray, jsize};
 
+use crate::IntoFFI;
 use crate::reactive::{WuiBinding, WuiComputed, WuiWatcherGuard};
 
 #[inline]
@@ -520,13 +521,14 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateVec
     let binding = unsafe {
         &*require_jlong_ptr::<WuiBinding<Vec<Date>>>(binding_ptr, "setBindingDateVec", "binding")
     };
+    let dates = unsafe { JObjectArray::from_raw(dates) };
     let length = env
-        .get_array_length(dates)
+        .get_array_length(&dates)
         .expect("Failed to get date array length");
     let mut rust_dates = Vec::with_capacity(length as usize);
     for index in 0..length {
         let element = env
-            .get_object_array_element(dates, index)
+            .get_object_array_element(&dates, index)
             .expect("Failed to read date array element");
         let year = env
             .get_field(&element, "year", "I")
