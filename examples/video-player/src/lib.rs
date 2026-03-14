@@ -111,19 +111,16 @@ pub fn app(env: Environment) -> App {
 fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> impl View {
     let is_selected = selected.clone().map(move |s| s == index);
     let selected_for_action = selected.clone();
+    let bg = is_selected.select(
+        Srgb::WHITE.with_opacity(0.35),
+        Srgb::WHITE.with_opacity(0.15),
+    );
 
-    Dynamic::watch(is_selected, move |active| {
-        let bg = if active {
-            Srgb::WHITE.with_opacity(0.35)
-        } else {
-            Srgb::WHITE.with_opacity(0.15)
-        };
-
-        button(text(label).foreground(Srgb::WHITE))
-            .with_state(&selected_for_action)
-            .action(move |s| s.set(index))
-            .background(bg)
-    })
+    button(label)
+        .with_state(&selected_for_action)
+        .action(move |s: Binding<usize>| s.set(index))
+        .foreground(Srgb::WHITE)
+        .background(bg.computed())
 }
 
 waterui_ffi::export!();
