@@ -7,7 +7,6 @@
 //! - Copy assets to platform-specific locations
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::PackageId;
@@ -16,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use smol::fs;
 use smol::stream::StreamExt;
 use tracing::{debug, info, warn};
+use walkdir::WalkDir;
+use waterui_assets::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 use crate::project::Project;
 
@@ -375,8 +376,6 @@ fn resolve_local_font_path(
 ///
 /// If the font is already cached, returns the cached path.
 async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<PathBuf> {
-    ensure_http_allowed(url)?;
-
     // Create cache directory if needed
     fs::create_dir_all(cache_dir).await?;
 
@@ -419,55 +418,28 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
     }
 
     info!("Downloading font '{}' from {}", name, url);
-
-    // Download the font using zenwave with redirect following
-    use zenwave::{Client, Method, redirect::FollowRedirect};
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client
-        .method(Method::GET, url)
+    let bytes = download_remote_bytes(url)
         .await
+        .map_err(eyre::Report::new)
         .wrap_err_with(|| format!("Failed to download font from {url}"))?;
 
-    if !response.status().is_success() {
-        eyre::bail!(
-            "Failed to download font: HTTP {} from {}",
-            response.status(),
-            url
-        );
-    }
-
-    let bytes = response
-        .into_body()
-        .into_bytes()
+    match write_bytes_atomically(&cache_file, &bytes)
         .await
-        .wrap_err("Failed to read font data")?;
-
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("System clock is before UNIX_EPOCH")
-        .as_nanos();
-    let temp_file = cache_dir.join(format!(
-        "{hash}.{extension}.tmp-{}-{nonce}",
-        std::process::id()
-    ));
-    fs::write(&temp_file, &bytes).await?;
-
-    if let Err(e) = fs::rename(&temp_file, &cache_file).await {
-        let _ = fs::remove_file(&temp_file).await;
-        if cache_file.exists() {
+        .map_err(eyre::Report::new)
+        .wrap_err_with(|| {
+            format!(
+                "Failed to finalize cache file for '{}' at {}",
+                name,
+                cache_file.display()
+            )
+        })? {
+        AtomicWriteOutcome::Written => {}
+        AtomicWriteOutcome::ReusedExisting => {
             debug!(
                 "Font cache race detected for '{}', reusing {}",
                 name,
                 cache_file.display()
             );
-        } else {
-            return Err(e).wrap_err_with(|| {
-                format!(
-                    "Failed to finalize cache file for '{}' at {}",
-                    name,
-                    cache_file.display()
-                )
-            });
         }
     }
 
@@ -477,47 +449,6 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
     }
 
     Ok(cache_file)
-}
-
-fn ensure_http_allowed(url: &str) -> eyre::Result<()> {
-    if url.starts_with("http://") && !is_loopback_http_url(url) {
-        eyre::bail!(
-            "HTTP not allowed for remote fonts: {}. Only localhost/loopback permits HTTP.",
-            url
-        );
-    }
-
-    Ok(())
-}
-
-fn is_loopback_http_url(url: &str) -> bool {
-    extract_http_host(url)
-        .and_then(normalize_host)
-        .is_some_and(is_loopback_host)
-}
-
-fn extract_http_host(url: &str) -> Option<&str> {
-    let remainder = url.strip_prefix("http://")?;
-    let authority = remainder.split(['/', '?', '#']).next()?;
-    authority.rsplit('@').next()
-}
-
-fn normalize_host(authority: &str) -> Option<&str> {
-    if authority.is_empty() {
-        return None;
-    }
-
-    if let Some(host) = authority.strip_prefix('[') {
-        let closing = host.find(']')?;
-        return Some(&host[..closing]);
-    }
-
-    authority.split(':').next()
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Finds a font file in an extracted zip archive.
@@ -581,27 +512,25 @@ async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
 
 /// Recursively finds a file by name in a directory.
 async fn find_file_recursive(dir: &Path, filename: &str) -> eyre::Result<PathBuf> {
-    let mut entries = fs::read_dir(dir).await?;
-
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        let path = entry.path();
-
-        if is_symlink(&path)? {
-            warn!("Skipping symlink while searching files: {}", path.display());
-            continue;
-        }
-
-        if path.is_dir() {
-            if let Ok(found) = Box::pin(find_file_recursive(&path, filename)).await {
-                return Ok(found);
+    let dir = dir.to_path_buf();
+    let filename = filename.to_string();
+    smol::unblock(move || {
+        for entry in WalkDir::new(&dir) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
             }
-        } else if path.file_name().is_some_and(|n| n == filename) {
-            return Ok(path);
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name == filename)
+            {
+                return Ok(entry.into_path());
+            }
         }
-    }
-
-    eyre::bail!("File '{}' not found in {}", filename, dir.display())
+        eyre::bail!("File '{}' not found in {}", filename, dir.display())
+    })
+    .await
 }
 
 /// Extracts Font Awesome version from directory structure.
@@ -633,62 +562,56 @@ fn extract_fontawesome_version(extract_dir: &Path) -> String {
 ///
 /// Supports TTF and OTF formats.
 async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
-    let mut entries = fs::read_dir(dir).await?;
+    let dir = dir.to_path_buf();
+    let name = name.to_string();
+    smol::unblock(move || {
+        let mut candidates = Vec::new();
+        let name_lower = name.to_lowercase();
 
-    let mut candidates = Vec::new();
-    let name_lower = name.to_lowercase();
+        let style_keyword =
+            extract_style_keyword(&name_lower).unwrap_or_else(|| "regular".to_string());
 
-    // Extract style keywords for Font Awesome-style names (e.g., "Font Awesome 7 Free Solid" -> "solid")
-    // If no style found, default to "regular" for matching
-    let style_keyword = extract_style_keyword(&name_lower).unwrap_or_else(|| "regular".to_string());
-
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        let path = entry.path();
-
-        if is_symlink(&path)? {
-            warn!("Skipping symlink while searching fonts: {}", path.display());
-            continue;
-        }
-
-        if path.is_dir() {
-            if let Ok(found) = Box::pin(find_font_file(&path, name)).await {
-                return Ok(found);
+        for entry in WalkDir::new(&dir) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
             }
-        } else if let Some(ext) = path.extension() {
+
+            let path = entry.into_path();
+            let Some(ext) = path.extension() else {
+                continue;
+            };
             let ext = ext.to_string_lossy().to_lowercase();
-            // Support TTF and OTF formats
-            if ext == "ttf" || ext == "otf" {
-                let file_name = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_lowercase();
-
-                // Match by style keyword (e.g., "solid" matches "Font Awesome 7 Free-Solid-900")
-                // This is more precise than just matching the base name which could hit multiple files
-                if file_name.contains(&style_keyword) {
-                    // Also verify the base name matches to avoid false positives
-                    let name_parts: Vec<&str> = name_lower.split_whitespace().collect();
-                    let matches_base = name_parts
-                        .iter()
-                        .take(3)
-                        .all(|part| file_name.contains(part));
-                    if matches_base {
-                        return Ok(path);
-                    }
-                }
-
-                candidates.push(path);
+            if ext != "ttf" && ext != "otf" {
+                continue;
             }
-        }
-    }
 
-    // Return any font file found
-    candidates
-        .into_iter()
-        .next()
-        .ok_or_else(|| eyre::eyre!("No font file found in zip for '{}'", name))
+            let file_name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+
+            if file_name.contains(&style_keyword) {
+                let name_parts: Vec<&str> = name_lower.split_whitespace().collect();
+                let matches_base = name_parts
+                    .iter()
+                    .take(3)
+                    .all(|part| file_name.contains(part));
+                if matches_base {
+                    return Ok(path);
+                }
+            }
+
+            candidates.push(path);
+        }
+
+        candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre::eyre!("No font file found in zip for '{}'", name))
+    })
+    .await
 }
 
 /// Extract style keyword from font family name for matching.
@@ -925,7 +848,10 @@ mod tests {
             "http://[::1]/font.ttf",
             "https://example.com/font.ttf",
         ] {
-            assert!(ensure_http_allowed(url).is_ok(), "expected to allow {url}");
+            assert!(
+                waterui_assets::ensure_http_allowed(url).is_ok(),
+                "expected to allow {url}"
+            );
         }
     }
 
@@ -937,7 +863,7 @@ mod tests {
             "http://127.0.0.1.evil.com/font.ttf",
         ] {
             assert!(
-                ensure_http_allowed(url).is_err(),
+                waterui_assets::ensure_http_allowed(url).is_err(),
                 "expected to reject {url}"
             );
         }
