@@ -89,30 +89,41 @@ pub struct AlignmentKeyId {
 }
 
 impl AlignmentKeyId {
+    /// Creates a stable alignment identifier from its low/high 64-bit halves.
     #[must_use]
     pub const fn new(low: u64, high: u64) -> Self {
         Self { low, high }
     }
 
+    /// Returns the low 64 bits of the identifier.
     #[must_use]
     pub const fn low(self) -> u64 {
         self.low
     }
 
+    /// Returns the high 64 bits of the identifier.
     #[must_use]
     pub const fn high(self) -> u64 {
         self.high
     }
 
+    /// Creates an identifier from a stable string name using FNV-1a 128-bit hashing.
     #[must_use]
     pub const fn from_name(name: &str) -> Self {
         let hash = fnv1a_128(name.as_bytes());
+        let bytes = hash.to_le_bytes();
         Self {
-            low: hash as u64,
-            high: (hash >> 64) as u64,
+            low: u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]),
+            high: u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]),
         }
     }
 
+    /// Creates an identifier from a type name.
     #[must_use]
     pub const fn from_type_name(name: &str) -> Self {
         Self::from_name(name)
@@ -201,6 +212,7 @@ impl HorizontalAlignment {
     }
 
     #[must_use]
+    /// Returns the stable identifier carried across layout and FFI boundaries.
     pub const fn stable_id(self) -> AlignmentKeyId {
         self.stable_id
     }
@@ -229,7 +241,7 @@ impl Debug for HorizontalAlignment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HorizontalAlignment")
             .field("stable_id", &self.stable_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -307,6 +319,7 @@ impl VerticalAlignment {
     }
 
     #[must_use]
+    /// Returns the stable identifier carried across layout and FFI boundaries.
     pub const fn stable_id(self) -> AlignmentKeyId {
         self.stable_id
     }
@@ -335,7 +348,7 @@ impl Debug for VerticalAlignment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VerticalAlignment")
             .field("stable_id", &self.stable_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

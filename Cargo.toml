@@ -82,6 +82,7 @@ waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
 waterui-text = { version = "0.2.2", path = "components/text" }
 waterui-media = { version = "0.2.1", path = "components/media" }
+waterui-image = { version = "0.2.1", path = "components/image" }
 waterui-video = { version = "0.2.1", path = "components/video" }
 waterui-form = { version = "0.2.1", path = "components/form" }
 waterui-controls = { version = "0.2.1", path = "components/controls"}
