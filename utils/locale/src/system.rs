@@ -4,7 +4,7 @@ use core::str::FromStr;
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use nami::Binding;
+use nami::{Binding, Container};
 
 use crate::locale::{Locale, locales};
 use crate::regional::{self, ListenerHandle};
@@ -33,7 +33,7 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
 
         let initial = locale_from_tag(regional::current_settings().locale_tag());
         let mut state = RuntimeLocaleState {
-            binding: Binding::container(initial),
+            binding: Binding::custom(Container::new(initial)),
             listener: None,
         };
         ensure_listener_registered(&mut state);

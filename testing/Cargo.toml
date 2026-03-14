@@ -21,6 +21,7 @@ vello.workspace = true
 accesskit = "0.24"
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+executor-core.workspace = true
 
 [lints]
 workspace = true
