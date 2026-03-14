@@ -212,9 +212,7 @@ fn selected_tooltip_stacks_with_existing_overlay_layers() {
             "composition-line-tooltip",
             LineChart::new(Binding::container(data.clone()))
                 .chart_overlay(|_proxy| {
-                    absolute((
-                        Srgb::WHITE.size(12.0, 12.0).position(18.0, 18.0),
-                    ))
+                    absolute((Srgb::WHITE.size(12.0, 12.0).position(18.0, 18.0),))
                 })
                 .selected_tooltip(|hit| {
                     waterui_chart::Tooltip::new(

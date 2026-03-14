@@ -42,6 +42,8 @@ use core::fmt;
 use waterui_str::Str;
 
 #[cfg(feature = "std")]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(feature = "std")]
 use std::{
     cell::Cell,
     path::{Path, PathBuf},
@@ -56,8 +58,6 @@ use {
     waterkit_fs::WaterFs,
     zenwave::{Client, Method, redirect::FollowRedirect},
 };
-#[cfg(feature = "std")]
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 // ============================================================================
 // Parsed Component Types
@@ -856,10 +856,12 @@ fn infer_extension(url: &Url, content_type: Option<&str>) -> Option<String> {
 
 #[cfg(feature = "std")]
 fn preferred_extension<'a>(extensions: &'a [&'a str]) -> Option<&'a str> {
-    ["txt", "json", "html", "xml", "css", "js", "jpg", "png", "gif"]
-        .into_iter()
-        .find(|preferred| extensions.iter().any(|candidate| candidate == preferred))
-        .or_else(|| extensions.first().copied())
+    [
+        "txt", "json", "html", "xml", "css", "js", "jpg", "png", "gif",
+    ]
+    .into_iter()
+    .find(|preferred| extensions.iter().any(|candidate| candidate == preferred))
+    .or_else(|| extensions.first().copied())
 }
 
 #[cfg(feature = "std")]
@@ -1246,9 +1248,13 @@ mod tests {
     #[test]
     fn fetch_remote_to_cache_downloads_with_zenwave() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let address = listener.local_addr().expect("listener should have local addr");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local addr");
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("server should accept one connection");
+            let (mut stream, _) = listener
+                .accept()
+                .expect("server should accept one connection");
             let mut request = [0u8; 1024];
             let _ = stream.read(&mut request);
             let response = concat!(

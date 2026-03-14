@@ -95,7 +95,7 @@ impl Installation for WasmPackInstallation {
     type Error = eyre::Report;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        run_command("cargo", ["install", "wasm-pack"]) 
+        run_command("cargo", ["install", "wasm-pack"])
             .await
             .map(|_| ())
     }
