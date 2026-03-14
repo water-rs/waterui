@@ -20,7 +20,7 @@ use accesskit::{
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
-use nami::{Binding, Signal};
+use nami::{Binding, Signal, with_local_binding_factory};
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
@@ -2645,12 +2645,17 @@ fn measure_view_dimensions_with_proposal(
     if let Some(text) = view.downcast_ref::<Text>() {
         return HydrolysisRenderer::measure_text_dimensions(
             state,
-            text.content().get(),
-            text.paragraph_alignment().get(),
+            text.resolve(env).content.get(),
+            text.resolve(env).paragraph_alignment.get(),
             env,
             proposal.width,
             None,
         );
+    }
+    if let Some(label) = view.downcast_ref::<SemanticLabel>() {
+        let body_env = env.clone();
+        let body = AnyView::new(label.clone().body(&body_env));
+        return measure_view_dimensions_with_proposal(&body, proposal, state, &body_env);
     }
 
     if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, env) {
@@ -3632,11 +3637,15 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
 
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let split = view.as_inner();
-        let sidebar = measure_view_intrinsic(&split.sidebar, state, env);
+        let sidebar = {
+            let sidebar_view = normalize_layout_view(split.sidebar.build(), env);
+            measure_view_intrinsic(&sidebar_view, state, env)
+        };
         let detail = if let Some(detail) = split.detail.as_ref() {
             measure_navigation_view_intrinsic(detail, state, env)
         } else {
-            measure_view_intrinsic(&split.placeholder, state, env)
+            let placeholder_view = normalize_layout_view(split.placeholder.build(), env);
+            measure_view_intrinsic(&placeholder_view, state, env)
         };
         LayoutSize::new(
             (f64::from(split.sidebar_width) + f64::from(detail.width)) as f32,
@@ -6717,11 +6726,11 @@ impl HydrolysisRenderer {
         );
         let detail_rect =
             vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
-        Self::dispatch_in_rect(ctx, env, split.sidebar, sidebar_rect);
+        Self::dispatch_in_rect(ctx, env, split.sidebar.build(), sidebar_rect);
         if let Some(detail) = split.detail {
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), detail_rect);
         } else {
-            Self::dispatch_in_rect(ctx, env, split.placeholder, detail_rect);
+            Self::dispatch_in_rect(ctx, env, split.placeholder.build(), detail_rect);
         }
     }
 
@@ -7762,8 +7771,9 @@ impl HydrolysisRenderer {
         {
             let renderer = unsafe { ctx.renderer() };
             let mut action = button.action;
-            renderer.register_pointer_target(hit_bounds, move |_point, env| {
-                action(env);
+            let action_env = env.clone();
+            renderer.register_pointer_target(hit_bounds, move |_point, _env| {
+                action(&action_env);
                 true
             });
         }
@@ -11950,7 +11960,7 @@ impl HydrolysisRenderer {
             return self.accessibility_label_from_view_with_budget(content, env, remaining - 1);
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.__text().__resolve(env).content);
+            let styled = self.read_signal(&label.__text().resolve(env).content);
             return Some(styled.to_plain().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
@@ -12710,6 +12720,39 @@ fn local_state_overlay_env(base: &Environment, current: &Environment) -> Environ
     current
         .get::<LocalStateScope>()
         .map_or_else(|| base.clone(), |scope| base.extending(scope.clone()))
+}
+
+impl HydrolysisRenderer {
+    pub fn with_local_state_env<R>(
+        &self,
+        env: &Environment,
+        f: impl FnOnce(&Environment) -> R,
+    ) -> R {
+        let mut local_env = env.clone();
+        let local_state_registry = Rc::clone(&self.local_state_registry);
+        local_env.insert(LocalStateScope::root());
+        local_env.insert(LocalStateStore::new(move |path, index, type_id, init| {
+            local_state_registry
+                .borrow_mut()
+                .bind_slot(path, index, type_id, &*init)
+        }));
+        let scope = local_env
+            .get::<LocalStateScope>()
+            .unwrap_or_else(|| {
+                panic!("hydrolysis local state environment missing LocalStateScope")
+            })
+            .clone();
+        let store = local_env
+            .get::<LocalStateStore>()
+            .unwrap_or_else(|| {
+                panic!("hydrolysis local state environment missing LocalStateStore")
+            })
+            .clone();
+        with_local_binding_factory(
+            Rc::new(move |type_id, init| store.get_or_init_dynamic(&scope, type_id, init)),
+            || f(&local_env),
+        )
+    }
 }
 
 fn local_shared<T: 'static>(env: &Environment, init: impl FnOnce() -> T + 'static) -> Rc<T> {
