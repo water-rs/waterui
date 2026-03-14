@@ -23,10 +23,10 @@ use waterui_layout::{
     VerticalAlignment, ViewDimensions, measure_layout,
 };
 
+use super::type_id_to_java;
 use crate::IntoFFI;
 use crate::IntoRust;
 use crate::WuiTypeId;
-use super::type_id_to_java;
 use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
@@ -324,7 +324,11 @@ fn view_dimensions_to_java<'local>(
         .map(|(alignment, value)| horizontal_guide_to_java(env, alignment, value))
         .collect();
     let horizontal_array = env
-        .new_object_array(horizontal_guides.len() as i32, &horizontal_class, JObject::null())
+        .new_object_array(
+            horizontal_guides.len() as i32,
+            &horizontal_class,
+            JObject::null(),
+        )
         .expect("create HorizontalGuideStruct array");
     for (index, guide) in horizontal_guides.iter().enumerate() {
         env.set_object_array_element(&horizontal_array, index as i32, guide)
@@ -339,7 +343,11 @@ fn view_dimensions_to_java<'local>(
         .map(|(alignment, value)| vertical_guide_to_java(env, alignment, value))
         .collect();
     let vertical_array = env
-        .new_object_array(vertical_guides.len() as i32, &vertical_class, JObject::null())
+        .new_object_array(
+            vertical_guides.len() as i32,
+            &vertical_class,
+            JObject::null(),
+        )
         .expect("create VerticalGuideStruct array");
     for (index, guide) in vertical_guides.iter().enumerate() {
         env.set_object_array_element(&vertical_array, index as i32, guide)
@@ -363,7 +371,11 @@ fn view_dimensions_to_java<'local>(
 
 fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimensions {
     let size_obj = env
-        .get_field(dimensions, "size", "Ldev/waterui/android/runtime/SizeStruct;")
+        .get_field(
+            dimensions,
+            "size",
+            "Ldev/waterui/android/runtime/SizeStruct;",
+        )
         .expect("ViewDimensionsStruct.size")
         .l()
         .expect("size is object");
@@ -397,7 +409,11 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .get_object_array_element(&horizontal_array, index)
             .expect("horizontal guide element");
         let alignment_obj = env
-            .get_field(&guide, "alignment", "Ldev/waterui/android/runtime/TypeIdStruct;")
+            .get_field(
+                &guide,
+                "alignment",
+                "Ldev/waterui/android/runtime/TypeIdStruct;",
+            )
             .expect("HorizontalGuideStruct.alignment")
             .l()
             .expect("alignment is object");
@@ -430,7 +446,11 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .get_object_array_element(&vertical_array, index)
             .expect("vertical guide element");
         let alignment_obj = env
-            .get_field(&guide, "alignment", "Ldev/waterui/android/runtime/TypeIdStruct;")
+            .get_field(
+                &guide,
+                "alignment",
+                "Ldev/waterui/android/runtime/TypeIdStruct;",
+            )
             .expect("VerticalGuideStruct.alignment")
             .l()
             .expect("alignment is object");
@@ -574,24 +594,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'lo
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    layout_ptr: jlong,
-    proposal: JObject<'local>,
-    subviews: jobjectArray,
-) -> jobject {
-    let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
-    let proposal = extract_proposal(&mut env, &proposal);
-    let jni_subviews = extract_subviews(&mut env, subviews);
-    let subview_refs: Vec<&dyn SubView> = jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-    let dimensions = measure_layout(layout, proposal, &subview_refs);
-    view_dimensions_to_java(&mut env, &dimensions).into_raw()
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'local>(
-'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -2235,7 +2238,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropExitHandl
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentFirstBaselineId<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentFirstBaselineId<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -2250,7 +2255,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignment
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentLastBaselineId<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentLastBaselineId<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jobject {
