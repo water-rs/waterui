@@ -114,14 +114,14 @@ impl AlignmentKeyId {
     }
 
     #[must_use]
-    pub fn from_type_name(name: &str) -> Self {
+    pub const fn from_type_name(name: &str) -> Self {
         Self::from_name(name)
     }
 }
 
 const fn fnv1a_128(bytes: &[u8]) -> u128 {
-    const FNV_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
-    const FNV_PRIME: u128 = 0x0000000001000000000000000000013b;
+    const FNV_OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const FNV_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
 
     let mut hash = FNV_OFFSET;
     let mut i = 0;
