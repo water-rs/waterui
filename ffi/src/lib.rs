@@ -1373,6 +1373,21 @@ pub struct WuiMenuItem {
 
 ffi_safe!(WuiMenuItem);
 
+impl Default for WuiMenuItem {
+    fn default() -> Self {
+        Self {
+            tag: WuiMenuItemTag::Divider,
+            label: empty_menu_text(),
+            icon: null_mut(),
+            action: null_mut(),
+            disabled: null_mut(),
+            selected: null_mut(),
+            shortcut: null_mut(),
+            items: null_mut(),
+        }
+    }
+}
+
 #[inline]
 fn empty_menu_text() -> WuiText {
     WuiText {

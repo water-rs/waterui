@@ -14,6 +14,7 @@ extern crate std;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::mem::take;
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
@@ -1737,7 +1738,7 @@ unsafe extern "C" fn watcher_call_picker_items(
 
 unsafe extern "C" fn watcher_call_menu_items(
     data: *mut (),
-    value: crate::array::WuiArray<crate::WuiMenuItem>,
+    mut value: crate::array::WuiArray<crate::WuiMenuItem>,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     let watcher_data = unsafe { &*(data as *const WatcherData) };
@@ -1746,7 +1747,7 @@ unsafe extern "C" fn watcher_call_menu_items(
         .attach_current_thread()
         .expect("Failed to attach JVM thread");
 
-    let items_slice = value.as_slice();
+    let items_slice = value.as_mut_slice();
     let menu_item_class = env
         .find_class("dev/waterui/android/runtime/MenuItemStruct")
         .expect("MenuItemStruct class not found");
@@ -1759,11 +1760,13 @@ unsafe extern "C" fn watcher_call_menu_items(
         )
         .expect("Failed to create menu items array");
 
-    for (i, item) in items_slice.iter().enumerate() {
-        let item_obj = menu_item_to_java(&mut env, item.clone());
+    for (i, item) in items_slice.iter_mut().enumerate() {
+        let item_obj = menu_item_to_java(&mut env, take(item));
         env.set_object_array_element(&array, i as jsize, &item_obj)
             .expect("Failed to set menu item array element");
     }
+
+    value.consume();
 
     let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
     invoke_callback(
