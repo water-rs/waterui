@@ -275,9 +275,7 @@ pub(crate) fn decode_with_software_fallback(data: &[u8]) -> Result<DecodedRgba, 
                 }
             };
             waterkit_codec::decode_image(&patched).map_err(|fallback_err| {
-                format!(
-                    "Image decode failed: {primary_err}; HEIF AV1 retry failed: {fallback_err}"
-                )
+                format!("Image decode failed: {primary_err}; HEIF AV1 retry failed: {fallback_err}")
             })?
         }
     };
@@ -366,9 +364,9 @@ fn software_decode_error_message(data: &[u8], primary_err: &impl core::fmt::Disp
             ),
         },
         Ok(None) => format!("Image decode failed: {primary_err}"),
-        Err(parse_err) => format!(
-            "Image decode failed: {primary_err}; HEIF container parse failed: {parse_err}"
-        ),
+        Err(parse_err) => {
+            format!("Image decode failed: {primary_err}; HEIF container parse failed: {parse_err}")
+        }
     }
 }
 
@@ -411,7 +409,8 @@ fn parse_primary_item_type(cursor: &mut Cursor<&[u8]>) -> Result<Option<FourCC>,
             let item_infos = meta.get::<Iinf>().map(|iinf| &iinf.item_infos);
             return Ok(primary_item_id.and_then(|item_id| {
                 item_infos.and_then(|infos| {
-                    infos.iter()
+                    infos
+                        .iter()
                         .find(|info| info.item_id == item_id)
                         .and_then(|info| info.item_type)
                 })
@@ -455,7 +454,10 @@ fn heif_primary_codec(primary_item_type: Option<FourCC>) -> HeifPrimaryCodec {
 }
 
 fn ensure_compatible_brand(brands: &mut Vec<FourCC>, required: FourCC) {
-    if brands.iter().any(|brand| *brand == required || *brand == AVIS_BRAND) {
+    if brands
+        .iter()
+        .any(|brand| *brand == required || *brand == AVIS_BRAND)
+    {
         return;
     }
 
@@ -524,6 +526,9 @@ mod tests {
     fn does_not_rewrite_heif_hevc_ftyp() {
         let encoded = build_heif_bytes(HVC1_ITEM_TYPE);
         let patched = patch_heif_brand_to_avif(&encoded).expect("heif parse should succeed");
-        assert!(patched.is_none(), "HEVC-backed HEIF must stay on platform decode");
+        assert!(
+            patched.is_none(),
+            "HEVC-backed HEIF must stay on platform decode"
+        );
     }
 }

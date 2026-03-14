@@ -66,7 +66,10 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-scroll-x");
     let initial = app.capture_snapshot(&suite, "line-scroll-x", "00_initial");
-    assert!(initial.path().is_file(), "line-scroll-x: initial snapshot missing");
+    assert!(
+        initial.path().is_file(),
+        "line-scroll-x: initial snapshot missing"
+    );
     assert_close(scroll_position.get(), start, 0.05, "line-scroll-x initial");
 
     assert!(
@@ -82,7 +85,10 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
         .label(format!("x-pos:{expected:.2}"))
         .assert_exists();
     let scrolled = app.capture_snapshot(&suite, "line-scroll-x", "01_scrolled");
-    assert!(scrolled.path().is_file(), "line-scroll-x: scrolled snapshot missing");
+    assert!(
+        scrolled.path().is_file(),
+        "line-scroll-x: scrolled snapshot missing"
+    );
     assert!(
         initial.snapshot().changed_pixels(scrolled.snapshot()) > 0,
         "line-scroll-x: scrolling should change rendered pixels"
@@ -117,8 +123,16 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-scroll-y");
     let initial = app.capture_snapshot(&suite, "line-scroll-y", "00_initial");
-    assert!(initial.path().is_file(), "line-scroll-y: initial snapshot missing");
-    assert_close(scroll_position.get(), bounds.min_y, 0.05, "line-scroll-y initial");
+    assert!(
+        initial.path().is_file(),
+        "line-scroll-y: initial snapshot missing"
+    );
+    assert_close(
+        scroll_position.get(),
+        bounds.min_y,
+        0.05,
+        "line-scroll-y initial",
+    );
 
     assert!(
         app.query()
@@ -133,7 +147,10 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
         .label(format!("y-pos:{expected:.2}"))
         .assert_exists();
     let scrolled = app.capture_snapshot(&suite, "line-scroll-y", "01_scrolled");
-    assert!(scrolled.path().is_file(), "line-scroll-y: scrolled snapshot missing");
+    assert!(
+        scrolled.path().is_file(),
+        "line-scroll-y: scrolled snapshot missing"
+    );
     assert!(
         initial.snapshot().changed_pixels(scrolled.snapshot()) > 0,
         "line-scroll-y: scrolling should change rendered pixels"
@@ -190,7 +207,12 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
         initial.snapshot().changed_pixels(narrowed.snapshot()) > 0,
         "line-visible-domain-reactive: reactive visible domain should redraw chart"
     );
-    assert_close(x_position.get(), 0.0, 0.05, "line-visible-domain-reactive position");
+    assert_close(
+        x_position.get(),
+        0.0,
+        0.05,
+        "line-visible-domain-reactive position",
+    );
     app.query()
         .role(Role::LABEL)
         .label("visible:4.00")

@@ -63,7 +63,10 @@ mod tests {
         assert_eq!(button_style_css_classes(ButtonStyle::Bordered), &[]);
         assert_eq!(button_style_css_classes(ButtonStyle::Plain), &["flat"]);
         assert_eq!(button_style_css_classes(ButtonStyle::Borderless), &["flat"]);
-        assert_eq!(button_style_css_classes(ButtonStyle::Link), &["flat", "link"]);
+        assert_eq!(
+            button_style_css_classes(ButtonStyle::Link),
+            &["flat", "link"]
+        );
         assert_eq!(
             button_style_css_classes(ButtonStyle::BorderedProminent),
             &["suggested-action"]

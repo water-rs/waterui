@@ -9,7 +9,9 @@ use crate::charts::canvas::{
 };
 use crate::composition::ChartComposition;
 use crate::data::Candle;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 
 /// Candlestick chart for financial OHLC data.
 pub struct CandlestickChart<S: Signal<Output = Vec<Candle>>> {
