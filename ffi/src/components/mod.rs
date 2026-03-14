@@ -22,8 +22,6 @@ pub mod form;
 /// Navigation component FFI bindings
 pub mod navigation;
 
-/// Media component FFI bindings
-pub mod media;
 /// Video component FFI bindings
 pub mod video;
 
