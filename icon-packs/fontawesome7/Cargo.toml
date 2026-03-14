@@ -30,6 +30,7 @@ arkiv = { version = "0.7", features = ["download"] }
 dirs = "6"
 sha2 = "0.10"
 hex = "0.4"
+waterui-build-support.workspace = true
 
 [lints]
 workspace = true
