@@ -197,6 +197,10 @@ waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol.workspace = true
 waterkit-haptic = { workspace = true, optional = true }
+waterui-chart = { workspace = true, optional = true }
+waterui-barcode = { workspace = true, optional = true }
+waterui-map = { workspace = true, optional = true }
+waterui-particle = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
 robius-open.workspace = true
@@ -242,6 +246,10 @@ assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
 media = ["dep:waterui-media", "video"]
 video = ["dep:waterui-video"]
 webview = ["dep:waterui-webview"]
+chart = ["dep:waterui-chart"]
+barcode = ["dep:waterui-barcode"]
+map = ["dep:waterui-map"]
+particle = ["dep:waterui-particle"]
 flow-markdown = [
     "dep:tree-sitter",
     "dep:tree-sitter-md",
@@ -257,7 +265,17 @@ flow-markdown = [
     "dep:tree-sitter-sequel",
 ]
 std = ["dep:waterkit-haptic"]
-all = ["std", "assets", "media", "webview", "flow-markdown"]
+all = [
+    "std",
+    "assets",
+    "media",
+    "webview",
+    "flow-markdown",
+    "chart",
+    "barcode",
+    "map",
+    "particle",
+]
 
 
 [lints]

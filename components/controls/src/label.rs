@@ -1,5 +1,7 @@
 //! Semantic labels shared by controls, menus, and chrome.
 
+use core::any::Any;
+
 use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
@@ -26,8 +28,8 @@ pub enum IconPosition {
 ///
 /// ```rust,ignore
 /// hstack((
-///     button(label("Search").icon(SystemIcon::SEARCH)).action(|| {}),
-///     button(label("Settings").icon(SystemIcon::SETTINGS)).action(|| {}),
+///     button(label("Search").system_icon(SystemIcon::SEARCH)).action(|| {}),
+///     button(label("Settings").system_icon(SystemIcon::SETTINGS)).action(|| {}),
 /// ))
 /// .install(LabelDisplayMode::IconOnly)
 /// ```
@@ -53,12 +55,21 @@ struct LabelIcon {
 }
 
 impl LabelIcon {
-    fn new(icon: impl View + Clone) -> Self {
-        let system_icon = AnyView::new(icon.clone())
-            .downcast_ref::<SystemIcon>()
-            .cloned();
+    fn custom(icon: impl View + Clone) -> Self {
         let view = AnyViewBuilder::new(move || AnyView::new(icon.clone()));
-        Self { view, system_icon }
+        Self {
+            view,
+            system_icon: None,
+        }
+    }
+
+    fn system(icon: SystemIcon) -> Self {
+        let system_icon = icon.clone();
+        let view = AnyViewBuilder::new(move || AnyView::new(icon.clone()));
+        Self {
+            view,
+            system_icon: Some(system_icon),
+        }
     }
 }
 
@@ -121,7 +132,19 @@ impl Label {
     /// menus currently only project [`SystemIcon`].
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
-        self.icon = Some(LabelIcon::new(icon));
+        let icon = if let Some(system_icon) = (&icon as &dyn Any).downcast_ref::<SystemIcon>() {
+            LabelIcon::system(system_icon.clone())
+        } else {
+            LabelIcon::custom(icon)
+        };
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Adds a semantic system icon to the label.
+    #[must_use]
+    pub fn system_icon(mut self, icon: SystemIcon) -> Self {
+        self.icon = Some(LabelIcon::system(icon));
         self
     }
 

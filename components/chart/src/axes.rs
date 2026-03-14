@@ -167,76 +167,17 @@ impl<C: View + 'static> View for ChartAxes<C> {
             self.chart,
         );
 
-        // Build views dynamically
-        let mut views: Vec<AnyView> = Vec::new();
-
-        // Grid lines behind the chart (if enabled)
-        views.push(AnyView::new(GridLines {
-            y_ticks: if y_show_grid {
-                y_ticks.clone()
-            } else {
-                Vec::new()
-            },
-            x_ticks: if x_show_grid {
-                x_ticks.clone()
-            } else {
-                Vec::new()
-            },
-            padding_left: padding.left,
-            padding_right: padding.right,
-            padding_top: padding.top,
-            padding_bottom: padding.bottom,
-            plot_padding: padding.plot,
-        }));
-
-        // Padded chart
-        views.push(AnyView::new(padded_chart));
-
-        // Y-axis tick labels (positioned left of chart)
-        views.push(AnyView::new(AxisLabels {
-            ticks: y_ticks,
-            is_vertical: true,
-            padding_offset: padding.left - 5.0,
-            padding_start: padding.top,
-            padding_end: padding.bottom,
-            plot_padding: padding.plot,
-        }));
-
-        // X-axis tick labels (positioned below chart)
-        views.push(AnyView::new(AxisLabels {
-            ticks: x_ticks,
-            is_vertical: false,
-            padding_offset: padding.bottom - 5.0,
-            padding_start: padding.left,
-            padding_end: padding.right,
-            plot_padding: padding.plot,
-        }));
-
-        // Y-axis title label (positioned at top-left)
-        if let Some(label) = y_label {
-            views.push(AnyView::new(
-                text(label).size(12.0).bold().position_in_offset(
-                    UnitPoint::TOP_LEADING,
-                    UnitPoint::TOP_LEADING,
-                    2.0,
-                    2.0,
-                ),
-            ));
-        }
-
-        // X-axis title label (positioned at bottom-center)
-        if let Some(label) = x_label {
-            views.push(AnyView::new(
-                text(label).size(12.0).bold().position_in_offset(
-                    UnitPoint::BOTTOM,
-                    UnitPoint::BOTTOM,
-                    0.0,
-                    -2.0,
-                ),
-            ));
-        }
-
-        absolute(views)
+        absolute((
+            padded_chart,
+            axis_overlay(
+                y_show_grid,
+                x_show_grid,
+                y_ticks,
+                x_ticks,
+                &padding,
+            ),
+            axis_titles(y_label, x_label),
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -356,6 +297,94 @@ impl Layout for GridLinesLayout {
 /// Grid line color - light gray with low opacity.
 fn grid_color() -> Color {
     Color::srgb_f32(0.5, 0.5, 0.5).with_opacity(0.3)
+}
+
+struct AxisOverlay {
+    y_show_grid: bool,
+    x_show_grid: bool,
+    y_ticks: Vec<Tick>,
+    x_ticks: Vec<Tick>,
+    padding: AxisPadding,
+}
+
+impl View for AxisOverlay {
+    fn body(self, _env: &Environment) -> impl View {
+        let grid_y_ticks = if self.y_show_grid {
+            self.y_ticks.clone()
+        } else {
+            Vec::new()
+        };
+        let grid_x_ticks = if self.x_show_grid {
+            self.x_ticks.clone()
+        } else {
+            Vec::new()
+        };
+
+        absolute((
+            GridLines {
+                y_ticks: grid_y_ticks,
+                x_ticks: grid_x_ticks,
+                padding_left: self.padding.left,
+                padding_right: self.padding.right,
+                padding_top: self.padding.top,
+                padding_bottom: self.padding.bottom,
+                plot_padding: self.padding.plot,
+            },
+            AxisLabels {
+                ticks: self.y_ticks,
+                is_vertical: true,
+                padding_offset: self.padding.left - 5.0,
+                padding_start: self.padding.top,
+                padding_end: self.padding.bottom,
+                plot_padding: self.padding.plot,
+            },
+            AxisLabels {
+                ticks: self.x_ticks,
+                is_vertical: false,
+                padding_offset: self.padding.bottom - 5.0,
+                padding_start: self.padding.left,
+                padding_end: self.padding.right,
+                plot_padding: self.padding.plot,
+            },
+        ))
+    }
+}
+
+fn axis_overlay(
+    y_show_grid: bool,
+    x_show_grid: bool,
+    y_ticks: Vec<Tick>,
+    x_ticks: Vec<Tick>,
+    padding: &AxisPadding,
+) -> AxisOverlay {
+    AxisOverlay {
+        y_show_grid,
+        x_show_grid,
+        y_ticks,
+        x_ticks,
+        padding: padding.clone(),
+    }
+}
+
+fn axis_titles(y_label: Option<String>, x_label: Option<String>) -> impl View {
+    absolute((
+        y_label.map(|label| {
+            text(label).size(12.0).bold().position_in_offset(
+                UnitPoint::TOP_LEADING,
+                UnitPoint::TOP_LEADING,
+                2.0,
+                2.0,
+            )
+        }),
+        x_label.map(|label| {
+            text(label).size(12.0).bold().position_in_offset(
+                UnitPoint::BOTTOM,
+                UnitPoint::BOTTOM,
+                0.0,
+                -2.0,
+            )
+        }),
+    ))
 }
 
 /// Internal view for rendering axis labels.
@@ -597,76 +626,11 @@ where
                 .map(|a| a.compute_ticks(b.min_x, b.max_x))
                 .unwrap_or_default();
 
-            let mut views: Vec<AnyView> = Vec::new();
-
-            // Grid lines behind
-            views.push(AnyView::new(GridLines {
-                y_ticks: if y_show_grid {
-                    y_ticks.clone()
-                } else {
-                    Vec::new()
-                },
-                x_ticks: if x_show_grid {
-                    x_ticks.clone()
-                } else {
-                    Vec::new()
-                },
-                padding_left: padding.left,
-                padding_right: padding.right,
-                padding_top: padding.top,
-                padding_bottom: padding.bottom,
-                plot_padding: padding.plot,
-            }));
-
-            // Y-axis tick labels
-            views.push(AnyView::new(AxisLabels {
-                ticks: y_ticks,
-                is_vertical: true,
-                padding_offset: padding.left - 5.0,
-                padding_start: padding.top,
-                padding_end: padding.bottom,
-                plot_padding: padding.plot,
-            }));
-
-            // X-axis tick labels
-            views.push(AnyView::new(AxisLabels {
-                ticks: x_ticks,
-                is_vertical: false,
-                padding_offset: padding.bottom - 5.0,
-                padding_start: padding.left,
-                padding_end: padding.right,
-                plot_padding: padding.plot,
-            }));
-
-            // Y-axis title label
-            if let Some(ref label) = y_label {
-                views.push(AnyView::new(
-                    text(label.clone()).size(12.0).bold().position_in_offset(
-                        UnitPoint::TOP_LEADING,
-                        UnitPoint::TOP_LEADING,
-                        2.0,
-                        2.0,
-                    ),
-                ));
-            }
-
-            // X-axis title label
-            if let Some(ref label) = x_label {
-                views.push(AnyView::new(
-                    text(label.clone()).size(12.0).bold().position_in_offset(
-                        UnitPoint::BOTTOM,
-                        UnitPoint::BOTTOM,
-                        0.0,
-                        -2.0,
-                    ),
-                ));
-            }
-
-            absolute(views)
+            axis_overlay(y_show_grid, x_show_grid, y_ticks, x_ticks, &padding)
         });
 
         // Use absolute layout - it stretches to fill parent
-        absolute((padded_chart, reactive_axes))
+        absolute((padded_chart, reactive_axes, axis_titles(y_label, x_label)))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
