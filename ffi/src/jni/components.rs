@@ -19,14 +19,12 @@ use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use nami::SignalExt;
 use waterui_layout::{
-    AlignmentKeyId, HorizontalAlignment, Layout, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, measure_layout,
+    HorizontalAlignment, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions, measure_layout,
 };
 
-use super::type_id_to_java;
 use crate::IntoFFI;
 use crate::IntoRust;
-use crate::WuiTypeId;
 use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
@@ -242,18 +240,86 @@ impl SubView for JniSubView {
     }
 }
 
-fn extract_type_id(env: &mut JNIEnv, type_id: &JObject) -> AlignmentKeyId {
-    let low = env
-        .get_field(type_id, "low", "J")
-        .expect("TypeIdStruct.low")
-        .j()
-        .expect("low is long") as u64;
-    let high = env
-        .get_field(type_id, "high", "J")
-        .expect("TypeIdStruct.high")
-        .j()
-        .expect("high is long") as u64;
-    AlignmentKeyId::new(low, high)
+fn horizontal_alignment_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    alignment: HorizontalAlignment,
+) -> JObject<'local> {
+    let class = env
+        .find_class("dev/waterui/android/runtime/HorizontalAlignment")
+        .expect("HorizontalAlignment class");
+    let field_name = if alignment == HorizontalAlignment::Leading {
+        "LEADING"
+    } else if alignment == HorizontalAlignment::Trailing {
+        "TRAILING"
+    } else {
+        "CENTER"
+    };
+    env.get_static_field(
+        &class,
+        field_name,
+        "Ldev/waterui/android/runtime/HorizontalAlignment;",
+    )
+    .expect("HorizontalAlignment enum value")
+    .l()
+    .expect("horizontal alignment is object")
+}
+
+fn vertical_alignment_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    alignment: VerticalAlignment,
+) -> JObject<'local> {
+    let class = env
+        .find_class("dev/waterui/android/runtime/VerticalAlignment")
+        .expect("VerticalAlignment class");
+    let field_name = if alignment == VerticalAlignment::Top {
+        "TOP"
+    } else if alignment == VerticalAlignment::Bottom {
+        "BOTTOM"
+    } else if alignment == VerticalAlignment::FirstBaseline {
+        "FIRST_BASELINE"
+    } else if alignment == VerticalAlignment::LastBaseline {
+        "LAST_BASELINE"
+    } else {
+        "CENTER"
+    };
+    env.get_static_field(
+        &class,
+        field_name,
+        "Ldev/waterui/android/runtime/VerticalAlignment;",
+    )
+    .expect("VerticalAlignment enum value")
+    .l()
+    .expect("vertical alignment is object")
+}
+
+fn extract_horizontal_alignment(env: &mut JNIEnv, alignment: &JObject) -> HorizontalAlignment {
+    let ordinal = env
+        .call_method(alignment, "ordinal", "()I", &[])
+        .expect("horizontal alignment ordinal()")
+        .i()
+        .expect("horizontal alignment ordinal is int");
+    match ordinal {
+        0 => HorizontalAlignment::Leading,
+        1 => HorizontalAlignment::Center,
+        2 => HorizontalAlignment::Trailing,
+        _ => panic!("unknown HorizontalAlignment ordinal {ordinal}"),
+    }
+}
+
+fn extract_vertical_alignment(env: &mut JNIEnv, alignment: &JObject) -> VerticalAlignment {
+    let ordinal = env
+        .call_method(alignment, "ordinal", "()I", &[])
+        .expect("vertical alignment ordinal()")
+        .i()
+        .expect("vertical alignment ordinal is int");
+    match ordinal {
+        0 => VerticalAlignment::Top,
+        1 => VerticalAlignment::Center,
+        2 => VerticalAlignment::Bottom,
+        3 => VerticalAlignment::FirstBaseline,
+        4 => VerticalAlignment::LastBaseline,
+        _ => panic!("unknown VerticalAlignment ordinal {ordinal}"),
+    }
 }
 
 fn size_to_java<'local>(env: &mut JNIEnv<'local>, size: Size) -> JObject<'local> {
@@ -276,15 +342,11 @@ fn horizontal_guide_to_java<'local>(
     let class = env
         .find_class("dev/waterui/android/runtime/HorizontalGuideStruct")
         .expect("HorizontalGuideStruct class");
-    let alignment_id = WuiTypeId {
-        low: alignment.stable_id().low(),
-        high: alignment.stable_id().high(),
-    };
-    let type_id = type_id_to_java(env, alignment_id);
+    let alignment = horizontal_alignment_to_java(env, alignment);
     env.new_object(
         &class,
-        "(Ldev/waterui/android/runtime/TypeIdStruct;F)V",
-        &[JValue::Object(&type_id), JValue::Float(value)],
+        "(Ldev/waterui/android/runtime/HorizontalAlignment;F)V",
+        &[JValue::Object(&alignment), JValue::Float(value)],
     )
     .expect("create HorizontalGuideStruct")
 }
@@ -297,15 +359,11 @@ fn vertical_guide_to_java<'local>(
     let class = env
         .find_class("dev/waterui/android/runtime/VerticalGuideStruct")
         .expect("VerticalGuideStruct class");
-    let alignment_id = WuiTypeId {
-        low: alignment.stable_id().low(),
-        high: alignment.stable_id().high(),
-    };
-    let type_id = type_id_to_java(env, alignment_id);
+    let alignment = vertical_alignment_to_java(env, alignment);
     env.new_object(
         &class,
-        "(Ldev/waterui/android/runtime/TypeIdStruct;F)V",
-        &[JValue::Object(&type_id), JValue::Float(value)],
+        "(Ldev/waterui/android/runtime/VerticalAlignment;F)V",
+        &[JValue::Object(&alignment), JValue::Float(value)],
     )
     .expect("create VerticalGuideStruct")
 }
@@ -412,7 +470,7 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .get_field(
                 &guide,
                 "alignment",
-                "Ldev/waterui/android/runtime/TypeIdStruct;",
+                "Ldev/waterui/android/runtime/HorizontalAlignment;",
             )
             .expect("HorizontalGuideStruct.alignment")
             .l()
@@ -422,10 +480,7 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .expect("HorizontalGuideStruct.value")
             .f()
             .expect("value is float");
-        result.set_horizontal(
-            HorizontalAlignment::from_stable_id(extract_type_id(env, &alignment_obj)),
-            value,
-        );
+        result.set_horizontal(extract_horizontal_alignment(env, &alignment_obj), value);
     }
 
     let vertical_array = env
@@ -449,7 +504,7 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .get_field(
                 &guide,
                 "alignment",
-                "Ldev/waterui/android/runtime/TypeIdStruct;",
+                "Ldev/waterui/android/runtime/VerticalAlignment;",
             )
             .expect("VerticalGuideStruct.alignment")
             .l()
@@ -459,10 +514,7 @@ fn extract_view_dimensions(env: &mut JNIEnv, dimensions: &JObject) -> ViewDimens
             .expect("VerticalGuideStruct.value")
             .f()
             .expect("value is float");
-        result.set_vertical(
-            VerticalAlignment::from_stable_id(extract_type_id(env, &alignment_obj)),
-            value,
-        );
+        result.set_vertical(extract_vertical_alignment(env, &alignment_obj), value);
     }
 
     result
@@ -2235,38 +2287,4 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callDropExitHandl
     ) as *const crate::drag_drop::WuiDropDestination;
     let wui_env = require_env_const(env_ptr, "callDropExitHandler");
     unsafe { crate::drag_drop::waterui_call_drop_exit_handler(drop_dest, wui_env) };
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentFirstBaselineId<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    type_id_to_java(
-        &mut env,
-        WuiTypeId {
-            low: VerticalAlignment::FirstBaseline.stable_id().low(),
-            high: VerticalAlignment::FirstBaseline.stable_id().high(),
-        },
-    )
-    .into_raw()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_verticalAlignmentLastBaselineId<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    type_id_to_java(
-        &mut env,
-        WuiTypeId {
-            low: VerticalAlignment::LastBaseline.stable_id().low(),
-            high: VerticalAlignment::LastBaseline.stable_id().high(),
-        },
-    )
-    .into_raw()
 }

@@ -8,10 +8,7 @@
 use alloc::{format, vec, vec::Vec};
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
-use crate::{
-    HorizontalAlignmentKey, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    ViewDimensions,
-};
+use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
 
 // ============================================================================
 // Test Infrastructure
@@ -140,14 +137,6 @@ impl SubView for BaselineTextView {
     }
 }
 
-struct TitleGuide;
-
-impl HorizontalAlignmentKey for TitleGuide {
-    fn default_value(dimensions: &ViewDimensions) -> f32 {
-        dimensions.size.width * 0.5
-    }
-}
-
 struct GuidedBoxView {
     size: Size,
     guide: f32,
@@ -155,8 +144,7 @@ struct GuidedBoxView {
 
 impl SubView for GuidedBoxView {
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(self.size)
-            .with_horizontal(HorizontalAlignment::custom::<TitleGuide>(), self.guide)
+        ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -1306,10 +1294,9 @@ fn test_hstack_first_baseline_uses_text_baselines() {
 }
 
 #[test]
-fn test_vstack_custom_horizontal_alignment_uses_guides() {
-    let alignment = HorizontalAlignment::custom::<TitleGuide>();
+fn test_vstack_explicit_horizontal_alignment_uses_guides() {
     let layout = VStackLayout {
-        alignment,
+        alignment: HorizontalAlignment::Leading,
         spacing: 8.0,
     };
 
