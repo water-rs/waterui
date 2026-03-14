@@ -6,10 +6,17 @@ use core::f32::consts::PI;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
-use waterui::reactive::{binding, Binding};
+use waterui::reactive::{Binding, binding};
 use waterui_particle::{ParticleShape, ParticleSystem};
 
 // --- Demos ---
+
+fn title_label(color: impl Into<Color>) -> impl View {
+    text("GPU Particle System")
+        .size(24.0)
+        .bold()
+        .foreground(color)
+}
 
 fn rain() -> impl View {
     ParticleSystem::new(10000)
@@ -260,17 +267,20 @@ fn bounce_box() -> impl View {
 /// Main View
 fn main() -> impl View {
     let mode = binding(0);
+    let is_confetti = mode.clone().map(|m| m == 5);
 
     zstack((
         // Background
-        watch(mode.clone(), |m| match m {
-            0 | 1 => Color::srgb_hex("#0F172A"),   // Rain/Snow
-            2 => Color::srgb_hex("#1a221a"),       // Fog
-            3 | 4 | 6 => Color::from(Srgb::BLACK), // Flame/Firework/Explosion
-            7 => Color::srgb_hex("#08111E"),       // Bounce Box
-            5 => Color::srgb_hex("#F0F4F8"),       // Confetti (Light BG)
-            _ => Color::from(Srgb::BLACK),
-        }),
+        mode.clone()
+            .map(|m| match m {
+                0 | 1 => Color::srgb_hex("#0F172A"),   // Rain/Snow
+                2 => Color::srgb_hex("#1a221a"),       // Fog
+                3 | 4 | 6 => Color::from(Srgb::BLACK), // Flame/Firework/Explosion
+                7 => Color::srgb_hex("#08111E"),       // Bounce Box
+                5 => Color::srgb_hex("#F0F4F8"),       // Confetti (Light BG)
+                _ => Color::from(Srgb::BLACK),
+            })
+            .computed(),
         // Particle System
         watch(mode.clone(), |m| match m {
             0 => AnyView::new(rain()),
@@ -285,17 +295,10 @@ fn main() -> impl View {
         }),
         // UI Overlay
         vstack((
-            watch(mode.clone(), |m| {
-                let color = if m == 5 {
-                    Color::from(Srgb::BLACK)
-                } else {
-                    Color::from(Srgb::WHITE)
-                };
-                text("GPU Particle System")
-                    .size(24.0)
-                    .bold()
-                    .foreground(color)
-            }),
+            zstack((
+                title_label(Color::from(Srgb::BLACK)).opacity(is_confetti.clone().select(1.0, 0.0)),
+                title_label(Color::from(Srgb::WHITE)).opacity(is_confetti.select(0.0, 1.0)),
+            )),
             vstack((
                 hstack((
                     Button::new(text("Rain"))
