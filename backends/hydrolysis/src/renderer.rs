@@ -3641,8 +3641,8 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
             let sidebar_view = normalize_layout_view(split.sidebar.build(), env);
             measure_view_intrinsic(&sidebar_view, state, env)
         };
-        let detail = if let Some(detail) = split.detail.as_ref() {
-            measure_navigation_view_intrinsic(detail, state, env)
+        let detail = if let Some(selected) = split.selection.get() {
+            measure_navigation_view_intrinsic(&split.detail.build(selected), state, env)
         } else {
             let placeholder_view = normalize_layout_view(split.placeholder.build(), env);
             measure_view_intrinsic(&placeholder_view, state, env)
@@ -6689,8 +6689,13 @@ impl HydrolysisRenderer {
     ) {
         let split = split.into_inner();
         let compact = ctx.bounds.width() < split_compact_threshold(f64::from(split.sidebar_width));
+        let selected = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.read_signal(&split.selection)
+        };
 
-        if compact && let Some(detail) = split.detail {
+        if compact && let Some(selected) = selected {
+            let detail = split.detail.build(selected);
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), ctx.bounds);
             let back_button_rect = navigation_back_button_rect(ctx.bounds);
             {
@@ -6703,14 +6708,12 @@ impl HydrolysisRenderer {
                     &vello::kurbo::RoundedRect::from_rect(back_button_rect, 6.0),
                 );
             }
-            let clear_selection = Rc::new(RefCell::new(split.clear_selection));
-            let env = env.clone();
+            let selection = split.selection.clone();
             let renderer = unsafe { ctx.renderer() };
             renderer.register_pointer_target(
                 transformed_rect(ctx.hit_transform, back_button_rect),
                 move |_point, _| {
-                    let mut action = clear_selection.borrow_mut();
-                    (action)(&env);
+                    selection.set(None);
                     true
                 },
             );
@@ -6727,7 +6730,8 @@ impl HydrolysisRenderer {
         let detail_rect =
             vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
         Self::dispatch_in_rect(ctx, env, split.sidebar.build(), sidebar_rect);
-        if let Some(detail) = split.detail {
+        if let Some(selected) = selected {
+            let detail = split.detail.build(selected);
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), detail_rect);
         } else {
             Self::dispatch_in_rect(ctx, env, split.placeholder.build(), detail_rect);
