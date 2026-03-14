@@ -35,6 +35,7 @@ impl WebViewController {
     /// Opens a new blank web view and returns its handle.
     ///
     /// The web view starts blank - use `go_to(url)` on the returned handle to navigate.
+    #[must_use]
     pub fn open(&self) -> AnyWebViewHandle {
         self.controller.open()
     }
