@@ -9,6 +9,8 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+#[cfg(feature = "std")]
+use executor_core::spawn;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -972,9 +974,10 @@ pub trait ViewExt: View + Sized {
         mut action: impl FnMut() + 'static,
     ) -> Metadata<GestureObserver> {
         self.gesture(TapGesture::new(), move || {
-            if let Err(error) = Haptic::impact(intensity) {
-                tracing::debug!(?error, ?intensity, "failed to trigger haptic impact");
-            }
+            spawn(async move {
+                let _ = Haptic::impact(intensity).await;
+            })
+            .detach();
             action();
         })
     }

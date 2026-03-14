@@ -25,6 +25,3 @@ pub use stepper::{Stepper, stepper};
 /// Button component and related utilities.
 pub mod button;
 pub use button::{Button, ButtonStyle, button};
-/// Text editor component.
-pub mod text_editor;
-pub use text_editor::RichTextEditor;

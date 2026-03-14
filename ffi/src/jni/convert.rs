@@ -1417,6 +1417,51 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
     }
 }
 
+impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class("dev/waterui/android/runtime/MultiDatePickerStruct")
+            .expect("MultiDatePickerStruct class not found");
+        let date_class = env
+            .find_class("dev/waterui/android/runtime/DateStruct")
+            .expect("DateStruct class not found");
+        let start = env
+            .new_object(
+                &date_class,
+                "(III)V",
+                &[
+                    JValue::Int(self.range.start.year),
+                    JValue::Int(self.range.start.month as i32),
+                    JValue::Int(self.range.start.day as i32),
+                ],
+            )
+            .expect("Failed to create DateStruct for range start");
+        let end = env
+            .new_object(
+                &date_class,
+                "(III)V",
+                &[
+                    JValue::Int(self.range.end.year),
+                    JValue::Int(self.range.end.month as i32),
+                    JValue::Int(self.range.end.day as i32),
+                ],
+            )
+            .expect("Failed to create DateStruct for range end");
+        env.new_object(
+            &class,
+            "(JJLdev/waterui/android/runtime/DateStruct;Ldev/waterui/android/runtime/DateStruct;J)V",
+            &[
+                JValue::Long(self.label as jlong),
+                JValue::Long(self.value as jlong),
+                JValue::Object(&start),
+                JValue::Object(&end),
+                JValue::Long(self.decorated as jlong),
+            ],
+        )
+        .expect("Failed to create MultiDatePickerStruct")
+    }
+}
+
 /// WuiScrollView -> ScrollStruct(axis, contentPtr)
 impl ToJavaStruct for crate::components::layout::WuiScrollView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

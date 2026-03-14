@@ -14,17 +14,13 @@ use jiff::{
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::button;
 use waterui_core::dynamic::Dynamic;
-use waterui_core::extract::Extractor;
 use waterui_core::{AnyView, Environment, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::spacer;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack, vstack};
 use waterui_locale::format::date::{format_calendar_month_year, format_calendar_weekday};
-use waterui_locale::{
-    Locale,
-    regional::{self, RegionalContext},
-};
+use waterui_locale::{Locale, locale_binding};
 use waterui_text::{
     Text,
     font::Caption,
@@ -92,28 +88,67 @@ impl View for Calendar {
 
         vstack((
             label,
-            Dynamic::watch(
-                visible_month.zip(&selection).zip(&decorated),
-                move |((month, selected_date), decorated_dates)| {
-                    AnyView::new(build_calendar_body(
-                        &locale,
-                        month,
-                        &range,
-                        visible_month.clone(),
-                        calendar_rows(month, |cell| {
-                            single_day_cell_view(
-                                cell,
-                                selected_date,
-                                &range,
-                                selection.clone(),
-                                &decorated_dates,
-                            )
-                        }),
-                    ))
-                },
-            ),
+            Dynamic::watch(visible_month.clone(), move |month| {
+                SingleCalendarMonthView::new(
+                    locale.clone(),
+                    month,
+                    range.clone(),
+                    visible_month.clone(),
+                    selection.clone(),
+                    decorated.clone(),
+                )
+            }),
         ))
         .spacing(10.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SingleCalendarMonthView {
+    locale: Locale,
+    month: VisibleMonth,
+    range: RangeInclusive<Date>,
+    visible_month: Binding<VisibleMonth>,
+    selection: Binding<Date>,
+    decorated: Computed<BTreeSet<Date>>,
+}
+
+impl SingleCalendarMonthView {
+    fn new(
+        locale: Locale,
+        month: VisibleMonth,
+        range: RangeInclusive<Date>,
+        visible_month: Binding<VisibleMonth>,
+        selection: Binding<Date>,
+        decorated: Computed<BTreeSet<Date>>,
+    ) -> Self {
+        Self {
+            locale,
+            month,
+            range,
+            visible_month,
+            selection,
+            decorated,
+        }
+    }
+}
+
+impl View for SingleCalendarMonthView {
+    fn body(self, _env: &Environment) -> impl View {
+        CalendarBody::new(
+            self.locale,
+            self.month,
+            self.range.clone(),
+            self.visible_month,
+            calendar_rows(self.month, move |cell| {
+                SingleDayCellView::new(
+                    cell,
+                    self.selection.clone(),
+                    self.range.clone(),
+                    self.decorated.clone(),
+                )
+            }),
+        )
     }
 }
 
@@ -175,30 +210,58 @@ pub(crate) struct DayCell {
     pub(crate) in_current_month: bool,
 }
 
-pub(crate) fn build_calendar_body(
-    locale: &Locale,
+pub(crate) struct CalendarBody<Content> {
+    locale: Locale,
     month: VisibleMonth,
-    range: &RangeInclusive<Date>,
+    range: RangeInclusive<Date>,
     visible_month: Binding<VisibleMonth>,
-    content: impl View,
-) -> impl View {
-    let can_go_previous = month.previous().first_day() >= month_start(*range.start());
-    let can_go_next = month.next().first_day() <= month_start(*range.end());
-
-    Padding::new(
-        EdgeInsets::all(8.0),
-        vstack((
-            build_month_header(locale, month, visible_month, can_go_previous, can_go_next),
-            weekday_header(locale),
-            content,
-        ))
-        .spacing(8.0),
-    )
+    content: Content,
 }
 
-pub(crate) fn calendar_rows(
+impl<Content> CalendarBody<Content> {
+    pub(crate) fn new(
+        locale: Locale,
+        month: VisibleMonth,
+        range: RangeInclusive<Date>,
+        visible_month: Binding<VisibleMonth>,
+        content: Content,
+    ) -> Self {
+        Self {
+            locale,
+            month,
+            range,
+            visible_month,
+            content,
+        }
+    }
+}
+
+impl<Content: View> View for CalendarBody<Content> {
+    fn body(self, _env: &Environment) -> impl View {
+        let can_go_previous = self.month.previous().first_day() >= month_start(*self.range.start());
+        let can_go_next = self.month.next().first_day() <= month_start(*self.range.end());
+
+        Padding::new(
+            EdgeInsets::all(8.0),
+            vstack((
+                build_month_header(
+                    &self.locale,
+                    self.month,
+                    self.visible_month,
+                    can_go_previous,
+                    can_go_next,
+                ),
+                weekday_header(&self.locale),
+                self.content,
+            ))
+            .spacing(8.0),
+        )
+    }
+}
+
+pub(crate) fn calendar_rows<V: View>(
     month: VisibleMonth,
-    mut cell_view: impl FnMut(DayCell) -> AnyView,
+    mut cell_view: impl FnMut(DayCell) -> V,
 ) -> impl View {
     let cells = month_cells(month);
     let mut rows = Vec::new();
@@ -214,6 +277,90 @@ pub(crate) fn calendar_rows(
     }
 
     rows.into_iter().collect::<VStack<_>>().spacing(6.0)
+}
+
+#[derive(Debug, Clone)]
+struct SingleDayCellView {
+    cell: DayCell,
+    selection: Binding<Date>,
+    range: RangeInclusive<Date>,
+    decorated: Computed<BTreeSet<Date>>,
+}
+
+impl SingleDayCellView {
+    fn new(
+        cell: DayCell,
+        selection: Binding<Date>,
+        range: RangeInclusive<Date>,
+        decorated: Computed<BTreeSet<Date>>,
+    ) -> Self {
+        Self {
+            cell,
+            selection,
+            range,
+            decorated,
+        }
+    }
+}
+
+impl View for SingleDayCellView {
+    fn body(self, _env: &Environment) -> impl View {
+        let cell = self.cell;
+        let selection = self.selection;
+        let range = self.range;
+        let decorated = self.decorated;
+        Dynamic::watch(selection.zip(&decorated), move |(selected_date, decorated_dates)| {
+            single_day_cell_content(
+                cell,
+                selected_date,
+                &range,
+                selection.clone(),
+                &decorated_dates,
+            )
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MultiDayCellView {
+    cell: DayCell,
+    selection: Binding<BTreeSet<Date>>,
+    range: RangeInclusive<Date>,
+    decorated: Computed<BTreeSet<Date>>,
+}
+
+impl MultiDayCellView {
+    pub(crate) fn new(
+        cell: DayCell,
+        selection: Binding<BTreeSet<Date>>,
+        range: RangeInclusive<Date>,
+        decorated: Computed<BTreeSet<Date>>,
+    ) -> Self {
+        Self {
+            cell,
+            selection,
+            range,
+            decorated,
+        }
+    }
+}
+
+impl View for MultiDayCellView {
+    fn body(self, _env: &Environment) -> impl View {
+        let cell = self.cell;
+        let selection = self.selection;
+        let range = self.range;
+        let decorated = self.decorated;
+        Dynamic::watch(selection.zip(&decorated), move |(selected_dates, decorated_dates)| {
+            multi_day_cell_content(
+                cell,
+                &selected_dates,
+                &range,
+                selection.clone(),
+                &decorated_dates,
+            )
+        })
+    }
 }
 
 pub(crate) fn initial_visible_month(
@@ -239,10 +386,7 @@ pub(crate) fn initial_visible_month(
 }
 
 pub(crate) fn resolve_locale(env: &Environment) -> Locale {
-    if let Ok(context) = RegionalContext::extract(env) {
-        return context.locale().clone();
-    }
-    regional::current_settings().locale().clone()
+    locale_binding(env).get()
 }
 
 fn build_month_header(
@@ -314,7 +458,7 @@ fn weekday_header(locale: &Locale) -> impl View {
     .spacing(6.0)
 }
 
-fn single_day_cell_view(
+fn single_day_cell_content(
     cell: DayCell,
     selected_date: Date,
     range: &RangeInclusive<Date>,
@@ -356,7 +500,7 @@ fn single_day_cell_view(
     }
 }
 
-pub(crate) fn multi_day_cell_view(
+fn multi_day_cell_content(
     cell: DayCell,
     selected_dates: &BTreeSet<Date>,
     range: &RangeInclusive<Date>,
