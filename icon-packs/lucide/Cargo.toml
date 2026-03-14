@@ -20,7 +20,7 @@ waterui-icon.workspace = true
 
 [build-dependencies]
 serde_json = "1.0"
-ureq = "2.12"
+waterui-build-support.workspace = true
 
 [lints]
 workspace = true

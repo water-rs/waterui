@@ -1290,27 +1290,6 @@ impl WebViewHandle for GtkWebViewHandle {
 }
 
 #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
-fn json_quote(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 2);
-    out.push('"');
-    for ch in input.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if c <= '\u{1F}' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
 #[derive(Clone)]
 struct DecidePolicyData {
     shared: Rc<SharedState>,
@@ -1513,9 +1492,9 @@ unsafe extern "C" fn on_script_message_received(
 
     let js = format!(
         "window.__wateruiResolve({}, {}, {});",
-        json_quote(request_id),
+        serde_json::to_string(request_id).expect("request id must serialize to JSON"),
         if ok { "true" } else { "false" },
-        json_quote(&reply_payload),
+        serde_json::to_string(&reply_payload).expect("reply payload must serialize to JSON"),
     );
     let _ = webkitgtk::evaluate_javascript(data.webview, &js, None, std::ptr::null_mut());
 }

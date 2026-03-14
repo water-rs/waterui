@@ -33,6 +33,7 @@ glib.workspace = true
 cairo-rs.workspace = true
 gdk-pixbuf = "0.20"
 base64 = "0.22"
+serde_json = "1.0"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true

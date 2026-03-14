@@ -2,7 +2,12 @@ use std::net::IpAddr;
 
 use crate::AssetError;
 
-pub(crate) fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
+#[must_use]
+pub fn is_remote_url(path: &str) -> bool {
+    strip_http_prefix(path).is_some() || strip_https_prefix(path).is_some()
+}
+
+pub fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
     if has_http_scheme(url) && !is_loopback_http_url(url) {
         return Err(AssetError::http_not_allowed(url));
     }
@@ -10,7 +15,8 @@ pub(crate) fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
     Ok(())
 }
 
-fn is_loopback_http_url(url: &str) -> bool {
+#[must_use]
+pub fn is_loopback_http_url(url: &str) -> bool {
     extract_http_host(url)
         .and_then(normalize_host)
         .is_some_and(is_loopback_host)
@@ -31,6 +37,17 @@ fn strip_http_prefix(url: &str) -> Option<&str> {
     let prefix_len = HTTP_PREFIX.len();
     let prefix = url.get(..prefix_len)?;
     if prefix.eq_ignore_ascii_case(HTTP_PREFIX) {
+        url.get(prefix_len..)
+    } else {
+        None
+    }
+}
+
+fn strip_https_prefix(url: &str) -> Option<&str> {
+    const HTTPS_PREFIX: &str = "https://";
+    let prefix_len = HTTPS_PREFIX.len();
+    let prefix = url.get(..prefix_len)?;
+    if prefix.eq_ignore_ascii_case(HTTPS_PREFIX) {
         url.get(prefix_len..)
     } else {
         None
