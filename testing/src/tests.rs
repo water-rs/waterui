@@ -372,6 +372,35 @@ fn query_chain_and_index_are_type_safe() {
 }
 
 #[test]
+fn hidden_nodes_are_excluded_unless_requested() {
+    let mut hidden = node(3, Role::BUTTON, Some("Hidden action"), None, true);
+    hidden.hidden = true;
+
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::BUTTON, Some("Visible action"), None, true),
+        hidden,
+    ]));
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Visible action")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Hidden action")
+        .assert_not_exists();
+
+    let hidden_match = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Hidden action")
+        .hidden(true)
+        .single();
+    assert_eq!(hidden_match.id().as_u64(), 3);
+}
+
+#[test]
 fn wait_for_existence_and_nonexistence_complete_immediately() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),
@@ -567,6 +596,36 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
     assert!(
         (scale.get() - 1.4).abs() < 0.001,
         "second magnify should update the tracked scale binding"
+    );
+}
+
+#[test]
+fn ui_test_drains_local_tasks_through_headless_runtime() {
+    use waterui::task::spawn_local;
+    use waterui::{Binding, ViewExt as _};
+
+    let status = Binding::container(String::from("idle"));
+    let status_for_view = status.clone();
+
+    let mut app = UiTest::new().mount(move || {
+        waterui::text!("{status_for_view}")
+            .with_state(&status_for_view)
+            .on_appear(|status: Binding<String>| {
+                spawn_local(async move {
+                    status.set(String::from("ready"));
+                })
+                .detach();
+            })
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    while status.get() != "ready" && std::time::Instant::now() < deadline {
+        let _ = app.snapshot();
+    }
+    assert_eq!(
+        status.get().as_str(),
+        "ready",
+        "expected headless runtime to drain spawn_local task and update the binding"
     );
 }
 
