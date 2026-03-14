@@ -10,20 +10,59 @@ fn empty_placeholder() {}
 /// Internal native split container consumed by platform backends.
 #[must_use]
 pub struct NavigationSplitLayout {
-    /// Sidebar content.
-    pub sidebar: AnyViewBuilder<AnyView>,
-    /// Placeholder content used on regular-width layouts without selection.
-    pub placeholder: AnyViewBuilder<AnyView>,
-    /// Active detail view when a selection exists.
-    pub detail: Option<NavigationView>,
-    /// Preferred sidebar width on regular-width layouts.
-    pub sidebar_width: f32,
-    /// Action that clears the current selection on compact layouts.
-    pub clear_selection: BoxedAction<()>,
+    pub(crate) sidebar: AnyViewBuilder<AnyView>,
+    pub(crate) placeholder: AnyViewBuilder<AnyView>,
+    pub(crate) detail: Option<NavigationView>,
+    pub(crate) sidebar_width: f32,
+    pub(crate) clear_selection: BoxedAction<()>,
 }
 
 waterui_core::impl_debug!(NavigationSplitLayout);
 raw_view!(NavigationSplitLayout, StretchAxis::Both);
+
+impl NavigationSplitLayout {
+    fn new<Sidebar, Placeholder>(
+        sidebar: Sidebar,
+        placeholder: Placeholder,
+        detail: Option<NavigationView>,
+        sidebar_width: f32,
+        clear_selection: BoxedAction<()>,
+    ) -> Self
+    where
+        Sidebar: ViewBuilder,
+        Sidebar::Output: View,
+        Placeholder: ViewBuilder,
+        Placeholder::Output: View,
+    {
+        Self {
+            sidebar: AnyViewBuilder::new(sidebar).erase(),
+            placeholder: AnyViewBuilder::new(placeholder).erase(),
+            detail,
+            sidebar_width,
+            clear_selection,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyViewBuilder<AnyView>,
+        AnyViewBuilder<AnyView>,
+        Option<NavigationView>,
+        f32,
+        BoxedAction<()>,
+    ) {
+        (
+            self.sidebar,
+            self.placeholder,
+            self.detail,
+            self.sidebar_width,
+            self.clear_selection,
+        )
+    }
+}
 
 /// Adaptive master-detail navigation container.
 ///
@@ -82,18 +121,18 @@ impl<T, Sidebar, Detail, Placeholder> NavigationSplitView<T, Sidebar, Detail, Pl
 impl<T, Sidebar, Detail, Placeholder> View for NavigationSplitView<T, Sidebar, Detail, Placeholder>
 where
     T: Clone + 'static,
-    Sidebar: ViewBuilder,
+    Sidebar: ViewBuilder + Clone,
     Sidebar::Output: View,
     Detail: 'static + Clone + Fn(T) -> NavigationView,
-    Placeholder: ViewBuilder,
+    Placeholder: ViewBuilder + Clone,
     Placeholder::Output: View,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let selection = self.selection;
         let detail = self.detail;
         let sidebar_width = self.sidebar_width;
-        let sidebar = AnyViewBuilder::new(self.sidebar).erase();
-        let placeholder = AnyViewBuilder::new(self.placeholder).erase();
+        let sidebar = self.sidebar;
+        let placeholder = self.placeholder;
 
         Dynamic::watch(selection.clone(), move |selected| {
             let clear_selection = boxed_action_with_env({
@@ -103,13 +142,13 @@ where
                 }
             });
 
-            NavigationSplitLayout {
-                sidebar: sidebar.clone(),
-                placeholder: placeholder.clone(),
-                detail: selected.map(|value| detail(value)),
+            NavigationSplitLayout::new(
+                sidebar.clone(),
+                placeholder.clone(),
+                selected.map(|value| detail(value)),
                 sidebar_width,
                 clear_selection,
-            }
+            )
         })
     }
 }

@@ -77,15 +77,18 @@ const INVALID: Url = Url::new("https://");
 
 ### Reactive Fetching
 
-The `fetch()` method returns a reactive signal that can be watched for changes, integrating with WaterUI's reactive update system:
+`fetch()` resolves local/data/blob URLs immediately and downloads web URLs lazily into the app cache, exposing the cached local file URL as a reactive signal.
 
-```rust
+```rust,no_run
+use nami::Signal;
 use waterui_url::Url;
 
 let url = Url::parse("https://api.example.com/data.json").unwrap();
 let fetched = url.fetch();
-// Use with WaterUI's reactive primitives
+let cached_url = fetched.get();
 ```
+
+`fetch()` requires the crate `std` feature because it uses platform cache directories and HTTP transport.
 
 ## Examples
 
@@ -185,7 +188,7 @@ All component accessors are O(1) operations using pre-parsed byte offsets:
 ### Manipulation
 
 - `join(&self, path: &str) -> Url` - Join URL with relative path
-- `fetch(&self) -> Fetched` - Get reactive signal for URL content
+- `fetch(&self) -> Fetched` - Lazily download to cache and observe the cached local URL (`std` only)
 - `to_file_path(&self) -> Option<PathBuf>` - Convert to file path (requires `std` feature)
 
 ### Conversion

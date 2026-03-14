@@ -709,6 +709,7 @@ use crate::components::form::{WuiDate, WuiDateTime};
 use jiff::civil::{Date, DateTime};
 ffi_reactive!(Date, WuiDate, date);
 ffi_reactive!(DateTime, WuiDateTime, date_time);
+ffi_reactive!(Vec<Date>, WuiArray<WuiDate>, date_vec);
 
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
