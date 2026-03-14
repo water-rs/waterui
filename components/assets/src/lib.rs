@@ -1,6 +1,6 @@
-//! Asset management for WaterUI.
+//! Asset management for `WaterUI`.
 //!
-//! This crate provides types and utilities for managing assets in WaterUI applications:
+//! This crate provides types and utilities for managing assets in `WaterUI` applications:
 //!
 //! - [`Data`] - Small binary files loaded into memory (configs, shaders, JSON)
 //! - [`LargeFile`] - Large files using memory-mapping (ML models, large binaries)
