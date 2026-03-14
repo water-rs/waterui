@@ -7,6 +7,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+<<<<<<< HEAD
     // Generate a full-screen quad from vertex index (0-5)
     // Two triangles: (0,1,2) and (3,4,5)
     var positions = array<vec2<f32>, 6>(
@@ -25,6 +26,24 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(0.0, 1.0),  // bottom-left
         vec2<f32>(1.0, 0.0),  // top-right
         vec2<f32>(0.0, 0.0),  // top-left
+=======
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+    );
+
+    var uvs = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+>>>>>>> 13958599 (Extract image crate and tighten native rendering)
     );
 
     var output: VertexOutput;

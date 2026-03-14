@@ -77,13 +77,13 @@ pub mod video {
     pub use waterui_video::video::*;
 }
 pub use {
-    image::Image,
     live::LivePhoto,
     photo::Photo,
     video::{
         AspectRatio, Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig,
         Volume,
     },
+    waterui_image::Image,
     waterui_video::{Delivery, MediaItem, SubtitleTrack},
 };
 
