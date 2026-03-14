@@ -133,7 +133,7 @@ fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
             break;
         }
         let dx = bezier_derivative(guess, x1, x2);
-        if dx.abs() < 0.000001 {
+        if dx.abs() < 0.000_001 {
             break;
         }
         let next = guess - x / dx;

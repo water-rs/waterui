@@ -41,12 +41,12 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
     }
 
     // Check for web URLs (http://, https://, etc.)
-    if let Some(scheme_end) = find_scheme_end(bytes) {
-        if is_web_scheme(bytes, scheme_end) {
-            let web = parse_web_url(bytes, scheme_end);
-            validate_web_url(&web, bytes);
-            return ParsedComponents::Web(web);
-        }
+    if let Some(scheme_end) = find_scheme_end(bytes)
+        && is_web_scheme(bytes, scheme_end)
+    {
+        let web = parse_web_url(bytes, scheme_end);
+        validate_web_url(&web, bytes);
+        return ParsedComponents::Web(web);
     }
 
     // Default to local file path

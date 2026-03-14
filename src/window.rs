@@ -338,7 +338,6 @@ impl View for Window {
     fn body(self, env: &Environment) -> impl View {
         self.show(env);
         // Return empty view - the window is shown separately
-        ();
     }
 }
 
