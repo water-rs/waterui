@@ -196,10 +196,7 @@ impl Text {
         })
     }
 
-    /// Resolves semantic text into a raw config using the provided environment and locale.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn __resolve_with(&self, env: &Environment, locale: &Locale) -> TextConfig {
+    fn resolve_with_locale(&self, env: &Environment, locale: &Locale) -> TextConfig {
         match &self.0 {
             TextKind::Raw(config) => config.clone(),
             TextKind::Localized { resolver } => resolver(env, locale),
@@ -207,11 +204,10 @@ impl Text {
     }
 
     /// Resolves semantic text into a raw config using the environment's effective locale.
-    #[doc(hidden)]
     #[must_use]
-    pub fn __resolve(&self, env: &Environment) -> TextConfig {
+    pub fn resolve(&self, env: &Environment) -> TextConfig {
         let locale = locale_binding(env).get();
-        self.__resolve_with(env, &locale)
+        self.resolve_with_locale(env, &locale)
     }
 
     /// Converts text into an FFI-ready raw config without an environment.
@@ -226,7 +222,7 @@ impl Text {
         match self.0 {
             TextKind::Raw(config) => config,
             TextKind::Localized { .. } => panic!(
-                "Localized Text cannot cross FFI directly; resolve it in the component body with Text::__resolve(env) before converting to native config"
+                "Localized Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config"
             ),
         }
     }

@@ -470,14 +470,14 @@ impl GtkComponent for NavigationSplitLayout {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_position(self.sidebar_width as i32);
-        let sidebar = renderer.render_any(self.sidebar, env);
+        let sidebar = renderer.render_any(self.sidebar.build(), env);
         sidebar.set_hexpand(true);
         sidebar.set_vexpand(true);
         paned.set_start_child(Some(&sidebar));
         let detail = if let Some(detail) = self.detail {
             renderer.render(detail, env)
         } else {
-            renderer.render_any(self.placeholder, env)
+            renderer.render_any(self.placeholder.build(), env)
         };
         detail.set_hexpand(true);
         detail.set_vexpand(true);
