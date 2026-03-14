@@ -321,7 +321,9 @@ impl View for DefaultTableView {
     fn body(self, _env: &Environment) -> impl View {
         let columns = self.columns;
 
-        watch(columns, move |cols: Vec<TableColumn>| TableColumnsView::new(cols))
+        watch(columns, move |cols: Vec<TableColumn>| {
+            TableColumnsView::new(cols)
+        })
     }
 }
 

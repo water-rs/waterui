@@ -10,7 +10,9 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use executor_core::{
-    LocalExecutor, async_task::{AsyncTask, Runnable}, try_init_local_executor,
+    LocalExecutor,
+    async_task::{AsyncTask, Runnable},
+    try_init_local_executor,
 };
 use hydrolysis::HydrolysisViewRenderer;
 use waterui::graphics::SceneViewMergeToParent;

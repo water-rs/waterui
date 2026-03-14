@@ -3,10 +3,14 @@
 use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 
-use crate::charts::canvas::{area_bounds, area_geometry, draw_area, interactive_cartesian_signal_canvas};
+use crate::charts::canvas::{
+    area_bounds, area_geometry, draw_area, interactive_cartesian_signal_canvas,
+};
 use crate::composition::ChartComposition;
 use crate::data::AreaData;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, AreaDatum, HitResult, SelectionBindings};
+use crate::interaction::{
+    AreaDatum, CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 
 /// Stacked area chart for cumulative data visualization.
 pub struct AreaChart<S: Signal<Output = AreaData>> {

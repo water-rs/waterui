@@ -138,15 +138,12 @@ pub(crate) async fn build_preview_dylib(
         rust_build = rust_build.with_sccache(sccache.clone());
     }
     let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
-    let candidate_path = dylib_path
-        .clone()
-        .unwrap_or_else(|| expected_path.clone());
+    let candidate_path = dylib_path.clone().unwrap_or_else(|| expected_path.clone());
 
     let target_triple = target.triple().to_string();
     let dylib_signature =
         dylib_build_signature(runtime_fingerprint, &target_triple, project.crate_name());
-    let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await?
-    {
+    let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
         candidate_path
     } else {
         info!("Building dylib...");

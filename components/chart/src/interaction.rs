@@ -473,14 +473,16 @@ impl CartesianViewportBindings {
             .zip(&self.y_visible_length)
             .zip(&self.x_position)
             .zip(&self.y_position)
-            .map(|(((x_visible_length, y_visible_length), x_position), y_position)| {
-                CartesianViewportState {
-                    x_visible_length,
-                    y_visible_length,
-                    x_position,
-                    y_position,
-                }
-            })
+            .map(
+                |(((x_visible_length, y_visible_length), x_position), y_position)| {
+                    CartesianViewportState {
+                        x_visible_length,
+                        y_visible_length,
+                        x_position,
+                        y_position,
+                    }
+                },
+            )
             .computed()
     }
 
@@ -705,7 +707,10 @@ macro_rules! chart_x_selection_methods {
 
         /// Enables interactive scrolling along the specified axes.
         #[must_use]
-        pub fn chart_scrollable_axes(mut self, axes: crate::interaction::ChartScrollableAxes) -> Self {
+        pub fn chart_scrollable_axes(
+            mut self,
+            axes: crate::interaction::ChartScrollableAxes,
+        ) -> Self {
             self.cartesian_viewport = self.cartesian_viewport.with_scrollable_axes(axes);
             self
         }
