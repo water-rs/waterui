@@ -26,6 +26,7 @@ struct ChildMeasurement {
 #[derive(Debug, Clone, Default)]
 pub struct OverlayLayout {
     alignment: Alignment,
+    stretch_axis: StretchAxis,
 }
 
 impl OverlayLayout {
@@ -44,35 +45,19 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
-    /// Overlay stretches in both directions, allowing the base child to fill available space.
-    /// The actual size is determined by the base child in `size_that_fits`.
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        self.stretch_axis
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        // Overlay size is driven entirely by the base child (index 0). If the base
-        // provides no intrinsic size, fall back to the parent's constraints.
         let base_size = children
             .first()
             .map_or(Size::zero(), |c| c.measure(proposal).size);
 
-        let base_width = if base_size.width.is_finite() && base_size.width > 0.0 {
-            base_size.width
-        } else {
-            proposal.width.unwrap_or(0.0)
-        };
-
-        let base_height = if base_size.height.is_finite() && base_size.height > 0.0 {
-            base_size.height
-        } else {
-            proposal.height.unwrap_or(0.0)
-        };
-
-        let width = proposal.width.unwrap_or(base_width);
-        let height = proposal.height.unwrap_or(base_height);
-
-        Size::new(width.max(0.0), height.max(0.0))
+        Size::new(
+            overlay_axis_size(base_size.width, proposal.width),
+            overlay_axis_size(base_size.height, proposal.height),
+        )
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
@@ -92,18 +77,9 @@ impl Layout for OverlayLayout {
 
         let mut placements = Vec::with_capacity(children.len());
 
-        // Base child always fills the container's bounds
         if let Some(base) = measurements.first() {
-            let base_width = if base.dimensions.size.width.is_infinite() {
-                bounds.width()
-            } else {
-                base.dimensions.size.width
-            };
-            let base_height = if base.dimensions.size.height.is_infinite() {
-                bounds.height()
-            } else {
-                base.dimensions.size.height
-            };
+            let base_width = overlay_placement_axis(base.dimensions.size.width, bounds.width());
+            let base_height = overlay_placement_axis(base.dimensions.size.height, bounds.height());
             placements.push(Rect::new(
                 bounds.origin(),
                 Size::new(base_width, base_height),
@@ -189,6 +165,22 @@ impl Layout for OverlayLayout {
     }
 }
 
+fn overlay_axis_size(measured: f32, proposal: Option<f32>) -> f32 {
+    if measured.is_finite() {
+        measured.max(0.0)
+    } else {
+        proposal.unwrap_or(0.0).max(0.0)
+    }
+}
+
+fn overlay_placement_axis(measured: f32, bounds_axis: f32) -> f32 {
+    if measured.is_infinite() {
+        bounds_axis.max(0.0)
+    } else {
+        measured.min(bounds_axis).max(0.0)
+    }
+}
+
 /// A view that layers `overlay` content on top of a `base` view without
 /// allowing the overlay to influence layout sizing.
 pub struct Overlay<Base, Layer> {
@@ -204,6 +196,7 @@ impl<Base, Layer> Overlay<Base, Layer> {
         Self {
             layout: OverlayLayout {
                 alignment: Alignment::Center,
+                stretch_axis: StretchAxis::None,
             },
             base,
             layer,
@@ -232,7 +225,13 @@ where
     Layer: View + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        FixedContainer::new(self.layout, (self.base, self.layer))
+        let Overlay {
+            mut layout,
+            base,
+            layer,
+        } = self;
+        layout.stretch_axis = base.stretch_axis();
+        FixedContainer::new(layout, (base, layer))
     }
 }
 
@@ -247,6 +246,8 @@ pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Lay
 mod tests {
     use super::*;
     use crate::StretchAxis;
+    use crate::container::FixedContainer;
+    use waterui_core::{AnyView, Environment, View};
 
     struct MockSubView {
         size: Size,
@@ -261,6 +262,18 @@ mod tests {
         }
         fn priority(&self) -> i32 {
             0
+        }
+    }
+
+    struct StretchingBase;
+
+    impl View for StretchingBase {
+        fn body(self, _env: &Environment) -> impl View {
+            ()
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Horizontal
         }
     }
 
@@ -288,6 +301,7 @@ mod tests {
     fn test_overlay_placement_center() {
         let layout = OverlayLayout {
             alignment: Alignment::Center,
+            stretch_axis: StretchAxis::None,
         };
 
         let mut base = MockSubView {
@@ -309,5 +323,36 @@ mod tests {
         // Overlay child centered
         assert_eq!(rects[1].x(), 40.0); // (100 - 20) / 2
         assert_eq!(rects[1].y(), 40.0); // (100 - 20) / 2
+    }
+
+    #[test]
+    fn test_overlay_preserves_intrinsic_base_size_under_parent_proposal() {
+        let layout = OverlayLayout::default();
+
+        let base = MockSubView {
+            size: Size::new(40.0, 30.0),
+        };
+        let overlay_child = MockSubView {
+            size: Size::new(10.0, 10.0),
+        };
+
+        let children: Vec<&dyn SubView> = vec![&base, &overlay_child];
+        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), Some(100.0)), &children);
+
+        assert_eq!(size.width, 40.0);
+        assert_eq!(size.height, 30.0);
+    }
+
+    #[test]
+    fn test_overlay_body_preserves_base_stretch_axis() {
+        let env = Environment::default();
+        let body = overlay(StretchingBase, ()).body(&env);
+        let container = AnyView::new(body)
+            .downcast::<FixedContainer>()
+            .expect("overlay body should be a FixedContainer");
+        let (layout, children) = container.as_parts();
+
+        assert_eq!(children.len(), 2);
+        assert_eq!(layout.stretch_axis(), StretchAxis::Horizontal);
     }
 }
