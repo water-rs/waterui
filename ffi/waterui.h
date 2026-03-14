@@ -1017,6 +1017,8 @@ typedef struct WuiLifeCycleHookHandler WuiLifeCycleHookHandler;
 
 typedef struct WuiMoveAction WuiMoveAction;
 
+typedef struct WuiNavigationSplitDetail WuiNavigationSplitDetail;
+
 /**
  * Wrapper for OnEvent to avoid orphan rule issues.
  */
@@ -2596,6 +2598,13 @@ typedef struct WuiNavigationStack {
   enum WuiNavigationTransition transition;
 } WuiNavigationStack;
 
+typedef struct WuiId {
+  /**
+   * The inner integer value of the ID.
+   */
+  int32_t inner;
+} WuiId;
+
 typedef struct WuiNavigationSplitLayout {
   /**
    * Sidebar content.
@@ -2606,25 +2615,17 @@ typedef struct WuiNavigationSplitLayout {
    */
   struct WuiAnyView *placeholder;
   /**
-   * Active detail bar state when a selection exists.
+   * The currently selected detail identifier encoded as i32 (0 means no selection).
    */
-  struct WuiBar detail_bar;
+  WuiBinding_i32 *selection;
   /**
-   * Active detail content when a selection exists.
+   * Resolver handle for building detail content from a selected id.
    */
-  struct WuiAnyView *detail_content;
-  /**
-   * Whether a detail selection currently exists.
-   */
-  bool has_detail;
+  struct WuiNavigationSplitDetail *detail;
   /**
    * Preferred sidebar width in logical points.
    */
   float sidebar_width;
-  /**
-   * Action that clears the current selection on compact layouts.
-   */
-  struct WuiAction *clear_selection;
 } WuiNavigationSplitLayout;
 
 typedef struct WuiTab {
@@ -3619,13 +3620,6 @@ typedef struct WuiResolvedGradient {
   float start_value;
   float end_value;
 } WuiResolvedGradient;
-
-typedef struct WuiId {
-  /**
-   * The inner integer value of the ID.
-   */
-  int32_t inner;
-} WuiId;
 
 typedef struct Computed_Id WuiComputed_Id;
 
@@ -4994,6 +4988,23 @@ struct WuiTypeId waterui_navigation_view_id(void);
 struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_navigation_stack_id(void);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_split_navigation_detail(struct WuiNavigationSplitDetail *value);
+
+/**
+ * Resolves the active detail navigation view for a selected split identifier.
+ *
+ * # Safety
+ *
+ * - `handler` must be a valid pointer to a `WuiNavigationSplitDetail`.
+ * - `selected` must encode a valid non-zero split selection id.
+ */
+struct WuiNavigationView waterui_split_navigation_detail_content(struct WuiNavigationSplitDetail *handler,
+                                                                 struct WuiId selected);
 
 struct WuiNavigationSplitLayout waterui_force_as_split_navigation_container(struct WuiAnyView *view);
 

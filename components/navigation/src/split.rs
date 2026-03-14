@@ -1,5 +1,7 @@
-use waterui_core::dynamic::Dynamic;
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, ViewBuilder, boxed_action_with_env};
+use alloc::rc::Rc;
+
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::id::{Id, Mapping};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Binding, View, raw_view};
 
@@ -7,14 +9,53 @@ use crate::NavigationView;
 
 fn empty_placeholder() {}
 
+#[derive(Clone)]
+pub struct NavigationSplitDetailBuilder(Rc<dyn Fn(Id) -> NavigationView>);
+
+impl core::fmt::Debug for NavigationSplitDetailBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("NavigationSplitDetailBuilder")
+    }
+}
+
+impl NavigationSplitDetailBuilder {
+    fn mapped<T>(
+        mapping: Mapping<T>,
+        detail: impl Fn(T) -> NavigationView + 'static,
+    ) -> Self
+    where
+        T: Clone + Ord + 'static,
+    {
+        Self(Rc::new(move |selected| {
+            detail(
+                mapping
+                    .to_data(selected)
+                    .expect("NavigationSplitView selected id must exist in mapping"),
+            )
+        }))
+    }
+
+    #[must_use]
+    pub fn build(&self, selected: Id) -> NavigationView {
+        (self.0)(selected)
+    }
+}
+
+fn stable_view_builder<V>(view: V) -> AnyViewBuilder<AnyView>
+where
+    V: View + Clone,
+{
+    AnyViewBuilder::new(move || AnyView::new(view.clone()))
+}
+
 /// Internal native split container consumed by platform backends.
 #[must_use]
 pub struct NavigationSplitLayout {
     pub(crate) sidebar: AnyViewBuilder<AnyView>,
     pub(crate) placeholder: AnyViewBuilder<AnyView>,
-    pub(crate) detail: Option<NavigationView>,
+    pub(crate) selection: Binding<Option<Id>>,
+    pub(crate) detail: NavigationSplitDetailBuilder,
     pub(crate) sidebar_width: f32,
-    pub(crate) clear_selection: BoxedAction<()>,
 }
 
 waterui_core::impl_debug!(NavigationSplitLayout);
@@ -24,22 +65,20 @@ impl NavigationSplitLayout {
     fn new<Sidebar, Placeholder>(
         sidebar: Sidebar,
         placeholder: Placeholder,
-        detail: Option<NavigationView>,
+        selection: Binding<Option<Id>>,
+        detail: NavigationSplitDetailBuilder,
         sidebar_width: f32,
-        clear_selection: BoxedAction<()>,
     ) -> Self
     where
-        Sidebar: ViewBuilder,
-        Sidebar::Output: View,
-        Placeholder: ViewBuilder,
-        Placeholder::Output: View,
+        Sidebar: View + Clone,
+        Placeholder: View + Clone,
     {
         Self {
-            sidebar: AnyViewBuilder::new(sidebar).erase(),
-            placeholder: AnyViewBuilder::new(placeholder).erase(),
+            sidebar: stable_view_builder(sidebar),
+            placeholder: stable_view_builder(placeholder),
+            selection,
             detail,
             sidebar_width,
-            clear_selection,
         }
     }
 
@@ -50,16 +89,16 @@ impl NavigationSplitLayout {
     ) -> (
         AnyViewBuilder<AnyView>,
         AnyViewBuilder<AnyView>,
-        Option<NavigationView>,
+        Binding<Option<Id>>,
+        NavigationSplitDetailBuilder,
         f32,
-        BoxedAction<()>,
     ) {
         (
             self.sidebar,
             self.placeholder,
+            self.selection,
             self.detail,
             self.sidebar_width,
-            self.clear_selection,
         )
     }
 }
@@ -120,35 +159,22 @@ impl<T, Sidebar, Detail, Placeholder> NavigationSplitView<T, Sidebar, Detail, Pl
 
 impl<T, Sidebar, Detail, Placeholder> View for NavigationSplitView<T, Sidebar, Detail, Placeholder>
 where
-    T: Clone + 'static,
-    Sidebar: ViewBuilder + Clone,
-    Sidebar::Output: View,
-    Detail: 'static + Clone + Fn(T) -> NavigationView,
-    Placeholder: ViewBuilder + Clone,
-    Placeholder::Output: View,
+    T: Clone + Ord + 'static,
+    Sidebar: View + Clone,
+    Detail: 'static + Fn(T) -> NavigationView,
+    Placeholder: View + Clone,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let selection = self.selection;
-        let detail = self.detail;
-        let sidebar_width = self.sidebar_width;
-        let sidebar = self.sidebar;
-        let placeholder = self.placeholder;
+        let mapping = Mapping::new();
+        let selection = mapping.optional_binding(&self.selection);
+        let detail = NavigationSplitDetailBuilder::mapped(mapping, self.detail);
 
-        Dynamic::watch(selection.clone(), move |selected| {
-            let clear_selection = boxed_action_with_env({
-                let selection = selection.clone();
-                move |_env| {
-                    selection.set(None);
-                }
-            });
-
-            NavigationSplitLayout::new(
-                sidebar.clone(),
-                placeholder.clone(),
-                selected.map(|value| detail(value)),
-                sidebar_width,
-                clear_selection,
-            )
-        })
+        NavigationSplitLayout::new(
+            self.sidebar,
+            self.placeholder,
+            selection,
+            detail,
+            self.sidebar_width,
+        )
     }
 }
