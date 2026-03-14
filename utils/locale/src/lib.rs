@@ -1,6 +1,6 @@
-//! # WaterUI i18n
+//! # `WaterUI` i18n
 //!
-//! Internationalization (i18n) support for WaterUI applications.
+//! Internationalization (i18n) support for `WaterUI` applications.
 //!
 //! ## Features
 //!
@@ -8,7 +8,7 @@
 //! - **CLDR plural rules**: Proper pluralization for all languages
 //! - **Smart fallback**: zh-TW → zh-Hant → zh (not zh-Hans!)
 //! - **Unit wrappers**: `Length<Meter>`, `Temperature<Celsius>` with automatic conversion
-//! - **LocalizedDisplay**: Trait for locale-aware formatting
+//! - **`LocalizedDisplay`**: Trait for locale-aware formatting
 //!
 //! ## Usage
 //!

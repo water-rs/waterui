@@ -6,6 +6,8 @@ use waterui_str::Str;
 
 use crate::WebViewEvent;
 
+type ScriptMessageHandler = dyn Fn(&[u8]) -> Vec<u8> + 'static;
+
 /// When to inject a user script into the web view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScriptInjectionTime {
@@ -70,7 +72,7 @@ pub trait WebViewHandle: 'static {
     ///
     /// The handler receives data as bytes and returns a response as bytes.
     /// Use [`inject_script`](Self::inject_script) to set up a convenient JavaScript API.
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>);
+    fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
 
     /// Removes a previously added handler.
     fn remove_handler(&self, name: &str);
@@ -128,7 +130,7 @@ trait WebViewHandleImpl: Any {
     fn set_redirects_enabled(&self, enabled: bool);
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>);
+    fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
     fn remove_handler(&self, name: &str);
     fn set_cookie(&self, cookie: Cookie<'static>);
     fn get_cookies(&self) -> Vec<Cookie<'static>>;
@@ -189,7 +191,7 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
         WebViewHandle::can_go_forward(self)
     }
 
-    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>) {
         WebViewHandle::add_handler(self, name, handler);
     }
 
@@ -217,6 +219,7 @@ impl_debug!(AnyWebViewHandle);
 
 impl AnyWebViewHandle {
     /// Creates a new `AnyWebViewHandle` from a type implementing `WebViewHandle`.
+    #[must_use]
     pub fn new(handle: impl WebViewHandle) -> Self {
         Self {
             inner: Rc::new(handle),
@@ -271,17 +274,19 @@ impl AnyWebViewHandle {
     }
 
     /// Returns whether the web view can navigate back in its history.
+    #[must_use]
     pub fn can_go_back(&self) -> bool {
         self.inner.can_go_back()
     }
 
     /// Returns whether the web view can navigate forward in its history.
+    #[must_use]
     pub fn can_go_forward(&self) -> bool {
         self.inner.can_go_forward()
     }
 
     /// Adds a custom handler that can be called from JavaScript.
-    pub fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+    pub fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>) {
         self.inner.add_handler(name, handler);
     }
 
@@ -296,16 +301,25 @@ impl AnyWebViewHandle {
     }
 
     /// Retrieves all cookies for the current web view.
+    #[must_use]
     pub fn get_cookies(&self) -> Vec<Cookie<'static>> {
         self.inner.get_cookies()
     }
 
     /// Runs the given JavaScript code in the context of the web view.
-    pub async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
-        self.inner.run_javascript(script).await
+    ///
+    /// The returned future is intentionally thread-local because native web views and
+    /// their handles are main-thread-affine.
+    #[allow(clippy::future_not_send)]
+    pub fn run_javascript<'a>(
+        &'a self,
+        script: &'a str,
+    ) -> impl Future<Output = Result<Str, Str>> + 'a {
+        self.inner.run_javascript(script)
     }
 
     /// Downcasts the handle to a concrete type with runtime checks.
+    #[must_use]
     pub fn downcast_ref<T: WebViewHandle>(&self) -> Option<&T> {
         (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
     }
@@ -318,7 +332,8 @@ impl AnyWebViewHandle {
     /// This is intended for native backends that control both the creation
     /// and retrieval of the handle (e.g., Swift creates `FfiWebViewHandle`
     /// and later retrieves it via FFI).
+    #[must_use]
     pub unsafe fn downcast_ref_unchecked<T: WebViewHandle>(&self) -> &T {
-        unsafe { &*(self.inner.as_ref() as *const dyn Any as *const T) }
+        unsafe { &*std::ptr::from_ref::<dyn Any>(self.inner.as_ref()).cast::<T>() }
     }
 }

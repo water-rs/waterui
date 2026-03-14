@@ -1,6 +1,6 @@
-//! Icon components for WaterUI.
+//! Icon components for `WaterUI`.
 //!
-//! This module provides icon components for displaying icons in WaterUI apps.
+//! This module provides icon components for displaying icons in `WaterUI` apps.
 //!
 //! # Icon Types
 //!

@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+readme = "../../README.md"
 repository.workspace = true
 description = "Shared protocol for WaterUI inspector runtime streaming"
 keywords.workspace = true

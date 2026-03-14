@@ -1,4 +1,4 @@
-//! Shape system for WaterUI with HDR support.
+//! Shape system for `WaterUI` with HDR support.
 //!
 //! This module provides a trait-based system for defining shapes that can be used
 //! for clipping views and as filled views.
