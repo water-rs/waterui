@@ -36,7 +36,7 @@ use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
 };
-use waterui_text::{Text, styled::StyledStr, text};
+use waterui_text::{Text, text};
 
 use crate::Url;
 use crate::source::{MediaItem, SubtitleTrack};
@@ -969,14 +969,11 @@ fn player_controls(
         },
     );
 
-    let subtitle_toggle = button(Text::computed(
+    let subtitle_toggle = button(Text::display(
         subtitle_track_labels
             .zip(&subtitle_selection)
             .map(|(track_labels, selection)| {
-                StyledStr::plain(
-                    subtitle_selection_label(&track_labels, selection)
-                        .unwrap_or_else(|message| message),
-                )
+                subtitle_selection_label(&track_labels, selection).unwrap_or_else(|message| message)
             }),
     ))
     .with_state(&subtitle_selection)
@@ -1018,22 +1015,18 @@ fn player_controls(
                 let delta = (10.0 / duration).min(1.0);
                 value.set((value.get() - delta).max(0.0));
             }),
-        button(Text::computed(is_playing.clone().map(|playing| {
-            if playing {
-                StyledStr::plain("Pause")
-            } else {
-                StyledStr::plain("Play")
-            }
-        })))
+        button(Text::display(
+            is_playing
+                .clone()
+                .map(|playing| if playing { "Pause" } else { "Play" }),
+        ))
         .with_state(&is_playing)
         .action(|playing| playing.set(!playing.get())),
-        button(Text::computed(muted.clone().map(|is_muted| {
-            if is_muted {
-                StyledStr::plain("Unmute")
-            } else {
-                StyledStr::plain("Mute")
-            }
-        })))
+        button(Text::display(
+            muted
+                .clone()
+                .map(|is_muted| if is_muted { "Unmute" } else { "Mute" }),
+        ))
         .with_state(&muted)
         .action(|is_muted| is_muted.set(!is_muted.get())),
         slider(0.0..=1.0, &volume_level),
@@ -1055,9 +1048,12 @@ fn player_controls(
     ))
     .spacing(8.0);
 
-    let playback_rate_label = Dynamic::watch(playback_rate.clone(), move |rate| {
-        text(format!("Speed {:.2}x", clamp_playback_rate(rate))).footnote()
-    });
+    let playback_rate_label = Text::display(
+        playback_rate
+            .clone()
+            .map(|rate| format!("Speed {:.2}x", clamp_playback_rate(rate))),
+    )
+    .footnote();
 
     let speed_controls = hstack((
         playback_rate_label,
@@ -1074,11 +1070,11 @@ fn player_controls(
             .with_state(&playback_rate)
             .action(|rate| rate.set(2.0)),
         slider(0.25..=2.0, &playback_rate_level),
-        button(Text::computed(preserve_pitch.clone().map(|enabled| {
+        button(Text::display(preserve_pitch.clone().map(|enabled| {
             if enabled {
-                StyledStr::plain("Pitch Lock On")
+                "Pitch Lock On"
             } else {
-                StyledStr::plain("Pitch Lock Off")
+                "Pitch Lock Off"
             }
         })))
         .with_state(&preserve_pitch)
@@ -1086,25 +1082,21 @@ fn player_controls(
     ))
     .spacing(8.0);
 
-    let timeline = Dynamic::watch(position_seconds.clone(), {
-        let duration_seconds = duration_seconds.clone();
-        let is_buffering = is_buffering.clone();
-        move |position| {
-            let duration = duration_seconds.get().max(0.0);
-            let status = if is_buffering.get() {
-                "  (Buffering)"
-            } else {
-                ""
-            };
-            let label = format!(
-                "{} / {}{}",
-                format_timestamp(position),
-                format_timestamp(duration),
-                status
-            );
-            text(label).footnote()
-        }
-    });
+    let timeline = Text::display(
+        position_seconds
+            .zip(&duration_seconds)
+            .zip(&is_buffering)
+            .map(|((position, duration), is_buffering)| {
+                let status = if is_buffering { "  (Buffering)" } else { "" };
+                format!(
+                    "{} / {}{}",
+                    format_timestamp(position),
+                    format_timestamp(duration.max(0.0)),
+                    status
+                )
+            }),
+    )
+    .footnote();
 
     vstack((
         timeline,
