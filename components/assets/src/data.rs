@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::AssetError;
 #[cfg(feature = "std")]
-use crate::url::ensure_http_allowed;
+use crate::download_remote_bytes;
 
 /// Small binary data, fully loaded into memory.
 ///
@@ -90,31 +90,7 @@ impl Data {
     /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
     #[cfg(feature = "std")]
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
-        ensure_http_allowed(url)?;
-
-        use zenwave::{Client, Method, redirect::FollowRedirect};
-
-        let mut client = FollowRedirect::new(zenwave::client());
-        let response = client
-            .method(Method::GET, url)
-            .await
-            .map_err(|e| AssetError::network(url, None, e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(AssetError::network(
-                url,
-                Some(response.status().as_u16()),
-                "HTTP request failed",
-            ));
-        }
-
-        let bytes = response
-            .into_body()
-            .into_bytes()
-            .await
-            .map_err(|e| AssetError::network(url, None, e.to_string()))?;
-
-        Ok(Self::from_bytes(bytes.to_vec()))
+        Ok(Self::from_bytes(download_remote_bytes(url).await?))
     }
 
     /// Data size in bytes.

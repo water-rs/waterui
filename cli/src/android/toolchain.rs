@@ -3,11 +3,12 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
-    process::{self, Output},
-    time::{SystemTime, UNIX_EPOCH},
+    process::Output,
 };
 
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
+use walkdir::WalkDir;
+use waterui_assets::{download_remote_bytes, write_bytes_atomically};
 
 use crate::{
     android::platform::{ALL_ABIS, AndroidAbi},
@@ -300,55 +301,49 @@ async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
 }
 
 async fn download_file_with_redirect(url: &str, destination: &Path) -> eyre::Result<()> {
-    use zenwave::{Client, Method, redirect::FollowRedirect};
-
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client.method(Method::GET, url).await?;
-    if !response.status().is_success() {
-        return Err(eyre::eyre!(
-            "Failed to download {url}: HTTP {}",
-            response.status()
-        ));
-    }
-
-    let bytes = response.into_body().into_bytes().await?;
-    let destination = destination.to_path_buf();
-    smol::unblock(move || std::fs::write(destination, &bytes)).await?;
+    let bytes = download_remote_bytes(url)
+        .await
+        .map_err(eyre::Report::new)
+        .wrap_err_with(|| format!("Failed to download {url}"))?;
+    write_bytes_atomically(destination, &bytes)
+        .await
+        .map_err(eyre::Report::new)
+        .wrap_err_with(|| {
+            format!(
+                "Failed to write downloaded archive to {}",
+                destination.display()
+            )
+        })?;
     Ok(())
 }
 
 fn find_cmdline_tools_dir(root: &Path) -> eyre::Result<PathBuf> {
-    let mut pending = vec![root.to_path_buf()];
     let sdkmanager_name = sdkmanager_binary_name();
 
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            let is_sdkmanager = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case(sdkmanager_name));
-            if !is_sdkmanager {
-                continue;
-            }
-
-            let bin_dir = path.parent().ok_or_else(|| {
-                eyre::eyre!(
-                    "Invalid Android command-line tools archive layout (missing bin directory)"
-                )
-            })?;
-            let cmdline_tools_dir = bin_dir.parent().ok_or_else(|| {
-                eyre::eyre!(
-                    "Invalid Android command-line tools archive layout (missing cmdline-tools root)"
-                )
-            })?;
-            return Ok(cmdline_tools_dir.to_path_buf());
+    for entry in WalkDir::new(root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
         }
+
+        let path = entry.path();
+        let is_sdkmanager = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(sdkmanager_name));
+        if !is_sdkmanager {
+            continue;
+        }
+
+        let bin_dir = path.parent().ok_or_else(|| {
+            eyre::eyre!("Invalid Android command-line tools archive layout (missing bin directory)")
+        })?;
+        let cmdline_tools_dir = bin_dir.parent().ok_or_else(|| {
+            eyre::eyre!(
+                "Invalid Android command-line tools archive layout (missing cmdline-tools root)"
+            )
+        })?;
+        return Ok(cmdline_tools_dir.to_path_buf());
     }
 
     Err(eyre::eyre!(
@@ -364,20 +359,23 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
     }
 
     let cmdline_tools_root = sdk_root.join("cmdline-tools");
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock must be after UNIX_EPOCH")
-        .as_nanos();
-    let temp_dir =
-        cmdline_tools_root.join(format!(".water-cmdline-tools-{}-{nonce}", process::id()));
-    let extract_dir = temp_dir.join("extract");
-    let archive_path = temp_dir.join("commandline-tools.zip");
-
-    {
+    let temp_dir = {
         let cmdline_tools_root = cmdline_tools_root.clone();
-        let extract_dir = extract_dir.clone();
         smol::unblock(move || {
             std::fs::create_dir_all(&cmdline_tools_root)?;
+            tempfile::Builder::new()
+                .prefix(".water-cmdline-tools-")
+                .tempdir_in(&cmdline_tools_root)
+                .map_err(eyre::Report::from)
+        })
+        .await?
+    };
+    let extract_dir = temp_dir.path().join("extract");
+    let archive_path = temp_dir.path().join("commandline-tools.zip");
+
+    {
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || {
             std::fs::create_dir_all(&extract_dir)?;
             Ok::<_, eyre::Report>(())
         })
@@ -416,8 +414,6 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
     }
 
     if sdkmanager.exists() {
-        let temp_dir = temp_dir.clone();
-        let _ = smol::unblock(move || std::fs::remove_dir_all(temp_dir)).await;
         Ok(())
     } else {
         Err(eyre::eyre!(
@@ -1452,8 +1448,11 @@ async fn verify_ndk_host_toolchain_executable(
     {
         let probe_source_for_write = probe_source.clone();
         smol::unblock(move || {
-            std::fs::write(&probe_source_for_write, b"int main(void) { return 0; }
-")
+            std::fs::write(
+                &probe_source_for_write,
+                b"int main(void) { return 0; }
+",
+            )
         })
         .await
         .map_err(|error| {
@@ -1524,9 +1523,7 @@ async fn verify_ndk_host_toolchain_executable(
         )
     };
     Err(ToolchainError::unfixable(
-        format!(
-            "Android NDK toolchain exists but failed to execute on this host: {detail}"
-        ),
+        format!("Android NDK toolchain exists but failed to execute on this host: {detail}"),
         suggestion,
     ))
 }
