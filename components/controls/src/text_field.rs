@@ -8,7 +8,6 @@ use nami::{Binding, Computed};
 use waterui_core::Str;
 use waterui_core::configurable;
 use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
-use waterui_locale::locale_binding;
 use waterui_text::{Text, TextConfig, styled::StyledStr};
 
 use crate::label::IntoLabel;
@@ -146,14 +145,12 @@ impl TextField {
 
 impl View for TextField {
     fn body(self, env: &Environment) -> impl View {
-        let locale = locale_binding(env).get();
-        let prompt_env = env.clone();
         let selection_menu = resolve_menu_items(self.0.selection_menu, env);
 
         AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
             label: self.0.label,
             value: self.0.value,
-            prompt: self.0.prompt.__resolve_with(&prompt_env, &locale),
+            prompt: self.0.prompt.resolve(env),
             keyboard: self.0.keyboard,
             selection_menu,
             line_limit: self.0.line_limit,
