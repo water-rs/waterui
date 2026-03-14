@@ -209,6 +209,7 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use crate::ViewDimensions;
+    use crate::measure_layout;
 
     struct MockSubView {
         size: Size,
@@ -221,6 +222,28 @@ mod tests {
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
         }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    struct GuidedSubview {
+        size: Size,
+        horizontal_guide: f32,
+        vertical_guide: f32,
+    }
+
+    impl SubView for GuidedSubview {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
+                .with_horizontal(HorizontalAlignment::Leading, self.horizontal_guide)
+                .with_vertical(VerticalAlignment::Top, self.vertical_guide)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+
         fn priority(&self) -> i32 {
             0
         }
@@ -265,5 +288,29 @@ mod tests {
         // Child size is bounds minus padding
         assert!((rects[0].width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
         assert!((rects[0].height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
+    }
+
+    #[test]
+    fn test_padding_offsets_explicit_guides() {
+        let layout = PaddingLayout {
+            edges: EdgeInsets::new(10.0, 0.0, 15.0, 0.0),
+        };
+        let child = GuidedSubview {
+            size: Size::new(50.0, 30.0),
+            horizontal_guide: 8.0,
+            vertical_guide: 6.0,
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+
+        let dimensions = measure_layout(&layout, ProposalSize::UNSPECIFIED, &children);
+
+        assert_eq!(
+            dimensions.explicit_horizontal(HorizontalAlignment::Leading),
+            Some(23.0)
+        );
+        assert_eq!(
+            dimensions.explicit_vertical(VerticalAlignment::Top),
+            Some(16.0)
+        );
     }
 }
