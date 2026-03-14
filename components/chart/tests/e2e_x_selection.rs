@@ -99,8 +99,14 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-x-value");
     let initial = app.capture_snapshot(&suite, "line-x-value", "00_initial");
-    assert!(initial.path().is_file(), "line-x-value: initial snapshot missing");
-    app.query().role(Role::LABEL).label("x:none").assert_exists();
+    assert!(
+        initial.path().is_file(),
+        "line-x-value: initial snapshot missing"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("x:none")
+        .assert_exists();
 
     assert!(
         app.query()
@@ -114,13 +120,19 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
         .get()
         .expect("line-x-value: tap should populate x selection");
     assert_close(actual_x, expected_x, 0.05, "line-x-value");
-    app.query().role(Role::LABEL).label("x:none").assert_not_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("x:none")
+        .assert_not_exists();
     app.query()
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "line-x-value", "01_selected");
-    assert!(selected.path().is_file(), "line-x-value: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "line-x-value: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -150,7 +162,10 @@ fn line_chart_x_selection_range_tracks_drag_span() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-x-range");
     let initial = app.capture_snapshot(&suite, "line-x-range", "00_initial");
-    assert!(initial.path().is_file(), "line-x-range: initial snapshot missing");
+    assert!(
+        initial.path().is_file(),
+        "line-x-range: initial snapshot missing"
+    );
     app.query()
         .role(Role::LABEL)
         .label("x-range:none")
@@ -178,7 +193,10 @@ fn line_chart_x_selection_range_tracks_drag_span() {
         .label(expected_label)
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "line-x-range", "01_selected");
-    assert!(selected.path().is_file(), "line-x-range: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "line-x-range: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -205,8 +223,14 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-y-value");
     let initial = app.capture_snapshot(&suite, "line-y-value", "00_initial");
-    assert!(initial.path().is_file(), "line-y-value: initial snapshot missing");
-    app.query().role(Role::LABEL).label("y:none").assert_exists();
+    assert!(
+        initial.path().is_file(),
+        "line-y-value: initial snapshot missing"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("y:none")
+        .assert_exists();
 
     assert!(
         app.query()
@@ -220,13 +244,19 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
         .get()
         .expect("line-y-value: tap should populate y selection");
     assert_close(actual_y, expected_y, 0.05, "line-y-value");
-    app.query().role(Role::LABEL).label("y:none").assert_not_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("y:none")
+        .assert_not_exists();
     app.query()
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "line-y-value", "01_selected");
-    assert!(selected.path().is_file(), "line-y-value: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "line-y-value: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -256,7 +286,10 @@ fn line_chart_y_selection_range_tracks_drag_span() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-y-range");
     let initial = app.capture_snapshot(&suite, "line-y-range", "00_initial");
-    assert!(initial.path().is_file(), "line-y-range: initial snapshot missing");
+    assert!(
+        initial.path().is_file(),
+        "line-y-range: initial snapshot missing"
+    );
     app.query()
         .role(Role::LABEL)
         .label("y-range:none")
@@ -284,7 +317,10 @@ fn line_chart_y_selection_range_tracks_drag_span() {
         .label(expected_label)
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "line-y-range", "01_selected");
-    assert!(selected.path().is_file(), "line-y-range: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "line-y-range: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -318,9 +354,18 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-xy-value");
     let initial = app.capture_snapshot(&suite, "line-xy-value", "00_initial");
-    assert!(initial.path().is_file(), "line-xy-value: initial snapshot missing");
-    app.query().role(Role::LABEL).label("x:none").assert_exists();
-    app.query().role(Role::LABEL).label("y:none").assert_exists();
+    assert!(
+        initial.path().is_file(),
+        "line-xy-value: initial snapshot missing"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("x:none")
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("y:none")
+        .assert_exists();
 
     assert!(
         app.query()
@@ -355,7 +400,10 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
         .label(format!("y:{expected_y:.2}"))
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "line-xy-value", "01_selected");
-    assert!(selected.path().is_file(), "line-xy-value: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "line-xy-value: selected snapshot missing"
+    );
 }
 
 #[test]
@@ -383,8 +431,14 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "depth-x-value");
     let initial = app.capture_snapshot(&suite, "depth-x-value", "00_initial");
-    assert!(initial.path().is_file(), "depth-x-value: initial snapshot missing");
-    app.query().role(Role::LABEL).label("x:none").assert_exists();
+    assert!(
+        initial.path().is_file(),
+        "depth-x-value: initial snapshot missing"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("x:none")
+        .assert_exists();
 
     assert!(
         app.query()
@@ -398,17 +452,25 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
         .get()
         .expect("depth-x-value: tap should populate x selection");
     assert_close(actual_x, expected_x, 0.05, "depth-x-value");
-    app.query().role(Role::LABEL).label("x:none").assert_not_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("x:none")
+        .assert_not_exists();
     app.query()
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
     let selected = app.capture_snapshot(&suite, "depth-x-value", "01_selected");
-    assert!(selected.path().is_file(), "depth-x-value: selected snapshot missing");
+    assert!(
+        selected.path().is_file(),
+        "depth-x-value: selected snapshot missing"
+    );
 }
 
 #[test]
-#[should_panic(expected = "chart_x_selection and chart_x_selection_range cannot be active on the same chart")]
+#[should_panic(
+    expected = "chart_x_selection and chart_x_selection_range cannot be active on the same chart"
+)]
 fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
     let data = point_series();
     let x_value = Binding::container(None::<f32>);
@@ -426,7 +488,9 @@ fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
 }
 
 #[test]
-#[should_panic(expected = "chart_y_selection and chart_y_selection_range cannot be active on the same chart")]
+#[should_panic(
+    expected = "chart_y_selection and chart_y_selection_range cannot be active on the same chart"
+)]
 fn line_chart_rejects_simultaneous_y_value_and_range_selection() {
     let data = point_series();
     let y_value = Binding::container(None::<f32>);

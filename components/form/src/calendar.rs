@@ -309,15 +309,18 @@ impl View for SingleDayCellView {
         let selection = self.selection;
         let range = self.range;
         let decorated = self.decorated;
-        Dynamic::watch(selection.zip(&decorated), move |(selected_date, decorated_dates)| {
-            single_day_cell_content(
-                cell,
-                selected_date,
-                &range,
-                selection.clone(),
-                &decorated_dates,
-            )
-        })
+        Dynamic::watch(
+            selection.zip(&decorated),
+            move |(selected_date, decorated_dates)| {
+                single_day_cell_content(
+                    cell,
+                    selected_date,
+                    &range,
+                    selection.clone(),
+                    &decorated_dates,
+                )
+            },
+        )
     }
 }
 
@@ -351,15 +354,18 @@ impl View for MultiDayCellView {
         let selection = self.selection;
         let range = self.range;
         let decorated = self.decorated;
-        Dynamic::watch(selection.zip(&decorated), move |(selected_dates, decorated_dates)| {
-            multi_day_cell_content(
-                cell,
-                &selected_dates,
-                &range,
-                selection.clone(),
-                &decorated_dates,
-            )
-        })
+        Dynamic::watch(
+            selection.zip(&decorated),
+            move |(selected_dates, decorated_dates)| {
+                multi_day_cell_content(
+                    cell,
+                    &selected_dates,
+                    &range,
+                    selection.clone(),
+                    &decorated_dates,
+                )
+            },
+        )
     }
 }
 

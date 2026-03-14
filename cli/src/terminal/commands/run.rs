@@ -1030,14 +1030,20 @@ mod tests {
         let err = validate_device_arg(TargetPlatform::Linux, TargetBackend::Gtk4, Some("foo"))
             .expect_err("gtk4 with --device should fail");
         assert!(err.to_string().contains("--device is not supported"));
-        let err = validate_device_arg(TargetPlatform::Linux, TargetBackend::Hydrolysis, Some("foo"))
-            .expect_err("hydrolysis with --device should fail");
+        let err = validate_device_arg(
+            TargetPlatform::Linux,
+            TargetBackend::Hydrolysis,
+            Some("foo"),
+        )
+        .expect_err("hydrolysis with --device should fail");
         assert!(err.to_string().contains("--device is not supported"));
     }
 
     #[test]
     fn accepts_device_with_non_gtk4_backend() {
-        assert!(validate_device_arg(TargetPlatform::Ios, TargetBackend::Apple, Some("sim-1")).is_ok());
+        assert!(
+            validate_device_arg(TargetPlatform::Ios, TargetBackend::Apple, Some("sim-1")).is_ok()
+        );
     }
 
     #[test]

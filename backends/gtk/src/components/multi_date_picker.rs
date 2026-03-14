@@ -52,17 +52,13 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
             let calendar = calendar.clone();
             let value = value.clone();
             let decorated = decorated.clone();
-            move |_, _| {
-                apply_multi_date_state(&calendar, &value.get(), &decorated.get())
-            }
+            move |_, _| apply_multi_date_state(&calendar, &value.get(), &decorated.get())
         });
         calendar.connect_notify_local(Some("year"), {
             let calendar = calendar.clone();
             let value = value.clone();
             let decorated = decorated.clone();
-            move |_, _| {
-                apply_multi_date_state(&calendar, &value.get(), &decorated.get())
-            }
+            move |_, _| apply_multi_date_state(&calendar, &value.get(), &decorated.get())
         });
 
         let value_guard = value.watch({
@@ -92,7 +88,10 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
         });
 
         root.append(&calendar);
-        store_watcher_guards(&root, vec![Box::new(value_guard), Box::new(decorated_guard)]);
+        store_watcher_guards(
+            &root,
+            vec![Box::new(value_guard), Box::new(decorated_guard)],
+        );
         root.upcast()
     }
 }

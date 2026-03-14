@@ -9,3 +9,4 @@ Keep the change set strictly scoped to the task.
 - Prefer file-scoped formatting and verification on the exact files you intentionally changed.
 - Check `git status --short` before and after formatting or codegen steps. If unrelated files appear, stop and narrow the command instead of continuing with a polluted diff.
 - Only use repo-wide formatting or sweeping rewrites when the user explicitly asks for them or the task genuinely requires touching the whole workspace.
+- Please use `waterui` skill and `waterui-agent-workspace` skill if have.

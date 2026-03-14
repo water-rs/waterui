@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use waterui::component::list::Move;
-use waterui_core::handler::BoxedAction;
 use waterui_core::Environment;
+use waterui_core::handler::BoxedAction;
 
 use crate::{IntoFFI, WuiEnv};
 
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn waterui_call_index_action(
         unsafe { crate::expect_non_null_mut(action, "waterui_call_index_action", "action") };
     let env = unsafe { crate::expect_non_null(env, "waterui_call_index_action", "env") };
     let _ = crate::ffi_boundary("waterui_call_index_action", || {
-        (action.0 .0)(env, index);
+        (action.0.0)(env, index);
     });
 }
 
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn waterui_call_move_action(
         unsafe { crate::expect_non_null_mut(action, "waterui_call_move_action", "action") };
     let env = unsafe { crate::expect_non_null(env, "waterui_call_move_action", "env") };
     let _ = crate::ffi_boundary("waterui_call_move_action", || {
-        (action.0 .0)(env, Move::new(from_index, to_index));
+        (action.0.0)(env, Move::new(from_index, to_index));
     });
 }
 
