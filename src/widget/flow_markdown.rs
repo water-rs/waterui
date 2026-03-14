@@ -104,9 +104,8 @@ impl FlowMarkdown {
 
 impl View for FlowMarkdown {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
+        let Self { source, config } = self;
         let (handler, dynamic) = Dynamic::new();
-        let source = self.source.clone();
-        let config = self.config.clone();
         let state = Rc::new(RefCell::new(FlowMarkdownState::new(config)));
 
         let initial = source.get();
@@ -120,7 +119,6 @@ impl View for FlowMarkdown {
         let guard_source = source.clone();
         let guard = source.watch({
             let state = Rc::clone(&state);
-            let handler = handler.clone();
             move |ctx: Context<Str>| {
                 let metadata = ctx.metadata().clone();
                 let markdown = ctx.into_value();
@@ -478,11 +476,11 @@ impl FlowMarkdownState {
             if !changed_kinds.contains(&kind) {
                 continue;
             }
-            if let Some(FlowAnimationPolicy::Typewriter {
+            if let FlowAnimationPolicy::Typewriter {
                 cps,
                 batch_ms,
                 fade_in,
-            }) = self.animation_policy(kind)
+            } = self.animation_policy(kind)
             {
                 let batch_ms = batch_ms.max(1);
                 let batch_chars = ((u64::from(cps.max(1)) * batch_ms) / 1000).max(1) as usize;
@@ -495,7 +493,7 @@ impl FlowMarkdownState {
     fn has_typewriter_policy(&self, kind: FlowElementKind) -> bool {
         matches!(
             self.animation_policy(kind),
-            Some(FlowAnimationPolicy::Typewriter { .. })
+            FlowAnimationPolicy::Typewriter { .. }
         )
     }
 
@@ -508,7 +506,7 @@ impl FlowMarkdownState {
             if !changed_kinds.contains(&kind) {
                 continue;
             }
-            if let Some(FlowAnimationPolicy::Fade(animation)) = self.animation_policy(kind) {
+            if let FlowAnimationPolicy::Fade(animation) = self.animation_policy(kind) {
                 metadata = metadata.with(animation);
                 break;
             }
@@ -516,8 +514,8 @@ impl FlowMarkdownState {
         metadata
     }
 
-    fn animation_policy(&self, kind: FlowElementKind) -> Option<FlowAnimationPolicy> {
-        Some(animation_policy_for_kind(&self.config, kind))
+    fn animation_policy(&self, kind: FlowElementKind) -> FlowAnimationPolicy {
+        animation_policy_for_kind(&self.config, kind)
     }
 }
 
@@ -540,11 +538,12 @@ fn animation_policy_for_kind(
                 batch_ms: 40,
                 fade_in: config.typewriter_token_fade_in.clone(),
             },
-            FlowElementKind::CodeBlock | FlowElementKind::Table => FlowAnimationPolicy::None,
+            FlowElementKind::CodeBlock | FlowElementKind::Table | FlowElementKind::Hr => {
+                FlowAnimationPolicy::None
+            }
             FlowElementKind::Image => {
                 FlowAnimationPolicy::Fade(Animation::ease_in_out(Duration::from_millis(180)))
             }
-            FlowElementKind::Hr => FlowAnimationPolicy::None,
         },
         FlowAnimationPreset::Minimal => match kind {
             FlowElementKind::Image => {
