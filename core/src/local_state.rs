@@ -99,6 +99,28 @@ impl LocalStateStore {
         }
     }
 
+    /// Returns the current slot value or initializes it on first use via a type-erased entry.
+    #[must_use]
+    pub fn get_or_init_dynamic(
+        &self,
+        scope: &LocalStateScope,
+        type_id: TypeId,
+        init: impl FnOnce() -> Rc<dyn Any> + 'static,
+    ) -> Rc<dyn Any> {
+        let init = RefCell::new(Some(init));
+        (self.bind_slot)(
+            scope.path,
+            scope.next_slot_index(),
+            type_id,
+            Box::new(move || {
+                let init = init.borrow_mut().take().unwrap_or_else(|| {
+                    panic!("LocalStateStore initializer was invoked more than once")
+                });
+                init()
+            }),
+        )
+    }
+
     /// Returns the current slot value or initializes it on first use.
     #[must_use]
     pub fn get_or_init<T: 'static>(
@@ -106,17 +128,10 @@ impl LocalStateStore {
         scope: &LocalStateScope,
         init: impl FnOnce() -> T + 'static,
     ) -> Rc<T> {
-        let init = RefCell::new(Some(init));
-        let value = (self.bind_slot)(
-            scope.path,
-            scope.next_slot_index(),
+        let value = self.get_or_init_dynamic(
+            scope,
             TypeId::of::<T>(),
-            Box::new(move || {
-                let init = init.borrow_mut().take().unwrap_or_else(|| {
-                    panic!("LocalStateStore initializer was invoked more than once")
-                });
-                Rc::new(init()) as Rc<dyn Any>
-            }),
+            move || Rc::new(init()) as Rc<dyn Any>,
         );
         value.downcast::<T>().unwrap_or_else(|_| {
             panic!(

@@ -24,6 +24,8 @@ impl Role {
     pub const IMAGE: Self = Self(AccessibilityRole::Image);
     pub const LIST: Self = Self(AccessibilityRole::List);
     pub const LIST_ITEM: Self = Self(AccessibilityRole::ListItem);
+    pub const TAB: Self = Self(AccessibilityRole::Tab);
+    pub const TAB_LIST: Self = Self(AccessibilityRole::TabList);
     pub const COMBOBOX: Self = Self(AccessibilityRole::ComboBox);
     pub const OPTION: Self = Self(AccessibilityRole::ListBoxOption);
 
