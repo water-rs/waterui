@@ -100,7 +100,7 @@ impl AnyView {
     #[doc(hidden)]
     #[must_use]
     pub fn stable_ptr(&self) -> *const () {
-        (&*self.0 as *const dyn AnyViewImpl).cast::<()>()
+        std::ptr::from_ref::<dyn AnyViewImpl>(&*self.0).cast::<()>()
     }
 
     /// Downcasts `AnyView` to a concrete view type without any runtime checks.

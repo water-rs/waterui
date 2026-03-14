@@ -56,7 +56,7 @@ impl<T: MetadataKey> Metadata<T> {
 
 impl<T: MetadataKey> View for Metadata<T> {
     fn body(self, _env: &Environment) -> impl View {
-        Self::panic_not_caught()
+        Self::panic_not_caught();
     }
 }
 
