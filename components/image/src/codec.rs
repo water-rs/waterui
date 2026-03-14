@@ -384,8 +384,8 @@ fn parse_heif_container(data: &[u8]) -> Result<Option<HeifContainerInfo>, String
         return Ok(None);
     }
 
-    let ftyp =
-        Ftyp::read_atom(&header, &mut cursor).map_err(|error| format!("failed to read ftyp: {error}"))?;
+    let ftyp = Ftyp::read_atom(&header, &mut cursor)
+        .map_err(|error| format!("failed to read ftyp: {error}"))?;
     if !ftyp_contains_heif_brand(&ftyp) {
         return Ok(None);
     }

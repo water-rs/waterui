@@ -31,6 +31,8 @@ pub mod shaders;
 
 /// Offscreen image generators.
 pub mod image_generator;
+/// Shared container-aware image decode helpers.
+pub mod image_decode;
 
 /// Offscreen image analysis helpers.
 pub mod image_analysis;

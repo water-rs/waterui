@@ -406,7 +406,7 @@ mod tests {
                 .await
                 .expect("body should load");
 
-            let platform_probe = crate::image_codec::decode_with_platform(&bytes);
+            let platform_probe = waterkit_codec::decode_image_platform(&bytes);
             let platform_ok = platform_probe.is_ok();
             if let Err(err) = &platform_probe {
                 eprintln!(
@@ -438,9 +438,9 @@ mod tests {
                     DecodePath::SoftwareFallback,
                     "decode path should fall back to software when platform probe fails"
                 );
-                let software_probe = crate::image_codec::decode_with_software_fallback(&bytes)
+                let software_probe = waterkit_codec::decode_image(&bytes)
                     .expect("AV1 software fallback should decode on platform AV1 decode miss");
-                assert!(software_probe.width > 0 && software_probe.height > 0);
+                assert!(software_probe.width() > 0 && software_probe.height() > 0);
             }
             eprintln!(
                 "[av1_decode_fallback_probe_smoke] platform_ok={platform_ok} selected_path={path:?}"

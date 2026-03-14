@@ -34,6 +34,7 @@ pollster = "0.4"
 inventory = "0.3"
 dirs = "5.0"
 rayon = "1.11"
+mp4parse = "0.17"
 
 [build-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }

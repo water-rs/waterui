@@ -273,7 +273,7 @@ pub(crate) fn calendar_rows<V: View>(
             .map(&mut cell_view)
             .collect::<HStack<_>>()
             .spacing(6.0);
-        rows.push(AnyView::new(row));
+        rows.push(row);
     }
 
     rows.into_iter().collect::<VStack<_>>().spacing(6.0)
