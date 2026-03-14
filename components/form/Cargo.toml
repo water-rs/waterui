@@ -22,7 +22,6 @@ waterui-text.workspace = true
 waterui-url.workspace = true
 waterui-graphics.workspace = true
 waterkit-dialog = { workspace = true, optional = true }
-waterkit-fs = { workspace = true, optional = true }
 tracing.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
@@ -33,7 +32,7 @@ getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] 
 
 [features]
 default = ["std"]
-std = ["dep:waterkit-dialog", "dep:waterkit-fs"]
+std = ["dep:waterkit-dialog"]
 
 [dev-dependencies]
 waterui.workspace = true
