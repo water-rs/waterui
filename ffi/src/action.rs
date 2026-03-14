@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2);
 
         unsafe {
-            crate::drop_action(action_ptr);
+            waterui_drop_action(action_ptr);
             let _ = Box::from_raw(env_ptr as *mut waterui::Environment);
         }
     }
