@@ -1,4 +1,4 @@
-//! Video components and playback API for WaterUI.
+//! Video components and playback API for `WaterUI`.
 
 use waterui_core::Environment;
 
@@ -19,7 +19,7 @@ mod subtitles;
 
 /// Installs the Rust/GPU video player hooks into the provided environment.
 ///
-/// This forces `Video` / `VideoPlayer` to render through the WaterUI
+/// This forces `Video` / `VideoPlayer` to render through the `WaterUI`
 /// `GpuSurface` playback pipeline.
 pub fn install_rust_player_hooks(env: &mut Environment) {
     runtime_player::install_platform_hooks(env);
@@ -28,7 +28,7 @@ pub fn install_rust_player_hooks(env: &mut Environment) {
 /// Installs platform video hooks into the provided environment.
 ///
 /// On Android this installs Rust player hooks so `Video`/`VideoPlayer`
-/// render through the WaterUI GPU pipeline instead of native player widgets.
+/// render through the `WaterUI` GPU pipeline instead of native player widgets.
 pub fn install_platform_hooks(env: &mut Environment) {
     #[cfg(target_os = "android")]
     {
