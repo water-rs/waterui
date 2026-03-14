@@ -187,7 +187,7 @@ fn media_view(media: Media) -> AnyView {
         }
         Media::Video(url) => {
             tracing::debug!("Displaying video from: {}", url);
-            video_view(url)
+            video_view(url).anyview()
         }
         Media::LivePhoto(source) => {
             tracing::debug!("Displaying live photo");
@@ -203,7 +203,7 @@ fn media_view(media: Media) -> AnyView {
     }
 }
 
-fn video_view(url: Url) -> AnyView {
+fn video_view(url: Url) -> impl View {
     vstack((
         VideoPlayer::new(url)
             .show_controls(true)
@@ -213,7 +213,6 @@ fn video_view(url: Url) -> AnyView {
             .foreground(MutedForeground)
             .padding_with(8.0),
     ))
-    .anyview()
 }
 
 fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {

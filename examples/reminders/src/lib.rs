@@ -4,7 +4,6 @@ use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
-use waterui::reactive::binding;
 use waterui::shape::RoundedRectangle;
 use waterui_icon::SystemIcon;
 
@@ -269,45 +268,39 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
             let is_selected = selection.clone().map(move |current| current == Some(dest));
             let selection_for_action = selection.clone();
             let query = query.clone();
+            let bg = is_selected
+                .select(
+                    Srgb::WHITE.with_opacity(0.14),
+                    Srgb::WHITE.with_opacity(0.0),
+                )
+                .computed();
+            let count = query.map(move |query| {
+                if let Some(query) = query.as_deref() {
+                    let (today_rows, upcoming_rows) = reminders_for(dest);
+                    filter_reminders(today_rows, Some(query)).len() as i32
+                        + filter_reminders(upcoming_rows, Some(query)).len() as i32
+                } else {
+                    row.count
+                }
+            });
 
-            ListItem::new(Dynamic::watch(
-                is_selected.zip(&query),
-                move |(active, query)| {
-                    let count = if let Some(query) = query.as_deref() {
-                        let (today_rows, upcoming_rows) = reminders_for(dest);
-                        filter_reminders(today_rows, Some(query)).len() as i32
-                            + filter_reminders(upcoming_rows, Some(query)).len() as i32
-                    } else {
-                        row.count
-                    };
-
-                    let bg = if active {
-                        Srgb::WHITE.with_opacity(0.14)
-                    } else {
-                        Srgb::WHITE.with_opacity(0.0)
-                    };
-
-                    AnyView::new(
-                        hstack((
-                            SystemIcon::from_static(dest.icon_name())
-                                .size(18.0, 18.0)
-                                .foreground(dest.icon_color()),
-                            text(dest.title()).body().foreground(Foreground),
-                            spacer(),
-                            text(format!("{count}"))
-                                .caption()
-                                .foreground(MutedForeground),
-                        ))
-                        .padding_with(EdgeInsets::symmetric(10.0, 14.0))
-                        .background(bg)
-                        .clip(RoundedRectangle::new(10.0))
-                        .on_tap({
-                            let selection_for_action = selection_for_action.clone();
-                            move || selection_for_action.set(Some(dest))
-                        }),
-                    )
-                },
-            ))
+            ListItem::new(
+                hstack((
+                    SystemIcon::from_static(dest.icon_name())
+                        .size(18.0, 18.0)
+                        .foreground(dest.icon_color()),
+                    text(dest.title()).body().foreground(Foreground),
+                    spacer(),
+                    text!("{count}").caption().foreground(MutedForeground),
+                ))
+                .padding_with(EdgeInsets::symmetric(10.0, 14.0))
+                .background(bg)
+                .clip(RoundedRectangle::new(10.0))
+                .on_tap({
+                    let selection_for_action = selection_for_action.clone();
+                    move || selection_for_action.set(Some(dest))
+                }),
+            )
         }),
     ))
     .width(300.0)
@@ -321,40 +314,32 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
         let today_rows = filter_reminders(today_rows, normalized_query.as_deref());
         let upcoming_rows = filter_reminders(upcoming_rows, normalized_query.as_deref());
 
-        AnyView::new(
-            vstack((
-                content_header(dest),
-                Divider,
-                reminder_section("Today", today_rows),
-                if upcoming_rows.is_empty() {
-                    AnyView::new(spacer())
-                } else {
-                    AnyView::new(reminder_section("Upcoming", upcoming_rows))
-                },
-            ))
-            .background(Material::Regular),
-        )
+        vstack((
+            content_header(dest),
+            Divider,
+            reminder_section("Today", today_rows),
+            (!upcoming_rows.is_empty()).then(|| reminder_section("Upcoming", upcoming_rows)),
+        ))
+        .background(Material::Regular)
     })
     .title(dest.title())
     .searchable(&search, "Search reminders")
     .navigation_bar_trailing(
-        button(SystemIcon::PLUS.size(16.0, 16.0))
+        button(Label::new("").icon(SystemIcon::PLUS))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )
 }
 
 fn placeholder_view() -> impl View {
-    zstack((
-        Material::Regular,
-        vstack((
-            text("Select a list").title().foreground(Foreground),
-            text("Choose one of your reminder collections from the sidebar.")
-                .body()
-                .foreground(MutedForeground),
-        ))
-        .spacing(10.0),
+    vstack((
+        text("Select a list").title().foreground(Foreground),
+        text("Choose one of your reminder collections from the sidebar.")
+            .body()
+            .foreground(MutedForeground),
     ))
+    .spacing(10.0)
+    .background(Material::Regular)
 }
 
 fn content_header(dest: SidebarDestination) -> impl View {
@@ -405,7 +390,7 @@ fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view(), env)
+    App::new(main_view, env)
 }
 
 waterui_ffi::export!();
