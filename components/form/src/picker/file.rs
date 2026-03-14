@@ -8,7 +8,7 @@ use waterui_text::Text;
 use waterui_url::Url;
 
 #[cfg(feature = "std")]
-use {std::path::Path, waterkit_dialog::FileDialog, waterkit_fs::WaterFs};
+use waterkit_dialog::FileDialog;
 
 /// Configuration for a file picker component.
 #[derive(Debug, Clone)]
@@ -64,13 +64,18 @@ impl<Label: IntoLabel + 'static> View for FilePicker<Label> {
             async move {
                 #[cfg(feature = "std")]
                 {
-                    let selected_paths: Option<Vec<std::path::PathBuf>> = match if self.num <= 1 {
+                    let dialog = if self.import {
+                        FileDialog::new().import_to_cache_subdir("waterui/file-picker-imports")
+                    } else {
                         FileDialog::new()
+                    };
+                    let selected_paths: Option<Vec<std::path::PathBuf>> = match if self.num <= 1 {
+                        dialog
                             .show_open_single_file()
                             .await
                             .map(|path| path.map(|path| vec![path]))
                     } else {
-                        FileDialog::new().show_open_multiple_files().await
+                        dialog.show_open_multiple_files().await
                     } {
                         Ok(paths) => paths,
                         Err(error) => {
@@ -89,26 +94,7 @@ impl<Label: IntoLabel + 'static> View for FilePicker<Label> {
 
                     let mut urls = Vec::with_capacity(selected_paths.len());
                     for path in selected_paths.into_iter().take(self.num.max(1)) {
-                        let selected_path = if self.import {
-                            match WaterFs::import_file_to_cache(
-                                &path,
-                                Path::new("waterui/file-picker-imports"),
-                            ) {
-                                Ok(imported) => imported,
-                                Err(error) => {
-                                    tracing::warn!(
-                                        "FilePicker failed to import selected file: {error}"
-                                    );
-                                    return;
-                                }
-                            }
-                        } else {
-                            path
-                        };
-
-                        urls.push(Url::from_file_path_str(
-                            selected_path.to_string_lossy().to_string(),
-                        ));
+                        urls.push(Url::from_file_path_str(path.to_string_lossy().to_string()));
                     }
                     value.set(urls);
                 }
