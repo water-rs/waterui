@@ -1,7 +1,7 @@
 //! GPU texture filters using wgpu.
 //!
 //! `filtrate` provides GPU-accelerated image filters that work with any wgpu texture.
-//! It's designed to be standalone and usable outside of WaterUI - for images, video frames,
+//! It's designed to be standalone and usable outside of `WaterUI` - for images, video frames,
 //! render targets, or any GPU texture.
 //!
 //! # Features
