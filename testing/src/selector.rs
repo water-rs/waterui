@@ -7,7 +7,7 @@ use crate::app::MountedApp;
 use crate::semantics::{NodeBounds, NodeId, NodeSnapshot, Role};
 
 /// Chainable semantic selector.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Selector {
     role: Option<Role>,
     label_exact: Option<String>,
@@ -17,6 +17,23 @@ pub struct Selector {
     checked: Option<bool>,
     expanded: Option<bool>,
     value_exact: Option<String>,
+    hidden: Option<bool>,
+}
+
+impl Default for Selector {
+    fn default() -> Self {
+        Self {
+            role: None,
+            label_exact: None,
+            label_contains: None,
+            enabled: None,
+            selected: None,
+            checked: None,
+            expanded: None,
+            value_exact: None,
+            hidden: Some(false),
+        }
+    }
 }
 
 impl Selector {
@@ -68,6 +85,12 @@ impl Selector {
         self
     }
 
+    #[must_use]
+    pub const fn hidden(mut self, hidden: bool) -> Self {
+        self.hidden = Some(hidden);
+        self
+    }
+
     pub(crate) fn matches(&self, node: &NodeSnapshot) -> bool {
         if let Some(role) = self.role
             && node.role().as_accesskit() != role.as_accesskit()
@@ -116,6 +139,12 @@ impl Selector {
 
         if let Some(expected) = self.value_exact.as_deref()
             && node.value() != Some(expected)
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.hidden
+            && node.hidden() != expected
         {
             return false;
         }
