@@ -41,6 +41,7 @@ use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
 use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
 use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_graphics::{AppliedFilter, ResolvedGradient, color::ResolvedColor};
@@ -799,6 +800,7 @@ impl GtkRenderer {
         Self::register_native::<SecureFieldConfig>(dispatcher);
         Self::register_native::<PickerConfig>(dispatcher);
         Self::register_native::<DatePickerConfig>(dispatcher);
+        Self::register_native::<MultiDatePickerConfig>(dispatcher);
         Self::register_native::<ColorPickerConfig>(dispatcher);
         Self::register_native::<Menu>(dispatcher);
         Self::register_native::<SystemIcon>(dispatcher);

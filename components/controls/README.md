@@ -200,27 +200,10 @@ TextField::styled(&styled)
 
 **Keyboard types**: `Text` (default), `Email`, `URL`, `Number`, `PhoneNumber`
 
-> Note: Multi-line editing (`line_limit > 1` or `disable_line_limit`) is not implemented yet.
+> Note: Multi-line editing is not implemented yet.
 >
 > `TextField::new(&Binding<Str>)` is plain-only and will panic if write-back contains rich styles.
 > Use `TextField::styled(&Binding<StyledStr>)` for styled bindings.
-
-### RichTextEditor
-
-Rich text editor API (styled binding input).
-
-```rust
-use waterui::prelude::*;
-use waterui::reactive::binding;
-use waterui::text::styled::StyledStr;
-
-let content = binding(StyledStr::default());
-
-RichTextEditor::new(&content)
-    .placeholder("Start writing...")
-```
-
-> `RichTextField` has been removed.
 > For field-style rich text input, use `TextField::styled(&Binding<StyledStr>)`.
 >
 > For selected-text menu customization, use `TextField::selection_menu(...)`.
@@ -358,7 +341,6 @@ vstack((
 - **`Slider`**: Continuous range selector (f64)
 - **`Stepper`**: Discrete numeric adjuster (i32)
 - **`TextField`**: Single-line text input
-- **`RichTextEditor`**: Rich text editor API on styled bindings
 
 ### Convenience Functions
 

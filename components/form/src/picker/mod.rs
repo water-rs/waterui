@@ -4,6 +4,7 @@ pub mod date;
 pub use date::DatePicker;
 pub mod file;
 pub mod multi_date;
+pub use multi_date::{MultiDatePicker, MultiDatePickerConfig};
 
 use alloc::vec::Vec;
 use nami::SignalExt;

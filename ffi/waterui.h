@@ -666,6 +666,14 @@ typedef struct Binding_StyledStr Binding_StyledStr;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_Vec_Date Binding_Vec_Date;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Volume Binding_Volume;
 
 /**
@@ -851,6 +859,14 @@ typedef struct Computed_StyledStr Computed_StyledStr;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Vec_Annotation Computed_Vec_Annotation;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Vec_Date Computed_Vec_Date;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1048,6 +1064,8 @@ typedef struct WuiWatcher_Str WuiWatcher_Str;
 typedef struct WuiWatcher_StyledStr WuiWatcher_StyledStr;
 
 typedef struct WuiWatcher_Vec_Annotation WuiWatcher_Vec_Annotation;
+
+typedef struct WuiWatcher_Vec_Date WuiWatcher_Vec_Date;
 
 typedef struct WuiWatcher_Vec_PickerItem_Id WuiWatcher_Vec_PickerItem_Id;
 
@@ -2491,6 +2509,49 @@ typedef struct WuiDatePicker {
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
+typedef struct Binding_Vec_Date WuiBinding_Vec_Date;
+
+/**
+ * C-compatible date representation using year, month (1-12), and day (1-31).
+ */
+typedef struct WuiDate {
+  /**
+   * Year (e.g., 2024)
+   */
+  int32_t year;
+  /**
+   * Month (1-12)
+   */
+  uint8_t month;
+  /**
+   * Day of month (1-31)
+   */
+  uint8_t day;
+} WuiDate;
+
+/**
+ * C representation of a range
+ */
+typedef struct WuiRange_WuiDate {
+  /**
+   * Start of the range
+   */
+  struct WuiDate start;
+  /**
+   * End of the range
+   */
+  struct WuiDate end;
+} WuiRange_WuiDate;
+
+typedef struct Computed_Vec_Date WuiComputed_Vec_Date;
+
+typedef struct WuiMultiDatePicker {
+  struct WuiAnyView *label;
+  WuiBinding_Vec_Date *value;
+  struct WuiRange_WuiDate range;
+  WuiComputed_Vec_Date *decorated;
+} WuiMultiDatePicker;
+
 typedef struct Binding_Str WuiBinding_Str;
 
 typedef struct WuiNavigationSearch {
@@ -3564,29 +3625,33 @@ typedef struct Binding_AnyView WuiBinding_AnyView;
 
 typedef struct Computed_AnyView WuiComputed_AnyView;
 
-/**
- * C-compatible date representation using year, month (1-12), and day (1-31).
- */
-typedef struct WuiDate {
-  /**
-   * Year (e.g., 2024)
-   */
-  int32_t year;
-  /**
-   * Month (1-12)
-   */
-  uint8_t month;
-  /**
-   * Day of month (1-31)
-   */
-  uint8_t day;
-} WuiDate;
-
 typedef struct Binding_Date WuiBinding_Date;
 
 typedef struct Computed_Date WuiComputed_Date;
 
 typedef struct Computed_DateTime WuiComputed_DateTime;
+
+typedef struct WuiArraySlice_WuiDate {
+  struct WuiDate *head;
+  uintptr_t len;
+} WuiArraySlice_WuiDate;
+
+typedef struct WuiArrayVTable_WuiDate {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiDate (*slice)(const void*);
+} WuiArrayVTable_WuiDate;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiDate {
+  NonNull data;
+  struct WuiArrayVTable_WuiDate vtable;
+} WuiArray_WuiDate;
 
 typedef struct WuiPickerItem {
   struct WuiId tag;
@@ -4925,6 +4990,10 @@ struct WuiTypeId waterui_secure_field_id(void);
 struct WuiDatePicker waterui_force_as_date_picker(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_date_picker_id(void);
+
+struct WuiMultiDatePicker waterui_force_as_multi_date_picker(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_multi_date_picker_id(void);
 
 struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
@@ -6841,6 +6910,77 @@ struct WuiWatcher_DateTime *waterui_new_watcher_date_time(void *data,
                                                                        struct WuiDateTime,
                                                                        struct WuiWatcherMetadata*),
                                                           void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiArray_WuiDate waterui_read_binding_date_vec(const WuiBinding_Vec_Date *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_date_vec(WuiBinding_Vec_Date *binding, struct WuiArray_WuiDate value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_date_vec(const WuiBinding_Vec_Date *binding,
+                                                       struct WuiWatcher_Vec_Date *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_date_vec(WuiBinding_Vec_Date *binding);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiArray_WuiDate waterui_read_computed_date_vec(const WuiComputed_Vec_Date *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_date_vec(const WuiComputed_Vec_Date *computed,
+                                                        struct WuiWatcher_Vec_Date *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_date_vec(WuiComputed_Vec_Date *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Vec_Date *waterui_clone_computed_date_vec(const WuiComputed_Vec_Date *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Vec_Date *waterui_new_watcher_date_vec(void *data,
+                                                         void (*call)(void*,
+                                                                      struct WuiArray_WuiDate,
+                                                                      struct WuiWatcherMetadata*),
+                                                         void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
