@@ -169,3 +169,24 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
     let nav_view = unsafe { crate::components::navigation::waterui_tab_content(content) };
     crate::jni::convert::struct_to_java(&mut env, &nav_view).into_raw()
 }
+
+/// Resolves split detail content from a selected identifier.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    detail_ptr: jlong,
+    selected_id: jint,
+) -> jobject {
+    use crate::components::navigation::WuiNavigationSplitDetail;
+
+    let detail: *mut WuiNavigationSplitDetail =
+        require_ptr(detail_ptr, "splitNavigationDetailContent", "detail");
+    let nav_view = unsafe {
+        crate::components::navigation::waterui_split_navigation_detail_content(
+            detail,
+            crate::id::WuiId { inner: selected_id },
+        )
+    };
+    crate::jni::convert::struct_to_java(&mut env, &nav_view).into_raw()
+}
