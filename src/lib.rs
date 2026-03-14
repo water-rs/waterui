@@ -43,21 +43,21 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
+    #[cfg(feature = "barcode")]
+    pub use super::barcode;
+    #[cfg(feature = "chart")]
+    pub use super::chart;
     pub use super::env::Environment;
+    #[cfg(feature = "map")]
+    pub use super::map;
     #[cfg(feature = "media")]
     pub use super::media;
+    #[cfg(feature = "particle")]
+    pub use super::particle;
     #[cfg(feature = "video")]
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
-    #[cfg(feature = "chart")]
-    pub use super::chart;
-    #[cfg(feature = "barcode")]
-    pub use super::barcode;
-    #[cfg(feature = "map")]
-    pub use super::map;
-    #[cfg(feature = "particle")]
-    pub use super::particle;
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
         accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
@@ -126,6 +126,10 @@ pub use color::Color;
 pub use form::FormBuilder;
 #[doc(inline)]
 pub use view::ViewExt;
+#[cfg(feature = "barcode")]
+pub use waterui_barcode as barcode;
+#[cfg(feature = "chart")]
+pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 pub use waterui_graphics::image_analysis;
@@ -135,20 +139,16 @@ pub use waterui_graphics::{
     ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
     RadialGradientGenerator, StripeGenerator,
 };
-#[cfg(feature = "barcode")]
-pub use waterui_barcode as barcode;
-#[cfg(feature = "chart")]
-pub use waterui_chart as chart;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
-#[cfg(feature = "map")]
-pub use waterui_map as map;
 pub use waterui_locale::regional;
 #[doc(inline)]
 pub use waterui_macros::*;
+#[cfg(feature = "map")]
+pub use waterui_map as map;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
