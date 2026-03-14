@@ -152,12 +152,12 @@ impl View for RichTextElement {
         match self {
             Self::Text(s) => text(s).anyview(),
             Self::Link { label, url } => crate::component::link::link(text(label), url).anyview(),
-            Self::Image { src, alt: _ } => render_image(src),
+            Self::Image { src, alt: _ } => render_image(&src),
             Self::Table {
                 headers,
                 rows,
                 alignments,
-            } => render_table(headers, rows, alignments).anyview(),
+            } => render_table(&headers, &rows, &alignments).anyview(),
             Self::List {
                 items,
                 ordered,
@@ -183,12 +183,12 @@ impl View for RichTextElement {
     }
 }
 
-fn render_image(src: Str) -> AnyView {
+fn render_image(src: &Str) -> AnyView {
     #[cfg(feature = "media")]
     {
-        let url = Url::parse(&*src)
+        let url = Url::parse(src)
             .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
-        return media_photo(url).anyview();
+        media_photo(url).anyview()
     }
 
     #[cfg(not(feature = "media"))]
@@ -230,9 +230,9 @@ fn quote(content: Vec<RichTextElement>) -> impl View {
 }
 
 fn render_table(
-    headers: Vec<RichTextElement>,
-    rows: Vec<Vec<RichTextElement>>,
-    alignments: Vec<MarkdownTableAlignment>,
+    headers: &[RichTextElement],
+    rows: &[Vec<RichTextElement>],
+    alignments: &[MarkdownTableAlignment],
 ) -> AnyView {
     let col_count = headers
         .len()
