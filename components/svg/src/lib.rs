@@ -12,7 +12,6 @@ extern crate alloc;
 mod scene_renderer;
 mod vello_renderer;
 
-use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, Environment, Signal, SignalExt, View};
 use waterui_graphics::SceneView;
 use waterui_graphics::color::Color;
@@ -154,12 +153,13 @@ impl Svg {
     fn to_reactive_scene_view<S>(&self, color_signal: S) -> impl View
     where
         S: Signal<Output = alloc::string::String> + 'static,
+        S::Guard: 'static,
     {
         let svg_template = self.build_svg_content(vello_renderer::SVG_COLOR_PLACEHOLDER);
-        Dynamic::watch(color_signal, move |color| {
-            let svg_content = svg_template.replace(vello_renderer::SVG_COLOR_PLACEHOLDER, &color);
-            SceneView::new(scene_renderer::SvgSceneContent::new(&svg_content))
-        })
+        SceneView::new(scene_renderer::ReactiveSvgSceneContent::new(
+            svg_template,
+            color_signal,
+        ))
     }
 
     /// Wraps a view in a frame, preserving optional intrinsic size.
@@ -179,6 +179,7 @@ impl Svg {
     fn to_reactive_framed_scene_view<S>(&self, color_signal: S) -> AnyView
     where
         S: Signal<Output = alloc::string::String> + 'static,
+        S::Guard: 'static,
     {
         self.frame_view(self.to_reactive_scene_view(color_signal))
     }
