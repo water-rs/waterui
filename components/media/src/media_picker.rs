@@ -10,7 +10,7 @@ use waterui_core::{Binding, Computed, Environment, Signal, View, reactive::impl_
 use waterui_text::{Text, text};
 
 #[cfg(feature = "std")]
-use waterkit_dialog::{MediaType, PhotoPicker as KitPhotoPicker};
+use waterkit_dialog::{LoadedMedia, LoadedMediaKind, MediaType, PhotoPicker as KitPhotoPicker};
 
 use crate::{Media, url::Url};
 
@@ -88,15 +88,15 @@ where
                         return;
                     };
 
-                    let path = match handle.load().await {
-                        Ok(path) => path,
+                    let loaded = match handle.load_media().await {
+                        Ok(loaded) => loaded,
                         Err(error) => {
                             tracing::warn!("MediaPicker failed to load selected media: {error}");
                             return;
                         }
                     };
 
-                    let media = media_from_loaded_path(&path, &requested_filter);
+                    let media = media_from_loaded_selection(loaded);
                     selection.set(Some(Selected { media }));
                 }
 
@@ -135,27 +135,13 @@ fn media_type_from_filter(filter: &MediaFilter) -> MediaType {
 }
 
 #[cfg(feature = "std")]
-fn media_from_loaded_path(path: &std::path::Path, requested_filter: &MediaFilter) -> Media {
-    let path_str = path.to_string_lossy().to_string();
+fn media_from_loaded_selection(loaded: LoadedMedia) -> Media {
+    let path_str = loaded.path().to_string_lossy().to_string();
     let url = Url::from_file_path_str(path_str);
 
-    match requested_filter {
-        MediaFilter::Image => Media::Image(url),
-        MediaFilter::Video => Media::Video(url),
-        MediaFilter::LivePhoto => {
-            tracing::warn!(
-                "MediaPicker selected LivePhoto via WaterKit dialog; current API returns a single asset, falling back to image/video inference"
-            );
-            infer_media_from_path(url, path)
-        }
-        MediaFilter::All(_) | MediaFilter::Any(_) | MediaFilter::Not(_) => {
-            if requests_live_photo(requested_filter) {
-                tracing::warn!(
-                    "MediaPicker selected a LivePhoto-combinator filter; current API returns a single asset, falling back to image/video inference"
-                );
-            }
-            infer_media_from_path(url, path)
-        }
+    match loaded.kind() {
+        LoadedMediaKind::Image => Media::Image(url),
+        LoadedMediaKind::Video => Media::Video(url),
     }
 }
 
@@ -167,26 +153,6 @@ fn requests_live_photo(filter: &MediaFilter) -> bool {
             filters.iter().any(requests_live_photo)
         }
         MediaFilter::Not(_) | MediaFilter::Image | MediaFilter::Video => false,
-    }
-}
-
-#[cfg(feature = "std")]
-fn infer_media_from_path(url: Url, path: &std::path::Path) -> Media {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase());
-
-    let is_video = ext.as_deref().is_some_and(|extension| {
-        matches!(
-            extension,
-            "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "3gp" | "hevc"
-        )
-    });
-
-    if is_video {
-        Media::Video(url)
-    } else {
-        Media::Image(url)
     }
 }
 
