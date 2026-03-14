@@ -486,6 +486,85 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate<'l
     binding.set(date);
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jobjectArray {
+    use nami::Signal;
+    use waterui_form::picker::date::Date;
+
+    let binding = unsafe {
+        &*require_jlong_ptr::<WuiBinding<Vec<Date>>>(binding_ptr, "readBindingDateVec", "binding")
+    };
+    let dates = binding.get();
+    let classes = crate::jni::java_classes();
+    let array = env
+        .new_object_array(
+            dates.len() as jsize,
+            &classes.date_struct_class,
+            JObject::null(),
+        )
+        .expect("Failed to create date struct array");
+
+    for (index, date) in dates.into_iter().enumerate() {
+        let ffi = date.into_ffi();
+        let java_date = create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32);
+        env.set_object_array_element(&array, index as jsize, java_date)
+            .expect("Failed to write date struct array element");
+    }
+
+    array.into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateVec<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    dates: jobjectArray,
+) {
+    use crate::IntoRust;
+    use crate::components::form::WuiDate;
+    use waterui_form::picker::date::Date;
+
+    let binding = unsafe {
+        &*require_jlong_ptr::<WuiBinding<Vec<Date>>>(binding_ptr, "setBindingDateVec", "binding")
+    };
+    let length = env
+        .get_array_length(dates)
+        .expect("Failed to get date array length");
+    let mut rust_dates = Vec::with_capacity(length as usize);
+    for index in 0..length {
+        let element = env
+            .get_object_array_element(dates, index)
+            .expect("Failed to read date array element");
+        let year = env
+            .get_field(&element, "year", "I")
+            .expect("DateStruct.year field missing")
+            .i()
+            .expect("DateStruct.year must be int");
+        let month = env
+            .get_field(&element, "month", "I")
+            .expect("DateStruct.month field missing")
+            .i()
+            .expect("DateStruct.month must be int");
+        let day = env
+            .get_field(&element, "day", "I")
+            .expect("DateStruct.day field missing")
+            .i()
+            .expect("DateStruct.day must be int");
+        let ffi_date = WuiDate {
+            year,
+            month: month as u8,
+            day: day as u8,
+        };
+        rust_dates.push(unsafe { ffi_date.into_rust() });
+    }
+    binding.set(rust_dates);
+}
+
 // --- DateTime Binding ---
 
 #[unsafe(no_mangle)]
@@ -1097,6 +1176,39 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedLiveP
     create_live_photo_source_struct(&mut env, image, video).into_raw()
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    computed_ptr: jlong,
+) -> jobjectArray {
+    use crate::IntoFFI;
+    use nami::Signal;
+    use waterui_form::picker::date::Date;
+
+    let computed = unsafe {
+        &*require_jlong_ptr::<WuiComputed<Vec<Date>>>(computed_ptr, "readComputedDateVec", "computed")
+    };
+    let dates = computed.get();
+    let classes = crate::jni::java_classes();
+    let array = env
+        .new_object_array(
+            dates.len() as jsize,
+            &classes.date_struct_class,
+            JObject::null(),
+        )
+        .expect("Failed to create computed date array");
+
+    for (index, date) in dates.into_iter().enumerate() {
+        let ffi = date.into_ffi();
+        let java_date = create_date_struct(&mut env, ffi.year, ffi.month as i32, ffi.day as i32);
+        env.set_object_array_element(&array, index as jsize, java_date)
+            .expect("Failed to write computed date array element");
+    }
+
+    array.into_raw()
+}
+
 /// Read Date computed value and return Java DateStruct.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDate<'local>(
@@ -1616,6 +1728,36 @@ unsafe extern "C" fn watcher_call_date(
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
 }
 
+unsafe extern "C" fn watcher_call_date_vec(
+    data: *mut (),
+    value: crate::array::WuiArray<crate::components::form::WuiDate>,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    let watcher_data = unsafe { &*(data as *const WatcherData) };
+    let mut env = watcher_data
+        .jvm
+        .attach_current_thread()
+        .expect("Failed to attach JVM thread");
+    let classes = crate::jni::java_classes();
+    let dates_slice = value.as_slice();
+    let array = env
+        .new_object_array(
+            dates_slice.len() as jsize,
+            &classes.date_struct_class,
+            JObject::null(),
+        )
+        .expect("Failed to create date watcher array");
+
+    for (index, date) in dates_slice.iter().enumerate() {
+        let java_date = create_date_struct(&mut env, date.year, date.month as i32, date.day as i32);
+        env.set_object_array_element(&array, index as jsize, java_date)
+            .expect("Failed to write date watcher array element");
+    }
+
+    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
+    invoke_callback(&mut env, &watcher_data.callback, &array, &metadata);
+}
+
 /// Call function for DateTime watcher.
 unsafe extern "C" fn watcher_call_date_time(
     data: *mut (),
@@ -1958,6 +2100,7 @@ jni_create_watcher_typed!(Annotations, watcher_call_annotations);
 jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style);
 jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment);
 jni_create_watcher_typed!(Date, watcher_call_date);
+jni_create_watcher_typed!(DateVec, watcher_call_date_vec);
 jni_create_watcher_typed!(DateTime, watcher_call_date_time);
 
 // ============================================================================

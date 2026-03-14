@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn menu_view_accepts_plain_buttons() {
-        let items = button(Label::new("Search").icon(SystemIcon::SEARCH))
+        let items = button(Label::new("Search").system_icon(SystemIcon::SEARCH))
             .action(|| {})
             .into_menu_items()
             .get();
