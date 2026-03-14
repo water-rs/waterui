@@ -69,9 +69,6 @@ pub struct JavaClasses {
     /// dev.waterui.android.runtime.VideoStruct
     pub video_struct_class: GlobalRef,
     pub video_struct_ctor: jni::sys::jmethodID,
-    /// dev.waterui.android.runtime.LivePhotoSourceStruct
-    pub live_photo_source_struct_class: GlobalRef,
-    pub live_photo_source_struct_ctor: jni::sys::jmethodID,
     /// dev.waterui.android.runtime.DateStruct
     pub date_struct_class: GlobalRef,
     pub date_struct_ctor: jni::sys::jmethodID,
@@ -277,22 +274,6 @@ fn init_classes(env: &mut JNIEnv) -> JavaClasses {
         .expect("VideoStruct constructor not found")
         .into_raw();
 
-    // LivePhotoSourceStruct
-    let live_photo_source_struct_class = env
-        .find_class("dev/waterui/android/runtime/LivePhotoSourceStruct")
-        .expect("LivePhotoSourceStruct class not found");
-    let live_photo_source_struct_class = env
-        .new_global_ref(live_photo_source_struct_class)
-        .expect("Failed to create global ref");
-    let live_photo_source_struct_ctor = env
-        .get_method_id(
-            &live_photo_source_struct_class,
-            "<init>",
-            "(Ljava/lang/String;Ljava/lang/String;)V",
-        )
-        .expect("LivePhotoSourceStruct constructor not found")
-        .into_raw();
-
     // DateStruct
     let date_struct_class = env
         .find_class("dev/waterui/android/runtime/DateStruct")
@@ -440,8 +421,6 @@ fn init_classes(env: &mut JNIEnv) -> JavaClasses {
         resolved_font_struct_ctor,
         video_struct_class,
         video_struct_ctor,
-        live_photo_source_struct_class,
-        live_photo_source_struct_ctor,
         date_struct_class,
         date_struct_ctor,
         date_time_struct_class,

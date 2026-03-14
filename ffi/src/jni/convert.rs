@@ -1780,17 +1780,6 @@ impl ToJavaStruct for crate::components::video::WuiVideoPlayer {
     }
 }
 
-/// WuiLivePhoto -> LivePhotoStruct (source pointer)
-impl ToJavaStruct for crate::components::media::WuiLivePhoto {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/LivePhotoStruct")
-            .expect("LivePhotoStruct class not found");
-        env.new_object(&class, "(J)V", &[JValue::Long(self.source as jlong)])
-            .expect("Failed to create LivePhotoStruct")
-    }
-}
-
 /// WuiSystemIcon -> SystemIconStruct(name: String)
 impl ToJavaStruct for crate::components::icon::WuiSystemIcon {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

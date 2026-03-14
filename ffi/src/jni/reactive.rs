@@ -152,32 +152,6 @@ fn create_video_struct<'local>(env: &mut JNIEnv<'local>, url: &str) -> JObject<'
     }
 }
 
-/// Create a LivePhotoSourceStruct Java object from Rust values.
-fn create_live_photo_source_struct<'local>(
-    env: &mut JNIEnv<'local>,
-    image: &str,
-    video: &str,
-) -> JObject<'local> {
-    let classes = crate::jni::java_classes();
-    let image_str = env
-        .new_string(image)
-        .expect("Failed to create image string");
-    let video_str = env
-        .new_string(video)
-        .expect("Failed to create video string");
-    unsafe {
-        env.new_object_unchecked(
-            &classes.live_photo_source_struct_class,
-            jni::objects::JMethodID::from_raw(classes.live_photo_source_struct_ctor),
-            &[
-                JValue::Object(&image_str).as_jni(),
-                JValue::Object(&video_str).as_jni(),
-            ],
-        )
-        .expect("Failed to create LivePhotoSourceStruct")
-    }
-}
-
 /// Create a DateStruct Java object from Rust values.
 fn create_date_struct<'local>(
     env: &mut JNIEnv<'local>,
@@ -1138,34 +1112,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedVideo
     create_video_struct(&mut env, url).into_raw()
 }
 
-/// Read LivePhotoSource computed value and return Java LivePhotoSourceStruct.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedLivePhotoSource<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    computed_ptr: jlong,
-) -> jobject {
-    use crate::IntoFFI;
-    use waterui::Signal;
-    use waterui_media::live::LivePhotoSource;
-
-    let computed = unsafe {
-        &*require_jlong_ptr::<WuiComputed<LivePhotoSource>>(
-            computed_ptr,
-            "readComputedLivePhotoSource",
-            "computed",
-        )
-    };
-    let source: LivePhotoSource = computed.get();
-    let ffi = source.into_ffi();
-    let image = unsafe { ffi.image.as_str() };
-    let video = unsafe { ffi.video.as_str() };
-
-    create_live_photo_source_struct(&mut env, image, video).into_raw()
-}
-
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'local>(
     mut env: JNIEnv<'local>,
@@ -1570,26 +1516,6 @@ unsafe extern "C" fn watcher_call_video(
 
     let url = unsafe { value.url.as_str() };
     let java_value = create_video_struct(&mut env, url);
-
-    let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
-    invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
-}
-
-/// Call function for LivePhotoSource watcher.
-unsafe extern "C" fn watcher_call_live_photo_source(
-    data: *mut (),
-    value: crate::components::media::WuiLivePhotoSource,
-    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
-) {
-    let watcher_data = unsafe { &*(data as *const WatcherData) };
-    let mut env = watcher_data
-        .jvm
-        .attach_current_thread()
-        .expect("Failed to attach JVM thread");
-
-    let image = unsafe { value.image.as_str() };
-    let video = unsafe { value.video.as_str() };
-    let java_value = create_live_photo_source_struct(&mut env, image, video);
 
     let metadata = create_metadata_object(&mut env, metadata_ptr as jlong);
     invoke_callback(&mut env, &watcher_data.callback, &java_value, &metadata);
@@ -2081,7 +2007,6 @@ jni_create_watcher_typed!(Float, watcher_call_float);
 jni_create_watcher_typed!(String, watcher_call_string);
 jni_create_watcher_typed!(AnyView, watcher_call_any_view);
 jni_create_watcher_typed!(Video, watcher_call_video);
-jni_create_watcher_typed!(LivePhotoSource, watcher_call_live_photo_source);
 jni_create_watcher_typed!(StyledStr, watcher_call_styled_str);
 jni_create_watcher_typed!(ResolvedColor, watcher_call_resolved_color);
 jni_create_watcher_typed!(ResolvedFont, watcher_call_resolved_font);

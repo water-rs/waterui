@@ -2,7 +2,6 @@ use core::ops::Deref;
 
 use crate::array::WuiArray;
 use crate::components::form::WuiPickerItem;
-use crate::components::media::WuiLivePhotoSource;
 use crate::components::text::WuiStyledStr;
 use crate::{IntoFFI, IntoRust, OpaqueType, WuiAnyView, WuiStr};
 use alloc::boxed::Box;
@@ -15,7 +14,6 @@ use waterui::reactive::watcher::Metadata;
 use waterui::{AnyView, Str};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
-use waterui_media::live::LivePhotoSource;
 use waterui_text::styled::StyledStr;
 opaque!(WuiWatcherMetadata, Metadata, watcher_metadata);
 
@@ -712,8 +710,6 @@ ffi_reactive!(DateTime, WuiDateTime, date_time);
 ffi_reactive!(Vec<Date>, WuiArray<WuiDate>, date_vec);
 
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
-
-ffi_computed!(LivePhotoSource, WuiLivePhotoSource);
 
 pub struct WuiWatcher<T: IntoFFI>(watcher::Watcher<T>);
 
