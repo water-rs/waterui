@@ -48,23 +48,23 @@ impl App {
 
     /// Get a reference to the main (first) window.
     #[must_use]
-    pub fn main_window(&self) -> &Window {
+    pub const fn main_window(&self) -> &Window {
         &self.main_window
     }
 
     /// Get a mutable reference to the main (first) window.
     #[must_use]
-    pub fn main_window_mut(&mut self) -> &mut Window {
+    pub const fn main_window_mut(&mut self) -> &mut Window {
         &mut self.main_window
     }
 
     /// Get an iterator over all windows (main window first).
-    pub fn windows(&self) -> impl Iterator<Item = &Window> + DoubleEndedIterator {
+    pub fn windows(&self) -> impl DoubleEndedIterator<Item = &Window> {
         std::iter::once(&self.main_window).chain(self.windows.iter())
     }
 
     /// Get a mutable iterator over all windows (main window first).
-    pub fn windows_mut(&mut self) -> impl Iterator<Item = &mut Window> + DoubleEndedIterator {
+    pub fn windows_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut Window> {
         std::iter::once(&mut self.main_window).chain(self.windows.iter_mut())
     }
 
