@@ -332,4 +332,32 @@ impl<T: Ord + Clone> Mapping<T> {
             },
         )
     }
+
+    /// Creates a binding that maps between an optional value binding and an optional ID binding.
+    ///
+    /// This is useful for selection-driven controls whose "no selection" state must survive
+    /// the type-erased boundary without collapsing to an arbitrary sentinel in Rust space.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    #[must_use]
+    pub fn optional_binding(&self, source: &Binding<Option<T>>) -> Binding<Option<Id>>
+    where
+        T: 'static,
+    {
+        let mapping = self.clone();
+        let mapping2 = self.clone();
+        Binding::mapping(
+            source,
+            move |value| value.map(|value| mapping.to_id(value)),
+            move |binding, value| {
+                binding.set(value.map(|value| {
+                    mapping2
+                        .to_data(value)
+                        .expect("Invalid optional binding mapping : Data not found")
+                }));
+            },
+        )
+    }
 }

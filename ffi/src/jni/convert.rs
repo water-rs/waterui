@@ -1588,43 +1588,18 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
 /// WuiNavigationSplitLayout -> SplitNavigationContainerStruct
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSplitLayout {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let search = if self.detail_bar.search.is_null() {
-            JObject::null()
-        } else {
-            unsafe { (&*self.detail_bar.search).to_java_struct(env) }
-        };
-        let bar_class = env
-            .find_class("dev/waterui/android/runtime/BarStruct")
-            .expect("BarStruct class not found");
-        let detail_bar = env
-            .new_object(
-                &bar_class,
-                "(JJJLdev/waterui/android/runtime/NavigationSearchStruct;JJI)V",
-                &[
-                    JValue::Long(self.detail_bar.title as jlong),
-                    JValue::Long(self.detail_bar.leading as jlong),
-                    JValue::Long(self.detail_bar.trailing as jlong),
-                    JValue::Object(&search),
-                    JValue::Long(self.detail_bar.color as jlong),
-                    JValue::Long(self.detail_bar.hidden as jlong),
-                    JValue::Int(self.detail_bar.display_mode as i32),
-                ],
-            )
-            .expect("Failed to create detail BarStruct");
         let class = env
             .find_class("dev/waterui/android/runtime/SplitNavigationContainerStruct")
             .expect("SplitNavigationContainerStruct class not found");
         env.new_object(
             &class,
-            "(JJLdev/waterui/android/runtime/BarStruct;JZFJ)V",
+            "(JJJJF)V",
             &[
                 JValue::Long(self.sidebar as jlong),
                 JValue::Long(self.placeholder as jlong),
-                JValue::Object(&detail_bar),
-                JValue::Long(self.detail_content as jlong),
-                JValue::Bool(if self.has_detail { 1 } else { 0 }),
+                JValue::Long(self.selection as jlong),
+                JValue::Long(self.detail as jlong),
                 JValue::Float(self.sidebar_width),
-                JValue::Long(self.clear_selection as jlong),
             ],
         )
         .expect("Failed to create SplitNavigationContainerStruct")
