@@ -14,8 +14,7 @@ categories = ["gui", "multimedia"]
 [dependencies]
 waterui-core.workspace = true
 waterui-url.workspace = true
-waterui-graphics.workspace = true
-waterui-layout.workspace = true
+waterui-image.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-video.workspace = true
@@ -24,13 +23,11 @@ filtrate.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true
-waterkit-codec = { workspace = true, features = ["software-fallback"] }
 mime = "0.3.17"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 blocking = "1.6.2"
 base64 = "0.22.1"
 async-oneshot = "0.5"
-wgpu.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
