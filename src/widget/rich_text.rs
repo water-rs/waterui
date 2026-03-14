@@ -247,13 +247,13 @@ fn render_table(
                 .get(col_idx)
                 .map_or_else(|| Text::from(""), element_to_text)
                 .bold();
-            table_cell(
+            AnyView::new(table_cell(
                 header,
                 alignments
                     .get(col_idx)
                     .copied()
                     .unwrap_or(MarkdownTableAlignment::None),
-            )
+            ))
         })
         .collect();
 
@@ -271,13 +271,13 @@ fn render_table(
                 let cell = row
                     .get(col_idx)
                     .map_or_else(|| Text::from(""), element_to_text);
-                table_cell(
+                AnyView::new(table_cell(
                     cell,
                     alignments
                         .get(col_idx)
                         .copied()
                         .unwrap_or(MarkdownTableAlignment::None),
-                )
+                ))
             })
             .collect();
         row_views.push(AnyView::new(
@@ -294,18 +294,15 @@ fn render_table(
     )
 }
 
-fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> AnyView {
-    match alignment {
-        MarkdownTableAlignment::None | MarkdownTableAlignment::Left => {
-            AnyView::new(content.max_width(f32::MAX))
-        }
-        MarkdownTableAlignment::Center => {
-            AnyView::new(hstack((spacer(), content, spacer())).max_width(f32::MAX))
-        }
-        MarkdownTableAlignment::Right => {
-            AnyView::new(hstack((spacer(), content)).max_width(f32::MAX))
-        }
-    }
+fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> impl View {
+    let leading_spacer = matches!(
+        alignment,
+        MarkdownTableAlignment::Center | MarkdownTableAlignment::Right
+    )
+    .then(spacer);
+    let trailing_spacer = matches!(alignment, MarkdownTableAlignment::Center).then(spacer);
+
+    hstack((leading_spacer, content, trailing_spacer)).max_width(f32::MAX)
 }
 
 /// Converts a `RichTextElement` to plain `Text` for table cells.
