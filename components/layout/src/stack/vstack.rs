@@ -78,22 +78,6 @@ fn vstack_intrinsic_cross_metrics(
     (max_leading, max_trailing)
 }
 
-fn vstack_container_guide_offset(
-    bounds: Rect,
-    alignment: HorizontalAlignment,
-    intrinsic_leading: f32,
-) -> f32 {
-    if alignment == HorizontalAlignment::Leading {
-        0.0
-    } else if alignment == HorizontalAlignment::Trailing {
-        bounds.width()
-    } else if alignment == HorizontalAlignment::Center {
-        bounds.width() * 0.5
-    } else {
-        intrinsic_leading
-    }
-}
-
 #[allow(clippy::cast_precision_loss)]
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -197,10 +181,17 @@ impl Layout for VStackLayout {
             0.0
         };
 
-        let (intrinsic_leading, _intrinsic_trailing) =
-            vstack_intrinsic_cross_metrics(&measurements, self.alignment, false);
-        let guide_line =
-            bounds.x() + vstack_container_guide_offset(bounds, self.alignment, intrinsic_leading);
+        let has_explicit_alignment_guides = measurements.iter().any(|measurement| {
+            measurement
+                .dimensions
+                .explicit_horizontal(self.alignment)
+                .is_some()
+        });
+        let guide_line = has_explicit_alignment_guides.then(|| {
+            let (intrinsic_leading, _intrinsic_trailing) =
+                vstack_intrinsic_cross_metrics(&measurements, self.alignment, false);
+            bounds.x() + intrinsic_leading
+        });
 
         // Place children
         let mut rects = Vec::with_capacity(children.len());
@@ -233,6 +224,11 @@ impl Layout for VStackLayout {
 
             let x = if measurement.stretches_cross_axis() {
                 bounds.x()
+            } else if let Some(guide_line) = guide_line {
+                let guide = adjusted_dimensions
+                    .horizontal(self.alignment)
+                    .clamp(0.0, child_width);
+                guide_line - guide
             } else if self.alignment == HorizontalAlignment::Leading {
                 bounds.x()
             } else if self.alignment == HorizontalAlignment::Trailing {
@@ -241,7 +237,7 @@ impl Layout for VStackLayout {
                 let guide = adjusted_dimensions
                     .horizontal(self.alignment)
                     .clamp(0.0, child_width);
-                guide_line - guide
+                bounds.x() + bounds.width() * 0.5 - guide
             };
 
             rects.push(Rect::new(
