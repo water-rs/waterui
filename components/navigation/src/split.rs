@@ -11,9 +11,9 @@ fn empty_placeholder() {}
 #[must_use]
 pub struct NavigationSplitLayout {
     /// Sidebar content.
-    pub sidebar: AnyView,
+    pub sidebar: AnyViewBuilder<AnyView>,
     /// Placeholder content used on regular-width layouts without selection.
-    pub placeholder: AnyView,
+    pub placeholder: AnyViewBuilder<AnyView>,
     /// Active detail view when a selection exists.
     pub detail: Option<NavigationView>,
     /// Preferred sidebar width on regular-width layouts.
@@ -104,8 +104,8 @@ where
             });
 
             NavigationSplitLayout {
-                sidebar: sidebar.build(),
-                placeholder: placeholder.build(),
+                sidebar: sidebar.clone(),
+                placeholder: placeholder.clone(),
                 detail: selected.map(|value| detail(value)),
                 sidebar_width,
                 clear_selection,

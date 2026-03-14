@@ -1,8 +1,16 @@
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    rc::Rc,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
+};
+use executor_core::{
+    LocalExecutor, async_task::{AsyncTask, Runnable}, try_init_local_executor,
 };
 use hydrolysis::HydrolysisViewRenderer;
 use waterui::graphics::SceneViewMergeToParent;
@@ -19,12 +27,58 @@ use crate::semantics::{NodeId, TreeSnapshot};
 use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
+#[derive(Clone, Debug)]
+struct TestLocalExecutor {
+    runnable_tx: mpsc::Sender<Runnable>,
+    runnable_rx: Rc<mpsc::Receiver<Runnable>>,
+}
+
+impl Default for TestLocalExecutor {
+    fn default() -> Self {
+        let (runnable_tx, runnable_rx) = mpsc::channel();
+        Self {
+            runnable_tx,
+            runnable_rx: Rc::new(runnable_rx),
+        }
+    }
+}
+
+impl TestLocalExecutor {
+    fn drain(&self) -> bool {
+        let mut ran = false;
+        loop {
+            let Ok(runnable) = self.runnable_rx.try_recv() else {
+                return ran;
+            };
+            ran = true;
+            runnable.run();
+        }
+    }
+}
+
+impl LocalExecutor for TestLocalExecutor {
+    type Task<T: 'static> = AsyncTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: Future + 'static,
+    {
+        let runnable_tx = self.runnable_tx.clone();
+        let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
+            let _ = runnable_tx.send(runnable);
+        });
+        runnable.schedule();
+        AsyncTask::from(task)
+    }
+}
+
 /// Runtime test host and configuration.
 #[derive(Debug)]
 pub struct UiTest {
     env: Environment,
     width: u32,
     height: u32,
+    local_executor: TestLocalExecutor,
 }
 
 impl Default for UiTest {
@@ -42,11 +96,16 @@ impl UiTest {
         env.insert(waterui_core::ViewRenderer::new(
             HydrolysisViewRenderer::default(),
         ));
+        let local_executor = TestLocalExecutor::default();
+        let _ = try_init_local_executor(waterui::task::monitored_local_executor(
+            local_executor.clone(),
+        ));
 
         Self {
             env,
             width: 390,
             height: 844,
+            local_executor,
         }
     }
 
@@ -72,6 +131,7 @@ impl UiTest {
             tree: TreeSnapshot::empty(),
             ui_focus: None,
             revision: 1,
+            local_executor: self.local_executor,
         };
         let rebuilt = app.pump_once();
         assert!(
@@ -90,6 +150,7 @@ pub struct MountedApp {
     pub(crate) tree: TreeSnapshot,
     pub(crate) ui_focus: Option<NodeId>,
     pub(crate) revision: u64,
+    local_executor: TestLocalExecutor,
 }
 
 impl core::fmt::Debug for MountedApp {
@@ -116,9 +177,13 @@ impl MountedApp {
 
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     pub fn snapshot(&mut self) -> Snapshot {
-        let outcome = self.driver.pump(self.content.build(), &self.env, true);
-        self.apply_pump_result(outcome)
-            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
+        let _ = self.local_executor.drain();
+        let outcome = self.driver.pump(&self.content, &self.env, true);
+        let snapshot = self
+            .apply_pump_result(outcome)
+            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"));
+        let _ = self.local_executor.drain();
+        snapshot
     }
 
     /// Creates a canonical artifact helper rooted at the provided suite.
@@ -526,10 +591,12 @@ impl MountedApp {
     }
 
     fn pump_once(&mut self) -> bool {
-        let outcome = self.driver.pump(self.content.build(), &self.env, false);
+        let drained_before = self.local_executor.drain();
+        let outcome = self.driver.pump(&self.content, &self.env, false);
         let rebuilt = outcome.rebuilt;
         let _ = self.apply_pump_result(outcome);
-        rebuilt
+        let drained_after = self.local_executor.drain();
+        rebuilt || drained_before || drained_after
     }
 
     fn matches_ui_focus(&mut self, selector: &Selector) -> bool {

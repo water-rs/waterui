@@ -107,6 +107,7 @@ waterkit-audio = { version = "0.1.0", path = "kit/audio" }
 waterkit-clipboard = { version = "0.1.0", path = "kit/clipboard" }
 waterkit-permission = { version = "0.1.0", path = "kit/permission" }
 waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
+waterkit-fs = { version = "0.1.0", path = "kit/fs" }
 waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
 waterkit-codec = { version = "0.1.0", path = "kit/codec", default-features = false }
 waterkit-video = { version = "0.1.0", path = "kit/video" }

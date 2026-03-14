@@ -3,6 +3,7 @@ use accesskit::{
 };
 use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow, PointerButton};
 use waterui::component::table::TableConfig;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
 use waterui_core::{AnyView, Environment, Native};
 
@@ -12,7 +13,7 @@ use crate::snapshot::{Snapshot, readback_texture_rgba8};
 pub(crate) trait A11yDriver {
     fn pump(
         &mut self,
-        content: AnyView,
+        content: &AnyViewBuilder<AnyView>,
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult;
@@ -73,7 +74,7 @@ impl HydrolysisA11yDriver {
 impl A11yDriver for HydrolysisA11yDriver {
     fn pump(
         &mut self,
-        content: AnyView,
+        content: &AnyViewBuilder<AnyView>,
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult {
@@ -91,8 +92,9 @@ impl A11yDriver for HydrolysisA11yDriver {
 
         let should_rebuild = self.needs_rebuild || self.renderer.take_rebuild_request();
         if should_rebuild {
-            self.renderer.reset_scene();
             self.renderer.begin_rebuild_frame();
+            let content = self.renderer.with_local_state_env(env, |_local_env| content.build());
+            self.renderer.reset_scene();
             self.renderer.dispatch(content, env, bounds);
             self.renderer.finish_rebuild_frame();
             self.needs_rebuild = false;

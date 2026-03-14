@@ -178,7 +178,7 @@ Uses `nami` crate for fine-grained reactivity:
 - Views automatically update when reactive values change
 
 <important>
-    WaterUI uses precise fine-grained reactivity, not React-style rebuild semantics. Do not assume view reconstruction is cheap or semantically harmless. If a view is rebuilt, its local identity and state are expected to be lost. Dynamic behavior must flow through `Binding`, `Computed`, and stable view identity rather than relying on recreating views with new plain values.
+    WaterUI uses precise fine-grained reactivity with Vue-like reconstruction semantics. A component's `.body` may be heavy and may perform one-time initialization for that component instance. After initialization, dynamic behavior is expected to be driven precisely through `Binding`, `Computed`, and other `impl Signal` inputs. If a component is recreated by control flow such as `when(...)`, `watch(...)`, or other parent-driven reconstruction, losing that component instance's local state is expected and correct because a new instance is being initialized.
 </important>
 
 <important>
