@@ -368,6 +368,16 @@ impl Layout for PositionedLayout {
                         width = width.max(0.0);
                         height = height.max(0.0);
 
+                        let measured = child
+                            .measure(ProposalSize::new(Some(width), Some(height)))
+                            .size;
+                        if explicit_width.is_none() && !(leading.is_some() && trailing.is_some()) {
+                            width = sanitize_axis(measured.width, width);
+                        }
+                        if explicit_height.is_none() && !(top.is_some() && bottom.is_some()) {
+                            height = sanitize_axis(measured.height, height);
+                        }
+
                         let x = if let Some(leading) = leading {
                             bounds.x() + leading
                         } else if let Some(trailing) = trailing {
@@ -410,6 +420,14 @@ fn sanitize_size(intrinsic: Size, bounds: Rect) -> Size {
         bounds.height().max(0.0)
     };
     Size::new(width, height)
+}
+
+fn sanitize_axis(measured: f32, fallback: f32) -> f32 {
+    if measured.is_finite() {
+        measured.max(0.0)
+    } else {
+        fallback.max(0.0)
+    }
 }
 
 // ============================================================================
@@ -921,5 +939,24 @@ mod tests {
         assert_eq!(rects[0].y(), 40.0);
         assert_eq!(rects[0].width(), 0.0);
         assert_eq!(rects[0].height(), 0.0);
+    }
+
+    #[test]
+    fn test_pin_constraints_remeasure_after_width_resolution() {
+        let layout = PositionedLayout {
+            anchor: UnitPoint::TOP_LEADING,
+            target: PositionTarget::Pinned(PinConstraints::new().leading(10.0).trailing(10.0)),
+        };
+
+        let child = ProposalAwareView::new(Size::new(120.0, 20.0), Size::new(100.0, 40.0));
+        let children: Vec<&dyn SubView> = vec![&child];
+        let bounds = Rect::new(Point::zero(), Size::new(120.0, 200.0));
+
+        let rects = layout.place(bounds, &children);
+
+        assert_eq!(rects[0].x(), 10.0);
+        assert_eq!(rects[0].width(), 100.0);
+        assert_eq!(rects[0].height(), 40.0);
+        assert_eq!(child.last_width.get(), Some(100.0));
     }
 }
