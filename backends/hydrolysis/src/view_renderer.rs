@@ -76,8 +76,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
 
                 let env = Environment::new().extending(SceneViewMergeToParent);
                 let view = crate::renderer::normalize_view_for_render(view, &env);
-                let bounds =
-                    vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 renderer.dispatch(view, &env, bounds);
                 renderer.finish_rebuild_frame();
                 renderer.render_scene_to_texture(

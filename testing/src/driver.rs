@@ -93,7 +93,9 @@ impl A11yDriver for HydrolysisA11yDriver {
         let should_rebuild = self.needs_rebuild || self.renderer.take_rebuild_request();
         if should_rebuild {
             self.renderer.begin_rebuild_frame();
-            let content = self.renderer.with_local_state_env(env, |_local_env| content.build());
+            let content = self
+                .renderer
+                .with_local_state_env(env, |_local_env| content.build());
             self.renderer.reset_scene();
             self.renderer.dispatch(content, env, bounds);
             self.renderer.finish_rebuild_frame();

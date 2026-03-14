@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use nami::with_local_binding_factory;
-use waterui_core::{AnyView, Environment, LocalStateScope, View};
 use waterui_core::LocalStateStore;
+use waterui_core::{AnyView, Environment, LocalStateScope, View};
 
 /// Handler that accepts a stack-allocated view via `&mut dyn Any` (`Option<V>` slot).
 type RawHandlerFn<T, C, R> = Box<dyn Fn(&mut T, C, &mut dyn Any, &Environment) -> R>;
@@ -116,9 +116,7 @@ fn with_local_bindings<R>(env: &Environment, f: impl FnOnce() -> R) -> R {
         })
         .clone();
     with_local_binding_factory(
-        Rc::new(move |type_id, init| {
-            store.get_or_init_dynamic(&scope, type_id, init)
-        }),
+        Rc::new(move |type_id, init| store.get_or_init_dynamic(&scope, type_id, init)),
         f,
     )
 }

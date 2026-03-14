@@ -35,7 +35,11 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
     let xcassets_dest = dest_dir.join("WaterUIAssets.xcassets");
     reset_dir(&xcassets_dest).await?;
     write_apple_root_contents(&xcassets_dest).await?;
-    let accent = project.manifest().theme.as_ref().and_then(|theme| theme.accent.as_deref());
+    let accent = project
+        .manifest()
+        .theme
+        .as_ref()
+        .and_then(|theme| theme.accent.as_deref());
 
     if let Some(icon) = manifest
         .assets

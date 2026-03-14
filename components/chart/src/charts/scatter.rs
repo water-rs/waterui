@@ -13,7 +13,9 @@ use crate::charts::canvas::{
 };
 use crate::composition::ChartComposition;
 use crate::data::DataPoint;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 use crate::params::{ChartParamError, PositiveF32};
 
 /// Scatter chart visualization.

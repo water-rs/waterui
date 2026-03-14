@@ -65,7 +65,10 @@ fn split_view() -> impl View {
 #[::waterui::test(tabs_view)]
 fn tabs_tap_switches_selection_and_content(app: &mut MountedApp) {
     app.query().role(Role::TAB_LIST).assert_exists();
-    app.query().role(Role::TAB).label("Home Tab").assert_exists();
+    app.query()
+        .role(Role::TAB)
+        .label("Home Tab")
+        .assert_exists();
     app.query()
         .role(Role::TAB)
         .label("Settings Tab")
@@ -117,9 +120,7 @@ fn navigation_link_push_and_back_pop_update_content(app: &mut MountedApp) {
     );
     assert!(
         app.wait_for(
-            &[app.expect_exists(
-                Selector::default().role(Role::BUTTON).label("Open Detail"),
-            )],
+            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Detail"),)],
             waterui_testing::WaitOptions::new(Duration::from_millis(200)),
         ) == waterui_testing::WaitResult::Completed,
         "root navigation content should return after back"

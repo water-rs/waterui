@@ -4,10 +4,14 @@ use nami::{Binding, Signal};
 use waterui_core::{Environment, View};
 use waterui_graphics::color::Srgb;
 
-use crate::charts::canvas::{depth_bounds, depth_geometry, draw_depth, interactive_cartesian_signal_canvas};
+use crate::charts::canvas::{
+    depth_bounds, depth_geometry, draw_depth, interactive_cartesian_signal_canvas,
+};
 use crate::composition::ChartComposition;
 use crate::data::DepthData;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, DepthDatum, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, DepthDatum, HitResult, SelectionBindings,
+};
 
 /// Depth chart for order book visualization.
 pub struct DepthChart<S: Signal<Output = DepthData>> {

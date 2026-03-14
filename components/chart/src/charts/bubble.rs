@@ -9,7 +9,9 @@ use crate::charts::canvas::{
 };
 use crate::composition::ChartComposition;
 use crate::data::BubblePoint;
-use crate::interaction::{CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings};
+use crate::interaction::{
+    CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
+};
 use crate::params::{ChartParamError, PositiveF32, UnitInterval};
 
 /// Bubble chart for 3D data visualization.

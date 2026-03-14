@@ -130,7 +130,8 @@ impl MultiDatePickerFallback {
                 binding.set(dates.into_iter().collect());
             },
         );
-        let initial_month = initial_visible_month(value.get().iter().next().copied(), &config.range);
+        let initial_month =
+            initial_visible_month(value.get().iter().next().copied(), &config.range);
         Self {
             label: config.label,
             value,

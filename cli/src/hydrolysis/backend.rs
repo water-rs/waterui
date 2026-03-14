@@ -61,7 +61,9 @@ impl HydrolysisBackend {
         let cargo_toml_path = project.backend_path::<Self>().join("Cargo.toml");
         let lib_rs_path = project.backend_path::<Self>().join("src/lib.rs");
         let main_rs_path = project.backend_path::<Self>().join("src/main.rs");
-        let preview_runtime_path = project.backend_path::<Self>().join("src/preview_runtime.rs");
+        let preview_runtime_path = project
+            .backend_path::<Self>()
+            .join("src/preview_runtime.rs");
         let preview_symbol_path = project.backend_path::<Self>().join("src/preview_symbol.rs");
         let web_index_path = project.backend_path::<Self>().join("web/index.html");
         if !cargo_toml_path.exists() {

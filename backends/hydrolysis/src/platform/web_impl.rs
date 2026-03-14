@@ -6,8 +6,8 @@ use std::{
 use nami::Signal;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{
-    CompositionEvent, Document, Event, EventTarget, HtmlCanvasElement, HtmlInputElement, KeyboardEvent,
-    PointerEvent, WheelEvent, Window as BrowserHostWindow,
+    CompositionEvent, Document, Event, EventTarget, HtmlCanvasElement, HtmlInputElement,
+    KeyboardEvent, PointerEvent, WheelEvent, Window as BrowserHostWindow,
 };
 
 use super::{
@@ -157,8 +157,8 @@ impl core::fmt::Debug for BrowserWindow {
 
 impl BrowserWindow {
     pub async fn new(schedule_frame: Rc<dyn Fn()>) -> Self {
-        let browser_window = web_sys::window()
-            .expect("hydrolysis web platform: browser window unavailable");
+        let browser_window =
+            web_sys::window().expect("hydrolysis web platform: browser window unavailable");
         let document = browser_window
             .document()
             .expect("hydrolysis web platform: document unavailable");
@@ -177,12 +177,8 @@ impl BrowserWindow {
             height: initial_resize.height,
         });
 
-        let surface = BrowserSurface::new(
-            canvas.clone(),
-            initial_resize.width,
-            initial_resize.height,
-        )
-        .await;
+        let surface =
+            BrowserSurface::new(canvas.clone(), initial_resize.width, initial_resize.height).await;
 
         let listeners = register_listeners(
             &browser_window,
@@ -465,18 +461,22 @@ fn register_listeners(
         let scale_factor = scale_factor.clone();
         let pending_resize = pending_resize.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&browser_window_target, "resize", move |_event| {
-            let resize = measure_canvas(&browser_window, &canvas);
-            scale_factor.set(resize.scale_factor);
-            apply_canvas_resize(&canvas, resize);
-            pending_resize.set(Some(resize));
-            pending_events.borrow_mut().push(InputEvent::Resize {
-                width: resize.width,
-                height: resize.height,
-            });
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &browser_window_target,
+            "resize",
+            move |_event| {
+                let resize = measure_canvas(&browser_window, &canvas);
+                scale_factor.set(resize.scale_factor);
+                apply_canvas_resize(&canvas, resize);
+                pending_resize.set(Some(resize));
+                pending_events.borrow_mut().push(InputEvent::Resize {
+                    width: resize.width,
+                    height: resize.height,
+                });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -484,24 +484,28 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "pointerdown", move |event| {
-            let event = event
-                .dyn_into::<PointerEvent>()
-                .expect("hydrolysis web platform: pointerdown event had unexpected type");
-            event.prevent_default();
-            let (x, y) = event_position(
-                &canvas,
-                f64::from(event.client_x()),
-                f64::from(event.client_y()),
-            );
-            pending_events.borrow_mut().push(InputEvent::PointerDown {
-                x,
-                y,
-                button: map_pointer_button(event.button()),
-            });
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &canvas_target,
+            "pointerdown",
+            move |event| {
+                let event = event
+                    .dyn_into::<PointerEvent>()
+                    .expect("hydrolysis web platform: pointerdown event had unexpected type");
+                event.prevent_default();
+                let (x, y) = event_position(
+                    &canvas,
+                    f64::from(event.client_x()),
+                    f64::from(event.client_y()),
+                );
+                pending_events.borrow_mut().push(InputEvent::PointerDown {
+                    x,
+                    y,
+                    button: map_pointer_button(event.button()),
+                });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -509,24 +513,28 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "pointerup", move |event| {
-            let event = event
-                .dyn_into::<PointerEvent>()
-                .expect("hydrolysis web platform: pointerup event had unexpected type");
-            event.prevent_default();
-            let (x, y) = event_position(
-                &canvas,
-                f64::from(event.client_x()),
-                f64::from(event.client_y()),
-            );
-            pending_events.borrow_mut().push(InputEvent::PointerUp {
-                x,
-                y,
-                button: map_pointer_button(event.button()),
-            });
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &canvas_target,
+            "pointerup",
+            move |event| {
+                let event = event
+                    .dyn_into::<PointerEvent>()
+                    .expect("hydrolysis web platform: pointerup event had unexpected type");
+                event.prevent_default();
+                let (x, y) = event_position(
+                    &canvas,
+                    f64::from(event.client_x()),
+                    f64::from(event.client_y()),
+                );
+                pending_events.borrow_mut().push(InputEvent::PointerUp {
+                    x,
+                    y,
+                    button: map_pointer_button(event.button()),
+                });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -534,32 +542,40 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "pointermove", move |event| {
-            let event = event
-                .dyn_into::<PointerEvent>()
-                .expect("hydrolysis web platform: pointermove event had unexpected type");
-            let (x, y) = event_position(
-                &canvas,
-                f64::from(event.client_x()),
-                f64::from(event.client_y()),
-            );
-            pending_events
-                .borrow_mut()
-                .push(InputEvent::PointerMove { x, y });
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &canvas_target,
+            "pointermove",
+            move |event| {
+                let event = event
+                    .dyn_into::<PointerEvent>()
+                    .expect("hydrolysis web platform: pointermove event had unexpected type");
+                let (x, y) = event_position(
+                    &canvas,
+                    f64::from(event.client_x()),
+                    f64::from(event.client_y()),
+                );
+                pending_events
+                    .borrow_mut()
+                    .push(InputEvent::PointerMove { x, y });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "pointercancel", move |_event| {
-            pending_events.borrow_mut().push(InputEvent::PointerCancel);
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &canvas_target,
+            "pointercancel",
+            move |_event| {
+                pending_events.borrow_mut().push(InputEvent::PointerCancel);
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -593,37 +609,41 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(ime_input.as_ref(), "keydown", move |event| {
-            let event = event
-                .dyn_into::<KeyboardEvent>()
-                .expect("hydrolysis web platform: keydown event had unexpected type");
-            let modifiers = map_modifiers_from_keyboard(&event);
-            match event.key().as_str() {
-                "Backspace" => {
-                    event.prevent_default();
-                    pending_events.borrow_mut().push(InputEvent::Key {
-                        key: KeyCode::Named("Backspace".to_string()),
-                        state: KeyState::Pressed,
-                        modifiers,
-                    });
+        listeners.push(add_event_listener(
+            ime_input.as_ref(),
+            "keydown",
+            move |event| {
+                let event = event
+                    .dyn_into::<KeyboardEvent>()
+                    .expect("hydrolysis web platform: keydown event had unexpected type");
+                let modifiers = map_modifiers_from_keyboard(&event);
+                match event.key().as_str() {
+                    "Backspace" => {
+                        event.prevent_default();
+                        pending_events.borrow_mut().push(InputEvent::Key {
+                            key: KeyCode::Named("Backspace".to_string()),
+                            state: KeyState::Pressed,
+                            modifiers,
+                        });
+                    }
+                    "Enter" => {
+                        event.prevent_default();
+                        pending_events.borrow_mut().push(InputEvent::ImeCommit {
+                            text: "\n".to_string(),
+                        });
+                    }
+                    "Tab" => {
+                        event.prevent_default();
+                        pending_events.borrow_mut().push(InputEvent::ImeCommit {
+                            text: "\t".to_string(),
+                        });
+                    }
+                    _ => return,
                 }
-                "Enter" => {
-                    event.prevent_default();
-                    pending_events.borrow_mut().push(InputEvent::ImeCommit {
-                        text: "\n".to_string(),
-                    });
-                }
-                "Tab" => {
-                    event.prevent_default();
-                    pending_events.borrow_mut().push(InputEvent::ImeCommit {
-                        text: "\t".to_string(),
-                    });
-                }
-                _ => return,
-            }
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -633,26 +653,30 @@ fn register_listeners(
         let ime_input = ime_input.clone();
         let composing = composing.clone();
         let suppress_next_input = suppress_next_input.clone();
-        listeners.push(add_event_listener(&ime_input_target, "input", move |event| {
-            event.prevent_default();
-            if suppress_next_input.replace(false) {
+        listeners.push(add_event_listener(
+            &ime_input_target,
+            "input",
+            move |event| {
+                event.prevent_default();
+                if suppress_next_input.replace(false) {
+                    ime_input.set_value("");
+                    return;
+                }
+                if composing.get() {
+                    return;
+                }
+                let value = ime_input.value();
+                if value.is_empty() {
+                    return;
+                }
                 ime_input.set_value("");
-                return;
-            }
-            if composing.get() {
-                return;
-            }
-            let value = ime_input.value();
-            if value.is_empty() {
-                return;
-            }
-            ime_input.set_value("");
-            pending_events
-                .borrow_mut()
-                .push(InputEvent::ImeCommit { text: value });
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+                pending_events
+                    .borrow_mut()
+                    .push(InputEvent::ImeCommit { text: value });
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     {
@@ -727,11 +751,15 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&ime_input_target, "blur", move |_event| {
-            pending_events.borrow_mut().push(InputEvent::ImeDisabled);
-            redraw_requested.set(true);
-            schedule_frame();
-        }));
+        listeners.push(add_event_listener(
+            &ime_input_target,
+            "blur",
+            move |_event| {
+                pending_events.borrow_mut().push(InputEvent::ImeDisabled);
+                redraw_requested.set(true);
+                schedule_frame();
+            },
+        ));
     }
 
     listeners
@@ -749,13 +777,18 @@ fn add_event_listener(
     let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(Event)>);
     target
         .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())
-        .unwrap_or_else(|_| panic!("hydrolysis web platform: failed to register {event_name} listener"));
+        .unwrap_or_else(|_| {
+            panic!("hydrolysis web platform: failed to register {event_name} listener")
+        });
     closure
 }
 
 fn event_position(canvas: &HtmlCanvasElement, client_x: f64, client_y: f64) -> (f32, f32) {
     let rect = canvas.get_bounding_client_rect();
-    ((client_x - rect.left()) as f32, (client_y - rect.top()) as f32)
+    (
+        (client_x - rect.left()) as f32,
+        (client_y - rect.top()) as f32,
+    )
 }
 
 fn map_modifiers_from_keyboard(event: &KeyboardEvent) -> Modifiers {

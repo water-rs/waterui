@@ -522,8 +522,7 @@ mod tests {
         );
         assert!(resolve_backend(TargetPlatform::Windows, TargetBackend::Gtk4).is_err());
         assert_eq!(
-            resolve_backend(TargetPlatform::Web, TargetBackend::Hydrolysis)
-                .expect("web backend"),
+            resolve_backend(TargetPlatform::Web, TargetBackend::Hydrolysis).expect("web backend"),
             TargetBackend::Hydrolysis
         );
     }
