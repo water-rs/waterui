@@ -50,6 +50,14 @@ pub mod prelude {
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
+    #[cfg(feature = "chart")]
+    pub use super::chart;
+    #[cfg(feature = "barcode")]
+    pub use super::barcode;
+    #[cfg(feature = "map")]
+    pub use super::map;
+    #[cfg(feature = "particle")]
+    pub use super::particle;
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
         accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
@@ -127,17 +135,25 @@ pub use waterui_graphics::{
     ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
     RadialGradientGenerator, StripeGenerator,
 };
+#[cfg(feature = "barcode")]
+pub use waterui_barcode as barcode;
+#[cfg(feature = "chart")]
+pub use waterui_chart as chart;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
+#[cfg(feature = "map")]
+pub use waterui_map as map;
 pub use waterui_locale::regional;
 #[doc(inline)]
 pub use waterui_macros::*;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
+#[cfg(feature = "particle")]
+pub use waterui_particle as particle;
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "video")]
