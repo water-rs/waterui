@@ -1,6 +1,6 @@
-//! WebView component for WaterUI framework.
+//! `WebView` component for `WaterUI` framework.
 //!
-//! This module provides a web view component for embedding web content in WaterUI applications.
+//! This module provides a web view component for embedding web content in `WaterUI` applications.
 //!
 //! # Architecture
 //!
@@ -37,7 +37,7 @@ use waterui_core::{
 };
 use waterui_str::Str;
 
-/// Events emitted by the WebView component.
+/// Events emitted by the `WebView` component.
 #[derive(Debug, Clone)]
 pub enum WebViewEvent {
     /// No event (initial state).
@@ -76,7 +76,7 @@ pub enum WebViewEvent {
     },
 }
 
-/// Errors that can occur in the WebView component.
+/// Errors that can occur in the `WebView` component.
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum WebViewError {
     /// A network error occurred.
@@ -95,13 +95,13 @@ pub enum WebViewError {
     LoadFailed(Str),
 }
 
-/// A WebView component that displays web content and handles navigation events.
+/// A `WebView` component that displays web content and handles navigation events.
 ///
 /// This struct wraps [`AnyWebViewHandle`] and adds reactive state via nami bindings.
 /// The `can_go_back` and `can_go_forward` bindings are automatically updated when
 /// the native backend emits [`WebViewEvent::StateChanged`] events.
 ///
-/// WebView implements [`View`] so it can be used directly in the view hierarchy.
+/// `WebView` implements [`View`] so it can be used directly in the view hierarchy.
 pub struct WebView {
     event: Binding<WebViewEvent>,
     handle: AnyWebViewHandle,
@@ -134,7 +134,8 @@ impl std::fmt::Debug for WebView {
 }
 
 impl WebView {
-    /// Creates a new WebView component with the given handle.
+    /// Creates a new `WebView` component with the given handle.
+    #[must_use]
     pub fn new(handle: AnyWebViewHandle) -> Self {
         let event = binding(WebViewEvent::None);
         let can_go_back = binding(handle.can_go_back());
@@ -182,6 +183,7 @@ impl WebView {
     /// let webview = WebView::new(handle)
     ///     .redirects_enabled(allow_redirects.clone());
     /// ```
+    #[must_use]
     pub fn redirects_enabled(mut self, enabled: impl Into<Computed<bool>>) -> Self {
         let enabled = enabled.into();
 
@@ -198,17 +200,18 @@ impl WebView {
         self
     }
 
-    /// Opens a new WebView and navigates to the specified URL.
+    /// Opens a new `WebView` and navigates to the specified URL.
     pub fn open(url: impl AsRef<str>) -> impl View {
         let url = url.as_ref().to_string();
         use_env(move |controller: WebViewController| {
             let handle = controller.open();
             handle.go_to(&url);
-            WebView::new(handle)
+            Self::new(handle)
         })
     }
 
-    /// Opens a new WebView, navigates to the specified URL, and applies a configuration function.
+    /// Opens a new `WebView`, navigates to the specified URL, and applies a
+    /// configuration function.
     pub fn open_then(
         url: impl AsRef<str>,
         f: impl FnOnce(AnyWebViewHandle) + 'static,
@@ -218,11 +221,12 @@ impl WebView {
             let handle = controller.open();
             handle.go_to(&url);
             f(handle.clone());
-            WebView::new(handle)
+            Self::new(handle)
         })
     }
 
-    /// Returns a signal that emits WebView events.
+    /// Returns a signal that emits `WebView` events.
+    #[must_use]
     pub fn event(&self) -> impl Signal<Output = WebViewEvent> {
         self.event.clone()
     }
@@ -253,18 +257,31 @@ impl WebView {
     }
 
     /// Returns a reactive signal for whether the web view can navigate back.
+    #[must_use]
     pub fn can_go_back(&self) -> Computed<bool> {
         Computed::from(self.can_go_back.clone())
     }
 
     /// Returns a reactive signal for whether the web view can navigate forward.
+    #[must_use]
     pub fn can_go_forward(&self) -> Computed<bool> {
         Computed::from(self.can_go_forward.clone())
     }
 
     /// Runs the given JavaScript code in the web view and returns the result.
-    pub async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
-        self.handle.run_javascript(script).await
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string from the native backend when script execution fails.
+    ///
+    /// The returned future is intentionally thread-local because `WebView` state is
+    /// bound to the native UI thread.
+    #[allow(clippy::future_not_send)]
+    pub fn run_javascript<'a>(
+        &'a self,
+        script: &'a str,
+    ) -> impl core::future::Future<Output = Result<Str, Str>> + 'a {
+        self.handle.run_javascript(script)
     }
 
     /// Sets the user agent string for the web view.
@@ -287,7 +304,8 @@ impl WebView {
     /// Returns the underlying handle.
     ///
     /// Use this to access lower-level functionality or to downcast to a native type.
-    pub fn handle(&self) -> &AnyWebViewHandle {
+    #[must_use]
+    pub const fn handle(&self) -> &AnyWebViewHandle {
         &self.handle
     }
 }

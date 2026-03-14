@@ -1,4 +1,4 @@
-//! Procedural macros for WaterUI asset management.
+//! Procedural macros for `WaterUI` asset management.
 //!
 //! Provides `asset!`, `assets!`, and `include_bundle!`.
 

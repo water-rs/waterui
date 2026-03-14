@@ -1,4 +1,4 @@
-//! Proc macros for WaterUI i18n.
+//! Proc macros for `WaterUI` i18n.
 //!
 //! This crate provides the `text!` macro for internationalized text.
 //! The macro loads translation files from the `i18n/` folder at compile time.
@@ -11,7 +11,10 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Expr, Ident, LitStr, Result, Token, parse_macro_input};
+use syn::{Expr, Ident, LitStr, Result, Token};
+
+const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
+const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one", "other_other"];
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
     match crate_name("waterui") {
@@ -44,6 +47,24 @@ enum TranslationValue {
         other_one: Option<String>,
         other_other: String,
     },
+}
+
+#[derive(Clone, Copy)]
+struct PluralFormsRef<'a> {
+    zero: Option<&'a String>,
+    one: Option<&'a String>,
+    two: Option<&'a String>,
+    few: Option<&'a String>,
+    many: Option<&'a String>,
+    other: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct DualPluralFormsRef<'a> {
+    one_one: Option<&'a String>,
+    one_other: Option<&'a String>,
+    other_one: Option<&'a String>,
+    other_other: &'a str,
 }
 
 /// All translations loaded from i18n folder
@@ -118,10 +139,6 @@ impl TranslationBundle {
         let table: toml::Table = toml::from_str(content)
             .map_err(|err| format!("Failed to parse '{}': {err}", source.display()))?;
         let mut translations = BTreeMap::new();
-
-        const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
-        const VALID_DUAL_PLURAL_FIELDS: &[&str] =
-            &["one_one", "one_other", "other_one", "other_other"];
 
         for (key, value) in table {
             let tv =
@@ -321,11 +338,7 @@ fn parse_placeholders(format_string: &str) -> Vec<Placeholder> {
             }
 
             let content = content.strip_suffix('=').unwrap_or(content);
-            let base = content
-                .split(|ch| ch == '.' || ch == '[')
-                .next()
-                .unwrap_or("")
-                .trim();
+            let base = content.split(['.', '[']).next().unwrap_or("").trim();
 
             if is_valid_ident(base) {
                 let name = base.to_string();
@@ -417,6 +430,104 @@ fn make_key(format_string: &str, context: Option<&str>) -> String {
     )
 }
 
+fn collect_plural_names(placeholders: &[Placeholder]) -> Vec<&str> {
+    placeholders
+        .iter()
+        .filter_map(|placeholder| match placeholder {
+            Placeholder::Plural(name) => Some(name.as_str()),
+            Placeholder::Regular(_) => None,
+        })
+        .collect()
+}
+
+fn build_binding_map(bindings: &[(Ident, Expr)]) -> std::collections::HashMap<String, &Expr> {
+    bindings
+        .iter()
+        .map(|(name, expr)| (name.to_string(), expr))
+        .collect()
+}
+
+fn build_captures_and_idents(
+    waterui: &TokenStream2,
+    placeholders: &[Placeholder],
+    binding_map: &std::collections::HashMap<String, &Expr>,
+) -> (Vec<TokenStream2>, Vec<Ident>) {
+    let mut captures = Vec::new();
+    let mut all_names = Vec::new();
+
+    if !placeholders.is_empty() {
+        // Bring `to_owned()` into scope (relies on auto-ref for literals like `0`).
+        captures.push(quote! {
+            use #waterui::reactive::__alloc::borrow::ToOwned as _;
+        });
+    }
+
+    for placeholder in placeholders {
+        let name = match placeholder {
+            Placeholder::Regular(name) | Placeholder::Plural(name) => name,
+        };
+
+        if all_names.contains(name) {
+            continue;
+        }
+
+        all_names.push(name.clone());
+        let name_ident = Ident::new(name, proc_macro2::Span::call_site());
+
+        if let Some(expr) = binding_map.get(name) {
+            captures.push(quote! {
+                let #name_ident = (#expr).to_owned();
+            });
+        } else {
+            captures.push(quote! {
+                let #name_ident = (#name_ident).to_owned();
+            });
+        }
+    }
+
+    let all_idents = all_names
+        .iter()
+        .map(|name| Ident::new(name, Span::call_site()))
+        .collect();
+    (captures, all_idents)
+}
+
+fn build_locale_arms(
+    bundle: &TranslationBundle,
+    translation_key: &str,
+    waterui: &TokenStream2,
+    all_idents: &[Ident],
+    plural_names: &[&str],
+) -> Vec<TokenStream2> {
+    let mut locale_arms = Vec::new();
+    for (locale_code, translations) in &bundle.locales {
+        if let Some(value) = translations.get(translation_key) {
+            let arm =
+                generate_translation_arm(waterui, locale_code, value, all_idents, plural_names);
+            locale_arms.push(arm);
+        }
+    }
+    locale_arms
+}
+
+fn translation_format_lit(text: &str) -> LitStr {
+    let format_str = text.replace("{#", "{");
+    LitStr::new(&format_str, Span::call_site())
+}
+
+fn build_text_config_expr(
+    waterui: &TokenStream2,
+    format_lit: &LitStr,
+    all_idents: &[Ident],
+) -> TokenStream2 {
+    if all_idents.is_empty() {
+        quote! { #waterui::text::Text::__config(#format_lit) }
+    } else {
+        let content = build_format_signal(waterui, format_lit, all_idents);
+        quote! { #waterui::text::Text::__config(#content) }
+    }
+}
+
 /// Macro for creating localized text.
 ///
 /// The `text!` macro loads translations from `i18n/` folder at compile time
@@ -454,13 +565,16 @@ fn make_key(format_string: &str, context: Option<&str>) -> String {
 /// // Explicit binding
 /// text!("Hello, {name}", name = get_name())
 /// ```
-pub(crate) fn text(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as TextInput);
-    let expanded = expand_text_macro(input);
+pub fn text(input: &TokenStream) -> TokenStream {
+    let input = match syn::parse::<TextInput>(input.clone()) {
+        Ok(input) => input,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    let expanded = expand_text_macro(&input);
     TokenStream::from(expanded)
 }
 
-fn expand_text_macro(input: TextInput) -> TokenStream2 {
+fn expand_text_macro(input: &TextInput) -> TokenStream2 {
     let waterui = match waterui_crate_path() {
         Ok(path) => path,
         Err(err) => return err,
@@ -479,70 +593,16 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
         }
     };
 
-    // Collect all placeholder names
-    let mut plural_names: Vec<&str> = Vec::new();
-
-    for ph in &placeholders {
-        if let Placeholder::Plural(name) = ph {
-            plural_names.push(name);
-        }
-    }
-
-    // Build binding expressions
-    let binding_map: std::collections::HashMap<String, &Expr> = input
-        .bindings
-        .iter()
-        .map(|(name, expr)| (name.to_string(), expr))
-        .collect();
-
-    // Generate capture statements for all placeholders
-    let mut captures = Vec::new();
-    let mut all_names: Vec<String> = Vec::new();
-
-    if !placeholders.is_empty() {
-        // Bring `to_owned()` into scope (relies on auto-ref for literals like `0`).
-        captures.push(quote! {
-            use #waterui::reactive::__alloc::borrow::ToOwned as _;
-        });
-    }
-
-    for ph in &placeholders {
-        let name = match ph {
-            Placeholder::Regular(n) | Placeholder::Plural(n) => n,
-        };
-
-        if !all_names.contains(name) {
-            all_names.push(name.clone());
-            let name_ident = Ident::new(name, proc_macro2::Span::call_site());
-
-            if let Some(expr) = binding_map.get(name) {
-                // Clone the expression to get an owned value (works for both &T and T)
-                captures.push(quote! {
-                    let #name_ident = (#expr).to_owned();
-                });
-            } else {
-                // Auto-capture from scope, use ToOwned to handle both &T and T
-                captures.push(quote! {
-                    let #name_ident = (#name_ident).to_owned();
-                });
-            }
-        }
-    }
-
-    let all_idents: Vec<Ident> = all_names
-        .iter()
-        .map(|name| Ident::new(name, Span::call_site()))
-        .collect();
-
-    // Generate match arms for each locale.
-    let mut locale_arms = Vec::new();
-    for (locale_code, translations) in &bundle.locales {
-        if let Some(value) = translations.get(&translation_key) {
-            let arm =
-                generate_translation_arm(&waterui, locale_code, value, &all_idents, &plural_names);
-            locale_arms.push(arm);
-        }
-    }
+    let plural_names = collect_plural_names(&placeholders);
+    let binding_map = build_binding_map(&input.bindings);
+    let (captures, all_idents) = build_captures_and_idents(&waterui, &placeholders, &binding_map);
+    let locale_arms = build_locale_arms(
+        &bundle,
+        &translation_key,
+        &waterui,
+        &all_idents,
+        &plural_names,
+    );
 
     let tracked_file_lits: Vec<LitStr> = bundle
         .tracked_files
@@ -554,14 +614,7 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     // Default fallback - use the key itself
     let default_format = key.replace("{#", "{");
     let default_format_lit = LitStr::new(&default_format, Span::call_site());
-    let default_body = if all_idents.is_empty() {
-        quote! { #waterui::text::Text::__config(#default_format_lit) }
-    } else {
-        let content = build_format_signal(&waterui, &default_format_lit, &all_idents);
-        quote! {
-            #waterui::text::Text::__config(#content)
-        }
-    };
+    let default_body = build_text_config_expr(&waterui, &default_format_lit, &all_idents);
 
     // Generate the localized Text
     quote! {
@@ -607,32 +660,9 @@ fn generate_translation_arm(
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
-    let locale_pattern = locale_code;
-
     match value {
         TranslationValue::Simple(text) => {
-            // Replace {#name} with {name} for format!
-            let format_str = text.replace("{#", "{");
-            let format_lit = LitStr::new(&format_str, Span::call_site());
-
-            if all_idents.is_empty() {
-                quote! {
-                    #locale_pattern => {
-                        Some(
-                            #waterui::text::Text::__config(#format_lit)
-                        )
-                    }
-                }
-            } else {
-                let content = build_format_signal(waterui, &format_lit, all_idents);
-                quote! {
-                    #locale_pattern => {
-                        Some(
-                            #waterui::text::Text::__config(#content)
-                        )
-                    }
-                }
-            }
+            generate_simple_translation_arm(waterui, locale_code, text, all_idents)
         }
         TranslationValue::Plural {
             zero,
@@ -641,146 +671,166 @@ fn generate_translation_arm(
             few,
             many,
             other,
-        } => {
-            // Get the first plural source variable
-            let plural_var = plural_names.first().copied().unwrap_or("count");
-            let plural_ident = Ident::new(plural_var, proc_macro2::Span::call_site());
-
-            // Generate plural category match arms
-            let mut category_arms = Vec::new();
-
-            if let Some(text) = zero {
-                let format_str = text.replace("{#", "{");
-                let format_lit = LitStr::new(&format_str, Span::call_site());
-                category_arms.push(quote! {
-                    #waterui::locale::PluralCategory::Zero => {
-                        #waterui::reactive::__alloc::format!(#format_lit)
-                    }
-                });
-            }
-            if let Some(text) = one {
-                let format_str = text.replace("{#", "{");
-                let format_lit = LitStr::new(&format_str, Span::call_site());
-                category_arms.push(quote! {
-                    #waterui::locale::PluralCategory::One => {
-                        #waterui::reactive::__alloc::format!(#format_lit)
-                    }
-                });
-            }
-            if let Some(text) = two {
-                let format_str = text.replace("{#", "{");
-                let format_lit = LitStr::new(&format_str, Span::call_site());
-                category_arms.push(quote! {
-                    #waterui::locale::PluralCategory::Two => {
-                        #waterui::reactive::__alloc::format!(#format_lit)
-                    }
-                });
-            }
-            if let Some(text) = few {
-                let format_str = text.replace("{#", "{");
-                let format_lit = LitStr::new(&format_str, Span::call_site());
-                category_arms.push(quote! {
-                    #waterui::locale::PluralCategory::Few => {
-                        #waterui::reactive::__alloc::format!(#format_lit)
-                    }
-                });
-            }
-            if let Some(text) = many {
-                let format_str = text.replace("{#", "{");
-                let format_lit = LitStr::new(&format_str, Span::call_site());
-                category_arms.push(quote! {
-                    #waterui::locale::PluralCategory::Many => {
-                        #waterui::reactive::__alloc::format!(#format_lit)
-                    }
-                });
-            }
-
-            let other_format = other.replace("{#", "{");
-            let other_format_lit = LitStr::new(&other_format, Span::call_site());
-            let locale_ident = unique_ident("__waterui_locale_value", all_idents);
-            let body = quote! {
-                let category = #waterui::locale::select_plural(&#locale_ident, #plural_ident);
-                match category {
-                    #(#category_arms)*
-                    _ => #waterui::reactive::__alloc::format!(#other_format_lit),
-                }
-            };
-            let content = build_signal_map(waterui, all_idents, &body);
-
-            quote! {
-                #locale_pattern => {
-                    let #locale_ident = locale.clone();
-                    Some(
-                        #waterui::text::Text::__config(#content)
-                    )
-                }
-            }
-        }
+        } => generate_plural_translation_arm(
+            waterui,
+            locale_code,
+            PluralFormsRef {
+                zero: zero.as_ref(),
+                one: one.as_ref(),
+                two: two.as_ref(),
+                few: few.as_ref(),
+                many: many.as_ref(),
+                other,
+            },
+            all_idents,
+            plural_names,
+        ),
         TranslationValue::DualPlural {
             one_one,
             one_other,
             other_one,
             other_other,
-        } => {
-            let plural_var_1 = plural_names.first().copied().unwrap_or("count");
-            let plural_var_2 = plural_names.get(1).copied().unwrap_or(plural_var_1);
-            let plural_ident_1 = Ident::new(plural_var_1, proc_macro2::Span::call_site());
-            let plural_ident_2 = Ident::new(plural_var_2, proc_macro2::Span::call_site());
+        } => generate_dual_plural_translation_arm(
+            waterui,
+            locale_code,
+            DualPluralFormsRef {
+                one_one: one_one.as_ref(),
+                one_other: one_other.as_ref(),
+                other_one: other_one.as_ref(),
+                other_other,
+            },
+            all_idents,
+            plural_names,
+        ),
+    }
+}
 
-            let one_one_format = one_one
-                .as_ref()
-                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
-            let one_other_format = one_other
-                .as_ref()
-                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
-            let other_one_format = other_one
-                .as_ref()
-                .map(|text| LitStr::new(&text.replace("{#", "{"), Span::call_site()));
-            let other_other_lit = LitStr::new(&other_other.replace("{#", "{"), Span::call_site());
-            let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+fn generate_simple_translation_arm(
+    waterui: &TokenStream2,
+    locale_code: &str,
+    text: &str,
+    all_idents: &[Ident],
+) -> TokenStream2 {
+    let format_lit = translation_format_lit(text);
+    let text_config = build_text_config_expr(waterui, &format_lit, all_idents);
+    quote! {
+        #locale_code => {
+            Some(#text_config)
+        }
+    }
+}
 
-            let one_one_expr = one_one_format
-                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
-                .unwrap_or_else(
-                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
-                );
-            let one_other_expr = one_other_format
-                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
-                .unwrap_or_else(
-                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
-                );
-            let other_one_expr = other_one_format
-                .map(|lit| quote! { #waterui::reactive::__alloc::format!(#lit) })
-                .unwrap_or_else(
-                    || quote! { #waterui::reactive::__alloc::format!(#other_other_lit) },
-                );
-
-            let body = quote! {
-                let category_1 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_1);
-                let category_2 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_2);
-                match (category_1, category_2) {
-                    (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
-                        #one_one_expr
-                    }
-                    (#waterui::locale::PluralCategory::One, _) => {
-                        #one_other_expr
-                    }
-                    (_, #waterui::locale::PluralCategory::One) => {
-                        #other_one_expr
-                    }
-                    _ => #waterui::reactive::__alloc::format!(#other_other_lit),
-                }
-            };
-            let content = build_signal_map(waterui, all_idents, &body);
-
-            quote! {
-                #locale_pattern => {
-                    let #locale_ident = locale.clone();
-                    Some(
-                        #waterui::text::Text::__config(#content)
-                    )
-                }
+fn push_plural_category_arm(
+    category_arms: &mut Vec<TokenStream2>,
+    waterui: &TokenStream2,
+    category: &TokenStream2,
+    text: Option<&String>,
+) {
+    if let Some(text) = text {
+        let format_lit = translation_format_lit(text);
+        category_arms.push(quote! {
+            #category => {
+                #waterui::reactive::__alloc::format!(#format_lit)
             }
+        });
+    }
+}
+
+fn generate_plural_translation_arm(
+    waterui: &TokenStream2,
+    locale_code: &str,
+    forms: PluralFormsRef<'_>,
+    all_idents: &[Ident],
+    plural_names: &[&str],
+) -> TokenStream2 {
+    let plural_var = plural_names.first().copied().unwrap_or("count");
+    let plural_ident = Ident::new(plural_var, proc_macro2::Span::call_site());
+    let mut category_arms = Vec::new();
+    let zero = quote! { #waterui::locale::PluralCategory::Zero };
+    let one = quote! { #waterui::locale::PluralCategory::One };
+    let two = quote! { #waterui::locale::PluralCategory::Two };
+    let few = quote! { #waterui::locale::PluralCategory::Few };
+    let many = quote! { #waterui::locale::PluralCategory::Many };
+    push_plural_category_arm(&mut category_arms, waterui, &zero, forms.zero);
+    push_plural_category_arm(&mut category_arms, waterui, &one, forms.one);
+    push_plural_category_arm(&mut category_arms, waterui, &two, forms.two);
+    push_plural_category_arm(&mut category_arms, waterui, &few, forms.few);
+    push_plural_category_arm(&mut category_arms, waterui, &many, forms.many);
+
+    let other_format_lit = translation_format_lit(forms.other);
+    let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+    let body = quote! {
+        let category = #waterui::locale::select_plural(&#locale_ident, #plural_ident);
+        match category {
+            #(#category_arms)*
+            _ => #waterui::reactive::__alloc::format!(#other_format_lit),
+        }
+    };
+    let content = build_signal_map(waterui, all_idents, &body);
+
+    quote! {
+        #locale_code => {
+            let #locale_ident = locale.clone();
+            Some(#waterui::text::Text::__config(#content))
+        }
+    }
+}
+
+fn optional_format_expr(
+    waterui: &TokenStream2,
+    format_lit: Option<LitStr>,
+    fallback: &LitStr,
+) -> TokenStream2 {
+    format_lit.map_or_else(
+        || quote! { #waterui::reactive::__alloc::format!(#fallback) },
+        |lit| quote! { #waterui::reactive::__alloc::format!(#lit) },
+    )
+}
+
+fn generate_dual_plural_translation_arm(
+    waterui: &TokenStream2,
+    locale_code: &str,
+    forms: DualPluralFormsRef<'_>,
+    all_idents: &[Ident],
+    plural_names: &[&str],
+) -> TokenStream2 {
+    let plural_var_1 = plural_names.first().copied().unwrap_or("count");
+    let plural_var_2 = plural_names.get(1).copied().unwrap_or(plural_var_1);
+    let plural_ident_1 = Ident::new(plural_var_1, proc_macro2::Span::call_site());
+    let plural_ident_2 = Ident::new(plural_var_2, proc_macro2::Span::call_site());
+
+    let one_one_format = forms.one_one.map(|text| translation_format_lit(text));
+    let one_other_format = forms.one_other.map(|text| translation_format_lit(text));
+    let other_one_format = forms.other_one.map(|text| translation_format_lit(text));
+    let other_other_lit = translation_format_lit(forms.other_other);
+    let locale_ident = unique_ident("__waterui_locale_value", all_idents);
+
+    let one_one_expr = optional_format_expr(waterui, one_one_format, &other_other_lit);
+    let one_other_expr = optional_format_expr(waterui, one_other_format, &other_other_lit);
+    let other_one_expr = optional_format_expr(waterui, other_one_format, &other_other_lit);
+
+    let body = quote! {
+        let category_1 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_1);
+        let category_2 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_2);
+        match (category_1, category_2) {
+            (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
+                #one_one_expr
+            }
+            (#waterui::locale::PluralCategory::One, _) => {
+                #one_other_expr
+            }
+            (_, #waterui::locale::PluralCategory::One) => {
+                #other_one_expr
+            }
+            _ => #waterui::reactive::__alloc::format!(#other_other_lit),
+        }
+    };
+    let content = build_signal_map(waterui, all_idents, &body);
+
+    quote! {
+        #locale_code => {
+            let #locale_ident = locale.clone();
+            Some(#waterui::text::Text::__config(#content))
         }
     }
 }
@@ -836,7 +886,7 @@ mod tests {
     }
 }
 
-pub(crate) fn catalog(input: TokenStream) -> TokenStream {
+pub fn catalog(input: &TokenStream) -> TokenStream {
     if !input.is_empty() {
         return syn::Error::new(Span::call_site(), "catalog! does not accept arguments")
             .to_compile_error()

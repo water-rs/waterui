@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+readme = "../../README.md"
 repository.workspace = true
 description = "Map component for WaterUI framework"
 keywords = ["map", "mapkit", "location", "ui", "waterui"]

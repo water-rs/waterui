@@ -1,4 +1,4 @@
-//! Shared asset discovery and planning for WaterUI applications.
+//! Shared asset discovery and planning for `WaterUI` applications.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;

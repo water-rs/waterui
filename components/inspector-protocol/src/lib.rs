@@ -1,4 +1,4 @@
-//! Shared protocol between a running WaterUI app and the Inspector app.
+//! Shared protocol between a running `WaterUI` app and the Inspector app.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,7 @@ pub mod transport {
     const MAX_FRAME_ENV: &str = "WATERUI_INSPECTOR_MAX_FRAME_BYTES";
 
     /// Hard cap for single frames.
+    #[must_use]
     pub fn max_frame_bytes() -> usize {
         const DEFAULT: usize = 16 * 1024 * 1024;
         std::env::var(MAX_FRAME_ENV)
@@ -46,7 +47,29 @@ pub mod transport {
             .unwrap_or(DEFAULT)
     }
 
+    async fn write_encoded_frame<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
+        let len: u32 = data.len().try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inspector frame too large for u32 length",
+            )
+        })?;
+
+        writer.write_all(&len.to_be_bytes()).await?;
+        writer.write_all(data).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
     /// Read one framed message from an async reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` when the frame is too large, malformed, or contains
+    /// trailing bytes after decoding. Propagates I/O failures from the reader.
     pub async fn read_frame<R, T>(reader: &mut R) -> io::Result<T>
     where
         R: AsyncRead + Unpin,
@@ -79,28 +102,28 @@ pub mod transport {
     }
 
     /// Write one framed message to an async writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` when the encoded payload exceeds the protocol frame
+    /// size limit or cannot be serialized. Propagates I/O failures from the writer.
     pub async fn write_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
-        T: Serialize,
+        W: AsyncWrite + Unpin + Send,
+        T: Serialize + Sync,
     {
         let config = bincode::config::standard();
         let data = bincode::serde::encode_to_vec(value, config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let len: u32 = data.len().try_into().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "inspector frame too large for u32 length",
-            )
-        })?;
-
-        writer.write_all(&len.to_be_bytes()).await?;
-        writer.write_all(&data).await?;
-        writer.flush().await?;
-        Ok(())
+        write_encoded_frame(writer, &data).await
     }
 
     /// Read one framed message from a blocking reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` when the frame is too large, malformed, or contains
+    /// trailing bytes after decoding. Propagates I/O failures from the reader.
     pub fn read_frame_blocking<R, T>(reader: &mut R) -> io::Result<T>
     where
         R: io::Read,
@@ -133,6 +156,11 @@ pub mod transport {
     }
 
     /// Write one framed message to a blocking writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidData` when the encoded payload exceeds the protocol frame
+    /// size limit or cannot be serialized. Propagates I/O failures from the writer.
     pub fn write_frame_blocking<W, T>(writer: &mut W, value: &T) -> io::Result<()>
     where
         W: io::Write,
@@ -197,18 +225,22 @@ pub mod tcp {
         /// - `WATERUI_INSPECTOR_HOST`
         /// - `WATERUI_INSPECTOR_PORT_START`
         /// - `WATERUI_INSPECTOR_PORT_RANGE`
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when any configured env var fails to parse.
         pub fn from_env() -> Result<Self, ConfigError> {
             let mut cfg = Self::default_localhost();
 
-            if let Some(host) = std::env::var("WATERUI_INSPECTOR_HOST").ok() {
+            if let Ok(host) = std::env::var("WATERUI_INSPECTOR_HOST") {
                 cfg.host = host.parse().map_err(|_| ConfigError::InvalidHost)?;
             }
-            if let Some(port_start) = std::env::var("WATERUI_INSPECTOR_PORT_START").ok() {
+            if let Ok(port_start) = std::env::var("WATERUI_INSPECTOR_PORT_START") {
                 cfg.port_start = port_start
                     .parse()
                     .map_err(|_| ConfigError::InvalidPortStart)?;
             }
-            if let Some(port_range) = std::env::var("WATERUI_INSPECTOR_PORT_RANGE").ok() {
+            if let Ok(port_range) = std::env::var("WATERUI_INSPECTOR_PORT_RANGE") {
                 cfg.port_range = port_range
                     .parse()
                     .map_err(|_| ConfigError::InvalidPortRange)?;
@@ -219,7 +251,7 @@ pub mod tcp {
 
         /// Inclusive port range to scan/bind.
         #[must_use]
-        pub fn ports(&self) -> RangeInclusive<u16> {
+        pub const fn ports(&self) -> RangeInclusive<u16> {
             let end = self
                 .port_start
                 .saturating_add(self.port_range.saturating_sub(1));

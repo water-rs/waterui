@@ -7,6 +7,7 @@
 use core::{
     any::{Any, TypeId, type_name},
     fmt::Debug,
+    ptr,
 };
 
 use alloc::boxed::Box;
@@ -100,7 +101,7 @@ impl AnyView {
     #[doc(hidden)]
     #[must_use]
     pub fn stable_ptr(&self) -> *const () {
-        std::ptr::from_ref::<dyn AnyViewImpl>(&*self.0).cast::<()>()
+        ptr::from_ref::<dyn AnyViewImpl>(&*self.0).cast::<()>()
     }
 
     /// Downcasts `AnyView` to a concrete view type without any runtime checks.
