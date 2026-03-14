@@ -24,7 +24,6 @@ executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true
 mime = "0.3.17"
-image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 blocking = "1.6.2"
 base64 = "0.22.1"
 async-oneshot = "0.5"
@@ -41,6 +40,12 @@ zenwave = { workspace = true, features = ["rustls"] }
 [features]
 default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
+
+[dev-dependencies]
+waterui-graphics.workspace = true
+waterkit-codec = { workspace = true, features = ["software-fallback"] }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+wgpu.workspace = true
 
 
 [lints]

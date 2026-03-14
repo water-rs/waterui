@@ -4,6 +4,7 @@
 //! for use with the Canvas drawing API.
 
 use waterui_core::layout::Size;
+use waterui_graphics::image_decode::load_dynamic_image;
 
 // Internal imports for rendering
 use peniko;
@@ -74,9 +75,7 @@ impl CanvasImage {
     /// # Errors
     /// Returns an error if the image format is unsupported or decoding fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ImageError> {
-        // Decode image using the image crate.
-        // HEIF AV1 payloads are handled by a lightweight AVIF brand fallback.
-        let img = decode_image_with_fallback(bytes).map_err(ImageError::DecodeError)?;
+        let img = load_dynamic_image(bytes).map_err(ImageError::DecodeError)?;
 
         // Convert to RGBA8
         let rgba = img.to_rgba8();
@@ -172,72 +171,4 @@ impl std::error::Error for ImageError {
             Self::DecodeError(err) => Some(err),
         }
     }
-}
-
-fn decode_image_with_fallback(bytes: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
-    match image::load_from_memory(bytes) {
-        Ok(img) => Ok(img),
-        Err(primary_err) => {
-            let Some(patched) = patch_heif_brand_to_avif(bytes) else {
-                return Err(primary_err);
-            };
-            image::load_from_memory(&patched).map_err(|_| primary_err)
-        }
-    }
-}
-
-fn patch_heif_brand_to_avif(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() < 16 {
-        return None;
-    }
-    let box_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    if box_size < 16 || box_size > data.len() || &data[4..8] != b"ftyp" {
-        return None;
-    }
-
-    let major = [data[8], data[9], data[10], data[11]];
-    let is_heif = is_heif_brand(&major)
-        || data[16..box_size]
-            .chunks_exact(4)
-            .any(|brand| is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]]));
-    if !is_heif {
-        return None;
-    }
-
-    let mut patched = data.to_vec();
-    patched[8..12].copy_from_slice(b"avif");
-
-    let mut has_avif_compat = false;
-    let mut first_heif_compat_offset: Option<usize> = None;
-    for offset in (16..box_size).step_by(4) {
-        if offset + 4 > box_size {
-            break;
-        }
-        let brand = &patched[offset..offset + 4];
-        if brand == b"avif" || brand == b"avis" {
-            has_avif_compat = true;
-            break;
-        }
-        if first_heif_compat_offset.is_none()
-            && is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]])
-        {
-            first_heif_compat_offset = Some(offset);
-        }
-    }
-    if !has_avif_compat {
-        if let Some(offset) = first_heif_compat_offset {
-            patched[offset..offset + 4].copy_from_slice(b"avif");
-        } else if box_size >= 20 {
-            patched[16..20].copy_from_slice(b"avif");
-        }
-    }
-
-    Some(patched)
-}
-
-fn is_heif_brand(brand: &[u8; 4]) -> bool {
-    matches!(
-        brand,
-        b"mif1" | b"msf1" | b"heif" | b"heic" | b"heix" | b"hevc" | b"hevx"
-    )
 }
