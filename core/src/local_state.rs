@@ -100,6 +100,10 @@ impl LocalStateStore {
     }
 
     /// Returns the current slot value or initializes it on first use via a type-erased entry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the renderer invokes the initializer closure more than once for the same slot.
     #[must_use]
     pub fn get_or_init_dynamic(
         &self,
@@ -122,17 +126,19 @@ impl LocalStateStore {
     }
 
     /// Returns the current slot value or initializes it on first use.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the renderer reuses an existing slot with a different concrete type.
     #[must_use]
     pub fn get_or_init<T: 'static>(
         &self,
         scope: &LocalStateScope,
         init: impl FnOnce() -> T + 'static,
     ) -> Rc<T> {
-        let value = self.get_or_init_dynamic(
-            scope,
-            TypeId::of::<T>(),
-            move || Rc::new(init()) as Rc<dyn Any>,
-        );
+        let value = self.get_or_init_dynamic(scope, TypeId::of::<T>(), move || {
+            Rc::new(init()) as Rc<dyn Any>
+        });
         value.downcast::<T>().unwrap_or_else(|_| {
             panic!(
                 "LocalStateStore slot type mismatch for {}",
