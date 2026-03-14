@@ -16,6 +16,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use waterui_build_support::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
 
 /// Lucide icons version
 const LUCIDE_VERSION: &str = "0.562.0";
@@ -45,11 +46,11 @@ fn main() {
     };
     let source = env::var("LUCIDE_ICON_URL").unwrap_or(default_source);
 
-    if !is_url(&source) {
+    if !is_http_url(&source) {
         println!("cargo:rerun-if-changed={source}");
     }
 
-    let icon_nodes_json = load_content(&source, &cache_file, "Lucide icon-nodes.json").unwrap_or_else(|e| {
+    let icon_nodes_json = load_cached_text(&source, &cache_file, "Lucide icon-nodes.json").unwrap_or_else(|e| {
         panic!(
             "waterui-icons-lucide: {e}\nHint: provide vendored data in `data/` or set `LUCIDE_ICON_URL` to a local file path/URL."
         )
@@ -61,39 +62,6 @@ fn main() {
 
     // Generate icons.rs
     generate_icons_rs(&out_dir, &icons);
-}
-
-/// Fetch content from URL or local file path
-fn fetch_content(path: &str) -> Result<String, String> {
-    if path.starts_with("http://") || path.starts_with("https://") {
-        eprintln!("Downloading Lucide icons from {path}...");
-        ureq::get(path)
-            .call()
-            .map_err(|e| format!("Download failed: {e}"))?
-            .into_string()
-            .map_err(|e| format!("Failed to read response: {e}"))
-    } else {
-        eprintln!("Reading Lucide icons from local file: {path}");
-        fs::read_to_string(path).map_err(|e| format!("Failed to read file: {e}"))
-    }
-}
-
-fn is_url(path: &str) -> bool {
-    path.starts_with("http://") || path.starts_with("https://")
-}
-
-fn load_content(source: &str, cache_path: &Path, desc: &str) -> Result<String, String> {
-    if is_url(source) {
-        if cache_path.exists() {
-            return fs::read_to_string(cache_path)
-                .map_err(|e| format!("Failed to read cached {desc}: {e}"));
-        }
-        let content = fetch_content(source)?;
-        let _ = fs::write(cache_path, &content);
-        Ok(content)
-    } else {
-        fs::read_to_string(source).map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
-    }
 }
 
 /// Parse a JSON value as a number (handles both Number and String variants)
@@ -221,8 +189,8 @@ fn generate_icons_rs(
             continue;
         };
 
-        let const_name = to_const_name(icon_name);
-        let fn_name = to_fn_name(icon_name);
+        let const_name = rust_const_name(icon_name);
+        let fn_name = rust_fn_name(icon_name);
 
         output.push_str(&format!("/// SVG path for `{icon_name}`.\n"));
         output.push_str(&format!("pub const {const_name}_PATH: &str = {path:?};\n"));
@@ -243,38 +211,4 @@ fn generate_icons_rs(
     fs::File::create(&dest_path)
         .and_then(|mut f| f.write_all(output.as_bytes()))
         .expect("Failed to write icons.rs");
-}
-
-/// Convert kebab-case to SCREAMING_SNAKE_CASE
-fn to_const_name(name: &str) -> String {
-    let name = if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        format!("ICON_{name}")
-    } else {
-        name.to_string()
-    };
-    name.replace('-', "_").to_uppercase()
-}
-
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
-    "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
-];
-
-/// Convert kebab-case to snake_case, escaping keywords
-fn to_fn_name(name: &str) -> String {
-    let name = if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        format!("icon_{name}")
-    } else {
-        name.to_string()
-    };
-    let snake = name.replace('-', "_");
-
-    if RUST_KEYWORDS.contains(&snake.as_str()) {
-        format!("r#{snake}")
-    } else {
-        snake
-    }
 }
