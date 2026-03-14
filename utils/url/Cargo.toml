@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 waterui-str.workspace = true
 nami-core.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 [features]
 std = []
