@@ -59,6 +59,7 @@ impl App {
     }
 
     /// Get an iterator over all windows (main window first).
+    #[must_use]
     pub fn windows(&self) -> impl DoubleEndedIterator<Item = &Window> {
         std::iter::once(&self.main_window).chain(self.windows.iter())
     }

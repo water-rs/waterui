@@ -228,7 +228,7 @@ pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorEn
     let flush_interval = config.flush_interval;
     thread::Builder::new()
         .name("waterui-inspector-server".to_string())
-        .spawn(move || run_server(listener, state, token, flush_interval))
+        .spawn(move || run_server(&listener, &state, token.as_str(), flush_interval))
         .map_err(|e| io::Error::other(format!("failed to spawn inspector server thread: {e}")))?;
 
     let endpoint = InspectorEndpointInfo {
@@ -278,21 +278,24 @@ impl SharedEvents {
             .try_into()
             .expect("UNIX millisecond timestamp overflowed u64");
 
-        let mut guard = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        {
+            let mut guard = match self.inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
 
-        let seq = guard.next_seq;
-        guard.next_seq = guard.next_seq.saturating_add(1);
-        guard.events.push_back(InspectorEventEnvelope {
-            seq,
-            timestamp_unix_ms,
-            event,
-        });
+            let seq = guard.next_seq;
+            guard.next_seq = guard.next_seq.saturating_add(1);
+            guard.events.push_back(InspectorEventEnvelope {
+                seq,
+                timestamp_unix_ms,
+                event,
+            });
 
-        while guard.events.len() > self.max_events {
-            guard.events.pop_front();
+            while guard.events.len() > self.max_events {
+                guard.events.pop_front();
+            }
+            drop(guard);
         }
     }
 
@@ -362,9 +365,9 @@ fn duration_to_us(duration: Duration) -> u64 {
 }
 
 fn run_server(
-    listener: TcpListener,
-    state: Arc<SharedEvents>,
-    token: String,
+    listener: &TcpListener,
+    state: &Arc<SharedEvents>,
+    token: &str,
     flush_interval: Duration,
 ) {
     for connection in listener.incoming() {
@@ -387,8 +390,8 @@ fn run_server(
             "Inspector client connected"
         );
 
-        let state = Arc::clone(&state);
-        let token = token.clone();
+        let state = Arc::clone(state);
+        let token = token.to_string();
         let spawn_result = thread::Builder::new()
             .name("waterui-inspector-client".to_string())
             .spawn(move || {
