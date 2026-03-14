@@ -198,47 +198,73 @@ fn main() -> impl View {
     let animation_preset = Binding::i32(0);
     let animation_cps = Binding::i32(64);
     let token_fade_enabled = Binding::bool(true);
-    let animation_revision = Binding::i32(0);
+    let document_title = document_index.clone().map(current_document_title);
+    let document_number = document_index
+        .clone()
+        .map(normalized_document_index)
+        .map(|index| index + 1);
+    let document_char_count = document_index.clone().map(current_document_char_count);
+    let document_total = MARKDOWN_DOCUMENTS.len() as i32;
+    let stream_speed = stream_cps
+        .clone()
+        .map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+    let stream_status = streaming
+        .clone()
+        .map(|streaming| if streaming { "running" } else { "idle" });
+    let flow_summary = animation_preset
+        .zip(&animation_cps)
+        .zip(&stream_cps)
+        .zip(&token_fade_enabled)
+        .map(|(((preset, cps), stream_cps), token_fade_enabled)| {
+            let fade_label = if token_fade_enabled {
+                format!("on ({} ms)", stream_interval_ms(stream_cps).clamp(8, 64))
+            } else {
+                "off".to_string()
+            };
+            (preset_label(preset), cps.clamp(8, 256), fade_label)
+        });
+    let flow_preset = flow_summary.clone().map(|(preset, _, _)| preset);
+    let flow_cps = flow_summary.clone().map(|(_, cps, _)| cps);
+    let flow_fade_label = flow_summary.clone().map(|(_, _, fade_label)| fade_label);
+    let token_fade_label = token_fade_enabled.clone().map(|enabled| {
+        if enabled {
+            "Token fade on"
+        } else {
+            "Token fade off"
+        }
+    });
+    let document_title_text = document_title.clone();
+    let document_number_text = document_number.clone();
+    let char_progress_text = char_progress.clone();
+    let document_char_count_text = document_char_count.clone();
+    let stream_speed_text = stream_speed.clone();
+    let stream_status_text = stream_status.clone();
+    let flow_preset_text = flow_preset.clone();
+    let flow_cps_text = flow_cps.clone();
+    let flow_fade_label_text = flow_fade_label.clone();
 
     scroll(
         vstack((
             text("FlowMarkdown E2E").title(),
-            Dynamic::watch(document_index.clone(), |index| {
-                AnyView::new(
-                    text(format!(
-                        "Document: {} ({}/{})",
-                        current_document_title(index),
-                        normalized_document_index(index) + 1,
-                        MARKDOWN_DOCUMENTS.len(),
-                    ))
-                    .sub_headline(),
-                )
-            }),
-            Dynamic::watch(char_progress.clone(), {
-                let document_index = document_index.clone();
-                move |progress| {
-                    AnyView::new(
-                        text(format!(
-                            "LLM output progress: {progress}/{} chars",
-                            current_document_char_count(document_index.get()),
-                        ))
-                        .caption(),
-                    )
-                }
-            }),
-            Dynamic::watch(stream_cps.clone(), {
-                let streaming = streaming.clone();
-                move |cps| {
-                    let status = if streaming.get() { "running" } else { "idle" };
-                    AnyView::new(
-                        text(format!(
-                            "LLM stream speed: {} chars/s | stream: {status}",
-                            cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX),
-                        ))
-                        .caption(),
-                    )
-                }
-            }),
+            text!(
+                "Document: {document_title} ({document_number}/{document_total})",
+                document_title = document_title_text,
+                document_number = document_number_text,
+                document_total = document_total
+            )
+            .sub_headline(),
+            text!(
+                "LLM output progress: {char_progress}/{document_char_count} chars",
+                char_progress = char_progress_text,
+                document_char_count = document_char_count_text
+            )
+            .caption(),
+            text!(
+                "LLM stream speed: {stream_speed} chars/s | stream: {stream_status}",
+                stream_status = stream_status_text,
+                stream_speed = stream_speed_text
+            )
+            .caption(),
             hstack((
                 button("Prev doc").action({
                     let document_index = document_index.clone();
@@ -312,103 +338,57 @@ fn main() -> impl View {
                 }),
             ))
             .spacing(10.0),
-            Dynamic::watch(animation_revision.clone(), {
-                let animation_preset = animation_preset.clone();
-                let animation_cps = animation_cps.clone();
-                let token_fade_enabled = token_fade_enabled.clone();
-                let stream_cps = stream_cps.clone();
-                move |_| {
-                    let fade_label = if token_fade_enabled.get() {
-                        format!(
-                            "on ({} ms)",
-                            stream_interval_ms(stream_cps.get()).clamp(8, 64)
-                        )
-                    } else {
-                        "off".to_string()
-                    };
-                    AnyView::new(
-                        text(format!(
-                            "Flow animation preset: {} | token reveal CPS: {} | token fade: {}",
-                            preset_label(animation_preset.get()),
-                            animation_cps.get().clamp(8, 256),
-                            fade_label,
-                        ))
-                        .caption(),
-                    )
-                }
-            }),
+            text!(
+                "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
+                preset = flow_preset_text,
+                cps = flow_cps_text,
+                fade_label = flow_fade_label_text
+            )
+            .caption(),
             hstack((
-                button("LLM CPS -")
-                    .with_state(&stream_cps)
-                    .with_state(&animation_revision)
-                    .action(|(cps, revision)| {
-                        cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                        revision.set(revision.get() + 1);
-                    }),
-                button("LLM CPS +")
-                    .with_state(&stream_cps)
-                    .with_state(&animation_revision)
-                    .action(|(cps, revision)| {
-                        cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                        revision.set(revision.get() + 1);
-                    }),
-                button("Preset")
-                    .with_state(&animation_preset)
-                    .with_state(&animation_revision)
-                    .action(|(preset, revision)| {
-                        preset.set((preset.get() + 1).rem_euclid(3));
-                        revision.set(revision.get() + 1);
-                    }),
-                button("CPS -")
-                    .with_state(&animation_cps)
-                    .with_state(&animation_revision)
-                    .action(|(cps, revision)| {
-                        cps.set((cps.get() - 8).clamp(8, 256));
-                        revision.set(revision.get() + 1);
-                    }),
-                button("CPS +")
-                    .with_state(&animation_cps)
-                    .with_state(&animation_revision)
-                    .action(|(cps, revision)| {
-                        cps.set((cps.get() + 8).clamp(8, 256));
-                        revision.set(revision.get() + 1);
-                    }),
-                button(Dynamic::watch(token_fade_enabled.clone(), |enabled| {
-                    if enabled {
-                        AnyView::new(text("Token fade on"))
-                    } else {
-                        AnyView::new(text("Token fade off"))
-                    }
-                }))
-                .with_state(&token_fade_enabled)
-                .with_state(&animation_revision)
-                .action(|(enabled, revision)| {
-                    enabled.set(!enabled.get());
-                    revision.set(revision.get() + 1);
+                button("LLM CPS -").with_state(&stream_cps).action(|cps| {
+                    cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
                 }),
+                button("LLM CPS +").with_state(&stream_cps).action(|cps| {
+                    cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+                }),
+                button("Preset").with_state(&animation_preset).action(|preset| {
+                    preset.set((preset.get() + 1).rem_euclid(3));
+                }),
+                button("CPS -").with_state(&animation_cps).action(|cps| {
+                    cps.set((cps.get() - 8).clamp(8, 256));
+                }),
+                button("CPS +").with_state(&animation_cps).action(|cps| {
+                    cps.set((cps.get() + 8).clamp(8, 256));
+                }),
+                button(text!("{token_fade_label}"))
+                    .with_state(&token_fade_enabled)
+                    .action(|enabled| {
+                        enabled.set(!enabled.get());
+                    }),
             ))
             .spacing(10.0),
             Divider,
-            Dynamic::watch(animation_revision.clone(), {
-                let markdown = markdown.clone();
-                let animation_preset = animation_preset.clone();
-                let animation_cps = animation_cps.clone();
-                let stream_cps = stream_cps.clone();
-                let token_fade_enabled = token_fade_enabled.clone();
-                move |_| {
-                    AnyView::new(
+            Dynamic::watch(
+                animation_preset
+                    .zip(&animation_cps)
+                    .zip(&stream_cps)
+                    .zip(&token_fade_enabled),
+                {
+                    let markdown = markdown.clone();
+                    move |(((preset, cps), stream_cps), token_fade_enabled)| {
                         configured_flow(
                             flow_markdown(markdown.clone()),
-                            animation_preset.get(),
-                            animation_cps.get(),
-                            stream_cps.get(),
-                            token_fade_enabled.get(),
+                            preset,
+                            cps,
+                            stream_cps,
+                            token_fade_enabled,
                         )
                         .padding()
-                        .border(Grey, 1.0),
-                    )
-                }
-            }),
+                        .border(Grey, 1.0)
+                    }
+                },
+            ),
         ))
         .padding(),
     )
