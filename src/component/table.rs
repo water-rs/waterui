@@ -253,6 +253,52 @@ fn build_table_rows(columns: Vec<TableColumn>, max_rows: usize) -> impl View {
     UiList::new(rows)
 }
 
+#[derive(Clone)]
+struct TableRowsView {
+    columns: Vec<TableColumn>,
+}
+
+impl TableRowsView {
+    fn new(columns: Vec<TableColumn>) -> Self {
+        Self { columns }
+    }
+}
+
+impl View for TableRowsView {
+    fn body(self, _env: &Environment) -> impl View {
+        let columns = self.columns;
+        watch(TableRowCountSignal::new(columns.clone()), move |max_rows| {
+            build_table_rows(columns.clone(), max_rows)
+        })
+    }
+}
+
+#[derive(Clone)]
+struct TableColumnsView {
+    columns: Vec<TableColumn>,
+}
+
+impl TableColumnsView {
+    fn new(columns: Vec<TableColumn>) -> Self {
+        Self { columns }
+    }
+}
+
+impl View for TableColumnsView {
+    fn body(self, _env: &Environment) -> impl View {
+        (!self.columns.is_empty()).then(|| {
+            vstack((
+                build_table_header(&self.columns),
+                Grey.height(1.0).max_width(f32::MAX),
+                TableRowsView::new(self.columns),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(4.0)
+            .padding()
+        })
+    }
+}
+
 /// Default table view that renders columns as a grid using stacks.
 ///
 /// This is used as a fallback when no native table implementation is available.
@@ -275,29 +321,7 @@ impl View for DefaultTableView {
     fn body(self, _env: &Environment) -> impl View {
         let columns = self.columns;
 
-        // Use watch to reactively rebuild when columns change
-        watch(columns, move |cols: Vec<TableColumn>| {
-            if cols.is_empty() {
-                return AnyView::new(());
-            }
-
-            let row_count = TableRowCountSignal::new(cols.clone());
-            AnyView::new(watch(row_count, {
-                let cols = cols.clone();
-                move |max_rows| {
-                    AnyView::new(
-                        vstack((
-                            build_table_header(&cols),
-                            Grey.height(1.0).max_width(f32::MAX),
-                            build_table_rows(cols.clone(), max_rows),
-                        ))
-                        .alignment(HorizontalAlignment::Leading)
-                        .spacing(4.0)
-                        .padding(),
-                    )
-                }
-            }))
-        })
+        watch(columns, move |cols: Vec<TableColumn>| TableColumnsView::new(cols))
     }
 }
 

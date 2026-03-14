@@ -39,11 +39,25 @@ use alloc::string::{String, ToString};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use core::fmt;
-use nami_core::Signal;
 use waterui_str::Str;
 
 #[cfg(feature = "std")]
-use std::path::{Path, PathBuf};
+use std::{
+    cell::Cell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+#[cfg(feature = "std")]
+use {
+    executor_core::spawn_local,
+    nami::Binding,
+    nami_core::Signal,
+    waterkit_fs::WaterFs,
+    zenwave::{Client, Method, redirect::FollowRedirect},
+};
+#[cfg(feature = "std")]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 // ============================================================================
 // Parsed Component Types
@@ -563,12 +577,14 @@ impl Url {
         }
     }
 
-    /// Fetches the content at this URL (for network resources).
+    /// Fetches the content at this URL.
     ///
-    /// This returns a reactive signal that can be watched for changes.
+    /// Local, blob, and data URLs resolve immediately to themselves. Web URLs
+    /// download lazily on first observation and resolve to a cached local file URL.
+    #[cfg(feature = "std")]
     #[must_use]
     pub fn fetch(&self) -> Fetched {
-        Fetched { url: self.clone() }
+        Fetched::new(self.clone())
     }
 
     /// Returns the underlying string representation.
@@ -669,37 +685,252 @@ impl From<Url> for Str {
 // This allows Url to be used directly with `IntoComputed<Url>`
 nami_core::impl_constant!(Url);
 
+#[cfg(feature = "std")]
+#[derive(Debug)]
+struct FetchedState {
+    result: Binding<Option<Url>>,
+    started: Cell<bool>,
+}
+
 /// A reactive signal for fetched URL content.
+#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct Fetched {
     url: Url,
+    state: Rc<FetchedState>,
 }
 
+#[cfg(feature = "std")]
+impl Fetched {
+    fn new(url: Url) -> Self {
+        Self {
+            url,
+            state: Rc::new(FetchedState {
+                result: Binding::container(None),
+                started: Cell::new(false),
+            }),
+        }
+    }
+
+    fn ensure_started(&self) {
+        if self.state.started.replace(true) {
+            return;
+        }
+
+        if !self.url.is_web() {
+            self.state.result.set(Some(self.url.clone()));
+            return;
+        }
+
+        if let Some(cached) = existing_fetch_cache_url(&self.url) {
+            self.state.result.set(Some(cached));
+            return;
+        }
+
+        let result = self.state.result.clone();
+        let url = self.url.clone();
+        spawn_local(async move {
+            match fetch_remote_to_cache(&url).await {
+                Ok(fetched) => result.set(Some(fetched)),
+                Err(error) => tracing::warn!("Url::fetch failed for '{}': {error}", url.as_str()),
+            }
+        })
+        .detach();
+    }
+}
+
+#[cfg(feature = "std")]
 impl Signal for Fetched {
     type Output = Option<Url>;
     type Guard = nami_core::watcher::BoxWatcherGuard;
 
     fn get(&self) -> Self::Output {
-        panic!(
-            "Url::fetch() is not implemented yet for '{}'; reactive URL fetching backend is missing",
-            self.url
-        );
+        self.ensure_started();
+        self.state.result.get()
     }
 
     fn watch(
         &self,
-        _watcher: impl Fn(nami_core::watcher::Context<Self::Output>) + 'static,
+        watcher: impl Fn(nami_core::watcher::Context<Self::Output>) + 'static,
     ) -> Self::Guard {
-        panic!(
-            "Url::fetch().watch() is not implemented yet for '{}'; reactive URL fetching backend is missing",
-            self.url
-        );
+        let guard = self.state.result.watch(watcher);
+        self.ensure_started();
+        guard
     }
+}
+
+#[cfg(feature = "std")]
+#[derive(Debug)]
+enum FetchError {
+    CacheRootUnavailable,
+    CreateCacheDir(std::io::Error),
+    Http(zenwave::Error),
+    UnsuccessfulStatus(u16),
+    ReadBody(String),
+    WriteTemp(std::io::Error),
+    Persist(std::io::Error),
+}
+
+#[cfg(feature = "std")]
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CacheRootUnavailable => write!(f, "cache directory is unavailable"),
+            Self::CreateCacheDir(error) => write!(f, "failed to create cache directory: {error}"),
+            Self::Http(error) => write!(f, "HTTP transport failed: {error}"),
+            Self::UnsuccessfulStatus(status) => {
+                write!(f, "upstream returned HTTP status {status}")
+            }
+            Self::ReadBody(error) => write!(f, "failed to read response body: {error}"),
+            Self::WriteTemp(error) => write!(f, "failed to write cache temp file: {error}"),
+            Self::Persist(error) => write!(f, "failed to persist cached file: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for FetchError {}
+
+#[cfg(feature = "std")]
+fn fetch_cache_root() -> Option<PathBuf> {
+    WaterFs::cache_dir()
+        .map(|root| root.join("waterui").join("url-fetch"))
+        .or_else(|| {
+            let temp_root = std::env::temp_dir();
+            (!temp_root.as_os_str().is_empty()).then(|| temp_root.join("waterui").join("url-fetch"))
+        })
+}
+
+#[cfg(feature = "std")]
+fn fetch_cache_token(url: &Url) -> String {
+    URL_SAFE_NO_PAD.encode(url.as_str().as_bytes())
+}
+
+#[cfg(feature = "std")]
+fn existing_fetch_cache_path(url: &Url) -> Option<PathBuf> {
+    let cache_root = fetch_cache_root()?;
+    let token = fetch_cache_token(url);
+    let exact = cache_root.join(&token);
+    if exact.is_file() {
+        return Some(exact);
+    }
+
+    let entries = std::fs::read_dir(&cache_root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name == token
+            || name
+                .strip_prefix(&token)
+                .is_some_and(|suffix| suffix.starts_with('.'))
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "std")]
+fn existing_fetch_cache_url(url: &Url) -> Option<Url> {
+    existing_fetch_cache_path(url)
+        .map(|path| Url::from_file_path_str(path.to_string_lossy().to_string()))
+}
+
+#[cfg(feature = "std")]
+fn infer_extension(url: &Url, content_type: Option<&str>) -> Option<String> {
+    if let Some(extension) = url.extension() {
+        return Some(extension.to_ascii_lowercase());
+    }
+
+    let content_type = content_type?
+        .split(';')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    mime_guess::get_mime_extensions_str(content_type)
+        .and_then(|extensions| preferred_extension(extensions))
+        .map(str::to_string)
+}
+
+#[cfg(feature = "std")]
+fn preferred_extension<'a>(extensions: &'a [&'a str]) -> Option<&'a str> {
+    ["txt", "json", "html", "xml", "css", "js", "jpg", "png", "gif"]
+        .into_iter()
+        .find(|preferred| extensions.iter().any(|candidate| candidate == preferred))
+        .or_else(|| extensions.first().copied())
+}
+
+#[cfg(feature = "std")]
+fn cache_path_for_token(cache_root: &Path, token: &str, extension: Option<&str>) -> PathBuf {
+    extension.map_or_else(
+        || cache_root.join(token),
+        |extension| cache_root.join(format!("{token}.{extension}")),
+    )
+}
+
+#[cfg(feature = "std")]
+async fn fetch_remote_to_cache(url: &Url) -> Result<Url, FetchError> {
+    if let Some(cached) = existing_fetch_cache_url(url) {
+        return Ok(cached);
+    }
+
+    let cache_root = fetch_cache_root().ok_or(FetchError::CacheRootUnavailable)?;
+    std::fs::create_dir_all(&cache_root).map_err(FetchError::CreateCacheDir)?;
+
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client
+        .method(Method::GET, url.as_str())
+        .await
+        .map_err(|error| FetchError::Http(error.into()))?;
+
+    if !response.status().is_success() {
+        return Err(FetchError::UnsuccessfulStatus(response.status().as_u16()));
+    }
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok());
+    let token = fetch_cache_token(url);
+    let extension = infer_extension(url, content_type);
+    let cache_path = cache_path_for_token(&cache_root, &token, extension.as_deref());
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_path = cache_root.join(format!("{token}.tmp-{}-{nonce}", std::process::id()));
+
+    let bytes = response
+        .into_body()
+        .into_bytes()
+        .await
+        .map_err(|error| FetchError::ReadBody(error.to_string()))?;
+    std::fs::write(&temp_path, &bytes).map_err(FetchError::WriteTemp)?;
+
+    if let Err(error) = std::fs::rename(&temp_path, &cache_path) {
+        if cache_path.exists() {
+            let _ = std::fs::remove_file(&temp_path);
+        } else {
+            return Err(FetchError::Persist(error));
+        }
+    }
+
+    Ok(Url::from_file_path_str(
+        cache_path.to_string_lossy().to_string(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "std")]
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     #[test]
     fn test_const_url_creation() {
@@ -991,5 +1222,58 @@ mod tests {
         assert!(Url::new("./relative/path").is_relative());
         assert!(Url::new("../parent/path").is_relative());
         assert!(Url::new("file.txt").is_relative());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fetch_resolves_local_url_immediately() {
+        let url = Url::new("/tmp/example.txt");
+        let fetched = url.fetch();
+        assert_eq!(fetched.get(), Some(url));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn infer_extension_uses_content_type_when_url_has_no_extension() {
+        let url = Url::new("https://example.com/download");
+        assert_eq!(
+            infer_extension(&url, Some("image/png; charset=utf-8")),
+            Some(String::from("png"))
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fetch_remote_to_cache_downloads_with_zenwave() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener should have local addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server should accept one connection");
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: text/plain\r\n",
+                "Content-Length: 5\r\n",
+                "Connection: close\r\n\r\n",
+                "hello"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+        });
+
+        let url = Url::from(format!("http://{address}/download"));
+        let fetched = futures::executor::block_on(fetch_remote_to_cache(&url))
+            .expect("remote fetch should succeed");
+        let fetched_path = fetched
+            .to_file_path()
+            .expect("remote fetch should resolve to local cache path");
+        let contents =
+            std::fs::read_to_string(&fetched_path).expect("cached file should be readable");
+        assert_eq!(contents, "hello");
+        assert_eq!(fetched.extension(), Some("txt"));
+
+        server.join().expect("server thread should finish");
     }
 }
