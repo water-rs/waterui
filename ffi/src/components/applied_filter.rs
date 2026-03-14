@@ -97,6 +97,10 @@ pub struct WuiAppliedFilterState {
     filter: AppliedFilter,
     /// Whether setup() has been called
     initialized: bool,
+    /// Input format used for the most recent successful setup.
+    setup_input_format: Option<wgpu::TextureFormat>,
+    /// Output format used for the most recent successful setup.
+    setup_output_format: Option<wgpu::TextureFormat>,
     /// Current input dimensions (from child view)
     input_width: u32,
     input_height: u32,
@@ -382,6 +386,8 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             capture_format,
             filter,
             initialized: false,
+            setup_input_format: None,
+            setup_output_format: None,
             input_width,
             input_height,
             output_width,
@@ -417,27 +423,7 @@ pub unsafe extern "C" fn waterui_applied_filter_setup(state: *mut WuiAppliedFilt
 
     let setup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
-
-        let ctx = FilterContext {
-            device: &state.device,
-            queue: &state.queue,
-            input_format: state.capture_format,
-            output_format: state.output_config.format,
-            pipeline_cache: state.pipeline_cache.as_ref(),
-        };
-
-        let setup_future = state.filter.setup(&ctx);
-        match pollster::block_on(setup_future) {
-            Ok(()) => {
-                state.initialized = true;
-                tracing::debug!("[AppliedFilter] setup complete");
-                true
-            }
-            Err(err) => {
-                tracing::error!("[AppliedFilter] setup failed fast: {err}");
-                false
-            }
-        }
+        ensure_applied_filter_setup(state, current_applied_filter_input_format(state))
     }));
 
     match setup_result {
@@ -489,14 +475,6 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *state };
 
-        if !state.initialized {
-            tracing::error!("[AppliedFilter] render requested before successful setup");
-            return WuiAppliedFilterRenderResult {
-                success: false,
-                needs_redraw: false,
-            };
-        }
-
         ensure_dimensions(state, width, height);
 
         // Get output texture
@@ -535,6 +513,14 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         } else {
             state.capture_format
         };
+
+        if !ensure_applied_filter_setup(state, input_format) {
+            tracing::error!("[AppliedFilter] render requested before successful setup");
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
+        }
 
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("AppliedFilter Input View"),
@@ -591,6 +577,53 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     match render_result {
         Ok(result) => result,
         Err(_) => abort_on_panic("waterui_applied_filter_render"),
+    }
+}
+
+fn current_applied_filter_input_format(state: &WuiAppliedFilterState) -> wgpu::TextureFormat {
+    if state.imported_texture.is_some() {
+        unsafe { state.imported_format.unwrap_unchecked() }
+    } else {
+        state.capture_format
+    }
+}
+
+fn ensure_applied_filter_setup(
+    state: &mut WuiAppliedFilterState,
+    input_format: wgpu::TextureFormat,
+) -> bool {
+    let output_format = state.output_config.format;
+    if state.initialized
+        && state.setup_input_format == Some(input_format)
+        && state.setup_output_format == Some(output_format)
+    {
+        return true;
+    }
+
+    let ctx = FilterContext {
+        device: &state.device,
+        queue: &state.queue,
+        input_format,
+        output_format,
+        pipeline_cache: state.pipeline_cache.as_ref(),
+    };
+
+    let setup_future = state.filter.setup(&ctx);
+    match pollster::block_on(setup_future) {
+        Ok(()) => {
+            state.initialized = true;
+            state.setup_input_format = Some(input_format);
+            state.setup_output_format = Some(output_format);
+            tracing::debug!("[AppliedFilter] setup complete");
+            true
+        }
+        Err(err) => {
+            state.initialized = false;
+            state.setup_input_format = None;
+            state.setup_output_format = None;
+            tracing::error!("[AppliedFilter] setup failed fast: {err}");
+            false
+        }
     }
 }
 
