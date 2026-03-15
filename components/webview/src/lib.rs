@@ -136,7 +136,7 @@ impl std::fmt::Debug for WebView {
 impl WebView {
     /// Creates a new `WebView` component with the given handle.
     #[must_use]
-    pub fn new(handle: AnyWebViewHandle) -> Self {
+    pub(crate) fn from_handle(handle: AnyWebViewHandle) -> Self {
         let event = binding(WebViewEvent::None);
         let can_go_back = binding(handle.can_go_back());
         let can_go_forward = binding(handle.can_go_forward());
@@ -180,8 +180,7 @@ impl WebView {
     ///
     /// ```ignore
     /// let allow_redirects = binding(false);
-    /// let webview = WebView::new(handle)
-    ///     .redirects_enabled(allow_redirects.clone());
+    /// let webview = controller.open().redirects_enabled(allow_redirects.clone());
     /// ```
     #[must_use]
     pub fn redirects_enabled(mut self, enabled: impl Into<Computed<bool>>) -> Self {
@@ -204,9 +203,9 @@ impl WebView {
     pub fn open(url: impl AsRef<str>) -> impl View {
         let url = url.as_ref().to_string();
         use_env(move |controller: WebViewController| {
-            let handle = controller.open();
-            handle.go_to(&url);
-            Self::new(handle)
+            let webview = controller.open();
+            webview.go_to(&url);
+            webview
         })
     }
 
@@ -218,10 +217,11 @@ impl WebView {
     ) -> impl View {
         let url = url.as_ref().to_string();
         use_env(move |controller: WebViewController| {
-            let handle = controller.open();
-            handle.go_to(&url);
+            let handle = controller.open_handle();
             f(handle.clone());
-            Self::new(handle)
+            let webview = Self::from_handle(handle);
+            webview.go_to(&url);
+            webview
         })
     }
 
