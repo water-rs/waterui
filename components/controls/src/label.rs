@@ -1,11 +1,13 @@
 //! Semantic labels shared by controls, menus, and chrome.
 
 use core::any::Any;
+use core::fmt::Display;
 
+use nami::Computed;
 use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
-use waterui_text::{IntoText, Text};
+use waterui_text::{IntoText, Text, styled::StyledStr};
 
 /// Position of the icon relative to the text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,9 +97,39 @@ impl IntoLabel for Label {
     }
 }
 
-impl<T: IntoText> IntoLabel for T {
+impl IntoLabel for Text {
     fn into_label(self) -> Label {
         Label::new(self)
+    }
+}
+
+impl IntoLabel for &'static str {
+    fn into_label(self) -> Label {
+        Label::new(self)
+    }
+}
+
+impl IntoLabel for alloc::string::String {
+    fn into_label(self) -> Label {
+        Label::new(self)
+    }
+}
+
+impl IntoLabel for waterui_core::Str {
+    fn into_label(self) -> Label {
+        Label::new(self)
+    }
+}
+
+impl IntoLabel for StyledStr {
+    fn into_label(self) -> Label {
+        Label::new(self)
+    }
+}
+
+impl<T: Display + Clone + 'static> IntoLabel for Computed<T> {
+    fn into_label(self) -> Label {
+        Label::new(Text::display(self))
     }
 }
 
@@ -258,6 +290,23 @@ impl View for Label {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+
+    use nami::{Computed, Signal};
+
+    use super::IntoLabel;
+
+    #[test]
+    fn computed_display_value_converts_into_label_text() {
+        let label = Computed::constant(String::from("Ready")).into_label();
+        let content = label.__text().content().get();
+
+        assert_eq!(content.to_plain(), "Ready");
     }
 }
 

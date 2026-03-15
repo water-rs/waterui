@@ -877,6 +877,14 @@ pub trait ViewExt: View + Sized {
         IgnorableMetadata::new(self, state)
     }
 
+    /// Applies reactive accessibility state metadata.
+    fn a11y_state_signal(
+        self,
+        state: impl IntoComputed<accessibility::AccessibilityState>,
+    ) -> IgnorableMetadata<accessibility::AccessibilityStateSignal> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    }
+
     /// Observes a gesture and executes an action when the gesture is recognized.
     ///
     /// # Arguments
@@ -1423,10 +1431,15 @@ pub trait ViewExt: View + Sized {
         // Compose: opacity + hit testing
         // opacity: 0.5 when disabled, 1.0 when enabled
         // hittable: false when disabled, true when enabled
+        let accessibility_state = is_disabled
+            .clone()
+            .map(|disabled| AccessibilityState::new().disabled(disabled));
         let opacity_value = is_disabled.clone().map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
 
-        self.opacity(opacity_value).hittable(hittable_value)
+        self.a11y_state_signal(accessibility_state)
+            .opacity(opacity_value)
+            .hittable(hittable_value)
     }
 
     /// Starts building a view with captured state for event handlers.

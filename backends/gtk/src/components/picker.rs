@@ -16,7 +16,7 @@ use crate::util::store_watcher_guards;
 
 impl GtkComponent for Native<PickerConfig> {
     /// Renders a `WaterUI` `Picker` as a GTK4 DropDown.
-    fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
+    fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
         let items = config.items;
         let selection = config.selection;
@@ -31,10 +31,11 @@ impl GtkComponent for Native<PickerConfig> {
             let dropdown = dropdown.clone();
             let ids = ids.clone();
             let selection = selection.clone();
+            let env = env.clone();
             Rc::new(move |item_list| {
                 let labels: Vec<String> = item_list
                     .iter()
-                    .map(|item| item.content.content().get().to_plain().to_string())
+                    .map(|item| item.content.resolve(&env).content.get().to_plain().to_string())
                     .collect();
                 let new_ids: Vec<_> = item_list.iter().map(|item| item.tag).collect();
                 let current_id = selection.get();

@@ -21,5 +21,9 @@ syntect = { version = "5", default-features = false, features = ["default-themes
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = "0.13"
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true

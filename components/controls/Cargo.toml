@@ -24,6 +24,10 @@ executor-core.workspace = true
 [features]
 default = []
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 
 [lints]
 workspace = true
