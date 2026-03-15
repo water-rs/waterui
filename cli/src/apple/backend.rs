@@ -128,9 +128,6 @@ impl Backend for AppleBackend {
             (crate_name.clone(), app_name, crate_name)
         };
 
-        // Get the relative path to the backend from project root (e.g., "apple" or ".water/apple")
-        let backend_relative_path = project.backend_relative_path::<Self>();
-
         let project_path = default_apple_project_path();
 
         let ios_permissions = manifest
@@ -141,7 +138,8 @@ impl Backend for AppleBackend {
             .collect();
         let ctx =
             TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
-                .with_backend_project_path(backend_relative_path)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf())
                 .with_ios_permissions(ios_permissions);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)

@@ -89,9 +89,6 @@ impl Backend for AndroidBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
-        // Get the relative path to the backend from project root (e.g., "android" or ".water/android")
-        let backend_relative_path = project.backend_relative_path::<Self>();
-
         // Determine the Android backend path - this is unused for local dev,
         // kept for potential future remote backend support
         let android_backend_path = manifest
@@ -114,7 +111,8 @@ impl Backend for AndroidBackend {
             project.crate_name().to_string(),
             app_name,
         )
-        .with_backend_project_path(backend_relative_path)
+        .with_backend_project_path(project.backend_path::<Self>())
+        .with_project_root_path(project.root().to_path_buf())
         .with_android_backend_path(android_backend_path)
         .with_android_permissions(android_permissions);
 
