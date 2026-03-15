@@ -21,8 +21,8 @@ use waterui_assets::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atom
 
 use crate::project::Project;
 
-mod pipeline;
 mod unified;
+mod web;
 
 /// Built-in font registry mapping font names to download URLs.
 ///
@@ -743,7 +743,7 @@ pub fn scan_project_font_assets(project: &Project) -> eyre::Result<Vec<ResolvedF
 
 /// Stage project assets for web packaging.
 pub async fn stage_project_assets_for_web(project: &Project, site_root: &Path) -> eyre::Result<()> {
-    pipeline::stage_for_web(project, site_root).await
+    web::stage_for_web(project, site_root).await
 }
 
 /// Copies project assets to a destination directory.
