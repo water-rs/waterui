@@ -24,6 +24,7 @@ use crate::platform::TargetPlatform;
 use crate::project::Project;
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::compute_runtime_fingerprint;
+use crate::support_app;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
@@ -496,9 +497,7 @@ async fn wait_for_connection_or_crash(
 
 /// Get the path to the preview support app.
 fn preview_support_path() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Home directory is not available"))?;
-    Ok(home.join(".water").join("preview_support"))
+    support_app::support_app_path("preview_support")
 }
 
 /// Ensure the preview support app exists and matches the current project requirements.
@@ -506,64 +505,21 @@ async fn ensure_preview_support_app(
     path: &PathBuf,
     requirements: &PreviewRequirements,
 ) -> Result<()> {
-    let metadata_path = path.join(PREVIEW_METADATA_FILE);
-    let cargo_path = path.join("Cargo.toml");
     let desired_signature = preview_signature(requirements);
-
-    let mut needs_scaffold = !cargo_path.exists();
-    if !needs_scaffold {
-        let stored_signature = match smol::fs::read_to_string(&metadata_path).await {
-            Ok(signature) => signature,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => {
-                return Err(color_eyre::eyre::eyre!(
-                    "Failed to read preview metadata {}: {err}",
-                    metadata_path.display()
-                ));
-            }
-        };
-        if stored_signature.trim() != desired_signature {
-            needs_scaffold = true;
-        }
-    }
-
-    if needs_scaffold {
-        if path.exists() {
-            remove_dir_all_retry(path).await?;
-        }
-        info!("Scaffolding preview app at {}", path.display());
-        scaffold_preview_app(path, requirements).await?;
-        smol::fs::write(&metadata_path, desired_signature.as_bytes()).await?;
-    } else if !metadata_path.exists() {
-        smol::fs::write(&metadata_path, desired_signature.as_bytes()).await?;
-    }
-
-    Ok(())
-}
-
-async fn remove_dir_all_retry(path: &Path) -> Result<()> {
-    const ATTEMPTS: usize = 6;
-    for attempt in 0..ATTEMPTS {
-        match smol::fs::remove_dir_all(path).await {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err)
-                if err.kind() == std::io::ErrorKind::DirectoryNotEmpty
-                    && attempt + 1 < ATTEMPTS =>
-            {
-                // macOS may transiently report ENOTEMPTY while background processes
-                // are still releasing files under the app bundle.
-                smol::Timer::after(Duration::from_millis(50 * (attempt as u64 + 1))).await;
-            }
-            Err(err) => return Err(err.into()),
-        }
-    }
-
-    bail!("Failed to remove preview support directory after retries")
+    let scaffold_path = path.clone();
+    let scaffold_requirements = requirements.clone();
+    support_app::ensure_support_app(
+        path,
+        PREVIEW_METADATA_FILE,
+        &desired_signature,
+        "preview support",
+        move || async move { scaffold_preview_app(&scaffold_path, &scaffold_requirements).await },
+    )
+    .await
 }
 
 /// Scaffold the preview support app as a normal playground project.
-async fn scaffold_preview_app(path: &PathBuf, requirements: &PreviewRequirements) -> Result<()> {
+async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -> Result<()> {
     use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
     use crate::templates::TemplateContext;
 

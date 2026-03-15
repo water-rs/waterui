@@ -14,30 +14,9 @@ pub enum AtomicWriteOutcome {
 
 pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, AssetError> {
     ensure_http_allowed(url)?;
-
-    use zenwave::{Client, Method, redirect::FollowRedirect};
-
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client
-        .method(Method::GET, url)
+    waterui_url::download_remote_bytes(url)
         .await
-        .map_err(|error| AssetError::network(url, None, error.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(AssetError::network(
-            url,
-            Some(response.status().as_u16()),
-            "HTTP request failed",
-        ));
-    }
-
-    let bytes = response
-        .into_body()
-        .into_bytes()
-        .await
-        .map_err(|error| AssetError::network(url, None, error.to_string()))?;
-
-    Ok(bytes.to_vec())
+        .map_err(|error| AssetError::network(url, error.status_code(), error.to_string()))
 }
 
 pub async fn write_bytes_atomically(
