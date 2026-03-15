@@ -8,6 +8,7 @@
 //! defaults whenever possible and use these helpers as the final step to ensure
 //! assistive technologies convey the intended experience.
 
+use nami::{Computed, signal::IntoComputed};
 use waterui_core::metadata::MetadataKey;
 use waterui_str::Str;
 
@@ -260,5 +261,25 @@ impl AccessibilityState {
     #[must_use]
     pub const fn is_hidden(&self) -> bool {
         self.hidden
+    }
+}
+
+/// Reactive accessibility state source for view modifiers that depend on signals.
+#[derive(Debug, Clone)]
+pub struct AccessibilityStateSignal(Computed<AccessibilityState>);
+
+impl MetadataKey for AccessibilityStateSignal {}
+
+impl AccessibilityStateSignal {
+    /// Creates a new reactive accessibility state wrapper.
+    #[must_use]
+    pub fn new(state: impl IntoComputed<AccessibilityState>) -> Self {
+        Self(state.into_computed())
+    }
+
+    /// Returns the computed accessibility state.
+    #[must_use]
+    pub fn state(&self) -> &Computed<AccessibilityState> {
+        &self.0
     }
 }
