@@ -4,7 +4,7 @@ use glib::object::ObjectExt;
 use nami::watcher::BoxWatcherGuard;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-    AccessibilityState,
+    AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
@@ -149,7 +149,8 @@ fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
-        AccessibilityState
+        AccessibilityState,
+        AccessibilityStateSignal
     );
 
     None

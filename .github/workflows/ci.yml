@@ -117,3 +117,19 @@ jobs:
   test:
     name: Test
     uses: ./.github/workflows/test.yml
+
+  test-report:
+    name: Test Report
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p artifacts
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: test-snapshots-*
+          path: artifacts/
+      - name: Generate Step Summary
+        run: python3 .github/scripts/generate_test_summary.py artifacts >> "$GITHUB_STEP_SUMMARY"

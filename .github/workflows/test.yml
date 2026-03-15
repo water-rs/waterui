@@ -5,6 +5,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
   test:
@@ -21,3 +22,11 @@ jobs:
         with:
           shared-key: test-${{ matrix.os }}
       - run: cargo test --verbose --all-features
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-${{ matrix.os }}
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
