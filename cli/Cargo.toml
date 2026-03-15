@@ -66,6 +66,7 @@ waterui-preview-protocol = { path = "../components/preview-protocol" }
 waterui-inspector-protocol = { path = "../components/inspector-protocol" }
 tempfile = "3.26"
 walkdir = "2.5"
+pathdiff = "0.2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
