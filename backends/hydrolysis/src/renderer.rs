@@ -25,7 +25,7 @@ use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-    AccessibilityState,
+    AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
@@ -3227,6 +3227,10 @@ fn measure_slider_intrinsic(
     LayoutSize::new(min_width as f32, intrinsic_height as f32)
 }
 
+fn resolved_text_styled(text: &Text, env: &Environment) -> StyledStr {
+    text.resolve(env).content.get()
+}
+
 fn measure_picker_intrinsic(
     picker: &PickerConfig,
     state: &mut HydroState,
@@ -3244,7 +3248,7 @@ fn measure_picker_intrinsic(
             let mut max_item_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = item.content.content().get();
+                let styled = resolved_text_styled(&item.content, env);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 max_item_height = max_item_height.max(f64::from(size.height));
@@ -3259,7 +3263,7 @@ fn measure_picker_intrinsic(
             let mut max_item_width: f64 = 0.0;
             let mut total_height = 0.0;
             for (index, item) in items.iter().enumerate() {
-                let styled = item.content.content().get();
+                let styled = resolved_text_styled(&item.content, env);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 total_height += f64::from(size.height).max(PICKER_RADIO_INDICATOR_SIZE);
@@ -4634,8 +4638,7 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut option_labels = Vec::with_capacity(items.len());
                     let mut max_item_text_height: f64 = 0.0;
                     for item in &items {
-                        let label_signal = item.content.content();
-                        let label = renderer.read_signal(&label_signal).to_plain();
+                        let label = renderer.read_resolved_text_styled(&item.content, env).to_plain();
                         let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
                             state,
                             StyledStr::plain(label.clone()),
@@ -4711,8 +4714,10 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
                     let selected = renderer.read_signal(&picker.selection);
                     for item in &items {
-                        let label_signal = item.content.content();
-                        let label = renderer.read_signal(&label_signal).to_plain().to_string();
+                        let label = renderer
+                            .read_resolved_text_styled(&item.content, env)
+                            .to_plain()
+                            .to_string();
                         let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
                             state,
                             StyledStr::plain(label.clone()),
@@ -5025,6 +5030,9 @@ impl HydrolysisRenderer {
         );
         dispatcher.register::<IgnorableMetadata<AccessibilityState>>(
             Self::render_accessibility_state_metadata,
+        );
+        dispatcher.register::<IgnorableMetadata<AccessibilityStateSignal>>(
+            Self::render_accessibility_state_signal_metadata,
         );
     }
 
@@ -6115,6 +6123,11 @@ impl HydrolysisRenderer {
     {
         self.watch_signal(signal);
         signal.get()
+    }
+
+    fn read_resolved_text_styled(&mut self, text: &Text, env: &Environment) -> StyledStr {
+        let resolved = text.resolve(env);
+        self.read_signal(&resolved.content)
     }
 
     fn bind_navigation_entries(&mut self) -> (usize, NavigationEntries) {
@@ -8853,8 +8866,7 @@ impl HydrolysisRenderer {
         for item in &items {
             let styled = {
                 let renderer = unsafe { ctx.renderer() };
-                let label_signal = item.content.content();
-                renderer.read_signal(&label_signal)
+                renderer.read_resolved_text_styled(&item.content, env)
             };
             let plain = styled.to_plain();
             let size = HydrolysisRenderer::measure_text_intrinsic_size(
@@ -8997,10 +9009,9 @@ impl HydrolysisRenderer {
         };
         let mut row_y = ctx.bounds.y0 + PICKER_VERTICAL_INSET;
         for item in items {
-            let label_signal = item.content.content();
             let label = {
                 let renderer = unsafe { ctx.renderer() };
-                renderer.read_signal(&label_signal)
+                renderer.read_resolved_text_styled(&item.content, env)
             };
             let label_size =
                 HydrolysisRenderer::measure_text_intrinsic_size(state, label.clone(), env);
@@ -10093,6 +10104,18 @@ impl HydrolysisRenderer {
         let IgnorableMetadata { content, value } = metadata;
         let mut local_env = env.clone();
         local_env.insert(value);
+        Self::dispatch_any(ctx, &local_env, content);
+    }
+
+    fn render_accessibility_state_signal_metadata(
+        _state: &mut HydroState,
+        ctx: RenderContext,
+        metadata: IgnorableMetadata<AccessibilityStateSignal>,
+        env: &Environment,
+    ) {
+        let IgnorableMetadata { content, value } = metadata;
+        let mut local_env = env.clone();
+        local_env.insert(value.state().get());
         Self::dispatch_any(ctx, &local_env, content);
     }
 
@@ -12678,7 +12701,8 @@ fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
-        AccessibilityState
+        AccessibilityState,
+        AccessibilityStateSignal
     );
 
     None
@@ -12866,7 +12890,8 @@ fn normalize_layout_view_with_budget(
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
-        AccessibilityState
+        AccessibilityState,
+        AccessibilityStateSignal
     );
 
     if view.is::<Native<FixedContainer>>() {
