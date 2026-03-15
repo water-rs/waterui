@@ -237,7 +237,7 @@ async fn check_toolchain_for_backend(
             if platform != CliPreviewPlatform::Android {
                 bail!("Internal error: Android preview backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android().await?;
+            toolchain_checks::check_android_run().await?;
         }
         CliPreviewBackend::Hydrolysis => {
             if platform != CliPreviewPlatform::Macos {
