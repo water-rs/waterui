@@ -10,9 +10,9 @@ use waterui_core::{Binding, Computed, Environment, Signal, View, reactive::impl_
 use waterui_text::{Text, text};
 
 #[cfg(feature = "std")]
-use waterkit_dialog::{LoadedMedia, LoadedMediaKind, MediaType, PhotoPicker as KitPhotoPicker};
+use waterkit_dialog::{LoadedMedia, MediaType, PhotoPicker as KitPhotoPicker};
 
-use crate::{Media, url::Url};
+use crate::{Media, live::LivePhotoSource, url::Url};
 
 /// A media picker view that lets users select photos, videos, or live media.
 ///
@@ -136,12 +136,20 @@ fn media_type_from_filter(filter: &MediaFilter) -> MediaType {
 
 #[cfg(feature = "std")]
 fn media_from_loaded_selection(loaded: LoadedMedia) -> Media {
-    let path_str = loaded.path().to_string_lossy().to_string();
-    let url = Url::from_file_path_str(path_str);
-
-    match loaded.kind() {
-        LoadedMediaKind::Image => Media::Image(url),
-        LoadedMediaKind::Video => Media::Video(url),
+    match loaded {
+        LoadedMedia::Image(path) => {
+            Media::Image(Url::from_file_path_str(path.to_string_lossy().to_string()))
+        }
+        LoadedMedia::Video(path) => {
+            Media::Video(Url::from_file_path_str(path.to_string_lossy().to_string()))
+        }
+        LoadedMedia::LivePhoto(live_photo) => {
+            let (image, video) = live_photo.into_parts();
+            Media::LivePhoto(LivePhotoSource::new(
+                Url::from_file_path_str(image.to_string_lossy().to_string()),
+                Url::from_file_path_str(video.to_string_lossy().to_string()),
+            ))
+        }
     }
 }
 
