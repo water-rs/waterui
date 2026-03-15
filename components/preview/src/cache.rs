@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use waterkit_fs::WaterFs;
 use waterui_preview_protocol::DylibId;
 
 fn water_cache_dir() -> PathBuf {
@@ -7,12 +8,8 @@ fn water_cache_dir() -> PathBuf {
         return PathBuf::from(cache_dir);
     }
 
-    if let Some(cache_dir) = dirs::cache_dir() {
+    if let Some(cache_dir) = WaterFs::cache_dir() {
         return cache_dir.join("waterui");
-    }
-
-    if let Some(home_dir) = dirs::home_dir() {
-        return home_dir.join(".water").join("cache");
     }
 
     std::env::temp_dir().join("waterui-cache")

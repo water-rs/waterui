@@ -398,15 +398,39 @@ const fn is_web_scheme(bytes: &[u8], scheme_end: usize) -> bool {
         return false;
     }
 
-    // Check for known web schemes
-    starts_with(bytes, b"http://")
-        || starts_with(bytes, b"https://")
-        || starts_with(bytes, b"ftp://")
-        || starts_with(bytes, b"ftps://")
-        || starts_with(bytes, b"ws://")
-        || starts_with(bytes, b"wss://")
-        || starts_with(bytes, b"rtsp://")
-        || starts_with(bytes, b"rtmp://")
+    // Check for known web schemes case-insensitively without allocating.
+    scheme_equals_ignore_ascii_case(bytes, scheme_end, b"http")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"https")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftp")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftps")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ws")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"wss")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtsp")
+        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtmp")
+}
+
+const fn scheme_equals_ignore_ascii_case(bytes: &[u8], scheme_end: usize, expected: &[u8]) -> bool {
+    if scheme_end != expected.len() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < scheme_end {
+        if ascii_lower(bytes[i]) != expected[i] {
+            return false;
+        }
+        i += 1;
+    }
+
+    true
+}
+
+const fn ascii_lower(byte: u8) -> u8 {
+    if byte >= b'A' && byte <= b'Z' {
+        byte + (b'a' - b'A')
+    } else {
+        byte
+    }
 }
 
 /// Find first occurrence of any character in set, or end of string
