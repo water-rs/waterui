@@ -54,6 +54,10 @@ pub struct Args {
     #[arg(short = 'r', long)]
     recursive: bool,
 
+    /// Clean the global playground project cache under `~/.water/project_cache`.
+    #[arg(long, visible_alias = "project-cache")]
+    global_cache: bool,
+
     /// Skip confirmation prompt in recursive mode.
     #[arg(short = 'y', long)]
     yes: bool,
@@ -61,6 +65,25 @@ pub struct Args {
 
 /// Run the clean command.
 pub async fn run(args: Args) -> Result<()> {
+    if args.global_cache {
+        if args.recursive {
+            bail!("`water clean --global-cache` cannot be combined with --recursive");
+        }
+        if args.backend != TargetBackend::All {
+            warn!(
+                "Ignoring `--backend {:?}` when cleaning the global playground cache",
+                args.backend
+            );
+        }
+        if args.path != PathBuf::from(".") {
+            warn!(
+                "Ignoring `--path {}` when cleaning the global playground cache",
+                args.path.display()
+            );
+        }
+        return clean_global_playground_cache(args.yes).await;
+    }
+
     let root_path = crate::project_path::canonicalize(&args.path)?;
 
     if args.recursive {
@@ -122,6 +145,47 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn clean_global_playground_cache(yes: bool) -> Result<()> {
+    let cache_root = water_dir::playground_cache_root()?;
+    clean_global_playground_cache_root(cache_root, yes).await
+}
+
+async fn clean_global_playground_cache_root(cache_root: PathBuf, yes: bool) -> Result<()> {
+    header!("Cleaning global playground cache...");
+
+    if !path_exists(&cache_root).await {
+        note!("No global playground cache found at {}", cache_root.display());
+        return Ok(());
+    }
+
+    ensure_recursive_confirmation_mode(yes, shell::is_interactive())?;
+    if !yes {
+        let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Delete the global playground cache at {}?",
+                cache_root.display()
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            warn!("Cancelled global playground cache clean");
+            return Ok(());
+        }
+    }
+
+    remove_global_playground_cache_root(cache_root.clone()).await?;
+    success!("Removed global playground cache at {}", cache_root.display());
+    Ok(())
+}
+
+async fn remove_global_playground_cache_root(cache_root: PathBuf) -> Result<bool> {
+    if !path_exists(&cache_root).await {
+        return Ok(false);
+    }
+    smol::unblock(move || remove_dir_all::remove_dir_all(&cache_root)).await?;
+    Ok(true)
 }
 
 async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
@@ -435,7 +499,7 @@ mod tests {
 
     use super::{
         collapse_nested_cache_dirs, discover_projects, ensure_recursive_confirmation_mode,
-        ensure_recursive_root_is_directory, should_skip_dir,
+        ensure_recursive_root_is_directory, remove_global_playground_cache_root, should_skip_dir,
     };
     use waterui_cli::project::{Manifest, Package, PackageType};
 
@@ -492,6 +556,24 @@ mod tests {
         let discovered = block_on(discover_projects(temp.path())).expect("discover projects");
 
         assert_eq!(discovered, vec![ignored_project, visible_project]);
+    }
+
+    #[test]
+    fn clean_global_playground_cache_removes_cache_root() {
+        let temp = tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        write_manifest(&project, "demo");
+        let cache_root = temp.path().join("project_cache");
+        let project_cache_dir = cache_root.join("demo");
+        fs::create_dir_all(&project_cache_dir).expect("create project cache");
+        fs::write(project_cache_dir.join("marker"), b"cache").expect("write marker");
+
+        assert!(
+            block_on(remove_global_playground_cache_root(cache_root.clone()))
+                .expect("remove global cache")
+        );
+
+        assert!(!cache_root.exists());
     }
 
     fn write_manifest(project_root: &Path, name: &str) {
