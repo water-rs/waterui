@@ -29,8 +29,8 @@ val targetAbis = (System.getenv("WATERUI_ANDROID_ABIS") ?: "arm64-v8a,x86_64")
     .map { it.trim() }
     .filter { it.isNotEmpty() }
 
-// Find the project root (grandparent of android directory: .water/android -> .water -> project)
-val projectRoot = rootProject.projectDir.parentFile.parentFile
+// Resolve the user project root from the generated backend project location.
+val projectRoot = rootProject.projectDir.resolve("__PROJECT_ROOT_RELATIVE_PATH__").canonicalFile
 
 // Determine build type from Gradle's build variant
 val isRelease = gradle.startParameter.taskNames.any {
