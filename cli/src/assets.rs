@@ -16,6 +16,7 @@ use smol::fs;
 use smol::stream::StreamExt;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
+use waterkit_fs::WaterFs;
 use waterui_assets::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 use crate::project::Project;
@@ -338,10 +339,9 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
 
 /// Gets the cache directory for downloaded fonts.
 fn cache_dir() -> eyre::Result<PathBuf> {
-    let cache = dirs::home_dir()
-        .ok_or_eyre("Could not determine home directory")?
-        .join(".water")
-        .join("fonts");
+    let cache = WaterFs::cache_dir()
+        .map(|root| root.join("waterui").join("fonts"))
+        .ok_or_eyre("Could not determine cache directory")?;
     Ok(cache)
 }
 
@@ -568,11 +568,9 @@ async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
     let version = extract_fontawesome_version(extract_dir);
 
     // Copy to fontawesome cache directory
-    let fontawesome_cache = dirs::home_dir()
-        .ok_or_eyre("Could not determine home directory")?
-        .join(".water")
-        .join("cache")
-        .join("fontawesome");
+    let fontawesome_cache = WaterFs::cache_dir()
+        .map(|root| root.join("waterui").join("fontawesome"))
+        .ok_or_eyre("Could not determine cache directory")?;
 
     fs::create_dir_all(&fontawesome_cache).await?;
 
