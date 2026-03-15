@@ -184,11 +184,7 @@ fn main(webview: WebView) -> impl View {
                 .action(|wv| wv.refresh()),
             button("Stop").with_state(&webview).action(|wv| wv.stop()),
         )),
-        Toggle::new(&allow_redirects).label(
-            text("Allow redirects")
-                .body()
-                .foreground(theme_color::Foreground),
-        ),
+        Toggle::new(&allow_redirects).label(text("Allow redirects")),
         text!("System User Agent: {system_user_agent}")
             .font(font::Caption)
             .foreground(theme_color::MutedForeground),
@@ -250,11 +246,7 @@ fn main(webview: WebView) -> impl View {
                 .foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
-        progress(progress_value.clone()).label(
-            text("Load progress")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-        ),
+        progress(progress_value.clone()).label(text("Load progress").caption()),
         hstack((
             text("JS Result:")
                 .caption()
@@ -299,12 +291,11 @@ fn missing_controller_view() -> impl View {
 
 pub fn app(env: Environment) -> App {
     let Some(controller) = env.get::<WebViewController>().cloned() else {
-        return App::new(missing_controller_view(), env);
+        return App::new(missing_controller_view, env);
     };
-    let handle = controller.open();
-    let webview = WebView::new(handle);
+    let webview = controller.open();
 
-    App::new(main(webview), env)
+    App::new(move || main(webview.clone()), env)
 }
 
 waterui_ffi::export!();
