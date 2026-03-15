@@ -437,7 +437,7 @@ pub async fn run(args: Args) -> Result<()> {
         _ => {}
     }
 
-    if args.platform == TargetPlatform::Web {
+    if args.platform == Some(TargetPlatform::Web) {
         let spinner = shell::spinner("Building Hydrolysis web app...");
         let site_root = prepare_hydrolysis_web_dev_site(&project).await?;
         if let Some(pb) = spinner {

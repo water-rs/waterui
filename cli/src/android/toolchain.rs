@@ -1912,7 +1912,9 @@ impl Toolchain for AndroidNdk {
             ));
         }
 
-        if is_linux_arm_host() {
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(AndroidNdkInstallation))
+        } else if is_linux_arm_host() {
             Err(ToolchainError::unfixable(
                 "Android NDK is missing on this ARM Linux host",
                 format!(
@@ -1921,8 +1923,6 @@ impl Toolchain for AndroidNdk {
                     android_linux_arm_manual_suggestion()
                 ),
             ))
-        } else if AndroidSdk::sdkmanager_path().await.is_some() {
-            Err(ToolchainError::fixable(AndroidNdkInstallation))
         } else {
             Err(ToolchainError::unfixable(
                 "Android NDK not found",

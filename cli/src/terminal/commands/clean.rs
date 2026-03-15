@@ -347,7 +347,8 @@ async fn clean_cache_dir(
     if let Some(pb) = progress.as_ref() {
         pb.set_message(format!("Removing {}", cache_dir.display()));
     }
-    smol::unblock(move || remove_dir_all::remove_dir_all(&cache_dir)).await?;
+    let cache_dir_for_remove = cache_dir.clone();
+    smol::unblock(move || remove_dir_all::remove_dir_all(&cache_dir_for_remove)).await?;
     if let Some(pb) = progress.as_ref() {
         pb.inc(1);
     }
@@ -409,7 +410,7 @@ mod tests {
         collapse_nested_cache_dirs, discover_projects, ensure_recursive_confirmation_mode,
         should_skip_dir,
     };
-    use crate::project::{Manifest, Package, PackageType};
+    use waterui_cli::project::{Manifest, Package, PackageType};
 
     #[test]
     fn skip_dir_filters_heavy_dirs() {
