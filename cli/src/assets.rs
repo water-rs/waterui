@@ -381,8 +381,75 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
 
     // Use URL hash as filename to avoid conflicts
     let hash = sha256_hex(url);
-    let extension = if url.ends_with(".zip") { "zip" } else { "ttf" };
-    let cache_file = cache_dir.join(format!("{hash}.{extension}"));
+    if url.ends_with(".zip") {
+        let extract_dir = cache_dir.join(&hash);
+        if extract_dir.exists() {
+            debug!(
+                "Font '{}' already extracted at {}",
+                name,
+                extract_dir.display()
+            );
+            return find_font_file(&extract_dir, name).await;
+        }
+
+        let cache_file = cache_dir.join(format!("{hash}.zip"));
+        let cache_len = match fs::metadata(&cache_file).await {
+            Ok(metadata) => Some(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).wrap_err_with(|| {
+                    format!(
+                        "Failed to read cached font metadata for '{}' at {}",
+                        name,
+                        cache_file.display()
+                    )
+                });
+            }
+        };
+        if let Some(cache_len) = cache_len {
+            if cache_len == 0 {
+                warn!(
+                    "Ignoring empty cached font '{}' at {}",
+                    name,
+                    cache_file.display()
+                );
+                let _ = fs::remove_file(&cache_file).await;
+            } else {
+                debug!("Font '{}' already cached at {}", name, cache_file.display());
+                return find_font_in_extracted_zip(&cache_file, name).await;
+            }
+        }
+
+        info!("Downloading font '{}' from {}", name, url);
+        let bytes = download_remote_bytes(url)
+            .await
+            .map_err(eyre::Report::new)
+            .wrap_err_with(|| format!("Failed to download font from {url}"))?;
+
+        match write_bytes_atomically(&cache_file, &bytes)
+            .await
+            .map_err(eyre::Report::new)
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to finalize cache file for '{}' at {}",
+                    name,
+                    cache_file.display()
+                )
+            })? {
+            AtomicWriteOutcome::Written => {}
+            AtomicWriteOutcome::ReusedExisting => {
+                debug!(
+                    "Font cache race detected for '{}', reusing {}",
+                    name,
+                    cache_file.display()
+                );
+            }
+        }
+
+        return find_font_in_extracted_zip(&cache_file, name).await;
+    }
+
+    let cache_file = cache_dir.join(format!("{hash}.ttf"));
 
     // If already cached, return the path
     let cache_len = match fs::metadata(&cache_file).await {
@@ -408,11 +475,6 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
             let _ = fs::remove_file(&cache_file).await;
         } else {
             debug!("Font '{}' already cached at {}", name, cache_file.display());
-
-            // For zip files, we need to find the actual font file
-            if extension == "zip" {
-                return find_font_in_extracted_zip(&cache_file, name).await;
-            }
             return Ok(cache_file);
         }
     }
@@ -441,11 +503,6 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
                 cache_file.display()
             );
         }
-    }
-
-    // For zip files, extract and find the font
-    if extension == "zip" {
-        return find_font_in_extracted_zip(&cache_file, name).await;
     }
 
     Ok(cache_file)
@@ -883,6 +940,21 @@ mod tests {
                 "expected to reject {url}"
             );
         }
+    }
+
+    #[test]
+    fn zip_font_cache_uses_extracted_directory_without_archive() {
+        let cache_dir = tempdir().expect("temp cache dir");
+        let url = "https://example.com/inter.zip";
+        let extracted_dir = cache_dir.path().join(sha256_hex(url));
+        fs::create_dir_all(&extracted_dir).expect("create extracted dir");
+        let extracted_font = extracted_dir.join("inter-regular.ttf");
+        fs::write(&extracted_font, b"font").expect("write extracted font");
+
+        let resolved = smol::block_on(download_font("Inter", url, cache_dir.path()))
+            .expect("reuse extracted cache");
+
+        assert_eq!(resolved, extracted_font);
     }
 
     #[test]
