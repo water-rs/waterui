@@ -12,7 +12,7 @@ categories = ["gui", "caching"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-url.workspace = true
+waterui-url = { workspace = true, features = ["std"] }
 waterui-media.workspace = true
 waterui-video.workspace = true
 thiserror.workspace = true
@@ -30,19 +30,7 @@ hex = "0.4"
 # Async filesystem
 smol = "2.0"
 tempfile = "3.26"
-
-# Home directory
-dirs = "5.0"
-
-# HTTP for remote assets
-[target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { workspace = true, features = ["native-tls"] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
-
-[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+waterkit-fs.workspace = true
 
 [features]
 default = ["std"]

@@ -22,7 +22,7 @@ indexmap = "2"
 blocking = "1.6"
 async-fs = "2.2.0"
 async-process = "2.5.0"
-dirs = "6"
+waterkit-fs.workspace = true
 
 # Async runtime
 async-io = "2.6"

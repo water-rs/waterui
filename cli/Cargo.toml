@@ -62,6 +62,7 @@ ignore = "0.4"
 remove_dir_all = "1.0"
 waterui-assets.workspace = true
 waterui-assets-plan.workspace = true
+waterkit-fs.workspace = true
 waterui-preview-protocol = { path = "../components/preview-protocol" }
 waterui-inspector-protocol = { path = "../components/inspector-protocol" }
 tempfile = "3.26"
