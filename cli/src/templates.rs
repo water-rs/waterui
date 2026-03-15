@@ -54,10 +54,12 @@ pub struct TemplateContext {
     pub use_remote_dev_backend: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
-    /// Relative path from project root to where the Xcode/Android project is located.
-    /// Used to compute correct relative paths. Defaults to "apple" for standard projects.
-    /// For playground projects, this would be ".water/apple".
+    /// Path to the backend project being scaffolded.
+    ///
+    /// This may be relative to the project root or an absolute cache path.
     pub backend_project_path: Option<PathBuf>,
+    /// Absolute path to the user project root when scaffolding generated backend projects.
+    pub project_root_path: Option<PathBuf>,
     /// Android permissions to include in the manifest (e.g., "internet", "camera")
     pub android_permissions: Vec<String>,
     /// iOS permissions to include in Info.plist (e.g., "microphone", "camera")
@@ -90,6 +92,7 @@ impl TemplateContext {
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
             backend_project_path: None,
+            project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
@@ -115,6 +118,7 @@ impl TemplateContext {
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: None,
+            project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: manifest.package.accessory,
@@ -145,6 +149,7 @@ impl TemplateContext {
             use_remote_dev_backend: false,
             waterui_path: Some(waterui_path),
             backend_project_path: None,
+            project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory,
@@ -157,6 +162,13 @@ impl TemplateContext {
     #[must_use]
     pub fn with_backend_project_path(mut self, path: PathBuf) -> Self {
         self.backend_project_path = Some(path);
+        self
+    }
+
+    /// Set absolute project root path for template rendering.
+    #[must_use]
+    pub fn with_project_root_path(mut self, path: PathBuf) -> Self {
+        self.project_root_path = Some(path);
         self
     }
 
@@ -278,6 +290,32 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             return Some(normalize_path_for_config(&absolute_backend_path));
         }
 
+        if let Some(backend_project_path) = self
+            .backend_project_path
+            .as_ref()
+            .filter(|path| path.is_absolute())
+        {
+            let project_root = self.project_root_path.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "TemplateContext missing project_root_path for absolute backend project {}",
+                    backend_project_path.display()
+                )
+            });
+            let absolute_backend_path = project_root
+                .join(waterui_path)
+                .join("backends")
+                .join(backend_subdir);
+            let relative_path = pathdiff::diff_paths(&absolute_backend_path, backend_project_path)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Failed to compute backend dependency path from {} to {}",
+                        backend_project_path.display(),
+                        absolute_backend_path.display()
+                    )
+                });
+            return Some(normalize_path_for_config(&relative_path));
+        }
+
         // Count how many levels deep the project is from the project root
         // Default is 1 level (e.g., "android"), playground uses 2 levels (e.g., ".water/android")
         let project_depth = self
@@ -317,6 +355,28 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// For a backend at `apple/`, returns `..` (go up 1 level).
     /// For a backend at `.water/apple/`, returns `../..` (go up 2 levels).
     fn project_root_relative_path(&self) -> String {
+        if let Some(backend_project_path) = self
+            .backend_project_path
+            .as_ref()
+            .filter(|path| path.is_absolute())
+        {
+            let project_root = self.project_root_path.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "TemplateContext missing project_root_path for absolute backend project {}",
+                    backend_project_path.display()
+                )
+            });
+            let relative_path = pathdiff::diff_paths(project_root, backend_project_path)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Failed to compute project root path from {} to {}",
+                        backend_project_path.display(),
+                        project_root.display()
+                    )
+                });
+            return normalize_path_for_config(&relative_path);
+        }
+
         let depth = self
             .backend_project_path
             .as_ref()
@@ -440,12 +500,13 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
 
 #[cfg(test)]
 mod tests {
-    use super::{TemplateContext, embedded};
+    use super::{TemplateContext, embedded, normalize_path_for_config};
     use std::path::PathBuf;
 
     fn ctx(
         waterui_path: Option<PathBuf>,
         backend_project_path: Option<PathBuf>,
+        project_root_path: Option<PathBuf>,
         package_type: crate::project::PackageType,
     ) -> TemplateContext {
         TemplateContext {
@@ -458,6 +519,7 @@ mod tests {
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
             backend_project_path,
+            project_root_path,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory: false,
@@ -467,7 +529,7 @@ mod tests {
     }
 
     fn app_ctx() -> TemplateContext {
-        ctx(None, None, crate::project::PackageType::App)
+        ctx(None, None, None, crate::project::PackageType::App)
     }
 
     fn playground_ctx() -> TemplateContext {
@@ -488,6 +550,7 @@ mod tests {
         let ctx = ctx(
             Some(PathBuf::from("../..")),
             Some(PathBuf::from(".water/apple")),
+            None,
             crate::project::PackageType::App,
         );
 
@@ -510,6 +573,7 @@ mod tests {
         let ctx = ctx(
             Some(abs),
             Some(PathBuf::from("apple")),
+            None,
             crate::project::PackageType::App,
         );
         let path = ctx
@@ -522,6 +586,44 @@ mod tests {
             "/waterui/backends/apple"
         };
         assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn absolute_backend_project_path_uses_real_project_root() {
+        let project_root = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\lexo\demo")
+        } else {
+            PathBuf::from("/Users/lexo/demo")
+        };
+        let backend_project_path = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\lexo\.water\project_cache\abc123\apple")
+        } else {
+            PathBuf::from("/Users/lexo/.water/project_cache/abc123/apple")
+        };
+
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(backend_project_path.clone()),
+            Some(project_root.clone()),
+            crate::project::PackageType::Playground,
+        );
+
+        let path = ctx
+            .compute_relative_backend_path("apple")
+            .expect("expected backend path");
+        let expected_backend_path = pathdiff::diff_paths(
+            project_root.join("../waterui").join("backends/apple"),
+            &backend_project_path,
+        )
+        .expect("backend diff path");
+        assert_eq!(path, normalize_path_for_config(&expected_backend_path));
+
+        let expected_project_root =
+            pathdiff::diff_paths(&project_root, &backend_project_path).expect("project root diff");
+        assert_eq!(
+            ctx.project_root_relative_path(),
+            normalize_path_for_config(&expected_project_root)
+        );
     }
 
     #[test]

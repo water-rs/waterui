@@ -12,6 +12,7 @@ pub struct Project {
     manifest: Manifest,
     crate_name: String,
     target_dir: PathBuf,
+    managed_backends_root: PathBuf,
 }
 
 impl Project {
@@ -188,9 +189,7 @@ impl Project {
     /// Returns `project.root() / backends.path / B::DEFAULT_PATH`.
     #[must_use]
     pub fn backend_path<B: Backend>(&self) -> PathBuf {
-        self.root
-            .join(self.manifest.backends.path())
-            .join(B::DEFAULT_PATH)
+        self.managed_backends_root.join(B::DEFAULT_PATH)
     }
 
     /// Get the relative path to a backend directory from project root.
@@ -204,7 +203,7 @@ impl Project {
     /// Get the full path to the managed native FFI companion crate.
     #[must_use]
     pub fn ffi_crate_path(&self) -> PathBuf {
-        self.root.join(self.ffi_crate_relative_path())
+        self.managed_backends_root.join("ffi")
     }
 
     /// Get the relative path to the managed native FFI companion crate from project root.
@@ -293,6 +292,11 @@ impl Project {
             smol::fs::remove_dir_all(target_dir).await?;
         }
 
+        if self.is_playground() {
+            crate::water_dir::remove_playground_cache(self.root()).await?;
+            return Ok(());
+        }
+
         // Clean Apple backend if configured
         if self.apple_backend().is_some() {
             clean_apple(self).await?;
@@ -370,8 +374,8 @@ pub enum FailToOpenProject {
     #[error("Failed to initialize backend: {0}")]
     BackendInit(#[from] crate::backend::FailToInitBackend),
 
-    /// Failed to manage `.water` directory for playground projects.
-    #[error("Failed to prepare .water directory: {0}")]
+    /// Failed to manage the playground cache directory.
+    #[error("Failed to prepare playground managed cache: {0}")]
     WaterDir(#[from] eyre::Report),
 }
 
@@ -432,7 +436,8 @@ impl Project {
             self.crate_name().to_string(),
             app_name,
         )
-        .with_backend_project_path(self.ffi_crate_relative_path());
+        .with_backend_project_path(self.ffi_crate_path())
+        .with_project_root_path(self.root.clone());
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
             .await
@@ -534,12 +539,18 @@ impl Project {
         let target_dir = get_target_dir(&path)
             .await
             .map_err(FailToCreateProject::TargetDirError)?;
+        let managed_backends_root = if options.package_type == PackageType::Playground {
+            path.join(".water")
+        } else {
+            path.join(manifest.backends.path())
+        };
 
         Ok(Self {
             root: path,
             manifest,
             crate_name,
             target_dir,
+            managed_backends_root,
         })
     }
 
@@ -751,13 +762,15 @@ impl Project {
             return Err(FailToOpenProject::BackendsNotAllowedInPlayground);
         }
 
-        // For playground projects, managed backends are stored in .water directory.
-        if is_playground {
-            crate::water_dir::ensure_valid(&path)
+        let managed_backends_root = if is_playground {
+            let managed_backends_root = crate::water_dir::ensure_valid(&path)
                 .await
                 .map_err(FailToOpenProject::WaterDir)?;
             manifest.backends.set_path(".water");
-        }
+            managed_backends_root
+        } else {
+            path.join(manifest.backends.path())
+        };
 
         let target_dir = get_target_dir(&path)
             .await
@@ -768,6 +781,7 @@ impl Project {
             manifest,
             crate_name,
             target_dir,
+            managed_backends_root,
         };
 
         // For playground projects, auto-initialize backends
@@ -813,10 +827,7 @@ impl Project {
     }
 
     async fn remove_backend_relative_dir(&self, relative_path: &Path) -> eyre::Result<()> {
-        let backend_path = self
-            .root
-            .join(self.manifest.backends.path())
-            .join(relative_path);
+        let backend_path = self.managed_backends_root.join(relative_path);
         if backend_path.exists() {
             smol::fs::remove_dir_all(&backend_path).await?;
         }
