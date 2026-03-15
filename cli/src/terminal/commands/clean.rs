@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{self, Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use futures::{StreamExt, stream};
 use ignore::{DirEntry, WalkBuilder};
@@ -20,7 +20,8 @@ use waterui_cli::{
     apple::platform::clean_apple,
     gtk4::platform::clean_gtk4,
     hydrolysis::platform::clean_hydrolysis,
-    project::{Manifest, Project},
+    project::{Manifest, PackageType, Project},
+    water_dir,
 };
 
 /// Target backend for cleaning.
@@ -63,6 +64,7 @@ pub async fn run(args: Args) -> Result<()> {
     let root_path = crate::project_path::canonicalize(&args.path)?;
 
     if args.recursive {
+        ensure_recursive_root_is_directory(&root_path)?;
         if args.backend != TargetBackend::All {
             warn!(
                 "Ignoring `--backend {:?}` in recursive mode; cleaning project cache directories only",
@@ -198,6 +200,16 @@ fn ensure_recursive_confirmation_mode(yes: bool, interactive: bool) -> Result<()
     Ok(())
 }
 
+fn ensure_recursive_root_is_directory(root: &Path) -> Result<()> {
+    if !root.is_dir() {
+        bail!(
+            "`water clean --recursive --path` requires a directory path, got {}",
+            root.display()
+        );
+    }
+    Ok(())
+}
+
 async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
     let root = root.to_path_buf();
     smol::unblock(move || discover_projects_blocking(&root)).await
@@ -213,7 +225,7 @@ impl CachePlan {
     async fn discover(root: &Path) -> Result<Self> {
         let project_roots = discover_projects(root).await?;
         let project_count = project_roots.len();
-        let cache_dirs = collect_existing_cache_dirs(project_roots).await;
+        let cache_dirs = collect_existing_cache_dirs(project_roots).await?;
         Ok(Self {
             project_count,
             cache_dirs,
@@ -221,7 +233,7 @@ impl CachePlan {
     }
 }
 
-async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Vec<PathBuf> {
+async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     let mut cache_dirs = BTreeSet::new();
     let mut discovered = stream::iter(
         project_roots
@@ -229,7 +241,7 @@ async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Vec<PathBuf
             .map(|project_root| async move { discover_project_cache_dirs(project_root).await }),
     )
     .buffer_unordered(discovery_parallelism());
-    while let Some(project_cache_dirs) = discovered.next().await {
+    while let Some(project_cache_dirs) = discovered.next().await.transpose()? {
         cache_dirs.extend(project_cache_dirs);
     }
 
@@ -240,11 +252,11 @@ async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Vec<PathBuf
         }
     }
 
-    collapse_nested_cache_dirs(existing_cache_dirs)
+    Ok(collapse_nested_cache_dirs(existing_cache_dirs))
 }
 
-async fn discover_project_cache_dirs(project_root: PathBuf) -> BTreeSet<PathBuf> {
-    let mut cache_dirs = BTreeSet::from([project_root.join(".water")]);
+async fn discover_project_cache_dirs(project_root: PathBuf) -> Result<BTreeSet<PathBuf>> {
+    let mut cache_dirs = BTreeSet::from([managed_project_cache_dir(&project_root).await?]);
     match resolve_target_dir(project_root.clone()).await {
         Ok(target_dir) => {
             cache_dirs.insert(target_dir);
@@ -255,7 +267,17 @@ async fn discover_project_cache_dirs(project_root: PathBuf) -> BTreeSet<PathBuf>
             error
         ),
     }
-    cache_dirs
+    Ok(cache_dirs)
+}
+
+async fn managed_project_cache_dir(project_root: &Path) -> Result<PathBuf> {
+    let manifest = Manifest::open(project_root.join("Water.toml"))
+        .await
+        .map_err(eyre::Report::from)?;
+    match manifest.package.package_type {
+        PackageType::Playground => water_dir::playground_cache_dir(project_root),
+        PackageType::App => Ok(project_root.join(".water")),
+    }
 }
 
 async fn resolve_target_dir(
@@ -275,6 +297,11 @@ fn discover_projects_blocking(root: &Path) -> Result<Vec<PathBuf>> {
     let mut project_roots = BTreeSet::new();
     let mut builder = WalkBuilder::new(root);
     builder.hidden(false);
+    builder.parents(false);
+    builder.ignore(false);
+    builder.git_ignore(false);
+    builder.git_global(false);
+    builder.git_exclude(false);
     builder.require_git(false);
     builder.filter_entry(|entry| should_descend(entry));
 
@@ -408,7 +435,7 @@ mod tests {
 
     use super::{
         collapse_nested_cache_dirs, discover_projects, ensure_recursive_confirmation_mode,
-        should_skip_dir,
+        ensure_recursive_root_is_directory, should_skip_dir,
     };
     use waterui_cli::project::{Manifest, Package, PackageType};
 
@@ -440,7 +467,17 @@ mod tests {
     }
 
     #[test]
-    fn discover_projects_skips_gitignored_worktrees() {
+    fn recursive_requires_directory_root() {
+        let temp = tempdir().expect("tempdir");
+        let manifest = temp.path().join("Water.toml");
+        fs::write(&manifest, "").expect("write manifest placeholder");
+
+        assert!(ensure_recursive_root_is_directory(temp.path()).is_ok());
+        assert!(ensure_recursive_root_is_directory(&manifest).is_err());
+    }
+
+    #[test]
+    fn discover_projects_includes_gitignored_worktrees() {
         let temp = tempdir().expect("tempdir");
         fs::write(temp.path().join(".gitignore"), ".worktrees/\n").expect("write gitignore");
 
@@ -454,7 +491,7 @@ mod tests {
 
         let discovered = block_on(discover_projects(temp.path())).expect("discover projects");
 
-        assert_eq!(discovered, vec![visible_project]);
+        assert_eq!(discovered, vec![ignored_project, visible_project]);
     }
 
     fn write_manifest(project_root: &Path, name: &str) {

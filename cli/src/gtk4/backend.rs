@@ -71,9 +71,6 @@ impl Backend for Gtk4Backend {
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
 
-        // Get the relative path to the backend from project root (e.g., "gtk4" or ".water/gtk4")
-        let backend_relative_path = project.backend_relative_path::<Self>();
-
         let project_path = default_gtk4_project_path();
 
         let app_name = manifest
@@ -87,7 +84,8 @@ impl Backend for Gtk4Backend {
             project.crate_name().to_string(),
             app_name,
         )
-        .with_backend_project_path(backend_relative_path);
+        .with_backend_project_path(project.backend_path::<Self>())
+        .with_project_root_path(project.root().to_path_buf());
 
         templates::gtk4::scaffold(
             &project.backend_path::<Self>(),
