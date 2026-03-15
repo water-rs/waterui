@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::Duration;
 
 use color_eyre::eyre::{Context as _, Result, bail};
 use tracing::info;
@@ -12,6 +11,7 @@ use crate::platform::TargetPlatform;
 use crate::project::Project;
 use crate::runtime_compat::runtime_profile_tag;
 use crate::runtime_fingerprint::compute_runtime_fingerprint;
+use crate::support_app;
 use crate::templates::TemplateContext;
 
 const INSPECTOR_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
@@ -172,67 +172,24 @@ pub async fn launch_inspector_session(
 }
 
 fn inspector_support_path() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Home directory is not available"))?;
-    Ok(home.join(".water").join("inspector_support"))
+    support_app::support_app_path("inspector_support")
 }
 
 async fn ensure_inspector_support_app(
     path: &Path,
     requirements: &InspectorRequirements,
 ) -> Result<()> {
-    let metadata_path = path.join(INSPECTOR_METADATA_FILE);
-    let cargo_path = path.join("Cargo.toml");
     let desired_signature = inspector_signature(requirements);
-
-    let mut needs_scaffold = !cargo_path.exists();
-    if !needs_scaffold {
-        let stored_signature = match smol::fs::read_to_string(&metadata_path).await {
-            Ok(signature) => signature,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => {
-                return Err(color_eyre::eyre::eyre!(
-                    "Failed to read inspector metadata {}: {err}",
-                    metadata_path.display()
-                ));
-            }
-        };
-        if stored_signature.trim() != desired_signature {
-            needs_scaffold = true;
-        }
-    }
-
-    if needs_scaffold {
-        if path.exists() {
-            remove_dir_all_retry(path).await?;
-        }
-        info!("Scaffolding inspector app at {}", path.display());
-        scaffold_inspector_app(path, requirements).await?;
-        smol::fs::write(&metadata_path, desired_signature.as_bytes()).await?;
-    } else if !metadata_path.exists() {
-        smol::fs::write(&metadata_path, desired_signature.as_bytes()).await?;
-    }
-
-    Ok(())
-}
-
-async fn remove_dir_all_retry(path: &Path) -> Result<()> {
-    const ATTEMPTS: usize = 6;
-    for attempt in 0..ATTEMPTS {
-        match smol::fs::remove_dir_all(path).await {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err)
-                if err.kind() == std::io::ErrorKind::DirectoryNotEmpty
-                    && attempt + 1 < ATTEMPTS =>
-            {
-                smol::Timer::after(Duration::from_millis(50 * (attempt as u64 + 1))).await;
-            }
-            Err(err) => return Err(err.into()),
-        }
-    }
-
-    bail!("Failed to remove inspector support directory after retries")
+    let scaffold_path = path.to_path_buf();
+    let scaffold_requirements = requirements.clone();
+    support_app::ensure_support_app(
+        path,
+        INSPECTOR_METADATA_FILE,
+        &desired_signature,
+        "inspector support",
+        move || async move { scaffold_inspector_app(&scaffold_path, &scaffold_requirements).await },
+    )
+    .await
 }
 
 async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirements) -> Result<()> {

@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use smol::fs;
 use smol::stream::StreamExt;
 use tracing::warn;
+use waterkit_fs::WaterFs;
 
 use crate::project::Project;
 use crate::utils::{command, copy_file, which};
@@ -1449,12 +1450,9 @@ async fn optimized_cache_path(
     hasher.update(variant_meta.as_bytes());
     let digest = hex::encode(hasher.finalize());
 
-    let cache_dir = dirs::home_dir()
-        .ok_or_eyre("Could not determine home directory for assets cache")?
-        .join(".water")
-        .join("cache")
-        .join("assets")
-        .join("optimized");
+    let cache_dir = WaterFs::cache_dir()
+        .map(|root| root.join("waterui").join("assets").join("optimized"))
+        .ok_or_eyre("Could not determine cache directory for assets cache")?;
     fs::create_dir_all(&cache_dir).await?;
     let cache_path = cache_dir.join(format!("{digest}.{ext}"));
 

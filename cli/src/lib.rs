@@ -19,6 +19,7 @@ pub mod preview;
 pub mod project;
 pub(crate) mod runtime_compat;
 pub(crate) mod runtime_fingerprint;
+pub(crate) mod support_app;
 pub mod templates;
 pub mod toolchain;
 pub mod utils;
