@@ -37,6 +37,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
 - CI is expensive, please read full error message if CI fails. Do not blindly push commits to trigger CI again before fixing all problems you learnt.
 - For public API design, follow this repository style consistently: `Type::new(...)` is the general constructor, while free function constructors such as `button(...)` are ergonomic convenience entry points. Do not introduce parallel APIs like `Type::custom(...)` when `Type::new(...)` already covers the general case.
+- Keep the constructor split explicit in API design and documentation:
+  - `Type::new(...)` is the general constructor and should accept the most general shape that the component can render.
+  - Free function constructors like `button(...)` are ergonomic convenience entry points and may accept narrower semantic input types for better defaults.
+  - Example: `Button::new(...)` should remain the general constructor for arbitrary label views, while `button(...)` is the ergonomic constructor that accepts `IntoLabel` so literals, i18n-friendly text, and default accessibility semantics compose naturally.
 </important>
 
 ## Build Commands
