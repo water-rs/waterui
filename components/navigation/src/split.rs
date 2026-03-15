@@ -19,10 +19,7 @@ impl core::fmt::Debug for NavigationSplitDetailBuilder {
 }
 
 impl NavigationSplitDetailBuilder {
-    fn mapped<T>(
-        mapping: Mapping<T>,
-        detail: impl Fn(T) -> NavigationView + 'static,
-    ) -> Self
+    fn mapped<T>(mapping: Mapping<T>, detail: impl Fn(T) -> NavigationView + 'static) -> Self
     where
         T: Clone + Ord + 'static,
     {
@@ -116,8 +113,14 @@ impl NavigationSplitLayout {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn detail(&self) -> Option<&NavigationView> {
-        self.detail.as_ref()
+    pub fn selection(&self) -> &Binding<Option<Id>> {
+        &self.selection
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn detail_builder(&self) -> &NavigationSplitDetailBuilder {
+        &self.detail
     }
 
     #[doc(hidden)]

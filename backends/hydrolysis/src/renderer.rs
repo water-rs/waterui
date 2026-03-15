@@ -3641,13 +3641,8 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
             let sidebar_view = normalize_layout_view(split.sidebar().build(), env);
             measure_view_intrinsic(&sidebar_view, state, env)
         };
-<<<<<<< HEAD
-        let detail = if let Some(selected) = split.selection.get() {
-            measure_navigation_view_intrinsic(&split.detail.build(selected), state, env)
-=======
-        let detail = if let Some(detail) = split.detail() {
-            measure_navigation_view_intrinsic(detail, state, env)
->>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
+        let detail = if let Some(selected) = split.selection().get() {
+            measure_navigation_view_intrinsic(&split.detail_builder().build(selected), state, env)
         } else {
             let placeholder_view = normalize_layout_view(split.placeholder().build(), env);
             measure_view_intrinsic(&placeholder_view, state, env)
@@ -6692,23 +6687,16 @@ impl HydrolysisRenderer {
         split: Native<NavigationSplitLayout>,
         env: &Environment,
     ) {
-<<<<<<< HEAD
         let split = split.into_inner();
-        let compact = ctx.bounds.width() < split_compact_threshold(f64::from(split.sidebar_width));
+        let compact =
+            ctx.bounds.width() < split_compact_threshold(f64::from(split.sidebar_width()));
         let selected = {
             let renderer = unsafe { ctx.renderer() };
-            renderer.read_signal(&split.selection)
+            renderer.read_signal(split.selection())
         };
 
         if compact && let Some(selected) = selected {
-            let detail = split.detail.build(selected);
-=======
-        let (sidebar, placeholder, detail, sidebar_width, clear_selection) =
-            split.into_inner().into_parts();
-        let compact = ctx.bounds.width() < split_compact_threshold(f64::from(sidebar_width));
-
-        if compact && let Some(detail) = detail {
->>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
+            let detail = split.detail_builder().build(selected);
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), ctx.bounds);
             let back_button_rect = navigation_back_button_rect(ctx.bounds);
             {
@@ -6721,12 +6709,7 @@ impl HydrolysisRenderer {
                     &vello::kurbo::RoundedRect::from_rect(back_button_rect, 6.0),
                 );
             }
-<<<<<<< HEAD
-            let selection = split.selection.clone();
-=======
-            let clear_selection = Rc::new(RefCell::new(clear_selection));
-            let env = env.clone();
->>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
+            let selection = split.selection().clone();
             let renderer = unsafe { ctx.renderer() };
             renderer.register_pointer_target(
                 transformed_rect(ctx.hit_transform, back_button_rect),
@@ -6738,7 +6721,7 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let sidebar_width = f64::from(sidebar_width).min(ctx.bounds.width() * 0.5);
+        let sidebar_width = f64::from(split.sidebar_width()).min(ctx.bounds.width() * 0.5);
         let sidebar_rect = vello::kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
@@ -6747,17 +6730,12 @@ impl HydrolysisRenderer {
         );
         let detail_rect =
             vello::kurbo::Rect::new(sidebar_rect.x1, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
-<<<<<<< HEAD
-        Self::dispatch_in_rect(ctx, env, split.sidebar.build(), sidebar_rect);
+        Self::dispatch_in_rect(ctx, env, split.sidebar().build(), sidebar_rect);
         if let Some(selected) = selected {
-            let detail = split.detail.build(selected);
-=======
-        Self::dispatch_in_rect(ctx, env, sidebar.build(), sidebar_rect);
-        if let Some(detail) = detail {
->>>>>>> 79df02b9 (Use hydrolysis headless runtime in testing)
+            let detail = split.detail_builder().build(selected);
             Self::dispatch_in_rect(ctx, env, AnyView::new(detail), detail_rect);
         } else {
-            Self::dispatch_in_rect(ctx, env, placeholder.build(), detail_rect);
+            Self::dispatch_in_rect(ctx, env, split.placeholder().build(), detail_rect);
         }
     }
 
@@ -8316,6 +8294,11 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let mut text_field = text_field.into_inner();
+        #[cfg(feature = "accessibility")]
+        let default_accessibility_label = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.accessibility_label_from_view(&text_field.label, env)
+        };
         text_field.label = normalize_layout_view(text_field.label, env);
         let line_limit = text_field.line_limit.map(NonZeroUsize::get);
         #[cfg(feature = "accessibility")]
@@ -8335,9 +8318,7 @@ impl HydrolysisRenderer {
                     .to_string()
             };
             let default_label = {
-                let renderer = unsafe { ctx.renderer() };
-                renderer
-                    .accessibility_label_from_view(&text_field.label, env)
+                default_accessibility_label
                     .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()))
             };
             let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
@@ -8589,13 +8570,14 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let mut secure_field = secure_field.into_inner();
+        #[cfg(feature = "accessibility")]
+        let default_accessibility_label = {
+            let renderer = unsafe { ctx.renderer() };
+            renderer.accessibility_label_from_view(&secure_field.label, env)
+        };
         secure_field.label = normalize_layout_view(secure_field.label, env);
         #[cfg(feature = "accessibility")]
         {
-            let default_label = {
-                let renderer = unsafe { ctx.renderer() };
-                renderer.accessibility_label_from_view(&secure_field.label, env)
-            };
             let secure_len = {
                 let renderer = unsafe { ctx.renderer() };
                 renderer
@@ -8609,7 +8591,7 @@ impl HydrolysisRenderer {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
             );
-            let label = renderer.resolve_accessibility_label(env, default_label);
+            let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
             if let Some(label) = label {
                 node.set_label(label);
             }
