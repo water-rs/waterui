@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use waterui_core::{impl_debug, impl_extractor};
 
-use crate::{AnyWebViewHandle, WebViewHandle};
+use crate::{AnyWebViewHandle, WebView, WebViewHandle};
 
 /// A trait for custom web view controllers.
 ///
@@ -32,11 +32,17 @@ impl WebViewController {
         }
     }
 
-    /// Opens a new blank web view and returns its handle.
+    /// Opens a new blank web view.
     ///
-    /// The web view starts blank - use `go_to(url)` on the returned handle to navigate.
+    /// The web view starts blank - use `go_to(url)` on the returned view to navigate.
     #[must_use]
-    pub fn open(&self) -> AnyWebViewHandle {
+    pub fn open(&self) -> WebView {
+        WebView::from_handle(self.open_handle())
+    }
+
+    /// Opens a new blank web view and returns the underlying handle.
+    #[must_use]
+    pub(crate) fn open_handle(&self) -> AnyWebViewHandle {
         self.controller.open()
     }
 }
