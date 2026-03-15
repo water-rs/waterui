@@ -816,12 +816,89 @@ impl Signal for Fetched {
 
 #[cfg(feature = "std")]
 #[derive(Debug)]
-enum FetchError {
-    CacheRootUnavailable,
-    CreateCacheDir(std::io::Error),
+pub enum RemoteDownloadError {
     Http(zenwave::Error),
     UnsuccessfulStatus(u16),
     ReadBody(String),
+}
+
+#[cfg(feature = "std")]
+impl RemoteDownloadError {
+    #[must_use]
+    pub const fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::UnsuccessfulStatus(status) => Some(*status),
+            Self::Http(_) | Self::ReadBody(_) => None,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl fmt::Display for RemoteDownloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(error) => write!(f, "HTTP transport failed: {error}"),
+            Self::UnsuccessfulStatus(status) => {
+                write!(f, "upstream returned HTTP status {status}")
+            }
+            Self::ReadBody(error) => write!(f, "failed to read response body: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for RemoteDownloadError {}
+
+#[cfg(feature = "std")]
+struct DownloadedRemoteBytes {
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+}
+
+#[cfg(feature = "std")]
+pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadError> {
+    Ok(download_remote_bytes_with_content_type(url).await?.bytes)
+}
+
+#[cfg(feature = "std")]
+async fn download_remote_bytes_with_content_type(
+    url: &str,
+) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client
+        .method(Method::GET, url)
+        .await
+        .map_err(|error| RemoteDownloadError::Http(error.into()))?;
+
+    if !response.status().is_success() {
+        return Err(RemoteDownloadError::UnsuccessfulStatus(
+            response.status().as_u16(),
+        ));
+    }
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response
+        .into_body()
+        .into_bytes()
+        .await
+        .map_err(|error| RemoteDownloadError::ReadBody(error.to_string()))?;
+
+    Ok(DownloadedRemoteBytes {
+        bytes: bytes.to_vec(),
+        content_type,
+    })
+}
+
+#[cfg(feature = "std")]
+#[derive(Debug)]
+enum FetchError {
+    CacheRootUnavailable,
+    CreateCacheDir(std::io::Error),
+    Download(RemoteDownloadError),
     WriteTemp(std::io::Error),
     Persist(std::io::Error),
 }
@@ -832,11 +909,7 @@ impl fmt::Display for FetchError {
         match self {
             Self::CacheRootUnavailable => write!(f, "cache directory is unavailable"),
             Self::CreateCacheDir(error) => write!(f, "failed to create cache directory: {error}"),
-            Self::Http(error) => write!(f, "HTTP transport failed: {error}"),
-            Self::UnsuccessfulStatus(status) => {
-                write!(f, "upstream returned HTTP status {status}")
-            }
-            Self::ReadBody(error) => write!(f, "failed to read response body: {error}"),
+            Self::Download(error) => fmt::Display::fmt(error, f),
             Self::WriteTemp(error) => write!(f, "failed to write cache temp file: {error}"),
             Self::Persist(error) => write!(f, "failed to persist cached file: {error}"),
         }
@@ -962,21 +1035,10 @@ async fn fetch_remote_to_cache(url: &Url) -> Result<Url, FetchError> {
     let cache_entry_dir = fetch_cache_entry_dir(&cache_root, &key);
     std::fs::create_dir_all(&cache_entry_dir).map_err(FetchError::CreateCacheDir)?;
 
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client
-        .method(Method::GET, url.as_str())
+    let downloaded = download_remote_bytes_with_content_type(url.as_str())
         .await
-        .map_err(|error| FetchError::Http(error.into()))?;
-
-    if !response.status().is_success() {
-        return Err(FetchError::UnsuccessfulStatus(response.status().as_u16()));
-    }
-
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok());
-    let extension = infer_extension(url, content_type);
+        .map_err(FetchError::Download)?;
+    let extension = infer_extension(url, downloaded.content_type.as_deref());
     let cache_path = cache_payload_path(&cache_entry_dir, extension.as_deref());
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -984,12 +1046,7 @@ async fn fetch_remote_to_cache(url: &Url) -> Result<Url, FetchError> {
         .unwrap_or_default();
     let temp_path = cache_temp_path(&cache_entry_dir, nonce);
 
-    let bytes = response
-        .into_body()
-        .into_bytes()
-        .await
-        .map_err(|error| FetchError::ReadBody(error.to_string()))?;
-    std::fs::write(&temp_path, &bytes).map_err(FetchError::WriteTemp)?;
+    std::fs::write(&temp_path, &downloaded.bytes).map_err(FetchError::WriteTemp)?;
 
     if let Err(error) = std::fs::rename(&temp_path, &cache_path) {
         if cache_path.exists() {
