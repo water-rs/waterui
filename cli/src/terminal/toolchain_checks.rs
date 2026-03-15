@@ -15,9 +15,9 @@ use waterui_cli::{
         Installation, Toolchain, ToolchainError,
         cmake::Cmake,
         doctor::{CheckStatus, doctor},
+        web::WebToolchain,
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
-    toolchain::{Toolchain, cmake::Cmake, web::WebToolchain},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
