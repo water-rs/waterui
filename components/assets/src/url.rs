@@ -1,10 +1,17 @@
 use std::net::IpAddr;
 
 use crate::AssetError;
+use waterui_url::Url;
 
 #[must_use]
 pub fn is_remote_url(path: &str) -> bool {
-    strip_http_prefix(path).is_some() || strip_https_prefix(path).is_some()
+    Url::parse(path)
+        .and_then(|parsed| {
+            parsed
+                .scheme()
+                .map(|scheme| matches!(scheme, "http" | "https"))
+        })
+        .unwrap_or(false)
 }
 
 pub fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
@@ -17,54 +24,31 @@ pub fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
 
 #[must_use]
 pub fn is_loopback_http_url(url: &str) -> bool {
-    extract_http_host(url)
+    let Some(parsed) = Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != Some("http") {
+        return false;
+    }
+    parsed
+        .host()
         .and_then(normalize_host)
         .is_some_and(is_loopback_host)
 }
 
-fn extract_http_host(url: &str) -> Option<&str> {
-    let remainder = strip_http_prefix(url)?;
-    let authority = remainder.split(['/', '?', '#']).next()?;
-    authority.rsplit('@').next()
-}
-
 fn has_http_scheme(url: &str) -> bool {
-    strip_http_prefix(url).is_some()
+    Url::parse(url)
+        .and_then(|parsed| parsed.scheme().map(|scheme| scheme == "http"))
+        .unwrap_or(false)
 }
 
-fn strip_http_prefix(url: &str) -> Option<&str> {
-    const HTTP_PREFIX: &str = "http://";
-    let prefix_len = HTTP_PREFIX.len();
-    let prefix = url.get(..prefix_len)?;
-    if prefix.eq_ignore_ascii_case(HTTP_PREFIX) {
-        url.get(prefix_len..)
-    } else {
-        None
-    }
-}
-
-fn strip_https_prefix(url: &str) -> Option<&str> {
-    const HTTPS_PREFIX: &str = "https://";
-    let prefix_len = HTTPS_PREFIX.len();
-    let prefix = url.get(..prefix_len)?;
-    if prefix.eq_ignore_ascii_case(HTTPS_PREFIX) {
-        url.get(prefix_len..)
-    } else {
-        None
-    }
-}
-
-fn normalize_host(authority: &str) -> Option<&str> {
-    if authority.is_empty() {
+fn normalize_host(host: &str) -> Option<&str> {
+    if host.is_empty() {
         return None;
     }
-
-    if let Some(host) = authority.strip_prefix('[') {
-        let closing = host.find(']')?;
-        return Some(&host[..closing]);
-    }
-
-    authority.split(':').next()
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .or(Some(host))
 }
 
 fn is_loopback_host(host: &str) -> bool {
