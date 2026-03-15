@@ -16,6 +16,10 @@ waterui-core.workspace = true
 nami.workspace = true
 waterui-graphics.workspace = true
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 
 [lints]
 workspace = true

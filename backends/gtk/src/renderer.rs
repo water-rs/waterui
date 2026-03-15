@@ -11,7 +11,7 @@ use gtk4::{Align, CssProvider, Overflow};
 use nami::{Signal, watcher::BoxWatcherGuard};
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-    AccessibilityState,
+    AccessibilityState, AccessibilityStateSignal,
 };
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
@@ -1405,6 +1405,15 @@ impl GtkRenderer {
         Self::register_ignorable_metadata::<AccessibilityHidden>(dispatcher);
         Self::register_ignorable_metadata::<AccessibilityChildren>(dispatcher);
         Self::register_ignorable_metadata::<AccessibilityState>(dispatcher);
+        dispatcher.register::<IgnorableMetadata<AccessibilityStateSignal>>(
+            |_state, ctx, metadata, env| {
+                let renderer = unsafe { ctx.renderer() };
+                let IgnorableMetadata { content, value } = metadata;
+                let mut local_env = env.clone();
+                local_env.insert(value.state().get());
+                renderer.render_any(content, &local_env)
+            },
+        );
     }
 
     /// Registers a handler for `IgnorableMetadata<T>` that just renders the content.
