@@ -7,8 +7,8 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::Signal;
 use waterui_controls::text_field::TextField;
-use waterui_core::id::Id;
 use waterui_core::Environment;
+use waterui_core::id::Id;
 use waterui_navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
     NavigationTransition, NavigationView,
@@ -512,12 +512,13 @@ impl GtkComponent for NavigationSplitLayout {
         };
 
         rebuild_detail(selection.get());
-        let selection_guard = selection
-            .clone()
-            .computed()
-            .watch(move |ctx: nami::watcher::Context<Option<Id>>| {
-                rebuild_detail(ctx.into_value());
-            });
+        let selection_guard =
+            selection
+                .clone()
+                .computed()
+                .watch(move |ctx: nami::watcher::Context<Option<Id>>| {
+                    rebuild_detail(ctx.into_value());
+                });
         crate::util::store_watcher_guard(&paned, Box::new(selection_guard));
         paned.upcast()
     }

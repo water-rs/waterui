@@ -156,7 +156,10 @@ async fn clean_global_playground_cache_root(cache_root: PathBuf, yes: bool) -> R
     header!("Cleaning global playground cache...");
 
     if !path_exists(&cache_root).await {
-        note!("No global playground cache found at {}", cache_root.display());
+        note!(
+            "No global playground cache found at {}",
+            cache_root.display()
+        );
         return Ok(());
     }
 
@@ -176,7 +179,10 @@ async fn clean_global_playground_cache_root(cache_root: PathBuf, yes: bool) -> R
     }
 
     remove_global_playground_cache_root(cache_root.clone()).await?;
-    success!("Removed global playground cache at {}", cache_root.display());
+    success!(
+        "Removed global playground cache at {}",
+        cache_root.display()
+    );
     Ok(())
 }
 
