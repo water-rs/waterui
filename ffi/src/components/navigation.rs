@@ -11,7 +11,8 @@ use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
 use waterui_navigation::{
     Bar, CustomNavigationController, NavigationController, NavigationSearch, NavigationSplitLayout,
-    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView, split::NavigationSplitDetailBuilder,
+    NavigationStack, NavigationTitleDisplayMode, NavigationTransition, NavigationView,
+    split::NavigationSplitDetailBuilder,
 };
 
 into_ffi! {
@@ -170,13 +171,17 @@ impl crate::IntoRust for *mut WuiNavigationSplitDetail {
 
 #[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_split_navigation_detail(value: *mut WuiNavigationSplitDetail) {
+pub unsafe extern "C" fn waterui_drop_split_navigation_detail(
+    value: *mut WuiNavigationSplitDetail,
+) {
     let _ = unsafe { crate::IntoRust::into_rust(value) };
 }
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavigationDetail<'local>(
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavigationDetail<
+    'local,
+>(
     _env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     ptr: crate::jni::jlong,

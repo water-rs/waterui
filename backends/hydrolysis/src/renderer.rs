@@ -4638,7 +4638,9 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut option_labels = Vec::with_capacity(items.len());
                     let mut max_item_text_height: f64 = 0.0;
                     for item in &items {
-                        let label = renderer.read_resolved_text_styled(&item.content, env).to_plain();
+                        let label = renderer
+                            .read_resolved_text_styled(&item.content, env)
+                            .to_plain();
                         let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
                             state,
                             StyledStr::plain(label.clone()),

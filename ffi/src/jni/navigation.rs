@@ -172,7 +172,9 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
 
 /// Resolves split detail content from a selected identifier.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<'local>(
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     detail_ptr: jlong,
