@@ -35,7 +35,14 @@ impl GtkComponent for Native<PickerConfig> {
             Rc::new(move |item_list| {
                 let labels: Vec<String> = item_list
                     .iter()
-                    .map(|item| item.content.resolve(&env).content.get().to_plain().to_string())
+                    .map(|item| {
+                        item.content
+                            .resolve(&env)
+                            .content
+                            .get()
+                            .to_plain()
+                            .to_string()
+                    })
                     .collect();
                 let new_ids: Vec<_> = item_list.iter().map(|item| item.tag).collect();
                 let current_id = selection.get();
