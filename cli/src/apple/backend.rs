@@ -10,6 +10,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    project_types::CrateName,
     templates::{self, TemplateContext},
 };
 
@@ -110,13 +111,14 @@ impl Backend for AppleBackend {
             (
                 "WaterUIApp".to_string(),
                 "WaterUIApp".to_string(),
-                "WaterUIApp".to_string(),
+                CrateName::try_from("WaterUIApp").expect("playground crate name must be valid"),
             )
         } else {
-            let crate_name = project.crate_name().to_string();
+            let crate_name = project.crate_name().clone();
             // App name for Swift code must be a valid Swift identifier (no hyphens)
             // Convert "video-player-example" to "VideoPlayerExample"
             let app_name = crate_name
+                .as_str()
                 .split('-')
                 .map(|s| {
                     let mut chars = s.chars();
@@ -125,7 +127,7 @@ impl Backend for AppleBackend {
                     })
                 })
                 .collect::<String>();
-            (crate_name.clone(), app_name, crate_name)
+            (crate_name.to_string(), app_name, crate_name)
         };
 
         let project_path = default_apple_project_path();
@@ -134,7 +136,12 @@ impl Backend for AppleBackend {
             .permissions
             .iter()
             .filter(|(_, entry)| entry.is_enabled())
-            .map(|(name, entry)| (name.clone(), entry.description().to_string()))
+            .filter_map(|(key, entry)| {
+                key.ios_plist_key().map(|plist_key| templates::IosPermissionTemplateEntry {
+                    plist_key,
+                    description: entry.description().to_string(),
+                })
+            })
             .collect();
         let ctx =
             TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
