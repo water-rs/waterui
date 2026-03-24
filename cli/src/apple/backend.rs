@@ -88,8 +88,8 @@ fn is_default_apple_project_path(s: &Path) -> bool {
 impl Backend for AppleBackend {
     const DEFAULT_PATH: &'static str = "apple";
 
-    // Preserve Xcode build caches during re-scaffolding
-    const CACHE_PATHS: &'static [&'static str] = &["DerivedData", ".water"];
+    // Preserve Xcode build caches during re-scaffolding.
+    const CACHE_PATHS: &'static [&'static str] = &["DerivedData"];
 
     fn path(&self) -> &Path {
         &self.project_path

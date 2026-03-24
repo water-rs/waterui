@@ -59,7 +59,7 @@ pub async fn run(args: Args) -> Result<()> {
     if project.package_type() != PackageType::App {
         bail!(
             "`water backend` is only available for app mode projects.\n\
-             Playground backends are fully managed under `.water/`."
+             Playground backends are fully managed under `~/.water/build_cache/...`."
         );
     }
 
