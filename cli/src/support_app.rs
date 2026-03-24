@@ -6,8 +6,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use tracing::info;
 
 pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| eyre!("Home directory is not available"))?;
-    Ok(home.join(".water").join(name))
+    Ok(crate::water_dir::water_home_dir()?.join(name))
 }
 
 pub(crate) async fn ensure_support_app<F, Fut>(

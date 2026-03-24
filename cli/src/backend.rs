@@ -22,7 +22,8 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Backends {
     /// Base path for all backends, relative to project root.
-    /// Empty string means project root (for apps), `.water` for playgrounds.
+    /// Empty string means project root for app manifests.
+    /// Playground projects do not persist managed backend paths in `Water.toml`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     path: String,
     android: Option<AndroidBackend>,
