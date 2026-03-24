@@ -6,6 +6,7 @@
 //! a `GpuSurface` rendered by hydrolysis.
 
 mod animation;
+mod engine;
 mod env;
 mod gesture;
 mod gpu_view;
@@ -15,7 +16,9 @@ mod runner;
 mod scroll;
 mod time;
 mod view_renderer;
+mod widgets;
 
+pub use engine::{Brush, DrawContext, MaterialTheme, WidgetTheme};
 pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::BrowserWindow;
