@@ -345,94 +345,111 @@ async fn request_hydrolysis_adapter(
     compatible_surface: Option<&wgpu::Surface<'_>>,
     context: &str,
 ) -> wgpu::Adapter {
-    if should_force_fallback_adapter() {
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface,
-                force_fallback_adapter: true,
+                force_fallback_adapter: should_force_fallback_adapter(),
             })
             .await
-            .expect("hydrolysis adapter selection: failed to find fallback adapter");
+            .expect("hydrolysis adapter selection: failed to find web adapter");
         log_selected_adapter(context, &adapter);
         return adapter;
     }
 
-    let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all());
-    let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
-    let mut inspected_adapters: Vec<String> = Vec::new();
-
-    for adapter in instance.enumerate_adapters(backends) {
-        let info = adapter.get_info();
-        let surface_supported = compatible_surface
-            .as_ref()
-            .is_none_or(|surface| adapter.is_surface_supported(surface));
-        let limits = adapter.limits();
-        let compute_capable = is_compute_capable_adapter(&adapter);
-
-        tracing::info!(
-            target: "hydrolysis::gpu",
-            context,
-            adapter = ?info,
-            surface_supported,
-            compute_capable,
-            max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
-            "hydrolysis adapter candidate"
-        );
-
-        if !surface_supported {
-            continue;
+    #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+    {
+        if should_force_fallback_adapter() {
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface,
+                    force_fallback_adapter: true,
+                })
+                .await
+                .expect("hydrolysis adapter selection: failed to find fallback adapter");
+            log_selected_adapter(context, &adapter);
+            return adapter;
         }
 
-        inspected_adapters.push(format!(
-            "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
-            info.name,
-            info.backend,
-            info.device_type,
-            compute_capable,
-            limits.max_compute_workgroups_per_dimension
-        ));
+        let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all());
+        let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
+        let mut inspected_adapters: Vec<String> = Vec::new();
 
-        if info.device_type == wgpu::DeviceType::Cpu || info.backend == wgpu::Backend::Noop {
+        for adapter in instance.enumerate_adapters(backends) {
+            let info = adapter.get_info();
+            let surface_supported = compatible_surface
+                .as_ref()
+                .is_none_or(|surface| adapter.is_surface_supported(surface));
+            let limits = adapter.limits();
+            let compute_capable = is_compute_capable_adapter(&adapter);
+
             tracing::info!(
                 target: "hydrolysis::gpu",
                 context,
                 adapter = ?info,
-                "skipping software/noop adapter because fallback adapter was not requested"
+                surface_supported,
+                compute_capable,
+                max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
+                "hydrolysis adapter candidate"
             );
-            continue;
+
+            if !surface_supported {
+                continue;
+            }
+
+            inspected_adapters.push(format!(
+                "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
+                info.name,
+                info.backend,
+                info.device_type,
+                compute_capable,
+                limits.max_compute_workgroups_per_dimension
+            ));
+
+            if info.device_type == wgpu::DeviceType::Cpu || info.backend == wgpu::Backend::Noop {
+                tracing::info!(
+                    target: "hydrolysis::gpu",
+                    context,
+                    adapter = ?info,
+                    "skipping software/noop adapter because fallback adapter was not requested"
+                );
+                continue;
+            }
+
+            if !compute_capable {
+                continue;
+            }
+
+            let preference = AdapterPreference::for_info(&info);
+            match &best_candidate {
+                Some((best_preference, _)) if *best_preference <= preference => {}
+                _ => best_candidate = Some((preference, adapter)),
+            }
         }
 
-        if !compute_capable {
-            continue;
-        }
-
-        let preference = AdapterPreference::for_info(&info);
-        match &best_candidate {
-            Some((best_preference, _)) if *best_preference <= preference => {}
-            _ => best_candidate = Some((preference, adapter)),
-        }
-    }
-
-    let (_, adapter) = best_candidate.unwrap_or_else(|| {
-        if inspected_adapters.is_empty() {
-            panic!(
-                "{context}: failed to find a surface-compatible wgpu adapter for requested backends {:?}. \
+        let (_, adapter) = best_candidate.unwrap_or_else(|| {
+            if inspected_adapters.is_empty() {
+                panic!(
+                    "{context}: failed to find a surface-compatible wgpu adapter for requested backends {:?}. \
 Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.",
-                backends
-            );
-        }
+                    backends
+                );
+            }
 
-        panic!(
-            "{context}: failed to find a compute-capable modern adapter. \
+            panic!(
+                "{context}: failed to find a compute-capable modern adapter. \
 Surface-compatible adapters inspected: {}. \
 Set WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 to explicitly allow software fallback adapters for diagnostics.",
-            inspected_adapters.join("; ")
-        );
-    });
+                inspected_adapters.join("; ")
+            );
+        });
 
-    log_selected_adapter(context, &adapter);
-    adapter
+        log_selected_adapter(context, &adapter);
+        adapter
+    }
 }
 
 fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
