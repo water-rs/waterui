@@ -26,6 +26,7 @@ use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
 
+use crate::engine::{MaterialTheme, WidgetTheme};
 use crate::env::{parse_bool_env, parse_positive_u64_env};
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
@@ -43,6 +44,10 @@ fn install_native_component_hooks(env: &mut Environment) {
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
+}
+
+fn install_widget_theme(env: &mut Environment) {
+    env.insert(Box::new(MaterialTheme::new()) as Box<dyn WidgetTheme>);
 }
 
 fn install_window_manager(env: &mut Environment, pending_windows: Rc<RefCell<Vec<Window>>>) {
@@ -949,6 +954,7 @@ impl HeadlessRuntime {
         init_main_thread_executors();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         install_native_component_hooks(&mut env);
+        install_widget_theme(&mut env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -1059,6 +1065,7 @@ pub fn run(app: App) {
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
+    install_widget_theme(&mut env);
     install_window_manager(&mut env, Rc::clone(&pending_window_queue));
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui_core::ViewRenderer::new(
@@ -1131,7 +1138,7 @@ mod web_runner {
     use web_sys::Response;
 
     use crate::platform::{BrowserWindow, PlatformWindow};
-    use crate::renderer::HydrolysisRenderer;
+    use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
     use crate::runner::{
         RenderDiagnosticsConfig, RuntimeWindow, handle_input_events, render_window,
     };
@@ -1196,7 +1203,7 @@ mod web_runner {
         );
 
         let mut default_family_ids = Vec::new();
-        let state = renderer.dispatcher_mut().state_mut();
+        let state = renderer.state_mut();
         for font in manifest.fonts {
             let font_path = format!("fonts/{}", font.file_name);
             let font_data = fetch_bytes(&font_path).await;
@@ -1341,7 +1348,7 @@ mod web_runner {
             let _ =
                 try_init_local_executor(waterui::task::monitored_local_executor(local_executor));
 
-            let (windows, env) = app.into_parts();
+            let (windows, _menu_bar, env) = app.into_parts();
             let mut windows = windows.into_iter();
             let window = windows
                 .next()
@@ -1354,6 +1361,8 @@ mod web_runner {
             let mut env = env;
             let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
             super::install_native_component_hooks(&mut env);
+            super::install_widget_theme(&mut env);
+            env.insert(HydrolysisTextContextMenuMode::Overlay);
             env.insert(waterui_core::ViewRenderer::new(
                 crate::view_renderer::HydrolysisViewRenderer::default(),
             ));
@@ -1418,6 +1427,7 @@ mod winit_runner {
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+    #[cfg(any(wayland_platform, docsrs))]
     use winit::platform::wayland::EventLoopExtWayland;
     use winit::window::{Window as NativeWindow, WindowId};
 
@@ -1425,7 +1435,10 @@ mod winit_runner {
     use crate::renderer::{
         HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
     };
-    use crate::runner::{RenderDiagnosticsConfig, RuntimeWindow, render_window};
+    use crate::runner::{
+        RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
+        render_window,
+    };
 
     #[derive(Debug)]
     enum RunnerEvent {
@@ -1483,11 +1496,22 @@ mod winit_runner {
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
-        env.insert(if event_loop.is_wayland() {
-            HydrolysisTextContextMenuMode::Overlay
-        } else {
-            HydrolysisTextContextMenuMode::NativeWindow
-        });
+        let text_context_menu_mode = {
+            #[cfg(any(wayland_platform, docsrs))]
+            {
+                if event_loop.is_wayland() {
+                    HydrolysisTextContextMenuMode::Overlay
+                } else {
+                    HydrolysisTextContextMenuMode::NativeWindow
+                }
+            }
+            #[cfg(not(any(wayland_platform, docsrs)))]
+            {
+                HydrolysisTextContextMenuMode::NativeWindow
+            }
+        };
+        env.insert(text_context_menu_mode);
+        super::install_widget_theme(&mut env);
         env.insert(waterui::window::WindowManager::new({
             let pending_window_queue = Rc::clone(&pending_window_queue);
             let event_proxy = event_proxy.clone();

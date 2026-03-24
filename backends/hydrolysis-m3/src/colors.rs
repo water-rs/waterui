@@ -1,0 +1,24 @@
+use vello::peniko::Color;
+
+pub(crate) const SURFACE_SUBTLE: Color = Color::new([0.93, 0.93, 0.95, 1.0]);
+pub(crate) const SURFACE_DEFAULT: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
+pub(crate) const SURFACE_MUTED: Color = Color::new([0.98, 0.98, 0.99, 1.0]);
+pub(crate) const OUTLINE_SUBTLE: Color = Color::new([0.8, 0.82, 0.87, 1.0]);
+pub(crate) const OUTLINE_DEFAULT: Color = Color::new([0.75, 0.75, 0.78, 1.0]);
+pub(crate) const OUTLINE_STRONG: Color = Color::new([0.73, 0.74, 0.78, 1.0]);
+pub(crate) const FOREGROUND_STRONG: Color = Color::new([0.2, 0.2, 0.22, 1.0]);
+pub(crate) const FOREGROUND_MUTED: Color = Color::new([0.45, 0.47, 0.52, 1.0]);
+pub(crate) const ACCENT: Color = Color::new([0.2, 0.45, 0.9, 1.0]);
+pub(crate) const ACCENT_STRONG: Color = Color::new([0.15, 0.35, 0.75, 1.0]);
+pub(crate) const ACCENT_FILL: Color = Color::new([0.20392157, 0.53333336, 0.94509804, 1.0]);
+pub(crate) const ACCENT_SELECTION: Color = Color::new([0.88, 0.92, 0.99, 1.0]);
+pub(crate) const ACCENT_TRACK_OFF: Color = Color::new([0.86, 0.86, 0.88, 1.0]);
+pub(crate) const TOGGLE_OUTLINE_OFF: Color = Color::new([0.7, 0.72, 0.76, 1.0]);
+pub(crate) const TOGGLE_OUTLINE_ON: Color = Color::new([0.16, 0.34, 0.72, 1.0]);
+pub(crate) const RADIO_OUTLINE_OFF: Color = Color::new([0.65, 0.67, 0.72, 1.0]);
+pub(crate) const THUMB_OUTLINE: Color = Color::new([0.7, 0.73, 0.78, 1.0]);
+pub(crate) const THUMB_OUTLINE_SOFT: Color = Color::new([0.76, 0.78, 0.82, 1.0]);
+pub(crate) const DESTRUCTIVE: Color = Color::new([0.91, 0.25, 0.2, 1.0]);
+pub(crate) const SCROLL_INDICATOR: Color = Color::new([0.4, 0.4, 0.4, 0.55]);
+pub(crate) const ROW_EVEN: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
+pub(crate) const ROW_ODD: Color = Color::new([0.985, 0.985, 0.99, 1.0]);
