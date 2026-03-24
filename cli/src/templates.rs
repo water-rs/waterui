@@ -8,12 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use askama::Template;
+
 const WATERUI_VERSION: &str = "0.2";
 const WATERUI_FFI_VERSION: &str = "0.2";
 const WATERUI_HYDROLYSIS_VERSION: &str = "0.1";
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
+
+use crate::project_types::{BundleIdentifier, CrateName, RustIdent};
 
 /// Normalize a path to use forward slashes for config files (Cargo.toml, Xcode projects, etc.)
 /// This is necessary because Windows uses backslashes but these config files expect forward slashes.
@@ -35,6 +39,30 @@ mod embedded {
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndroidPermissionTemplateEntry {
+    pub name: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IosPermissionTemplateEntry {
+    pub plist_key: &'static str,
+    pub description: String,
+}
+
+impl IosPermissionTemplateEntry {
+    #[must_use]
+    pub fn escaped_description(&self) -> String {
+        self.description.replace('"', "\\\"")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontRegistrationTemplateEntry {
+    pub family_name: String,
+    pub file_name: String,
+}
+
 /// Context for rendering templates with type-safe substitutions.
 #[derive(Debug, Clone)]
 pub struct TemplateContext {
@@ -43,9 +71,9 @@ pub struct TemplateContext {
     /// The application name for file/folder naming (e.g., "`MyApp`")
     pub app_name: String,
     /// The Rust crate name (e.g., "`my_app`")
-    pub crate_name: String,
+    pub crate_name: CrateName,
     /// The bundle identifier (e.g., "com.example.myapp")
-    pub bundle_identifier: String,
+    pub bundle_identifier: BundleIdentifier,
     /// The author name
     pub author: String,
     /// Path to the Android backend (relative or absolute)
@@ -61,9 +89,9 @@ pub struct TemplateContext {
     /// Absolute path to the user project root when scaffolding generated backend projects.
     pub project_root_path: Option<PathBuf>,
     /// Android permissions to include in the manifest (e.g., "internet", "camera")
-    pub android_permissions: Vec<String>,
+    pub android_permissions: Vec<AndroidPermissionTemplateEntry>,
     /// iOS permissions to include in Info.plist (e.g., "microphone", "camera")
-    pub ios_permissions: Vec<(String, String)>,
+    pub ios_permissions: Vec<IosPermissionTemplateEntry>,
     /// Whether to build as an accessory (headless) app on macOS.
     pub accessory: bool,
     /// Preview runtime fingerprint inserted into preview support app templates.
@@ -77,13 +105,13 @@ impl TemplateContext {
     #[must_use]
     pub fn for_create_options(
         options: &crate::project::CreateOptions,
-        crate_name: impl Into<String>,
+        crate_name: CrateName,
     ) -> Self {
         let waterui_path = options.waterui_path.clone();
         Self {
             app_display_name: options.name.clone(),
             app_name: options.name.replace(' ', ""),
-            crate_name: crate_name.into(),
+            crate_name,
             bundle_identifier: options.bundle_identifier.clone(),
             author: options.author.clone(),
             android_backend_path: waterui_path
@@ -105,13 +133,13 @@ impl TemplateContext {
     #[must_use]
     pub fn for_project_manifest(
         manifest: &crate::project::Manifest,
-        crate_name: impl Into<String>,
+        crate_name: CrateName,
         app_name: impl Into<String>,
     ) -> Self {
         Self {
             app_display_name: manifest.package.name.clone(),
             app_name: app_name.into(),
-            crate_name: crate_name.into(),
+            crate_name,
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             android_backend_path: None,
@@ -132,8 +160,8 @@ impl TemplateContext {
     pub fn for_support_playground(
         app_display_name: impl Into<String>,
         app_name: impl Into<String>,
-        crate_name: impl Into<String>,
-        bundle_identifier: impl Into<String>,
+        crate_name: CrateName,
+        bundle_identifier: BundleIdentifier,
         waterui_path: PathBuf,
         accessory: bool,
         preview_runtime_fingerprint: Option<String>,
@@ -142,8 +170,8 @@ impl TemplateContext {
         Self {
             app_display_name: app_display_name.into(),
             app_name: app_name.into(),
-            crate_name: crate_name.into(),
-            bundle_identifier: bundle_identifier.into(),
+            crate_name,
+            bundle_identifier,
             author: String::new(),
             android_backend_path,
             use_remote_dev_backend: false,
@@ -181,93 +209,60 @@ impl TemplateContext {
 
     /// Set Android permissions for template rendering.
     #[must_use]
-    pub fn with_android_permissions(mut self, permissions: Vec<String>) -> Self {
+    pub fn with_android_permissions(mut self, permissions: Vec<AndroidPermissionTemplateEntry>) -> Self {
         self.android_permissions = permissions;
         self
     }
 
     /// Set iOS permissions for template rendering.
     #[must_use]
-    pub fn with_ios_permissions(mut self, permissions: Vec<(String, String)>) -> Self {
+    pub fn with_ios_permissions(mut self, permissions: Vec<IosPermissionTemplateEntry>) -> Self {
         self.ios_permissions = permissions;
         self
     }
 
-    /// Render a template string by replacing all placeholders.
     #[must_use]
-    pub fn render(&self, template: &str) -> String {
-        // Android namespace must be a valid Java package name (no hyphens)
-        let android_namespace = self.bundle_identifier.replace('-', "_");
+    pub fn crate_name_ident(&self) -> RustIdent {
+        self.crate_name.rust_ident()
+    }
 
-        // Rust identifier form of crate name (hyphens -> underscores)
-        let crate_name_ident = self.crate_name.replace('-', "_");
-        let android_backend_path = if self.use_remote_dev_backend {
-            String::new()
-        } else {
-            self.compute_android_backend_path().unwrap_or_else(|| {
-                panic!(
-                    "TemplateContext missing local Android backend path: \
+    #[must_use]
+    pub fn android_package_name(&self) -> String {
+        self.bundle_identifier
+            .android_package_name()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .to_string()
+    }
+
+    #[must_use]
+    pub fn android_backend_path(&self) -> String {
+        if self.use_remote_dev_backend {
+            return String::new();
+        }
+
+        self.compute_android_backend_path().unwrap_or_else(|| {
+            panic!(
+                "TemplateContext missing local Android backend path: \
 use_remote_dev_backend=false requires waterui_path or android_backend_path"
-                )
-            })
-        };
+            )
+        })
+    }
 
-        template
-            .replace("__APP_DISPLAY_NAME__", &self.app_display_name)
-            .replace("__APP_NAME__", &self.app_name)
-            .replace("__CRATE_NAME_IDENT__", &crate_name_ident)
-            .replace("__CRATE_NAME__", &self.crate_name)
-            .replace("__ANDROID_NAMESPACE__", &android_namespace)
-            .replace("__BUNDLE_IDENTIFIER__", &self.bundle_identifier)
-            .replace("__AUTHOR__", &self.author)
-            .replace("__ANDROID_BACKEND_PATH__", &android_backend_path)
-            .replace(
-                "__USE_REMOTE_DEV_BACKEND__",
-                if self.use_remote_dev_backend {
-                    "true"
-                } else {
-                    "false"
-                },
-            )
-            .replace(
-                "__SWIFT_PACKAGE_REFERENCE_ENTRY__",
-                &self.swift_package_reference_entry(),
-            )
-            .replace(
-                "__SWIFT_PACKAGE_REFERENCE_SECTION__",
-                &self.swift_package_reference_section(),
-            )
-            .replace("__IOS_PERMISSION_KEYS__", &self.ios_permissions_plist())
-            .replace("__ANDROID_PERMISSIONS__", &self.android_permissions_xml())
-            .replace(
-                "__PROJECT_ROOT_RELATIVE_PATH__",
-                &self.project_root_relative_path(),
-            )
-            .replace(
-                "__IS_ACCESSORY__",
-                if self.accessory { "true" } else { "false" },
-            )
-            .replace(
-                "__MACOS_LSUIELEMENT__",
-                if self.accessory { "YES" } else { "NO" },
-            )
-            .replace(
-                "__PREVIEW_RUNTIME_FINGERPRINT__",
-                self.preview_runtime_fingerprint
-                    .as_deref()
-                    .unwrap_or_default(),
-            )
-            .replace(
-                "__IS_PLAYGROUND__",
-                if self.package_type == crate::project::PackageType::Playground {
-                    "true"
-                } else {
-                    "false"
-                },
-            )
-            .replace("__FFI_EXPORT__", "")
-            // Font entries are populated during packaging, not creation - use empty default
-            .replace("__FONT_ENTRIES__", "")
+    #[must_use]
+    pub fn is_playground(&self) -> bool {
+        self.package_type == crate::project::PackageType::Playground
+    }
+
+    #[must_use]
+    pub const fn macos_lsuielement(&self) -> &'static str {
+        if self.accessory { "YES" } else { "NO" }
+    }
+
+    #[must_use]
+    pub fn preview_runtime_fingerprint(&self) -> &str {
+        self.preview_runtime_fingerprint
+            .as_deref()
+            .unwrap_or_default()
     }
 
     /// Transform a path by replacing "`AppName`" with the actual app name.
@@ -385,65 +380,6 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
         (0..depth).map(|_| "..").collect::<Vec<_>>().join("/")
     }
 
-    /// Generate iOS Info.plist permission keys for Xcode build settings.
-    fn ios_permissions_plist(&self) -> String {
-        if self.ios_permissions.is_empty() {
-            return String::new();
-        }
-
-        self.ios_permissions
-            .iter()
-            .filter_map(|(perm, desc)| {
-                let plist_key = match perm.to_lowercase().as_str() {
-                    "microphone" => "INFOPLIST_KEY_NSMicrophoneUsageDescription",
-                    "camera" => "INFOPLIST_KEY_NSCameraUsageDescription",
-                    "location" => "INFOPLIST_KEY_NSLocationWhenInUseUsageDescription",
-                    "photo_library" => "INFOPLIST_KEY_NSPhotoLibraryUsageDescription",
-                    "contacts" => "INFOPLIST_KEY_NSContactsUsageDescription",
-                    "calendars" => "INFOPLIST_KEY_NSCalendarsUsageDescription",
-                    "bluetooth" => "INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription",
-                    _ => return None, // Unknown permission, skip
-                };
-                // Escape double quotes in description
-                let escaped_desc = desc.replace('"', "\\\"");
-                Some(format!(
-                    "                                {plist_key} = \"{escaped_desc}\";"
-                ))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Generate Android permission XML entries for the manifest.
-    fn android_permissions_xml(&self) -> String {
-        if self.android_permissions.is_empty() {
-            return String::new();
-        }
-
-        self.android_permissions
-            .iter()
-            .map(|perm| {
-                let android_perm = match perm.to_lowercase().as_str() {
-                    "internet" => "android.permission.INTERNET",
-                    "camera" => "android.permission.CAMERA",
-                    "microphone" => "android.permission.RECORD_AUDIO",
-                    "location" => "android.permission.ACCESS_FINE_LOCATION",
-                    "coarse_location" => "android.permission.ACCESS_COARSE_LOCATION",
-                    "storage" => "android.permission.READ_EXTERNAL_STORAGE",
-                    "write_storage" => "android.permission.WRITE_EXTERNAL_STORAGE",
-                    "bluetooth" => "android.permission.BLUETOOTH",
-                    "bluetooth_admin" => "android.permission.BLUETOOTH_ADMIN",
-                    "vibrate" => "android.permission.VIBRATE",
-                    "wake_lock" => "android.permission.WAKE_LOCK",
-                    // Allow raw Android permission names
-                    other => return format!("    <uses-permission android:name=\"{other}\" />"),
-                };
-                format!("    <uses-permission android:name=\"{android_perm}\" />")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// Generate the `XCode` package reference entry line for the project file.
     fn swift_package_reference_entry(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
@@ -498,9 +434,123 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateNamespace {
+    Apple,
+    Android,
+    Ffi,
+    Gtk4,
+    Hydrolysis,
+    Inspector,
+    Preview,
+    Root,
+}
+
+impl TemplateNamespace {
+    const fn scaffold_template_prefix(self) -> &'static str {
+        match self {
+            Self::Apple => "src/templates/apple",
+            Self::Android => "src/templates/android",
+            Self::Ffi => "src/templates/ffi",
+            Self::Gtk4 => "src/templates/gtk4",
+            Self::Hydrolysis => "src/templates/hydrolysis",
+            Self::Inspector => "src/templates/inspector",
+            Self::Preview => "src/templates/preview",
+            Self::Root => "src/templates",
+        }
+    }
+}
+
+fn scaffold_template_dispatch_path(namespace: TemplateNamespace, relative_path: &Path) -> String {
+    let relative_path = normalize_path_for_config(relative_path);
+    if relative_path.starts_with("src/templates/") {
+        return relative_path;
+    }
+    format!(
+        "{}/{relative_path}",
+        namespace.scaffold_template_prefix()
+    )
+}
+
+macro_rules! define_scaffold_templates {
+    ($($name:ident => ($namespace:ident, $path:literal)),* $(,)?) => {
+        $(
+            #[derive(Template)]
+            #[template(path = $path, escape = "none")]
+            struct $name<'a> {
+                ctx: &'a TemplateContext,
+            }
+        )*
+
+        fn render_scaffold_template(
+            namespace: TemplateNamespace,
+            relative_path: &Path,
+            content: &str,
+            ctx: &TemplateContext,
+        ) -> io::Result<String> {
+            let display_path = relative_path.to_string_lossy();
+            let dispatch_path = scaffold_template_dispatch_path(namespace, relative_path);
+            match dispatch_path.as_str() {
+                "src/templates/apple/AppName/WaterUIFonts.swift.tpl" => {
+                    let empty_font_entries: &[FontRegistrationTemplateEntry] = &[];
+                    ScaffoldAppleFontTemplate {
+                        font_entries: empty_font_entries,
+                    }
+                    .render()
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Failed to render template {display_path}: {error}"),
+                        )
+                    })
+                }
+                $(
+                    $path => $name { ctx }
+                        .render()
+                        .map_err(|error| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Failed to render template {display_path}: {error}"),
+                            )
+                        }),
+                )*
+                _ => Ok(content.to_string()),
+            }
+        }
+    };
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl", escape = "none")]
+struct ScaffoldAppleFontTemplate<'a> {
+    font_entries: &'a [FontRegistrationTemplateEntry],
+}
+
+define_scaffold_templates! {
+    AppleProjectTemplate => (Apple, "src/templates/apple/AppName.xcodeproj/project.pbxproj.tpl"),
+    AppleAppTemplate => (Apple, "src/templates/apple/AppName/AppNameApp.swift.tpl"),
+    AppleBuildScriptTemplate => (Apple, "src/templates/apple/build-rust.sh.tpl"),
+    AndroidGradleAppTemplate => (Android, "src/templates/android/app/build.gradle.kts.tpl"),
+    AndroidManifestTemplate => (Android, "src/templates/android/app/src/main/AndroidManifest.xml.tpl"),
+    AndroidMainActivityTemplate => (Android, "src/templates/android/app/src/main/java/MainActivity.kt.tpl"),
+    AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
+    AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
+    FfiLibTemplate => (Ffi, "src/templates/ffi/src/lib.rs.tpl"),
+    Gtk4MainTemplate => (Gtk4, "src/templates/gtk4/src/main.rs.tpl"),
+    HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
+    HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
+    HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
+    HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
+    PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TemplateContext, embedded, normalize_path_for_config};
+    use super::{
+        TemplateContext, TemplateNamespace, embedded, normalize_path_for_config,
+        render_scaffold_template,
+    };
+    use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
 
     fn ctx(
@@ -512,8 +562,9 @@ mod tests {
         TemplateContext {
             app_display_name: String::new(),
             app_name: String::new(),
-            crate_name: String::new(),
-            bundle_identifier: "com.example.test".to_string(),
+            crate_name: CrateName::try_from("waterui_test").expect("test crate name must be valid"),
+            bundle_identifier: BundleIdentifier::try_from("com.example.test")
+                .expect("test bundle identifier must be valid"),
             author: String::new(),
             android_backend_path: None,
             use_remote_dev_backend: waterui_path.is_none(),
@@ -536,8 +587,9 @@ mod tests {
         TemplateContext::for_support_playground(
             "WaterUIApp",
             "WaterUIApp",
-            "waterui_app",
-            "dev.waterui.playground",
+            CrateName::try_from("waterui_app").expect("test crate name must be valid"),
+            BundleIdentifier::try_from("dev.waterui.playground")
+                .expect("test bundle identifier must be valid"),
             PathBuf::from("../.."),
             false,
             None,
@@ -637,7 +689,13 @@ mod tests {
             .contents_utf8()
             .expect("android manifest template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("android manifest render");
 
         assert!(rendered.contains("android:resizeableActivity=\"true\""));
         assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
@@ -655,7 +713,13 @@ mod tests {
             .contents_utf8()
             .expect("apple project template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName.xcodeproj/project.pbxproj.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("apple project render");
 
         assert!(
             rendered.contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]\" = audio;")
@@ -675,7 +739,13 @@ mod tests {
             .contents_utf8()
             .expect("android main activity template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/java/MainActivity.kt.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("android activity render");
 
         assert!(rendered.contains(
             "import dev.waterui.android.runtime.notifyVideoPictureInPictureUserLeaveHint"
@@ -693,7 +763,13 @@ mod tests {
             .contents_utf8()
             .expect("android manifest template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/src/main/AndroidManifest.xml.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("playground android manifest render");
 
         assert!(rendered.contains("android:resizeableActivity=\"true\""));
         assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
@@ -708,7 +784,13 @@ mod tests {
             .contents_utf8()
             .expect("apple project template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("AppName.xcodeproj/project.pbxproj.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("playground apple project render");
 
         assert!(
             rendered.contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]\" = audio;")
@@ -728,7 +810,13 @@ mod tests {
             .contents_utf8()
             .expect("apple build script template must be utf-8");
 
-        let rendered = ctx.render(template);
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Apple,
+            std::path::Path::new("build-rust.sh.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("playground apple build script render");
 
         assert!(rendered.contains("playground support app is managed by water run/package"));
         assert!(rendered.contains("if [ \"true\" = \"true\" ]; then"));
@@ -737,6 +825,7 @@ mod tests {
 
 /// Scaffold a directory from embedded templates (non-recursive, uses stack).
 async fn scaffold_dir(
+    namespace: TemplateNamespace,
     embedded_dir: &Dir<'_>,
     base_dir: &Path,
     ctx: &TemplateContext,
@@ -777,7 +866,7 @@ async fn scaffold_dir(
                 let content = file
                     .contents_utf8()
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
-                let rendered = ctx.render(content);
+                let rendered = render_scaffold_template(namespace, relative_path, content, ctx)?;
                 fs::write(&full_dest, rendered).await?;
             } else {
                 // Binary file - copy as-is
@@ -935,7 +1024,7 @@ async fn write_native_backend_bin_cargo_toml(
     }
 
     manifest.dependencies.insert(
-        ctx.crate_name.clone(),
+        ctx.crate_name.to_string(),
         Dependency::Detailed(Box::new(DependencyDetail {
             path: Some(ctx.project_root_relative_path()),
             ..Default::default()
@@ -996,7 +1085,7 @@ fn dependency_version(version: &str) -> SupportDependencyValue {
 
 /// Apple backend templates.
 pub mod apple {
-    use super::{Path, TemplateContext, embedded, fs, io, scaffold_dir};
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir};
 
     /// Write all Apple templates to the given directory.
     ///
@@ -1004,7 +1093,7 @@ pub mod apple {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        scaffold_dir(&embedded::APPLE, base_dir, ctx).await?;
+        scaffold_dir(TemplateNamespace::Apple, &embedded::APPLE, base_dir, ctx).await?;
 
         // Make build-rust.sh executable
         #[cfg(unix)]
@@ -1026,14 +1115,17 @@ pub mod apple {
 pub mod android {
     use crate::android::toolchain::AndroidSdk;
 
-    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
+    use super::{
+        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
+        scaffold_dir,
+    };
 
     /// Write all Android templates to the given directory.
     ///
     /// # Errors
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        scaffold_dir(&embedded::ANDROID, base_dir, ctx).await?;
+        scaffold_dir(TemplateNamespace::Android, &embedded::ANDROID, base_dir, ctx).await?;
 
         // Make gradlew executable
         #[cfg(unix)]
@@ -1068,7 +1160,7 @@ pub mod android {
 pub mod gtk4 {
     use super::{
         NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
+        TemplateNamespace, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
     };
 
     const WATERUI_GTK_VERSION: &str = "0.1";
@@ -1087,7 +1179,7 @@ pub mod gtk4 {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
 
         // Scaffold remaining template files (main.rs, etc.)
-        scaffold_dir(&embedded::GTK4, base_dir, ctx).await
+        scaffold_dir(TemplateNamespace::Gtk4, &embedded::GTK4, base_dir, ctx).await
     }
 
     /// Generate GTK4 Cargo.toml programmatically using cargo_toml crate.
@@ -1110,8 +1202,8 @@ pub mod gtk4 {
 pub mod hydrolysis {
     use super::{
         NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, compute_native_backend_dependency_path,
-        embedded, fs, io, scaffold_dir,
+        TemplateNamespace, WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
     };
 
     /// Write all hydrolysis templates to the given directory.
@@ -1125,7 +1217,7 @@ pub mod hydrolysis {
         package_name: &str,
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
-        scaffold_dir(&embedded::HYDROLYSIS, base_dir, ctx).await
+        scaffold_dir(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, base_dir, ctx).await
     }
 
     async fn generate_cargo_toml(
@@ -1221,7 +1313,7 @@ pub mod hydrolysis {
 
         let mut dependencies = BTreeMap::new();
         dependencies.insert(
-            ctx.crate_name.clone(),
+            ctx.crate_name.to_string(),
             DependencyValue::Detailed(DependencyDetail {
                 version: None,
                 path: Some(ctx.project_root_relative_path()),
@@ -1349,7 +1441,7 @@ pub mod ffi {
 
     use super::{
         NativeBackendDependencyPathKind, Path, TemplateContext, WATERUI_FFI_VERSION,
-        WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
+        TemplateNamespace, WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
         normalize_path_for_config, scaffold_dir,
     };
 
@@ -1364,7 +1456,7 @@ pub mod ffi {
         package_name: &str,
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
-        scaffold_dir(&embedded::FFI, base_dir, ctx).await
+        scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await
     }
 
     async fn generate_cargo_toml(
@@ -1388,7 +1480,7 @@ pub mod ffi {
         });
 
         manifest.dependencies.insert(
-            ctx.crate_name.clone(),
+            ctx.crate_name.to_string(),
             Dependency::Detailed(Box::new(DependencyDetail {
                 path: Some(ctx.project_root_relative_path()),
                 ..Default::default()
@@ -1445,7 +1537,10 @@ pub mod ffi {
 pub mod root {
     use crate::templates::WATERUI_VERSION;
 
-    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config};
+    use super::{
+        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
+        render_scaffold_template,
+    };
 
     /// Root template files (only .tpl files at the root level, excluding Cargo.toml).
     static ROOT_TEMPLATES: &[&str] = &["lib.rs.tpl", ".gitignore.tpl"];
@@ -1477,7 +1572,12 @@ pub mod root {
                 let content = file
                     .contents_utf8()
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
-                let rendered = ctx.render(content);
+                let rendered = render_scaffold_template(
+                    TemplateNamespace::Root,
+                    Path::new(template_name),
+                    content,
+                    ctx,
+                )?;
                 fs::write(&dest_path, rendered).await?;
             }
         }
@@ -1583,7 +1683,7 @@ pub mod root {
 
         let manifest = CargoManifest {
             package: PackageSection {
-                name: ctx.crate_name.clone(),
+                name: ctx.crate_name.to_string(),
                 version: "0.1.0".to_string(),
                 edition: "2024".to_string(),
                 authors: vec![ctx.author.clone()],
@@ -1612,8 +1712,8 @@ pub mod preview {
     use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
 
     use super::{
-        Path, TemplateContext, dependency_path, dependency_version, embedded, io, scaffold_dir,
-        write_support_cargo_toml,
+        Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
+        io, scaffold_dir, write_support_cargo_toml,
     };
 
     const WATERUI_PREVIEW_VERSION: &str = "0.1";
@@ -1647,7 +1747,7 @@ pub mod preview {
         generate_cargo_toml(base_dir, ctx).await?;
 
         // Scaffold remaining template files (lib.rs)
-        scaffold_dir(&embedded::PREVIEW, base_dir, ctx).await
+        scaffold_dir(TemplateNamespace::Preview, &embedded::PREVIEW, base_dir, ctx).await
     }
 
     /// Generate preview app Cargo.toml programmatically.
@@ -1680,15 +1780,15 @@ pub mod preview {
                 dependency_version(WATERUI_PREVIEW_VERSION),
             );
         }
-        write_support_cargo_toml(base_dir, &ctx.crate_name, dependencies).await
+        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
     }
 }
 
 /// Inspector app templates.
 pub mod inspector {
     use super::{
-        Path, TemplateContext, dependency_path, dependency_version, embedded, io, scaffold_dir,
-        write_support_cargo_toml,
+        Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
+        io, scaffold_dir, write_support_cargo_toml,
     };
 
     /// Hash of embedded inspector template files.
@@ -1717,7 +1817,7 @@ pub mod inspector {
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx).await?;
-        scaffold_dir(&embedded::INSPECTOR, base_dir, ctx).await
+        scaffold_dir(TemplateNamespace::Inspector, &embedded::INSPECTOR, base_dir, ctx).await
     }
 
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
@@ -1754,6 +1854,6 @@ pub mod inspector {
         dependencies.insert("smol".to_string(), dependency_version("2.0.2"));
         dependencies.insert("futures-lite".to_string(), dependency_version("2.6"));
 
-        write_support_cargo_toml(base_dir, &ctx.crate_name, dependencies).await
+        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
     }
 }

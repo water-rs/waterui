@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-__ANDROID_PERMISSIONS__
+{% for permission in ctx.android_permissions %}
+    <uses-permission android:name="{{ permission.name }}" />
+{% endfor %}
 
     <application
         android:allowBackup="true"

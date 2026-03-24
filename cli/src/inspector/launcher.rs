@@ -199,7 +199,10 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
 
     let options = CreateOptions {
         name: "WaterUI Inspector".to_string(),
-        bundle_identifier: "dev.waterui.inspector".to_string(),
+        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+            "dev.waterui.inspector",
+        )
+        .expect("inspector support bundle identifier must be valid"),
         package_type: PackageType::Playground,
         waterui_path: Some(waterui_path.clone()),
         author: String::new(),
@@ -216,8 +219,9 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
     let ctx = TemplateContext::for_support_playground(
         "WaterUI Inspector",
         "WaterUIInspector",
-        project.crate_name().to_string(),
-        "dev.waterui.inspector",
+        project.crate_name().clone(),
+        crate::project_types::BundleIdentifier::try_from("dev.waterui.inspector")
+            .expect("inspector support bundle identifier must be valid"),
         waterui_path,
         false,
         None,

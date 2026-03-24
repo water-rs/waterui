@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
 use futures::FutureExt as _;
 use smol::{
@@ -38,10 +39,14 @@ const HYDROLYSIS_INIT_HINT: &str = "initialize hydrolysis backend on macOS, Linu
 
 const HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE: &str =
     include_str!("../templates/hydrolysis/web/bootstrap.js.tpl");
-const HYDROLYSIS_WEB_INDEX_TEMPLATE: &str =
-    include_str!("../templates/hydrolysis/web/index.html.tpl");
 const HYDROLYSIS_WEB_STYLE_TEMPLATE: &str =
     include_str!("../templates/hydrolysis/web/style.css.tpl");
+
+#[derive(Template)]
+#[template(path = "src/templates/hydrolysis/web/index.html.tpl", escape = "none")]
+struct HydrolysisWebIndexTemplate<'a> {
+    ctx: &'a TemplateContext,
+}
 
 /// Build hydrolysis binary for the host platform.
 pub async fn build_hydrolysis(
@@ -146,7 +151,7 @@ pub fn built_hydrolysis_binary_path(project: &Project, profile: &str) -> eyre::R
     let binary_path = if cfg!(windows) {
         target_dir.join(format!("{binary_name}.exe"))
     } else {
-        target_dir.join(&binary_name)
+        target_dir.join(binary_name.as_ref())
     };
     if binary_path.exists() {
         return Ok(binary_path);
@@ -470,24 +475,21 @@ async fn write_hydrolysis_web_shell(project: &Project, site_root: &Path) -> eyre
         .chars()
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
-    let ctx =
-        TemplateContext::for_project_manifest(project.manifest(), project.crate_name(), app_name);
+    let ctx = TemplateContext::for_project_manifest(
+        project.manifest(),
+        project.crate_name().clone(),
+        app_name,
+    );
 
     fs::write(
         site_root.join("index.html"),
-        ctx.render(HYDROLYSIS_WEB_INDEX_TEMPLATE),
+        HydrolysisWebIndexTemplate { ctx: &ctx }
+            .render()
+            .map_err(|error| eyre::eyre!("Failed to render hydrolysis index template: {error}"))?,
     )
     .await?;
-    fs::write(
-        site_root.join("bootstrap.js"),
-        ctx.render(HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE),
-    )
-    .await?;
-    fs::write(
-        site_root.join("style.css"),
-        ctx.render(HYDROLYSIS_WEB_STYLE_TEMPLATE),
-    )
-    .await?;
+    fs::write(site_root.join("bootstrap.js"), HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE).await?;
+    fs::write(site_root.join("style.css"), HYDROLYSIS_WEB_STYLE_TEMPLATE).await?;
     Ok(())
 }
 

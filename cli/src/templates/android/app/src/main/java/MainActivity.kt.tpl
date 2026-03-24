@@ -1,4 +1,4 @@
-package __BUNDLE_IDENTIFIER__
+package {{ ctx.android_package_name() }}
 
 import android.content.Intent
 import android.os.Bundle

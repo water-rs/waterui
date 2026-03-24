@@ -17,6 +17,7 @@ pub mod macos_bundle;
 pub mod platform;
 pub mod preview;
 pub mod project;
+pub mod project_types;
 pub(crate) mod runtime_compat;
 pub(crate) mod runtime_fingerprint;
 pub(crate) mod support_app;
