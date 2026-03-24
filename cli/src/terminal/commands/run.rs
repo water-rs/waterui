@@ -403,7 +403,8 @@ pub async fn run(args: Args) -> Result<()> {
         }
     }
 
-    // Playground mode keeps generated backends in `.water`; regenerate managed backend glue when needed.
+    // Playground mode keeps generated backends in the global build cache; regenerate managed
+    // backend glue when needed.
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
             let needs_reinit = project.gtk4_backend().is_none()

@@ -50,12 +50,13 @@ pub struct Args {
     #[arg(long, default_value = ".")]
     path: PathBuf,
 
-    /// Recursively find all valid WaterUI projects under `--path` and clean each project's `.water` and `target` directories.
+    /// Recursively find all valid WaterUI projects under `--path` and clean each playground
+    /// project's managed build cache plus each app project's Cargo target directory.
     #[arg(short = 'r', long)]
     recursive: bool,
 
-    /// Clean the global playground project cache under `~/.water/project_cache`.
-    #[arg(long, visible_alias = "project-cache")]
+    /// Clean the global managed build cache under `~/.water/build_cache`.
+    #[arg(long)]
     global_cache: bool,
 
     /// Skip confirmation prompt in recursive mode.
@@ -71,17 +72,17 @@ pub async fn run(args: Args) -> Result<()> {
         }
         if args.backend != TargetBackend::All {
             warn!(
-                "Ignoring `--backend {:?}` when cleaning the global playground cache",
+                "Ignoring `--backend {:?}` when cleaning the global build cache",
                 args.backend
             );
         }
         if args.path != PathBuf::from(".") {
             warn!(
-                "Ignoring `--path {}` when cleaning the global playground cache",
+                "Ignoring `--path {}` when cleaning the global build cache",
                 args.path.display()
             );
         }
-        return clean_global_playground_cache(args.yes).await;
+        return clean_global_build_cache(args.yes).await;
     }
 
     let root_path = crate::project_path::canonicalize(&args.path)?;
@@ -90,7 +91,7 @@ pub async fn run(args: Args) -> Result<()> {
         ensure_recursive_root_is_directory(&root_path)?;
         if args.backend != TargetBackend::All {
             warn!(
-                "Ignoring `--backend {:?}` in recursive mode; cleaning project cache directories only",
+                "Ignoring `--backend {:?}` in recursive mode; cleaning discovered cache directories only",
                 args.backend
             );
         }
@@ -147,19 +148,16 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-async fn clean_global_playground_cache(yes: bool) -> Result<()> {
-    let cache_root = water_dir::playground_cache_root()?;
-    clean_global_playground_cache_root(cache_root, yes).await
+async fn clean_global_build_cache(yes: bool) -> Result<()> {
+    let cache_root = water_dir::build_cache_root().await?;
+    clean_global_build_cache_root(cache_root, yes).await
 }
 
-async fn clean_global_playground_cache_root(cache_root: PathBuf, yes: bool) -> Result<()> {
-    header!("Cleaning global playground cache...");
+async fn clean_global_build_cache_root(cache_root: PathBuf, yes: bool) -> Result<()> {
+    header!("Cleaning global build cache...");
 
     if !path_exists(&cache_root).await {
-        note!(
-            "No global playground cache found at {}",
-            cache_root.display()
-        );
+        note!("No global build cache found at {}", cache_root.display());
         return Ok(());
     }
 
@@ -167,26 +165,23 @@ async fn clean_global_playground_cache_root(cache_root: PathBuf, yes: bool) -> R
     if !yes {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
-                "Delete the global playground cache at {}?",
+                "Delete the global build cache at {}?",
                 cache_root.display()
             ))
             .default(false)
             .interact()?;
         if !confirmed {
-            warn!("Cancelled global playground cache clean");
+            warn!("Cancelled global build cache clean");
             return Ok(());
         }
     }
 
-    remove_global_playground_cache_root(cache_root.clone()).await?;
-    success!(
-        "Removed global playground cache at {}",
-        cache_root.display()
-    );
+    remove_global_build_cache_root(cache_root.clone()).await?;
+    success!("Removed global build cache at {}", cache_root.display());
     Ok(())
 }
 
-async fn remove_global_playground_cache_root(cache_root: PathBuf) -> Result<bool> {
+async fn remove_global_build_cache_root(cache_root: PathBuf) -> Result<bool> {
     if !path_exists(&cache_root).await {
         return Ok(false);
     }
@@ -195,7 +190,7 @@ async fn remove_global_playground_cache_root(cache_root: PathBuf) -> Result<bool
 }
 
 async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
-    header!("Recursively cleaning `.water` and `target` directories...");
+    header!("Recursively cleaning managed build caches and target directories...");
 
     let spinner = shell::spinner("Scanning for WaterUI projects...");
     let cache_plan = CachePlan::discover(root).await?;
@@ -326,28 +321,28 @@ async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Result<Vec<
 }
 
 async fn discover_project_cache_dirs(project_root: PathBuf) -> Result<BTreeSet<PathBuf>> {
-    let mut cache_dirs = BTreeSet::from([managed_project_cache_dir(&project_root).await?]);
-    match resolve_target_dir(project_root.clone()).await {
-        Ok(target_dir) => {
-            cache_dirs.insert(target_dir);
-        }
-        Err(error) => warn!(
-            "Skipping target cache discovery for {}: {}",
-            project_root.display(),
-            error
-        ),
-    }
-    Ok(cache_dirs)
-}
-
-async fn managed_project_cache_dir(project_root: &Path) -> Result<PathBuf> {
     let manifest = Manifest::open(project_root.join("Water.toml"))
         .await
         .map_err(eyre::Report::from)?;
+
+    let mut cache_dirs = BTreeSet::new();
     match manifest.package.package_type {
-        PackageType::Playground => water_dir::playground_cache_dir(project_root),
-        PackageType::App => Ok(project_root.join(".water")),
+        PackageType::Playground => {
+            cache_dirs.insert(water_dir::project_build_cache_dir(&project_root).await?);
+        }
+        PackageType::App => match resolve_target_dir(project_root.clone()).await {
+            Ok(target_dir) => {
+                cache_dirs.insert(target_dir);
+            }
+            Err(error) => warn!(
+                "Skipping target cache discovery for {}: {}",
+                project_root.display(),
+                error
+            ),
+        },
     }
+
+    Ok(cache_dirs)
 }
 
 async fn resolve_target_dir(
@@ -505,7 +500,7 @@ mod tests {
 
     use super::{
         collapse_nested_cache_dirs, discover_projects, ensure_recursive_confirmation_mode,
-        ensure_recursive_root_is_directory, remove_global_playground_cache_root, should_skip_dir,
+        ensure_recursive_root_is_directory, remove_global_build_cache_root, should_skip_dir,
     };
     use waterui_cli::project::{Manifest, Package, PackageType};
 
@@ -523,10 +518,16 @@ mod tests {
         let root = Path::new("/tmp/waterui-clean-test");
         let collapsed = collapse_nested_cache_dirs(vec![
             root.join("target/debug"),
-            root.join(".water"),
+            root.join("Users/demo/managed_backends"),
             root.join("target"),
         ]);
-        assert_eq!(collapsed, vec![root.join(".water"), root.join("target")]);
+        assert_eq!(
+            collapsed,
+            vec![
+                root.join("target"),
+                root.join("Users/demo/managed_backends")
+            ]
+        );
     }
 
     #[test]
@@ -565,17 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn clean_global_playground_cache_removes_cache_root() {
+    fn clean_global_build_cache_removes_cache_root() {
         let temp = tempdir().expect("tempdir");
         let project = temp.path().join("project");
         write_manifest(&project, "demo");
-        let cache_root = temp.path().join("project_cache");
+        let cache_root = temp.path().join("build_cache");
         let project_cache_dir = cache_root.join("demo");
         fs::create_dir_all(&project_cache_dir).expect("create project cache");
         fs::write(project_cache_dir.join("marker"), b"cache").expect("write marker");
 
         assert!(
-            block_on(remove_global_playground_cache_root(cache_root.clone()))
+            block_on(remove_global_build_cache_root(cache_root.clone()))
                 .expect("remove global cache")
         );
 

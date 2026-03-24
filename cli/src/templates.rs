@@ -279,7 +279,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
 
     /// Compute the relative path from the backend project to a `WaterUI` backend.
     ///
-    /// This accounts for the project being in a subdirectory (e.g., `.water/android`).
+    /// This accounts for the project being in a generated backend subdirectory.
     fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
         let waterui_path = self.waterui_path.as_ref()?;
 
@@ -316,8 +316,8 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             return Some(normalize_path_for_config(&relative_path));
         }
 
-        // Count how many levels deep the project is from the project root
-        // Default is 1 level (e.g., "android"), playground uses 2 levels (e.g., ".water/android")
+        // Count how many levels deep the project is from the project root.
+        // Default is 1 level (e.g., "android"), generated playground backends may be deeper.
         let project_depth = self
             .backend_project_path
             .as_ref()
@@ -353,7 +353,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// Compute the relative path from the backend project directory to the project root.
     ///
     /// For a backend at `apple/`, returns `..` (go up 1 level).
-    /// For a backend at `.water/apple/`, returns `../..` (go up 2 levels).
+    /// For a backend at `managed_backends/apple/`, returns `../..` (go up 2 levels).
     fn project_root_relative_path(&self) -> String {
         if let Some(backend_project_path) = self
             .backend_project_path
@@ -542,14 +542,14 @@ mod tests {
             false,
             None,
         )
-        .with_backend_project_path(PathBuf::from(".water/apple"))
+        .with_backend_project_path(PathBuf::from("managed_backends/apple"))
     }
 
     #[test]
     fn relative_waterui_path_produces_clean_relative_backend_path() {
         let ctx = ctx(
             Some(PathBuf::from("../..")),
-            Some(PathBuf::from(".water/apple")),
+            Some(PathBuf::from("managed_backends/apple")),
             None,
             crate::project::PackageType::App,
         );
@@ -596,9 +596,11 @@ mod tests {
             PathBuf::from("/Users/lexo/demo")
         };
         let backend_project_path = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\.water\project_cache\abc123\apple")
+            PathBuf::from(
+                r"C:\Users\lexo\.water\build_cache\drive-C\Users\lexo\demo\managed_backends\apple",
+            )
         } else {
-            PathBuf::from("/Users/lexo/.water/project_cache/abc123/apple")
+            PathBuf::from("/Users/lexo/.water/build_cache/Users/lexo/demo/managed_backends/apple")
         };
 
         let ctx = ctx(
