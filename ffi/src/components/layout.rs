@@ -6,6 +6,7 @@ use waterui_layout::{
     container::{FixedContainer, LazyContainer},
     measure_layout,
     scroll::Axis,
+    stack::{HStackLayout, VStackLayout},
 };
 
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
@@ -56,6 +57,48 @@ impl IntoFFI for LazyContainer {
             contents: contents.into_ffi(),
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WuiLazyStackAxis {
+    Unsupported = 0,
+    Vertical = 1,
+    Horizontal = 2,
+}
+
+#[derive(Clone, Copy)]
+struct LazyStackDescriptor {
+    axis: WuiLazyStackAxis,
+    spacing: f32,
+    horizontal_alignment: WuiHorizontalAlignment,
+    vertical_alignment: WuiVerticalAlignment,
+}
+
+fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
+    let layout_any = layout as &dyn core::any::Any;
+    if let Some(vstack) = layout_any.downcast_ref::<VStackLayout>() {
+        return Some(LazyStackDescriptor {
+            axis: WuiLazyStackAxis::Vertical,
+            spacing: vstack.spacing,
+            horizontal_alignment: vstack.alignment.into_ffi(),
+            vertical_alignment: VerticalAlignment::Center.into_ffi(),
+        });
+    }
+    if let Some(hstack) = layout_any.downcast_ref::<HStackLayout>() {
+        return Some(LazyStackDescriptor {
+            axis: WuiLazyStackAxis::Horizontal,
+            spacing: hstack.spacing,
+            horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
+            vertical_alignment: hstack.alignment.into_ffi(),
+        });
+    }
+    None
+}
+
+fn required_lazy_stack_descriptor(layout: &dyn Layout) -> LazyStackDescriptor {
+    lazy_stack_descriptor(layout)
+        .unwrap_or_else(|| panic!("waterui_layout_lazy_stack_* called for unsupported layout"))
 }
 
 // ============================================================================
@@ -503,6 +546,36 @@ pub unsafe extern "C" fn waterui_layout_place(
     rects.into_ffi()
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(layout: *mut WuiLayout) -> WuiLazyStackAxis {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    lazy_stack_descriptor(layout)
+        .map(|descriptor| descriptor.axis)
+        .unwrap_or(WuiLazyStackAxis::Unsupported)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_lazy_stack_spacing(layout: *mut WuiLayout) -> f32 {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    required_lazy_stack_descriptor(layout).spacing
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_lazy_stack_horizontal_alignment(
+    layout: *mut WuiLayout,
+) -> WuiHorizontalAlignment {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    required_lazy_stack_descriptor(layout).horizontal_alignment
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_lazy_stack_vertical_alignment(
+    layout: *mut WuiLayout,
+) -> WuiVerticalAlignment {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    required_lazy_stack_descriptor(layout).vertical_alignment
+}
+
 // ============================================================================
 // ScrollView
 // ============================================================================
@@ -533,3 +606,50 @@ impl IntoFFI for ScrollView {
 }
 
 ffi_view!(ScrollView, WuiScrollView, scroll_view);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_layout::stack::{HStackLayout, VStackLayout};
+
+    fn with_layout(layout: impl Layout + 'static, f: impl FnOnce(*mut WuiLayout)) {
+        let mut layout = WuiLayout(Box::new(layout));
+        f(&mut layout as *mut WuiLayout);
+    }
+
+    #[test]
+    fn lazy_stack_queries_report_vstack_configuration() {
+        with_layout(
+            VStackLayout {
+                alignment: HorizontalAlignment::Trailing,
+                spacing: 12.0,
+            },
+            |layout| unsafe {
+                assert_eq!(waterui_layout_lazy_stack_axis(layout), WuiLazyStackAxis::Vertical);
+                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 12.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_horizontal_alignment(layout),
+                    WuiHorizontalAlignment::Trailing
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn lazy_stack_queries_report_hstack_configuration() {
+        with_layout(
+            HStackLayout {
+                alignment: VerticalAlignment::Bottom,
+                spacing: 7.0,
+            },
+            |layout| unsafe {
+                assert_eq!(waterui_layout_lazy_stack_axis(layout), WuiLazyStackAxis::Horizontal);
+                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 7.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_vertical_alignment(layout),
+                    WuiVerticalAlignment::Bottom
+                );
+            },
+        );
+    }
+}
