@@ -16,7 +16,7 @@ dependencyResolutionManagement {
         maven { url = uri("https://dl.google.com/dl/android/maven2/") }
         mavenCentral()
         // Add Maven repository for dev dependencies if using remote dev mode
-        if (__USE_REMOTE_DEV_BACKEND__) {
+        if ({{ ctx.use_remote_dev_backend }}) {
             maven {
                 url = uri("https://jitpack.io")
             }
@@ -24,14 +24,14 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "__APP_NAME__"
+rootProject.name = "{{ ctx.app_name }}"
 include(":app")
 
 // Include the Android backend from the specified path
 // For local dev mode: uses waterui repository path directly
 // For release mode: uses copied backend in backends/android
-if (!__USE_REMOTE_DEV_BACKEND__) {
-    includeBuild("__ANDROID_BACKEND_PATH__") {
+if (!{{ ctx.use_remote_dev_backend }}) {
+    includeBuild("{{ ctx.android_backend_path() }}") {
         dependencySubstitution {
             substitute(module("dev.waterui.android:runtime")).using(project(":runtime"))
         }

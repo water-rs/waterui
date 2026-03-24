@@ -1,10 +1,10 @@
-//! Native FFI companion crate for __APP_DISPLAY_NAME__.
+//! Native FFI companion crate for {{ ctx.app_display_name }}.
 
 use waterui::app::App;
 use waterui::env::Environment;
 
 fn app(env: Environment) -> App {
-    __CRATE_NAME_IDENT__::app(env)
+    {{ ctx.crate_name_ident() }}::app(env)
 }
 
 waterui_ffi::export!();

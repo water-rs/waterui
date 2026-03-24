@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use color_eyre::eyre::{Context as _, Result, bail};
 
 use crate::backend::reinit_backend;
@@ -16,7 +17,16 @@ const HYDROLYSIS_PREVIEW_OUTPUT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_OUTPUT";
 const HYDROLYSIS_PREVIEW_WIDTH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_WIDTH";
 const HYDROLYSIS_PREVIEW_HEIGHT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_HEIGHT";
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
-const HYDROLYSIS_PREVIEW_SYMBOL_TEMPLATE: &str = include_str!("hydrolysis_preview_symbol.rs.tpl");
+
+#[derive(Template)]
+#[template(path = "src/preview/hydrolysis_preview_symbol.rs.tpl", escape = "none")]
+struct HydrolysisPreviewSymbolTemplate<'a> {
+    preview_symbol: &'a str,
+    crate_name_ident: &'a str,
+    preview_output_env: &'a str,
+    preview_width_env: &'a str,
+    preview_height_env: &'a str,
+}
 
 /// Render a preview via the managed Hydrolysis backend binary.
 pub async fn render_preview_with_hydrolysis(
@@ -72,13 +82,16 @@ async fn write_preview_symbol_bindings(project: &Project, symbol: &str) -> Resul
         .backend_path::<HydrolysisBackend>()
         .join("src")
         .join("preview_symbol.rs");
-    let crate_name_ident = project.crate_name().replace('-', "_");
-    let rendered = HYDROLYSIS_PREVIEW_SYMBOL_TEMPLATE
-        .replace("__PREVIEW_SYMBOL__", symbol)
-        .replace("__CRATE_NAME_IDENT__", &crate_name_ident)
-        .replace("__PREVIEW_OUTPUT_ENV__", HYDROLYSIS_PREVIEW_OUTPUT_ENV)
-        .replace("__PREVIEW_WIDTH_ENV__", HYDROLYSIS_PREVIEW_WIDTH_ENV)
-        .replace("__PREVIEW_HEIGHT_ENV__", HYDROLYSIS_PREVIEW_HEIGHT_ENV);
+    let crate_name_ident = project.crate_name().rust_ident();
+    let rendered = HydrolysisPreviewSymbolTemplate {
+        preview_symbol: symbol,
+        crate_name_ident: crate_name_ident.as_str(),
+        preview_output_env: HYDROLYSIS_PREVIEW_OUTPUT_ENV,
+        preview_width_env: HYDROLYSIS_PREVIEW_WIDTH_ENV,
+        preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,
+    }
+    .render()
+    .wrap_err("Failed to render hydrolysis preview symbol template")?;
     smol::fs::write(&module_path, rendered)
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;

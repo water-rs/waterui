@@ -502,7 +502,10 @@ mod tests {
         collapse_nested_cache_dirs, discover_projects, ensure_recursive_confirmation_mode,
         ensure_recursive_root_is_directory, remove_global_build_cache_root, should_skip_dir,
     };
-    use waterui_cli::project::{Manifest, Package, PackageType};
+    use waterui_cli::{
+        project::{Manifest, Package, PackageType},
+        project_types::BundleIdentifier,
+    };
 
     #[test]
     fn skip_dir_filters_heavy_dirs() {
@@ -588,7 +591,8 @@ mod tests {
         let manifest = Manifest::new(Package {
             package_type: PackageType::Playground,
             name: name.to_owned(),
-            bundle_identifier: format!("dev.waterui.{name}"),
+            bundle_identifier: BundleIdentifier::try_from(format!("dev.waterui.{name}"))
+                .expect("test bundle identifier must be valid"),
             assets_path: String::from("assets"),
             accessory: false,
         });

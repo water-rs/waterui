@@ -1,4 +1,4 @@
-//! Hydrolysis web entry point for __APP_DISPLAY_NAME__.
+//! Hydrolysis web entry point for {{ ctx.app_display_name }}.
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -9,6 +9,6 @@ use waterui::env::Environment;
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(start)]
 pub fn start() {
-    let app = __CRATE_NAME_IDENT__::app(Environment::new());
+    let app = {{ ctx.crate_name_ident() }}::app(Environment::new());
     hydrolysis::run(app);
 }
