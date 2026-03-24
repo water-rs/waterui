@@ -1,5 +1,6 @@
 pub(crate) mod button;
 pub(crate) mod container;
+pub(crate) mod date_picker;
 pub(crate) mod divider;
 pub(crate) mod dynamic;
 pub(crate) mod graphics;

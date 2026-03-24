@@ -1,7 +1,9 @@
+use jiff::civil::Date;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, View};
+use waterui_form::picker::date::{DatePicker, DatePickerType};
 use waterui_form::picker::{Picker, PickerItem, PickerStyle};
 use waterui_testing::{MountedApp, Role, UiTest};
 
@@ -97,5 +99,63 @@ fn picker_selection_flow() {
     assert!(
         initial.snapshot().changed_pixels(selected.snapshot()) > 0,
         "picker selection should change rendered pixels"
+    );
+}
+
+#[test]
+fn date_picker_accessibility() {
+    let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
+    let selected_date_for_view = selected_date.clone();
+
+    let mut app = mount_view(move || {
+        form_shell(vstack((
+            DatePicker::new(&selected_date_for_view).label(waterui::text!("Event Date")),
+            waterui::text!("selected:{selected_date_for_view}").foreground(Srgb::WHITE),
+        )))
+    });
+
+    let initial = app.capture_snapshot(SUITE, "date-picker-accessibility", "00_initial");
+    assert!(
+        initial.path().is_file(),
+        "date-picker-accessibility: initial snapshot missing"
+    );
+
+    let initial_value = DatePickerType::Date.format_value(selected_date.get().at(0, 0, 0, 0));
+    app.query()
+        .role(Role::COMBOBOX)
+        .value(initial_value.clone())
+        .assert_exists();
+
+    let updated_date = Date::new(2025, 2, 14).unwrap();
+    let updated_value = DatePickerType::Date.format_value(updated_date.at(0, 0, 0, 0));
+    assert!(
+        app.query()
+            .role(Role::COMBOBOX)
+            .value(initial_value)
+            .set_text(updated_value.clone()),
+        "date picker set_text should succeed"
+    );
+    assert_eq!(
+        selected_date.get(),
+        updated_date,
+        "date picker should update binding"
+    );
+    app.query()
+        .role(Role::COMBOBOX)
+        .value(updated_value)
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("selected:2025-02-14")
+        .assert_exists();
+
+    let updated = app.capture_snapshot(SUITE, "date-picker-accessibility", "01_updated");
+    assert!(
+        updated.path().is_file(),
+        "date-picker-accessibility: updated snapshot missing"
+    );
+    assert!(
+        initial.snapshot().changed_pixels(updated.snapshot()) > 0,
+        "date picker update should change rendered pixels"
     );
 }
