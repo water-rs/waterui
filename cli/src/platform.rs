@@ -154,7 +154,6 @@ impl TargetPlatform {
     pub const fn available_backends(&self) -> &[TargetBackend] {
         match self {
             Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
-            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
             Self::IOS
             | Self::IOSSimulator
             | Self::TvOS

@@ -3,13 +3,14 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Result, bail, eyre};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToSnakeCase};
 
 use crate::shell;
 use crate::{header, line, success};
 use waterui_cli::project::{CreateOptions, PackageType, Project};
+use waterui_cli::project_types::BundleIdentifier;
 
 /// Arguments for the create command.
 #[derive(ClapArgs, Debug)]
@@ -161,7 +162,8 @@ pub async fn run(args: Args) -> Result<()> {
         &project_path,
         CreateOptions {
             name: name.clone(),
-            bundle_identifier: bundle_id,
+            bundle_identifier: BundleIdentifier::try_from(bundle_id.as_str())
+                .map_err(|error| eyre!(error))?,
             package_type,
             waterui_path,
             author: whoami::username(),

@@ -99,16 +99,19 @@ impl Backend for AndroidBackend {
         let project_path = default_android_project_path();
 
         // Extract enabled permissions from the manifest
-        let android_permissions: Vec<String> = manifest
+        let android_permissions = manifest
             .permissions
             .iter()
             .filter(|(_, entry)| entry.is_enabled())
-            .map(|(name, _)| name.clone())
+            .filter_map(|(key, _)| {
+                key.android_permission_name()
+                    .map(|name| templates::AndroidPermissionTemplateEntry { name })
+            })
             .collect();
 
         let ctx = TemplateContext::for_project_manifest(
             manifest,
-            project.crate_name().to_string(),
+            project.crate_name().clone(),
             app_name,
         )
         .with_backend_project_path(project.backend_path::<Self>())

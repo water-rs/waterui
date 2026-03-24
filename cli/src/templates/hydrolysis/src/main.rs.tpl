@@ -1,4 +1,4 @@
-//! Hydrolysis entry point for __APP_DISPLAY_NAME__.
+//! Hydrolysis entry point for {{ ctx.app_display_name }}.
 
 #[cfg(feature = "waterui-preview-mode")]
 mod preview_symbol;
@@ -13,6 +13,6 @@ fn main() {
 
 #[cfg(not(feature = "waterui-preview-mode"))]
 fn main() {
-    let app = __CRATE_NAME_IDENT__::app(waterui::configure_environment!(waterui::env::Environment::new()));
+    let app = {{ ctx.crate_name_ident() }}::app(waterui::configure_environment!(waterui::env::Environment::new()));
     hydrolysis::run(app);
 }
