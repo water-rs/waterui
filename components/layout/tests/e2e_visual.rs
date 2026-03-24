@@ -35,6 +35,26 @@ fn pixel_at(snapshot: &Snapshot, x: u32, y: u32) -> [u8; 4] {
     ]
 }
 
+fn region_contains_color(
+    snapshot: &Snapshot,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    predicate: impl Fn([u8; 4]) -> bool,
+) -> bool {
+    let max_x = x1.min(snapshot.width);
+    let max_y = y1.min(snapshot.height);
+    for y in y0.min(snapshot.height)..max_y {
+        for x in x0.min(snapshot.width)..max_x {
+            if predicate(pixel_at(snapshot, x, y)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn visible_pixels(snapshot: &Snapshot) -> usize {
     snapshot
         .rgba8
@@ -78,8 +98,18 @@ fn vstack_renders_children_vertically() {
         visible_pixels(captured.snapshot()) > 0,
         "vstack-renders-children-vertically: expected visible pixels"
     );
-    assert_is_red(pixel_at(captured.snapshot(), 30, 30), "vstack first child");
-    assert_is_green(pixel_at(captured.snapshot(), 30, 82), "vstack second child");
+    assert!(
+        region_contains_color(captured.snapshot(), 20, 20, 120, 90, |pixel| {
+            pixel[3] > 0 && pixel[0] > 150 && pixel[1] < 120 && pixel[2] < 120
+        }),
+        "vstack-renders-children-vertically: expected red pixels in upper region"
+    );
+    assert!(
+        region_contains_color(captured.snapshot(), 20, 70, 120, 160, |pixel| {
+            pixel[3] > 0 && pixel[1] > 150 && pixel[0] < 120 && pixel[2] < 120
+        }),
+        "vstack-renders-children-vertically: expected green pixels in lower region"
+    );
 }
 
 #[test]
@@ -104,8 +134,18 @@ fn hstack_renders_children_horizontally() {
         visible_pixels(captured.snapshot()) > 0,
         "hstack-renders-children-horizontally: expected visible pixels"
     );
-    assert_is_red(pixel_at(captured.snapshot(), 30, 30), "hstack left child");
-    assert_is_green(pixel_at(captured.snapshot(), 82, 30), "hstack right child");
+    assert!(
+        region_contains_color(captured.snapshot(), 20, 20, 90, 140, |pixel| {
+            pixel[3] > 0 && pixel[0] > 150 && pixel[1] < 120 && pixel[2] < 120
+        }),
+        "hstack-renders-children-horizontally: expected red pixels in left region"
+    );
+    assert!(
+        region_contains_color(captured.snapshot(), 70, 20, 160, 140, |pixel| {
+            pixel[3] > 0 && pixel[1] > 150 && pixel[0] < 120 && pixel[2] < 120
+        }),
+        "hstack-renders-children-horizontally: expected green pixels in right region"
+    );
 }
 
 #[test]

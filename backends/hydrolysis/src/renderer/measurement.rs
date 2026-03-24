@@ -1,4 +1,6 @@
 use super::*;
+use waterui_form::picker::PickerStyle;
+use waterui_form::picker::date::DatePickerConfig;
 
 pub(crate) struct TableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -905,6 +907,46 @@ pub(crate) fn measure_slider_intrinsic(
 
 fn resolved_text_styled(text: &Text, env: &Environment) -> StyledStr {
     text.resolve(env).content.get()
+}
+
+pub(crate) fn measure_date_picker_intrinsic(
+    date_picker: &DatePickerConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let label_size = measure_view_intrinsic(&date_picker.label, state, env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let current = date_picker.value.get().clamp(
+        *date_picker.range.start(),
+        *date_picker.range.end(),
+    );
+    let candidates = [
+        date_picker.ty.format_value(*date_picker.range.start()),
+        date_picker.ty.format_value(current),
+        date_picker.ty.format_value(*date_picker.range.end()),
+    ];
+    let mut field_text_width: f64 = 0.0;
+    let mut field_text_height: f64 = 0.0;
+    for candidate in candidates {
+        let size =
+            HydrolysisRenderer::measure_text_intrinsic_size(state, StyledStr::plain(candidate), env);
+        field_text_width = field_text_width.max(f64::from(size.width));
+        field_text_height = field_text_height.max(f64::from(size.height));
+    }
+    let field_width =
+        (field_text_width + metrics.horizontal_inset * 2.0 + metrics.indicator_space)
+            .max(metrics.min_width);
+    let field_height =
+        (field_text_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
+    let width = if has_label {
+        f64::from(label_size.width) + 8.0 + field_width
+    } else {
+        field_width
+    };
+    let height = f64::from(label_size.height).max(field_height);
+    LayoutSize::new(width as f32, height as f32)
 }
 
 pub(crate) fn measure_picker_intrinsic(
