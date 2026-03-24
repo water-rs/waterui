@@ -726,6 +726,57 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'loca
     result_array.into_raw()
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAxis<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    layout_ptr: jlong,
+) -> jint {
+    unsafe {
+        crate::components::layout::waterui_layout_lazy_stack_axis(layout_ptr as *mut WuiLayout)
+            as jint
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSpacing<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    layout_ptr: jlong,
+) -> jfloat {
+    unsafe { crate::components::layout::waterui_layout_lazy_stack_spacing(layout_ptr as *mut WuiLayout) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn
+    Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHorizontalAlignment<'local>(
+        _env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        layout_ptr: jlong,
+    ) -> jint
+{
+    unsafe {
+        crate::components::layout::waterui_layout_lazy_stack_horizontal_alignment(
+            layout_ptr as *mut WuiLayout,
+        ) as jint
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn
+    Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackVerticalAlignment<'local>(
+        _env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        layout_ptr: jlong,
+    ) -> jint
+{
+    unsafe {
+        crate::components::layout::waterui_layout_lazy_stack_vertical_alignment(
+            layout_ptr as *mut WuiLayout,
+        ) as jint
+    }
+}
+
 // ============================================================================
 // Theme Functions
 // ============================================================================
