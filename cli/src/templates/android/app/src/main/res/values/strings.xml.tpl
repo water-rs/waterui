@@ -1,3 +1,3 @@
 <resources>
-    <string name="app_name">__APP_NAME__</string>
+    <string name="app_name">{{ ctx.app_name }}</string>
 </resources>

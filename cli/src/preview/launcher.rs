@@ -527,7 +527,8 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
 
     let options = CreateOptions {
         name: "WaterUI Preview".to_string(),
-        bundle_identifier: "dev.waterui.preview".to_string(),
+        bundle_identifier: crate::project_types::BundleIdentifier::try_from("dev.waterui.preview")
+            .expect("preview support bundle identifier must be valid"),
         package_type: PackageType::Playground,
         waterui_path: Some(waterui_path.clone()),
         author: String::new(),
@@ -546,8 +547,9 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
     let ctx = TemplateContext::for_support_playground(
         "WaterUI Preview",
         "WaterUIPreview",
-        project.crate_name().to_string(),
-        "dev.waterui.preview",
+        project.crate_name().clone(),
+        crate::project_types::BundleIdentifier::try_from("dev.waterui.preview")
+            .expect("preview support bundle identifier must be valid"),
         waterui_path,
         true,
         Some(requirements.runtime_fingerprint.clone()),

@@ -3,9 +3,9 @@
 //! This module provides utility functions for building and packaging Android apps.
 //! These functions are used by `AndroidBackend` to implement the `Backend` trait.
 
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use color_eyre::eyre::{self, bail};
 use smol::{fs, unblock};
 use target_lexicon::{Aarch64Architecture, Architecture, Triple};
@@ -24,6 +24,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    templates::FontRegistrationTemplateEntry,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::copy_file,
 };
@@ -704,9 +705,12 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
     Ok(())
 }
 
-/// Template for WaterUIFonts.kt (in android_dynamic/ to avoid scaffold auto-copy)
-const WATERUI_FONTS_TEMPLATE: &str =
-    include_str!("../templates/android_dynamic/WaterUIFonts.kt.tpl");
+#[derive(Template)]
+#[template(path = "src/templates/android_dynamic/WaterUIFonts.kt.tpl", escape = "none")]
+struct WaterUiFontsKotlinTemplate<'a> {
+    namespace: &'a str,
+    font_entries: &'a [FontRegistrationTemplateEntry],
+}
 
 /// Generate WaterUIFonts.kt file for registering custom fonts.
 async fn generate_font_registration_kotlin(
@@ -715,7 +719,10 @@ async fn generate_font_registration_kotlin(
     java_dir: &Path,
 ) -> eyre::Result<()> {
     // Get the package namespace from the project
-    let namespace = project.bundle_identifier().replace('-', "_");
+    let namespace = project
+        .bundle_identifier()
+        .android_package_name()
+        .map_err(|error| eyre::eyre!("{error}"))?;
 
     // Clean up legacy layout: older CLI versions wrote `WaterUIFonts.kt` directly under
     // `app/src/main/java/` (but still declared the app package), which can cause
@@ -724,28 +731,28 @@ async fn generate_font_registration_kotlin(
     let _ = fs::remove_file(&legacy_path).await;
 
     // Build font entries
-    let mut font_entries = String::new();
-    for font in fonts {
-        let file_name = font
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        writeln!(
-            &mut font_entries,
-            "        fonts[\"{}\"] = Typeface.createFromAsset(context.assets, \"fonts/{}\")",
-            font.name, file_name
-        )
-        .unwrap();
-    }
+    let font_entries = fonts
+        .iter()
+        .map(|font| FontRegistrationTemplateEntry {
+            family_name: font.name.clone(),
+            file_name: font
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect::<Vec<_>>();
 
-    // Render template
-    let content = WATERUI_FONTS_TEMPLATE
-        .replace("__ANDROID_NAMESPACE__", &namespace)
-        .replace("__FONT_ENTRIES__", font_entries.trim_end());
+    let content = WaterUiFontsKotlinTemplate {
+        namespace: namespace.as_str(),
+        font_entries: &font_entries,
+    }
+    .render()
+    .map_err(|error| eyre::eyre!("Failed to render WaterUIFonts.kt template: {error}"))?;
 
     // Create the package directory structure
-    let package_dir = java_dir.join(namespace.replace('.', "/"));
+    let package_dir = java_dir.join(namespace.as_str().replace('.', "/"));
     fs::create_dir_all(&package_dir).await?;
 
     let kotlin_path = package_dir.join("WaterUIFonts.kt");

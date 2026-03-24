@@ -33,7 +33,7 @@ import WaterUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
     private var headlessContext: WuiRootContext?
-    private let isAccessory: Bool = __IS_ACCESSORY__
+    private let isAccessory: Bool = {{ ctx.accessory }}
 
     static func main() {
         let app = NSApplication.shared
@@ -70,7 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "__APP_NAME__"
+        window.title = "{{ ctx.app_name }}"
         window.contentView = WaterUIView(frame: window.contentRect(forFrameRect: window.frame))
         window.center()
         window.makeKeyAndOrderFront(nil)

@@ -81,7 +81,7 @@ impl Backend for Gtk4Backend {
             .collect::<String>();
         let ctx = TemplateContext::for_project_manifest(
             manifest,
-            project.crate_name().to_string(),
+            project.crate_name().clone(),
             app_name,
         )
         .with_backend_project_path(project.backend_path::<Self>())
