@@ -1,28 +1,54 @@
-//! Management of the playground managed backend cache.
+//! Management of the global Water home and per-project managed backend build cache.
 //!
-//! Playground projects store generated backends in a per-project cache under
-//! `~/.water/project_cache/<project-path-hash>/` instead of scattering `.water`
-//! directories into user projects.
+//! Playground projects store generated backends under
+//! `~/.water/build_cache/<absolute-project-path>/managed_backends/` instead of
+//! scattering `.water` directories into user projects.
 
 use std::{
-    path::{Path, PathBuf},
+    ffi::OsStr,
+    path::{Component, Path, PathBuf, Prefix, PrefixComponent},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use color_eyre::eyre::{self, WrapErr};
 use serde::{Deserialize, Serialize};
-use sha2::Digest as _;
 use smol::fs;
-use smol::stream::StreamExt;
 use tracing::{info, warn};
+use walkdir::WalkDir;
 
 /// The CLI commit hash embedded at build time.
 pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 
-const PROJECT_CACHE_DIR_NAME: &str = "project_cache";
-const LEGACY_LOCAL_WATER_DIR_NAME: &str = ".water";
+const BUILD_CACHE_DIR_NAME: &str = "build_cache";
+const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
+const CONFIG_FILE_NAME: &str = "config.toml";
 const METADATA_FILE_NAME: &str = "metadata.toml";
-const STALE_CACHE_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
+const LEGACY_LOCAL_WATER_DIR_NAME: &str = ".water";
+const DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS: u64 = 30;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Global Water CLI configuration persisted to `~/.water/config.toml`.
+pub struct WaterConfig {
+    /// Managed build-cache policy.
+    #[serde(default)]
+    pub build_cache: BuildCacheConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Cleanup policy for the global managed build cache.
+pub struct BuildCacheConfig {
+    /// Remove build-cache entries that have been unused for more than this many days.
+    #[serde(default = "default_build_cache_cleanup_after_unused_days")]
+    pub cleanup_after_unused_days: u64,
+}
+
+impl Default for BuildCacheConfig {
+    fn default() -> Self {
+        Self {
+            cleanup_after_unused_days: default_build_cache_cleanup_after_unused_days(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CacheMetadata {
@@ -31,42 +57,94 @@ struct CacheMetadata {
     last_used_unix_seconds: u64,
 }
 
-/// Return the global root used for playground managed backend caches.
-pub fn playground_cache_root() -> eyre::Result<PathBuf> {
+const fn default_build_cache_cleanup_after_unused_days() -> u64 {
+    DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS
+}
+
+/// Return the Water home directory root at `~/.water`.
+pub fn water_home_dir() -> eyre::Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("Could not determine home directory"))?;
-    Ok(home.join(".water").join(PROJECT_CACHE_DIR_NAME))
+    Ok(home.join(".water"))
 }
 
-/// Return the managed backend cache directory for a playground project.
-pub fn playground_cache_dir(project_root: &Path) -> eyre::Result<PathBuf> {
+/// Ensure `~/.water/config.toml` exists and return the parsed configuration.
+pub async fn ensure_global_config() -> eyre::Result<WaterConfig> {
+    let water_home = water_home_dir()?;
+    ensure_global_config_in(&water_home).await
+}
+
+/// Return the global managed build-cache root at `~/.water/build_cache`.
+pub async fn build_cache_root() -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir()?;
+    let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+    Ok(cache_root)
+}
+
+/// Return the managed build-cache directory for a project.
+pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let cache_root = playground_cache_root()?;
-    Ok(playground_cache_dir_in(&project_root, &cache_root))
+    let cache_root = build_cache_root().await?;
+    Ok(project_build_cache_dir_in(&project_root, &cache_root))
 }
 
-/// Ensure the playground managed backend cache is valid for the current CLI version.
-///
-/// Returns the absolute cache directory path for the project.
-pub async fn ensure_valid(project_root: &Path) -> eyre::Result<PathBuf> {
+/// Ensure the managed build-cache directory exists for a project and return it.
+pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let cache_root = playground_cache_root()?;
-    ensure_valid_in(&project_root, &cache_root).await
+    let water_home = water_home_dir()?;
+    let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+    ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
 
-/// Remove the managed backend cache for a playground project.
-pub async fn remove_playground_cache(project_root: &Path) -> eyre::Result<()> {
+/// Remove the managed build cache for a project.
+pub async fn remove_project_build_cache(project_root: &Path) -> eyre::Result<()> {
     let project_root = canonicalize_project_root(project_root)?;
-    let cache_root = playground_cache_root()?;
-    remove_playground_cache_in(&project_root, &cache_root).await
+    let cache_root = build_cache_root().await?;
+    remove_project_build_cache_in(&project_root, &cache_root).await
 }
 
-async fn ensure_valid_in(project_root: &Path, cache_root: &Path) -> eyre::Result<PathBuf> {
-    cleanup_stale_caches(cache_root, project_root).await?;
-    let water_dir = playground_cache_dir_in(project_root, cache_root);
+async fn resolved_build_cache_root_in(water_home: &Path) -> eyre::Result<(WaterConfig, PathBuf)> {
+    let config = ensure_global_config_in(water_home).await?;
+    let cache_root = water_home.join(BUILD_CACHE_DIR_NAME);
+    fs::create_dir_all(&cache_root)
+        .await
+        .wrap_err_with(|| format!("Failed to create build cache root {}", cache_root.display()))?;
+    Ok((config, cache_root))
+}
+
+async fn ensure_global_config_in(water_home: &Path) -> eyre::Result<WaterConfig> {
+    fs::create_dir_all(water_home)
+        .await
+        .wrap_err_with(|| format!("Failed to create Water home {}", water_home.display()))?;
+
+    let config_path = water_home.join(CONFIG_FILE_NAME);
+    if config_path.exists() {
+        let contents = fs::read_to_string(&config_path)
+            .await
+            .wrap_err_with(|| format!("Failed to read Water config {}", config_path.display()))?;
+        return toml::from_str(&contents)
+            .wrap_err_with(|| format!("Failed to parse Water config {}", config_path.display()));
+    }
+
+    let config = WaterConfig::default();
+    let contents =
+        toml::to_string_pretty(&config).wrap_err("Failed to serialize default Water config")?;
+    fs::write(&config_path, contents)
+        .await
+        .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))?;
+    Ok(config)
+}
+
+async fn ensure_project_build_cache_in(
+    project_root: &Path,
+    cache_root: &Path,
+    config: &WaterConfig,
+) -> eyre::Result<PathBuf> {
+    cleanup_stale_caches(cache_root, project_root, config).await?;
     remove_legacy_local_water_dir(project_root).await?;
 
-    if water_dir.exists() {
-        let should_clean = match read_metadata(&water_dir).await {
+    let cache_dir = project_build_cache_dir_in(project_root, cache_root);
+    if cache_dir.exists() {
+        let should_clean = match read_metadata(&cache_dir).await {
             Ok(metadata) => {
                 metadata.project_root != project_root.display().to_string()
                     || metadata.cli_commit != CLI_COMMIT
@@ -76,16 +154,25 @@ async fn ensure_valid_in(project_root: &Path, cache_root: &Path) -> eyre::Result
 
         if should_clean {
             info!(
-                "Playground managed cache changed shape, cleaning {}",
-                water_dir.display()
+                "Managed build cache changed shape, cleaning {}",
+                cache_dir.display()
             );
-            fs::remove_dir_all(&water_dir).await?;
+            fs::remove_dir_all(&cache_dir).await?;
+            prune_empty_build_cache_ancestors(
+                cache_root,
+                cache_dir
+                    .parent()
+                    .expect("managed build cache dir should always have a parent"),
+            )
+            .await?;
         }
     }
 
-    fs::create_dir_all(&water_dir).await?;
+    fs::create_dir_all(&cache_dir)
+        .await
+        .wrap_err_with(|| format!("Failed to create build cache dir {}", cache_dir.display()))?;
     write_metadata(
-        &water_dir,
+        &cache_dir,
         &CacheMetadata {
             project_root: project_root.display().to_string(),
             cli_commit: CLI_COMMIT.to_string(),
@@ -94,25 +181,75 @@ async fn ensure_valid_in(project_root: &Path, cache_root: &Path) -> eyre::Result
     )
     .await?;
 
-    Ok(water_dir)
+    Ok(cache_dir)
 }
 
-async fn remove_playground_cache_in(project_root: &Path, cache_root: &Path) -> eyre::Result<()> {
-    let water_dir = playground_cache_dir_in(project_root, cache_root);
-    if water_dir.exists() {
-        fs::remove_dir_all(&water_dir).await?;
+async fn remove_project_build_cache_in(project_root: &Path, cache_root: &Path) -> eyre::Result<()> {
+    let cache_dir = project_build_cache_dir_in(project_root, cache_root);
+    if cache_dir.exists() {
+        fs::remove_dir_all(&cache_dir).await?;
+        prune_empty_build_cache_ancestors(
+            cache_root,
+            cache_dir
+                .parent()
+                .expect("managed build cache dir should always have a parent"),
+        )
+        .await?;
     }
     remove_legacy_local_water_dir(project_root).await
 }
 
-fn playground_cache_dir_in(project_root: &Path, cache_root: &Path) -> PathBuf {
-    cache_root.join(project_root_hash(project_root))
+fn project_build_cache_dir_in(project_root: &Path, cache_root: &Path) -> PathBuf {
+    project_cache_container_in(project_root, cache_root).join(MANAGED_BACKENDS_DIR_NAME)
 }
 
-fn project_root_hash(project_root: &Path) -> String {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(project_root.display().to_string().as_bytes());
-    format!("{:x}", hasher.finalize())
+fn project_cache_container_in(project_root: &Path, cache_root: &Path) -> PathBuf {
+    let mut path = cache_root.to_path_buf();
+    for component in project_root.components() {
+        match component {
+            Component::Prefix(prefix) => path.push(normalize_prefix_component(prefix)),
+            Component::RootDir => {}
+            Component::Normal(segment) => path.push(segment),
+            Component::CurDir | Component::ParentDir => {
+                panic!(
+                    "Canonical project root {} must not contain relative path components",
+                    project_root.display()
+                );
+            }
+        }
+    }
+    path
+}
+
+fn normalize_prefix_component(prefix: PrefixComponent<'_>) -> String {
+    match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            format!("drive-{}", char::from(letter).to_ascii_uppercase())
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            format!("unc-{}-{}", sanitize_os_str(server), sanitize_os_str(share))
+        }
+        Prefix::DeviceNS(device) => format!("device-{}", sanitize_os_str(device)),
+        Prefix::Verbatim(component) => format!("verbatim-{}", sanitize_os_str(component)),
+    }
+}
+
+fn sanitize_os_str(value: &OsStr) -> String {
+    let sanitized = value
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        return String::from("empty");
+    }
+    sanitized
 }
 
 fn canonicalize_project_root(project_root: &Path) -> eyre::Result<PathBuf> {
@@ -124,12 +261,12 @@ fn canonicalize_project_root(project_root: &Path) -> eyre::Result<PathBuf> {
     })
 }
 
-fn metadata_path(water_dir: &Path) -> PathBuf {
-    water_dir.join(METADATA_FILE_NAME)
+fn metadata_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(METADATA_FILE_NAME)
 }
 
-async fn read_metadata(water_dir: &Path) -> eyre::Result<CacheMetadata> {
-    let metadata_path = metadata_path(water_dir);
+async fn read_metadata(cache_dir: &Path) -> eyre::Result<CacheMetadata> {
+    let metadata_path = metadata_path(cache_dir);
     let contents = fs::read_to_string(&metadata_path)
         .await
         .wrap_err_with(|| format!("Failed to read cache metadata {}", metadata_path.display()))?;
@@ -137,8 +274,8 @@ async fn read_metadata(water_dir: &Path) -> eyre::Result<CacheMetadata> {
         .wrap_err_with(|| format!("Failed to parse cache metadata {}", metadata_path.display()))
 }
 
-async fn write_metadata(water_dir: &Path, metadata: &CacheMetadata) -> eyre::Result<()> {
-    let metadata_path = metadata_path(water_dir);
+async fn write_metadata(cache_dir: &Path, metadata: &CacheMetadata) -> eyre::Result<()> {
+    let metadata_path = metadata_path(cache_dir);
     let contents = toml::to_string(metadata).wrap_err("Failed to serialize cache metadata")?;
     fs::write(&metadata_path, contents)
         .await
@@ -157,46 +294,107 @@ async fn remove_legacy_local_water_dir(project_root: &Path) -> eyre::Result<()> 
     Ok(())
 }
 
-async fn cleanup_stale_caches(cache_root: &Path, current_project_root: &Path) -> eyre::Result<()> {
+async fn cleanup_stale_caches(
+    cache_root: &Path,
+    current_project_root: &Path,
+    config: &WaterConfig,
+) -> eyre::Result<()> {
     fs::create_dir_all(cache_root).await?;
-    let current_cache_dir = playground_cache_dir_in(current_project_root, cache_root);
-    let now = now_unix_seconds()?;
-    let mut entries = fs::read_dir(cache_root).await?;
 
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type().await?;
-        if !file_type.is_dir() || path == current_cache_dir {
+    let current_cache_dir = project_build_cache_dir_in(current_project_root, cache_root);
+    let max_unused_seconds = config
+        .build_cache
+        .cleanup_after_unused_days
+        .saturating_mul(24 * 60 * 60);
+    let now = now_unix_seconds()?;
+
+    for cache_dir in discover_managed_build_cache_dirs(cache_root).await? {
+        if cache_dir == current_cache_dir {
             continue;
         }
 
-        let should_remove = match read_metadata(&path).await {
+        let should_remove = match read_metadata(&cache_dir).await {
             Ok(metadata) => {
                 let project_root = PathBuf::from(&metadata.project_root);
                 !project_root.exists()
-                    || now.saturating_sub(metadata.last_used_unix_seconds)
-                        > STALE_CACHE_RETENTION_SECS
+                    || now.saturating_sub(metadata.last_used_unix_seconds) > max_unused_seconds
             }
             Err(error) => {
                 warn!(
-                    "Removing stale playground cache with invalid metadata at {}: {error}",
-                    path.display()
+                    "Removing stale build cache with invalid metadata at {}: {error}",
+                    cache_dir.display()
                 );
                 true
             }
         };
 
         if should_remove {
-            if let Err(error) = fs::remove_dir_all(&path).await {
+            if let Err(error) = fs::remove_dir_all(&cache_dir).await {
                 warn!(
-                    "Failed to remove stale playground cache {}: {error}",
-                    path.display()
+                    "Failed to remove stale build cache {}: {error}",
+                    cache_dir.display()
                 );
+                continue;
             }
+            prune_empty_build_cache_ancestors(
+                cache_root,
+                cache_dir
+                    .parent()
+                    .expect("managed build cache dir should always have a parent"),
+            )
+            .await?;
         }
     }
 
+    Ok(())
+}
+
+async fn discover_managed_build_cache_dirs(cache_root: &Path) -> eyre::Result<Vec<PathBuf>> {
+    let cache_root = cache_root.to_path_buf();
+    smol::unblock(move || -> eyre::Result<Vec<PathBuf>> {
+        let mut cache_dirs = Vec::new();
+        for entry in WalkDir::new(&cache_root).follow_links(false) {
+            let entry = entry.map_err(eyre::Report::from)?;
+            if !entry.file_type().is_file() || entry.file_name() != OsStr::new(METADATA_FILE_NAME) {
+                continue;
+            }
+
+            let cache_dir = entry.path().parent().ok_or_else(|| {
+                eyre::eyre!("Cache metadata {} has no parent", entry.path().display())
+            })?;
+            if cache_dir.file_name() != Some(OsStr::new(MANAGED_BACKENDS_DIR_NAME)) {
+                continue;
+            }
+            cache_dirs.push(cache_dir.to_path_buf());
+        }
+        Ok(cache_dirs)
+    })
+    .await
+}
+
+async fn prune_empty_build_cache_ancestors(
+    cache_root: &Path,
+    starting_dir: &Path,
+) -> eyre::Result<()> {
+    let mut current = starting_dir.to_path_buf();
+    while current.starts_with(cache_root) && current != cache_root {
+        match fs::remove_dir(&current).await {
+            Ok(()) => {
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                current = parent.to_path_buf();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                current = parent.to_path_buf();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
@@ -209,36 +407,85 @@ fn now_unix_seconds() -> eyre::Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
 
     use super::{
-        CLI_COMMIT, CacheMetadata, ensure_valid_in, metadata_path, now_unix_seconds,
-        playground_cache_dir_in, remove_playground_cache_in,
+        CLI_COMMIT, WaterConfig, ensure_global_config_in, ensure_project_build_cache_in,
+        metadata_path, now_unix_seconds, project_build_cache_dir_in, remove_project_build_cache_in,
     };
 
     #[test]
-    fn ensure_valid_uses_global_project_cache_dir() {
+    fn ensure_global_config_writes_default_build_cache_policy() {
         smol::block_on(async {
-            let project = tempdir().expect("project dir");
-            let cache_root = tempdir().expect("cache root");
+            let water_home = tempdir().expect("water home");
 
-            let water_dir = ensure_valid_in(project.path(), cache_root.path())
+            let config = ensure_global_config_in(water_home.path())
                 .await
-                .expect("ensure cache");
+                .expect("ensure config");
 
-            assert!(water_dir.starts_with(cache_root.path()));
-            assert_ne!(water_dir, project.path().join(".water"));
-            assert!(water_dir.exists());
+            assert_eq!(
+                config.build_cache.cleanup_after_unused_days,
+                super::DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS
+            );
+            let saved = smol::fs::read_to_string(water_home.path().join("config.toml"))
+                .await
+                .expect("read config");
+            assert!(saved.contains("[build_cache]"));
+            assert!(saved.contains("cleanup_after_unused_days = 30"));
         });
     }
 
     #[test]
-    fn ensure_valid_removes_legacy_local_water_dir() {
+    fn project_build_cache_dir_uses_absolute_project_path_components() {
+        let cache_root = Path::new("/tmp/water-cache-root");
+        let project_root = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\lexo\demo")
+        } else {
+            PathBuf::from("/Users/lexo/demo")
+        };
+
+        let cache_dir = project_build_cache_dir_in(&project_root, cache_root);
+
+        let expected = if cfg!(windows) {
+            cache_root.join("drive-C/Users/lexo/demo/managed_backends")
+        } else {
+            cache_root.join("Users/lexo/demo/managed_backends")
+        };
+        assert_eq!(cache_dir, expected);
+    }
+
+    #[test]
+    fn ensure_project_build_cache_uses_global_build_cache_dir() {
         smol::block_on(async {
             let project = tempdir().expect("project dir");
-            let cache_root = tempdir().expect("cache root");
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
+                .await
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
+
+            let cache_dir = ensure_project_build_cache_in(project.path(), &cache_root, &config)
+                .await
+                .expect("ensure cache");
+
+            assert!(cache_dir.starts_with(&cache_root));
+            assert_ne!(cache_dir, project.path().join(".water"));
+            assert!(cache_dir.ends_with("managed_backends"));
+            assert!(cache_dir.exists());
+        });
+    }
+
+    #[test]
+    fn ensure_project_build_cache_removes_legacy_local_water_dir() {
+        smol::block_on(async {
+            let project = tempdir().expect("project dir");
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
+                .await
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
             let legacy_dir = project.path().join(".water");
             smol::fs::create_dir_all(&legacy_dir)
                 .await
@@ -247,7 +494,7 @@ mod tests {
                 .await
                 .expect("write legacy file");
 
-            ensure_valid_in(project.path(), cache_root.path())
+            ensure_project_build_cache_in(project.path(), &cache_root, &config)
                 .await
                 .expect("ensure cache");
 
@@ -256,34 +503,38 @@ mod tests {
     }
 
     #[test]
-    fn ensure_valid_cleans_cache_when_cli_commit_changes() {
+    fn ensure_project_build_cache_cleans_cache_when_cli_commit_changes() {
         smol::block_on(async {
             let project = tempdir().expect("project dir");
-            let cache_root = tempdir().expect("cache root");
-            let water_dir = playground_cache_dir_in(project.path(), cache_root.path());
-            smol::fs::create_dir_all(&water_dir)
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
+                .await
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
+            let cache_dir = project_build_cache_dir_in(project.path(), &cache_root);
+            smol::fs::create_dir_all(&cache_dir)
                 .await
                 .expect("create cache dir");
-            smol::fs::write(water_dir.join("stale"), b"stale")
+            smol::fs::write(cache_dir.join("stale"), b"stale")
                 .await
                 .expect("write stale file");
-            let stale_metadata = CacheMetadata {
+            let stale_metadata = super::CacheMetadata {
                 project_root: project.path().display().to_string(),
                 cli_commit: String::from("old-commit"),
                 last_used_unix_seconds: 1,
             };
             let stale_contents =
                 toml::to_string(&stale_metadata).expect("serialize stale metadata");
-            smol::fs::write(metadata_path(&water_dir), stale_contents)
+            smol::fs::write(metadata_path(&cache_dir), stale_contents)
                 .await
                 .expect("write stale metadata");
 
-            ensure_valid_in(project.path(), cache_root.path())
+            ensure_project_build_cache_in(project.path(), &cache_root, &config)
                 .await
                 .expect("ensure cache");
 
-            assert!(!water_dir.join("stale").exists());
-            let fresh_metadata = super::read_metadata(&water_dir)
+            assert!(!cache_dir.join("stale").exists());
+            let fresh_metadata = super::read_metadata(&cache_dir)
                 .await
                 .expect("read metadata");
             assert_eq!(fresh_metadata.cli_commit, CLI_COMMIT);
@@ -291,15 +542,17 @@ mod tests {
     }
 
     #[test]
-    fn ensure_valid_cleans_stale_orphaned_caches() {
+    fn ensure_project_build_cache_cleans_stale_orphaned_caches() {
         smol::block_on(async {
             let project = tempdir().expect("project dir");
-            let cache_root = tempdir().expect("cache root");
-            let stale_cache = cache_root.path().join("stale-cache");
+            let water_home = tempdir().expect("water home");
+            let config = WaterConfig::default();
+            let cache_root = water_home.path().join("build_cache");
+            let stale_cache = cache_root.join("definitely/missing/project/managed_backends");
             smol::fs::create_dir_all(&stale_cache)
                 .await
                 .expect("create stale cache");
-            let stale_metadata = CacheMetadata {
+            let stale_metadata = super::CacheMetadata {
                 project_root: Path::new("/definitely/missing/project")
                     .display()
                     .to_string(),
@@ -312,7 +565,7 @@ mod tests {
                 .await
                 .expect("write stale metadata");
 
-            ensure_valid_in(project.path(), cache_root.path())
+            ensure_project_build_cache_in(project.path(), &cache_root, &config)
                 .await
                 .expect("ensure cache");
 
@@ -321,19 +574,32 @@ mod tests {
     }
 
     #[test]
-    fn remove_playground_cache_removes_global_cache_dir() {
+    fn remove_project_build_cache_deletes_only_managed_backends_leaf() {
         smol::block_on(async {
             let project = tempdir().expect("project dir");
-            let cache_root = tempdir().expect("cache root");
-            let water_dir = ensure_valid_in(project.path(), cache_root.path())
+            let child_project = project.path().join("nested/child");
+            smol::fs::create_dir_all(&child_project)
                 .await
-                .expect("ensure cache");
-
-            remove_playground_cache_in(project.path(), cache_root.path())
+                .expect("create child project");
+            let water_home = tempdir().expect("water home");
+            let config = ensure_global_config_in(water_home.path())
                 .await
-                .expect("remove cache");
+                .expect("ensure config");
+            let cache_root = water_home.path().join("build_cache");
 
-            assert!(!water_dir.exists());
+            let parent_cache = ensure_project_build_cache_in(project.path(), &cache_root, &config)
+                .await
+                .expect("ensure parent cache");
+            let child_cache = ensure_project_build_cache_in(&child_project, &cache_root, &config)
+                .await
+                .expect("ensure child cache");
+
+            remove_project_build_cache_in(project.path(), &cache_root)
+                .await
+                .expect("remove parent cache");
+
+            assert!(!parent_cache.exists());
+            assert!(child_cache.exists());
         });
     }
 }
