@@ -105,6 +105,7 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, LocalStateScope, LocalStateStore, Metadata, Native,
     Retain, Str, View, impl_extractor,
 };
+use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor};
@@ -560,6 +561,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<SliderConfig>);
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);
+        $macro!(Native<DatePickerConfig>);
         $macro!(Native<ResolvedTextFieldConfig>);
         $macro!(Native<SecureFieldConfig>);
         $macro!(Native<PickerConfig>);

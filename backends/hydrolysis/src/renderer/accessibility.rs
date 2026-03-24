@@ -6,6 +6,8 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
+#[cfg(feature = "accessibility")]
+use waterui_form::picker::date::{DatePickerType, DateTime};
 
 #[cfg(feature = "accessibility")]
 pub(super) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
@@ -30,6 +32,11 @@ pub(crate) enum AccessibilityActionTarget {
         value: nami::Binding<i32>,
         step: nami::Computed<i32>,
         range: RangeInclusive<i32>,
+    },
+    DatePicker {
+        value: nami::Binding<DateTime>,
+        range: RangeInclusive<DateTime>,
+        ty: DatePickerType,
     },
     TextField {
         value: nami::Binding<StyledStr>,
@@ -349,6 +356,9 @@ impl HydrolysisRenderer {
                     action_data,
                 )
             }
+            AccessibilityActionTarget::DatePicker { value, range, ty } => {
+                handle_accessibility_date_picker_action(&value, &range, ty, action, action_data)
+            }
             AccessibilityActionTarget::TextField { value, line_limit } => {
                 handle_accessibility_text_field_action(
                     self,
@@ -590,6 +600,13 @@ fn transform_accessibility_action_target(
                 range: range.clone(),
             }
         }
+        AccessibilityActionTarget::DatePicker { value, range, ty } => {
+            AccessibilityActionTarget::DatePicker {
+                value: value.clone(),
+                range: range.clone(),
+                ty: *ty,
+            }
+        }
         AccessibilityActionTarget::TextField { value, line_limit } => {
             AccessibilityActionTarget::TextField {
                 value: value.clone(),
@@ -811,6 +828,42 @@ fn handle_accessibility_stepper_action(
     }
     value.set(next);
     true
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_date_picker_action(
+    value: &nami::Binding<DateTime>,
+    range: &RangeInclusive<DateTime>,
+    ty: DatePickerType,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+) -> bool {
+    match action {
+        AccessibilityAction::Click | AccessibilityAction::Focus => true,
+        AccessibilityAction::SetValue => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!("hydrolysis accessibility date picker SetValue requires Value data");
+            };
+            let parsed = ty.parse_value(text.as_ref()).unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis accessibility date picker could not parse value {:?} with format {}: {error}",
+                    text,
+                    ty.format_string(),
+                )
+            });
+            let previous = value.get().clamp(*range.start(), *range.end());
+            let next = parsed.clamp(*range.start(), *range.end());
+            if next == previous {
+                return false;
+            }
+            value.set(next);
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility date picker does not support action {:?}",
+            action
+        ),
+    }
 }
 
 #[cfg(feature = "accessibility")]
