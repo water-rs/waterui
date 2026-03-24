@@ -90,6 +90,8 @@ fn main() -> Result<()> {
     smol::block_on({
         let cancelled = Arc::clone(&cancelled);
         async move {
+            waterui_cli::water_dir::ensure_global_config().await?;
+
             let ctrl_c_future = async {
                 // Poll until cancelled
                 loop {
