@@ -20,6 +20,10 @@ use alloc::string::String;
 use crate::Url;
 use executor_core::spawn_local;
 use futures::StreamExt;
+#[cfg(target_arch = "wasm32")]
+use std::path::Path;
+#[cfg(target_arch = "wasm32")]
+use waterkit_fs::WaterFs;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::{Environment, View};
 use waterui_image::Image;
@@ -147,6 +151,11 @@ async fn fetch_and_decode_streaming(
 ) -> Result<(), String> {
     if url.is_local() {
         let path = url.as_str().to_string();
+        #[cfg(target_arch = "wasm32")]
+        let bytes = WaterFs::read(Path::new(&path))
+            .await
+            .map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "wasm32"))]
         let bytes = blocking::unblock(move || std::fs::read(&path))
             .await
             .map_err(|error| error.to_string())?;
