@@ -1,4 +1,4 @@
-//! Hydrolysis preview runtime for __APP_DISPLAY_NAME__.
+//! Hydrolysis preview runtime for {{ ctx.app_display_name }}.
 
 use std::{env, fs, path::PathBuf};
 

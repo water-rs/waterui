@@ -10,7 +10,7 @@ use tracing::info;
 pub struct Project {
     root: PathBuf,
     manifest: Manifest,
-    crate_name: String,
+    crate_name: CrateName,
     target_dir: PathBuf,
     managed_backends_root: PathBuf,
 }
@@ -138,32 +138,32 @@ impl Project {
 
     /// Get the crate name of the project.
     #[must_use]
-    pub fn crate_name(&self) -> &str {
+    pub fn crate_name(&self) -> &CrateName {
         &self.crate_name
     }
 
     /// Get configured or default FFI crate name for app mode.
     #[must_use]
-    pub fn ffi_crate_name(&self) -> String {
+    pub fn ffi_crate_name(&self) -> CrateName {
         self.app_crate_overrides()
             .and_then(|crates| crates.ffi.clone())
-            .unwrap_or_else(|| format!("{}-ffi", self.crate_name))
+            .unwrap_or_else(|| self.crate_name.with_suffix("ffi"))
     }
 
     /// Get configured or default GTK backend crate name for app mode.
     #[must_use]
-    pub fn gtk_backend_crate_name(&self) -> String {
+    pub fn gtk_backend_crate_name(&self) -> CrateName {
         self.app_crate_overrides()
             .and_then(|crates| crates.gtk.clone())
-            .unwrap_or_else(|| format!("{}-gtk4", self.crate_name))
+            .unwrap_or_else(|| self.crate_name.with_suffix("gtk4"))
     }
 
     /// Get configured or default hydrolysis backend crate name for app mode.
     #[must_use]
-    pub fn hydrolysis_backend_crate_name(&self) -> String {
+    pub fn hydrolysis_backend_crate_name(&self) -> CrateName {
         self.app_crate_overrides()
             .and_then(|crates| crates.hydrolysis.clone())
-            .unwrap_or_else(|| format!("{}-hydrolysis", self.crate_name))
+            .unwrap_or_else(|| self.crate_name.with_suffix("hydrolysis"))
     }
 
     /// Get package type declared in `Water.toml`.
@@ -240,8 +240,8 @@ impl Project {
 
     /// Get the bundle identifier of the project.
     #[must_use]
-    pub const fn bundle_identifier(&self) -> &str {
-        self.manifest.package.bundle_identifier.as_str()
+    pub const fn bundle_identifier(&self) -> &BundleIdentifier {
+        &self.manifest.package.bundle_identifier
     }
 
     /// Get the assets directory path relative to project root.
@@ -362,6 +362,10 @@ pub enum FailToOpenProject {
     #[error("Invalid Cargo.toml: missing crate name")]
     MissingCrateName,
 
+    /// Crate name in Cargo.toml is invalid.
+    #[error("Invalid Cargo.toml crate name: {0}")]
+    InvalidCrateName(String),
+
     /// Project permissions are not allowed in non-playground projects.
     #[error("Project permissions are not allowed in non-playground projects")]
     PermissionsNotAllowedInNonPlayground,
@@ -417,7 +421,7 @@ pub struct CreateOptions {
     /// Application display name (e.g., "Water Example").
     pub name: String,
     /// Bundle identifier (e.g., "com.example.waterexample").
-    pub bundle_identifier: String,
+    pub bundle_identifier: BundleIdentifier,
     /// Package type for the project.
     pub package_type: PackageType,
     /// Path to local `WaterUI` repository for development.
@@ -437,7 +441,7 @@ impl Project {
             .collect::<String>();
         let ctx = TemplateContext::for_project_manifest(
             manifest,
-            self.crate_name().to_string(),
+            self.crate_name().clone(),
             app_name,
         )
         .with_backend_project_path(self.ffi_crate_path())
@@ -489,17 +493,25 @@ impl Project {
             .map_err(FailToCreateProject::CreateDir)?;
 
         // Derive crate name from display name
-        let crate_name = options
-            .name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
+        let crate_name = CrateName::try_from(
+            options
+                .name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>(),
+        )
+        .map_err(|error| {
+            FailToCreateProject::Scaffold(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                error,
+            ))
+        })?;
 
         // Build template context for root files
         let ctx = TemplateContext::for_create_options(&options, crate_name.clone());
@@ -529,7 +541,7 @@ impl Project {
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
-            permissions: HashMap::default(),
+            permissions: BTreeMap::default(),
             app: None,
             theme: None,
         };
@@ -754,7 +766,10 @@ impl Project {
         let crate_name = cargo_manifest
             .package
             .map(|p| p.name)
-            .ok_or(FailToOpenProject::MissingCrateName)?;
+            .ok_or(FailToOpenProject::MissingCrateName)
+            .and_then(|value| {
+                CrateName::try_from(value).map_err(FailToOpenProject::InvalidCrateName)
+            })?;
 
         let is_playground = manifest.package.package_type == PackageType::Playground;
 
@@ -855,7 +870,7 @@ async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::E
 }
 
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -870,6 +885,7 @@ use crate::{
     build::BuildOptions,
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     platform::{PackageOptions, TargetPlatform},
+    project_types::{BundleIdentifier, CrateName, PermissionKey},
     templates::{self, TemplateContext},
     utils::command,
 };
@@ -887,8 +903,8 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
     /// Permission configuration for playground projects.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub permissions: HashMap<String, PermissionEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub permissions: BTreeMap<PermissionKey, PermissionEntry>,
     /// App-only configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<AppConfig>,
@@ -982,7 +998,7 @@ impl Manifest {
             package,
             backends: Backends::default(),
             waterui_path: None,
-            permissions: HashMap::default(),
+            permissions: BTreeMap::default(),
             app: None,
             theme: None,
         }
@@ -1002,13 +1018,13 @@ pub struct AppConfig {
 pub struct AppCrates {
     /// Optional override crate name for generated FFI crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ffi: Option<String>,
+    pub ffi: Option<CrateName>,
     /// Optional override crate name for generated GTK backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gtk: Option<String>,
+    pub gtk: Option<CrateName>,
     /// Optional override crate name for generated hydrolysis backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydrolysis: Option<String>,
+    pub hydrolysis: Option<CrateName>,
 }
 
 /// `[package]` section in `Water.toml`.
@@ -1020,7 +1036,7 @@ pub struct Package {
     /// Human-readable name of the application (e.g., "Water Demo").
     pub name: String,
     /// Bundle identifier for the application (e.g., "com.example.waterdemo").
-    pub bundle_identifier: String,
+    pub bundle_identifier: BundleIdentifier,
     /// Path to assets directory relative to project root. Defaults to "assets".
     #[serde(
         default = "default_assets_path",

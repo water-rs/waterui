@@ -135,7 +135,7 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // The binary name is the GTK4 crate name (project-gtk4)
     let binary_name = project.gtk_backend_crate_name();
 
-    let binary_path = target_dir.join(&binary_name);
+    let binary_path = target_dir.join(binary_name.as_ref());
 
     let final_binary_path = if binary_path.exists() {
         binary_path

@@ -67,5 +67,3 @@ fn main() -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }
-
-__FFI_EXPORT__
