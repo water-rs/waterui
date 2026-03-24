@@ -1,0 +1,22 @@
+[package]
+name = "hydrolysis-m3"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+vello.workspace = true
+waterui = { version = "0.2.1", path = "../..", default-features = false }
+waterui-controls.workspace = true
+waterui-form.workspace = true
+waterui-graphics.workspace = true
+
+[lints]
+workspace = true
