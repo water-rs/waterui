@@ -1,0 +1,963 @@
+use super::*;
+
+pub(crate) struct TableMetrics {
+    pub(crate) column_widths: Vec<f64>,
+    pub(crate) table_width: f64,
+    pub(crate) table_height: f64,
+}
+
+pub(crate) fn table_header_cell_rect(
+    origin_x: f64,
+    origin_y: f64,
+    x_offset: f64,
+    width: f64,
+) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        origin_x + x_offset,
+        origin_y,
+        origin_x + x_offset + width,
+        origin_y + TABLE_HEADER_HEIGHT,
+    )
+}
+
+pub(crate) fn table_data_cell_rect(
+    origin_x: f64,
+    origin_y: f64,
+    x_offset: f64,
+    width: f64,
+    row_index: usize,
+) -> vello::kurbo::Rect {
+    let y0 = origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * row_index as f64;
+    vello::kurbo::Rect::new(
+        origin_x + x_offset,
+        y0,
+        origin_x + x_offset + width,
+        y0 + TABLE_ROW_HEIGHT,
+    )
+}
+
+fn navigation_bar_height(view: &NavigationView) -> f64 {
+    if view.bar.hidden.get() {
+        0.0
+    } else {
+        let base = match view.bar.display_mode {
+            waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+                NAVIGATION_BAR_HEIGHT_AUTOMATIC
+            }
+            waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
+            waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+        };
+        let search_extra = if view.bar.search.is_some() {
+            NAVIGATION_SEARCH_HEIGHT + NAVIGATION_SEARCH_VERTICAL_INSET * 2.0
+        } else {
+            0.0
+        };
+        base + search_extra
+    }
+}
+
+pub(crate) fn navigation_base_bar_height_for_display_mode(
+    display_mode: waterui::navigation::NavigationTitleDisplayMode,
+) -> f64 {
+    match display_mode {
+        waterui::navigation::NavigationTitleDisplayMode::Automatic => {
+            NAVIGATION_BAR_HEIGHT_AUTOMATIC
+        }
+        waterui::navigation::NavigationTitleDisplayMode::Inline => NAVIGATION_BAR_HEIGHT_INLINE,
+        waterui::navigation::NavigationTitleDisplayMode::Large => NAVIGATION_BAR_HEIGHT_LARGE,
+    }
+}
+
+pub(crate) fn split_compact_threshold(sidebar_width: f64) -> f64 {
+    sidebar_width + 360.0
+}
+
+pub(crate) fn measure_view_intrinsic(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    measure_view_dimensions(view, state, env).size
+}
+
+pub(crate) fn measure_view_dimensions(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    measure_view_dimensions_with_proposal(view, ProposalSize::UNSPECIFIED, state, env)
+}
+
+pub(crate) fn measure_view_dimensions_with_proposal(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        return measure_view_dimensions_with_proposal(
+            &metadata.content,
+            proposal,
+            state,
+            &metadata.value,
+        );
+    }
+
+    if let Some(content) = passthrough_content(view) {
+        return measure_view_dimensions_with_proposal(content, proposal, state, env);
+    }
+
+    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Canvas>().is_some() {
+        return ViewDimensions::new(LayoutSize::zero());
+    }
+
+    if let Some(text) = view.downcast_ref::<Str>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            StyledStr::plain(text.clone()),
+            HorizontalAlignment::Leading,
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(text) = view.downcast_ref::<&'static str>() {
+        let body = AnyView::new((*text).body(env));
+        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+    }
+    if let Some(text) = view.downcast_ref::<String>() {
+        let body = AnyView::new(text.clone().body(env));
+        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+    }
+    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
+        let body = AnyView::new(text.clone().body(env));
+        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+    }
+    if let Some(text) = view.downcast_ref::<Text>() {
+        return HydrolysisRenderer::measure_text_dimensions(
+            state,
+            text.resolve(env).content.get(),
+            text.resolve(env).paragraph_alignment.get(),
+            env,
+            proposal.width,
+            None,
+        );
+    }
+    if let Some(label) = view.downcast_ref::<SemanticLabel>() {
+        let body_env = env.clone();
+        let body = AnyView::new(label.clone().body(&body_env));
+        return measure_view_dimensions_with_proposal(&body, proposal, state, &body_env);
+    }
+
+    if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, env) {
+        return dimensions;
+    }
+
+    if view.downcast_ref::<Divider>().is_some() {
+        return ViewDimensions::new(LayoutSize::new(1.0, 1.0));
+    }
+
+    panic!(
+        "hydrolysis dimensions estimation encountered unsupported view type {}",
+        view.name()
+    );
+}
+
+pub(crate) fn measure_layout_dimensions<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> ViewDimensions {
+    let state = RefCell::new(state);
+    let mut subviews = Vec::new();
+    for child in children {
+        subviews.push(HydroSubview::from_view(child, &state, env));
+    }
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    let size = layout.size_that_fits(proposal, &refs);
+    let bounds = LayoutRect::from_size(size);
+    let child_rects = layout.place(bounds, &refs);
+    let placed_subviews: Vec<PlacedSubview<'_>> = subviews
+        .iter()
+        .zip(child_rects.iter().copied())
+        .map(|(view, frame)| PlacedSubview::new(view as &dyn SubView, frame))
+        .collect();
+
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal_keys = Vec::new();
+    let mut vertical_keys = Vec::new();
+
+    for alignment in layout.explicit_horizontal_alignments() {
+        if !horizontal_keys.contains(&alignment) {
+            horizontal_keys.push(alignment);
+        }
+    }
+    for alignment in layout.explicit_vertical_alignments() {
+        if !vertical_keys.contains(&alignment) {
+            vertical_keys.push(alignment);
+        }
+    }
+
+    for child in &placed_subviews {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal_keys.contains(&alignment) {
+                horizontal_keys.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical_keys.contains(&alignment) {
+                vertical_keys.push(alignment);
+            }
+        }
+    }
+
+    for alignment in horizontal_keys {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed_subviews) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical_keys {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed_subviews) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+
+    dimensions
+}
+
+impl HydrolysisRenderer {
+    pub(crate) fn render_text_config(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        text: Native<TextConfig>,
+        env: &Environment,
+    ) {
+        let text = text.into_inner();
+        let styled = renderer.read_signal(&text.content);
+        let alignment = renderer.read_signal(&text.paragraph_alignment);
+        Self::render_styled_text(
+            &mut renderer.state,
+            &mut renderer.scene,
+            ctx,
+            styled,
+            alignment,
+            env,
+        );
+    }
+
+    pub(crate) fn render_styled_text(
+        state: &mut HydroState,
+        scene: &mut vello::Scene,
+        ctx: RenderContext,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+    ) {
+        Self::render_styled_text_limited(state, scene, ctx, styled, alignment, env, None);
+    }
+
+    pub(crate) fn render_styled_text_limited(
+        state: &mut HydroState,
+        scene: &mut vello::Scene,
+        ctx: RenderContext,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        max_lines: Option<usize>,
+    ) {
+        let layout = Self::build_text_layout(
+            state,
+            styled,
+            alignment,
+            env,
+            Some(ctx.bounds.width() as f32),
+        );
+        Self::draw_text_layout(scene, ctx, &layout, max_lines);
+    }
+
+    fn draw_text_layout(
+        scene: &mut vello::Scene,
+        ctx: RenderContext,
+        layout: &parley::Layout<[u8; 4]>,
+        max_lines: Option<usize>,
+    ) {
+        if layout.is_empty() {
+            return;
+        }
+        let text_transform =
+            ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let style = glyph_run.style();
+                    let brush = rgba8_to_peniko(style.brush);
+                    let normalized_coords: Vec<vello::NormalizedCoord> =
+                        run.normalized_coords().to_vec();
+
+                    let mut run_x = glyph_run.offset();
+                    let run_y = glyph_run.baseline();
+                    let glyphs = glyph_run.glyphs().map(move |glyph| {
+                        let x = run_x + glyph.x;
+                        let y = run_y - glyph.y;
+                        run_x += glyph.advance;
+                        vello::Glyph { id: glyph.id, x, y }
+                    });
+
+                    scene
+                        .draw_glyphs(run.font())
+                        .brush(brush)
+                        .transform(text_transform)
+                        .font_size(run.font_size())
+                        .normalized_coords(&normalized_coords)
+                        .draw(vello::peniko::Fill::NonZero, glyphs);
+                }
+            }
+        }
+    }
+
+    fn default_text_brush(env: &Environment) -> [u8; 4] {
+        let color = theme::installed_color_signal::<theme::color::Foreground>(env).map_or_else(
+            || Color::srgb(0, 0, 0).resolve(env).get(),
+            |signal| signal.get(),
+        );
+        resolved_color_to_rgba8(color)
+    }
+
+    pub(crate) fn build_text_layout(
+        state: &mut HydroState,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        max_width: Option<f32>,
+    ) -> parley::Layout<[u8; 4]> {
+        let mut plain = String::new();
+        let mut spans = Vec::with_capacity(styled.chunks().len());
+        for (chunk, style) in styled.chunks() {
+            let start = plain.len();
+            plain.push_str(chunk.as_str());
+            let end = plain.len();
+            spans.push((start..end, style.clone()));
+        }
+
+        if plain.is_empty() {
+            return parley::Layout::new();
+        }
+
+        let mut family_storage = Vec::new();
+        let default_font = waterui_text::font::Font::default().resolve(env).get();
+        let default_brush = Self::default_text_brush(env);
+        let mut builder = state
+            .layout_cx
+            .ranged_builder(&mut state.font_cx, &plain, 1.0, true);
+        builder.push_default(parley::StyleProperty::Brush(default_brush));
+        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
+        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+            default_font.weight,
+        )));
+        let default_font_stack = if let Some(family) = default_font.family {
+            family_storage.push(family.to_string());
+            let family_name = family_storage
+                .last()
+                .expect("default font family storage must contain the pushed value");
+            parley::FontStack::Single(parley::FontFamily::Named(Cow::Borrowed(
+                family_name.as_str(),
+            )))
+        } else {
+            parley::FontStack::Single(parley::FontFamily::Generic(
+                parley::style::GenericFamily::SansSerif,
+            ))
+        };
+        builder.push_default(parley::StyleProperty::FontStack(default_font_stack));
+
+        for (range, style) in spans {
+            Self::push_text_style(&mut builder, &mut family_storage, style, range, env);
+        }
+
+        let mut layout = builder.build(&plain);
+        layout.break_all_lines(max_width);
+        layout.align(
+            max_width,
+            parley_alignment(alignment),
+            parley::AlignmentOptions::default(),
+        );
+        layout
+    }
+
+    pub(crate) fn measure_text_dimensions(
+        state: &mut HydroState,
+        styled: StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        max_width: Option<f32>,
+        max_lines: Option<usize>,
+    ) -> ViewDimensions {
+        let layout = Self::build_text_layout(state, styled, alignment, env, max_width);
+        if layout.is_empty() {
+            return ViewDimensions::new(LayoutSize::zero());
+        }
+
+        let mut width = 0.0_f32;
+        let mut height = 0.0_f32;
+        let mut first_baseline = None;
+        let mut last_baseline = None;
+
+        for (index, line) in layout.lines().enumerate() {
+            if max_lines.is_some_and(|limit| index >= limit) {
+                break;
+            }
+            let metrics = line.metrics();
+            width = width.max(metrics.advance);
+            height += metrics.line_height;
+            if first_baseline.is_none() {
+                first_baseline = Some(metrics.baseline);
+            }
+            last_baseline = Some(metrics.baseline);
+        }
+
+        let mut dimensions = ViewDimensions::new(LayoutSize::new(width, height));
+        if let Some(first_baseline) = first_baseline {
+            dimensions.set_vertical(VerticalAlignment::FirstBaseline, first_baseline);
+        }
+        if let Some(last_baseline) = last_baseline {
+            dimensions.set_vertical(VerticalAlignment::LastBaseline, last_baseline);
+        }
+        dimensions
+    }
+
+    pub(crate) fn measure_text_intrinsic_size(
+        state: &mut HydroState,
+        styled: StyledStr,
+        env: &Environment,
+    ) -> LayoutSize {
+        Self::measure_text_dimensions(state, styled, HorizontalAlignment::Leading, env, None, None)
+            .size
+    }
+
+    pub(crate) fn measure_text_intrinsic_size_with_line_limit(
+        state: &mut HydroState,
+        styled: StyledStr,
+        env: &Environment,
+        max_lines: Option<usize>,
+    ) -> LayoutSize {
+        Self::measure_text_dimensions(
+            state,
+            styled,
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            max_lines,
+        )
+        .size
+    }
+
+    fn push_text_style(
+        builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
+        family_storage: &mut Vec<String>,
+        style: TextStyle,
+        range: std::ops::Range<usize>,
+        env: &Environment,
+    ) {
+        let resolved_font = style.font.resolve(env).get();
+        builder.push(
+            parley::StyleProperty::FontSize(resolved_font.size),
+            range.clone(),
+        );
+        builder.push(
+            parley::StyleProperty::FontWeight(parley_font_weight(resolved_font.weight)),
+            range.clone(),
+        );
+        if let Some(family) = resolved_font.family {
+            family_storage.push(family.to_string());
+            let family_name = family_storage
+                .last()
+                .expect("font family storage must contain the pushed value");
+            builder.push(
+                parley::StyleProperty::FontStack(parley::FontStack::Single(
+                    parley::FontFamily::Named(Cow::Borrowed(family_name.as_str())),
+                )),
+                range.clone(),
+            );
+        }
+        builder.push(
+            parley::StyleProperty::FontStyle(if style.italic {
+                parley::FontStyle::Italic
+            } else {
+                parley::FontStyle::Normal
+            }),
+            range.clone(),
+        );
+        builder.push(
+            parley::StyleProperty::Underline(style.underline),
+            range.clone(),
+        );
+        builder.push(
+            parley::StyleProperty::Strikethrough(style.strikethrough),
+            range.clone(),
+        );
+        if let Some(color) = style.foreground {
+            builder.push(
+                parley::StyleProperty::Brush(resolved_color_to_rgba8(color.resolve(env).get())),
+                range,
+            );
+        }
+    }
+}
+
+pub(crate) fn measure_navigation_view_intrinsic(
+    navigation: &NavigationView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let bar_height = navigation_bar_height(navigation);
+    let title_size = if bar_height > 0.0 {
+        measure_view_intrinsic(&navigation.bar.title, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let leading_size = if !navigation.bar.leading.is::<()>() {
+        measure_view_intrinsic(&navigation.bar.leading, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let trailing_size = if !navigation.bar.trailing.is::<()>() {
+        measure_view_intrinsic(&navigation.bar.trailing, state, env)
+    } else {
+        LayoutSize::zero()
+    };
+    let search_size = if let Some(search) = navigation.bar.search.as_ref() {
+        measure_view_intrinsic(
+            &AnyView::new(TextField::new(&search.text).prompt(search.prompt.clone())),
+            state,
+            env,
+        )
+    } else {
+        LayoutSize::zero()
+    };
+    let content_size = measure_view_intrinsic(&navigation.content, state, env);
+    let width = f64::from(content_size.width)
+        .max(
+            f64::from(leading_size.width)
+                + f64::from(title_size.width)
+                + f64::from(trailing_size.width)
+                + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0
+                + NAVIGATION_BAR_ITEM_SPACING * 2.0,
+        )
+        .max(f64::from(search_size.width) + NAVIGATION_BAR_HORIZONTAL_INSET * 2.0);
+    let height = f64::from(content_size.height) + bar_height;
+    LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn measure_tabs_intrinsic(
+    tabs: &Tabs,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    assert!(
+        !(tabs.tabs.is_empty()),
+        "hydrolysis Tabs requires at least one tab"
+    );
+
+    let mut max_content_width: f64 = 0.0;
+    let mut max_content_height: f64 = 0.0;
+    let mut bar_width = 0.0;
+    for tab in &tabs.tabs {
+        let label_size = measure_view_intrinsic(&tab.label.content, state, env);
+        bar_width += (f64::from(label_size.width) + TABS_BUTTON_HORIZONTAL_INSET * 2.0)
+            .max(TABS_BUTTON_MIN_WIDTH);
+
+        let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
+        let content_size = measure_view_intrinsic(&content, state, env);
+        max_content_width = max_content_width.max(f64::from(content_size.width));
+        max_content_height = max_content_height.max(f64::from(content_size.height));
+    }
+
+    let width = max_content_width.max(bar_width);
+    let height = max_content_height + TABS_BAR_MIN_HEIGHT;
+    LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn tabs_bar_and_content_rect(
+    bounds: vello::kurbo::Rect,
+    position: TabPosition,
+) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+    let bar_height = (bounds.height() * 0.12).clamp(TABS_BAR_MIN_HEIGHT, TABS_BAR_MAX_HEIGHT);
+    match position {
+        TabPosition::Top => (
+            vello::kurbo::Rect::new(
+                bounds.x0,
+                bounds.y0,
+                bounds.x1,
+                (bounds.y0 + bar_height).min(bounds.y1),
+            ),
+            vello::kurbo::Rect::new(
+                bounds.x0,
+                (bounds.y0 + bar_height).min(bounds.y1),
+                bounds.x1,
+                bounds.y1,
+            ),
+        ),
+        TabPosition::Bottom => (
+            vello::kurbo::Rect::new(
+                bounds.x0,
+                (bounds.y1 - bar_height).max(bounds.y0),
+                bounds.x1,
+                bounds.y1,
+            ),
+            vello::kurbo::Rect::new(
+                bounds.x0,
+                bounds.y0,
+                bounds.x1,
+                (bounds.y1 - bar_height).max(bounds.y0),
+            ),
+        ),
+    }
+}
+
+pub(crate) fn tabs_button_rect(
+    bar_rect: vello::kurbo::Rect,
+    tab_count: usize,
+    index: usize,
+) -> vello::kurbo::Rect {
+    let button_width = bar_rect.width() / tab_count as f64;
+    let x0 = bar_rect.x0 + button_width * index as f64;
+    vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
+}
+
+pub(crate) fn navigation_back_button_rect(bounds: vello::kurbo::Rect) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        bounds.x0 + 8.0,
+        bounds.y0 + 8.0,
+        bounds.x0 + 38.0,
+        bounds.y0 + 36.0,
+    )
+}
+
+pub(crate) fn measure_list_intrinsic(
+    list: &ListConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let row_count = list.contents.len().get();
+    if row_count == 0 {
+        return LayoutSize::zero();
+    }
+    let editing = list.editing.get();
+    let mut first_item = list
+        .contents
+        .get_view(0)
+        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
+    first_item.content = normalize_layout_view(first_item.content, env);
+    let content_size = measure_view_intrinsic(&first_item.content, state, env);
+    let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
+        + LIST_ROW_VERTICAL_PADDING * 2.0;
+
+    let mut row_width = f64::from(content_size.width) + LIST_ROW_HORIZONTAL_PADDING * 2.0;
+    if editing && list.on_move.is_some() {
+        row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+    }
+    if editing && list.on_delete.is_some() {
+        row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+    }
+    let total_height = row_height * row_count as f64;
+    let max_width = row_width.max(LIST_ROW_HORIZONTAL_PADDING * 2.0);
+
+    LayoutSize::new(max_width as f32, total_height as f32)
+}
+
+pub(crate) fn materialize_list_item(
+    contents: &impl Views<View = ListItem>,
+    index: usize,
+    env: &Environment,
+) -> ListItem {
+    let mut item = contents
+        .get_view(index)
+        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
+    item.content = normalize_layout_view(item.content, env);
+    item
+}
+
+pub(crate) fn measure_list_item_row_height(
+    item: &ListItem,
+    state: &mut HydroState,
+    env: &Environment,
+) -> f64 {
+    let intrinsic = measure_view_intrinsic(&item.content, state, env);
+    f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT)) + LIST_ROW_VERTICAL_PADDING * 2.0
+}
+
+pub(crate) fn materialize_list_row(
+    contents: &impl Views<View = ListItem>,
+    index: usize,
+    state: &mut HydroState,
+    env: &Environment,
+) -> (ListItem, f64) {
+    let item = materialize_list_item(contents, index, env);
+    let row_height = measure_list_item_row_height(&item, state, env);
+    (item, row_height)
+}
+
+pub(crate) fn measure_progress_intrinsic(
+    progress: &ProgressConfig,
+    _state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    match progress.style {
+        ProgressStyle::Linear => {
+            let metrics = theme.progress_metrics(ProgressStyle::Linear);
+            let label_height =
+                f64::from(waterui_text::font::Font::default().resolve(env).get().size)
+                    .max(metrics.label_height);
+            let width = metrics.min_track_width + metrics.bar_horizontal_inset * 2.0;
+            let height = label_height
+                + metrics.bar_top_offset
+                + metrics.bar_height
+                + metrics.value_label_top_spacing
+                + label_height;
+            LayoutSize::new(width as f32, height as f32)
+        }
+        ProgressStyle::Circular => {
+            let metrics = theme.progress_metrics(ProgressStyle::Circular);
+            LayoutSize::new(
+                metrics.circular_diameter as f32,
+                metrics.circular_diameter as f32,
+            )
+        }
+        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
+    }
+}
+
+pub(crate) fn measure_text_field_intrinsic(
+    text_field: &ResolvedTextFieldConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let metrics = theme.input_field_metrics();
+    let label_size = measure_view_intrinsic(&text_field.label, state, env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label_height = f64::from(label_size.height).max(metrics.label_height);
+    let line_limit = text_field.line_limit.map(NonZeroUsize::get);
+    let prompt = text_field.prompt.content.get();
+    let value = text_field.value.get();
+    let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
+        state, prompt, env, line_limit,
+    );
+    let value_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
+        state, value, env, line_limit,
+    );
+    let content_width =
+        f64::from(prompt_size.width.max(value_size.width)) + metrics.horizontal_inset * 2.0;
+    let content_height =
+        f64::from(prompt_size.height.max(value_size.height)) + metrics.vertical_inset * 2.0;
+
+    let field_width = content_width.max(metrics.min_width);
+    let field_height = content_height.max(metrics.min_height);
+    let width = f64::from(label_size.width).max(field_width);
+    let height = if has_label {
+        label_height + field_height
+    } else {
+        field_height
+    };
+    LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn measure_secure_field_intrinsic(
+    secure_field: &SecureFieldConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let metrics = theme.input_field_metrics();
+    let label_size = measure_view_intrinsic(&secure_field.label, state, env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label_height = f64::from(label_size.height).max(metrics.label_height);
+    let secure_len = secure_field.value.get().expose().chars().count();
+    let masked = if secure_len == 0 {
+        StyledStr::plain("")
+    } else {
+        StyledStr::plain("*".repeat(secure_len))
+    };
+    let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
+    let field_width =
+        (f64::from(value_size.width) + metrics.horizontal_inset * 2.0).max(metrics.min_width);
+    let field_height =
+        (f64::from(value_size.height) + metrics.vertical_inset * 2.0).max(metrics.min_height);
+    let width = f64::from(label_size.width).max(field_width);
+    let height = if has_label {
+        label_height + field_height
+    } else {
+        field_height
+    };
+    LayoutSize::new(width as f32, height as f32)
+}
+
+pub(crate) fn measure_table_metrics(
+    columns: &[TableColumn],
+    state: &mut HydroState,
+    env: &Environment,
+) -> TableMetrics {
+    let mut column_widths = Vec::with_capacity(columns.len());
+    let mut max_rows = 0usize;
+    for column in columns {
+        let mut width = TABLE_MIN_COLUMN_WIDTH;
+        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
+        let label_size = measure_view_intrinsic(&label_view, state, env);
+        width = width.max(f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING);
+
+        let rows = column.rows();
+        max_rows = max_rows.max(rows.len().get());
+        column_widths.push(width);
+    }
+
+    let table_width: f64 = column_widths.iter().sum();
+    let table_height = TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * max_rows as f64;
+    TableMetrics {
+        column_widths,
+        table_width,
+        table_height,
+    }
+}
+
+pub(crate) fn refresh_table_slot_baseline(
+    columns: &[TableColumn],
+    slot: &mut LazyTableSlot,
+    state: &mut HydroState,
+    env: &Environment,
+) {
+    slot.prepare_columns(columns.len());
+    slot.max_rows = 0;
+    for (index, column) in columns.iter().enumerate() {
+        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
+        let label_size = measure_view_intrinsic(&label_view, state, env);
+        let width = (f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING)
+            .max(TABLE_MIN_COLUMN_WIDTH);
+        if slot.column_widths[index] < width {
+            slot.column_widths[index] = width;
+        }
+        slot.max_rows = slot.max_rows.max(column.rows().len().get());
+    }
+}
+
+pub(crate) fn update_table_slot_visible_cell_widths(
+    columns: &[TableColumn],
+    slot: &mut LazyTableSlot,
+    row_window: VisibleIndexWindow,
+    col_window: VisibleColumnWindow,
+    state: &mut HydroState,
+    env: &Environment,
+) {
+    for column_index in col_window.start..col_window.end {
+        let column = &columns[column_index];
+        let rows = column.rows();
+        for row_index in row_window.start..row_window.end {
+            if let Some(cell) = rows.get_view(row_index) {
+                let cell_view = normalize_layout_view(AnyView::new(cell), env);
+                let size = measure_view_intrinsic(&cell_view, state, env);
+                let width = (f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING)
+                    .max(TABLE_MIN_COLUMN_WIDTH);
+                if slot.column_widths[column_index] < width {
+                    slot.column_widths[column_index] = width;
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn measure_slider_intrinsic(
+    slider: &SliderConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let metrics = theme.slider_metrics();
+    let label_size = measure_view_intrinsic(&slider.label, state, env);
+    let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
+    let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
+
+    let control_row_height = (metrics.thumb_radius * 2.0)
+        .max(f64::from(min_label_size.height))
+        .max(f64::from(max_label_size.height));
+    let label_height = f64::from(label_size.height);
+    let intrinsic_height = if label_height > 0.0 {
+        label_height + metrics.vertical_spacing + control_row_height
+    } else {
+        control_row_height
+    };
+
+    let min_width = f64::from(label_size.width).max(
+        f64::from(min_label_size.width)
+            + metrics.horizontal_spacing
+            + metrics.min_track_width
+            + metrics.horizontal_spacing
+            + f64::from(max_label_size.width)
+            + metrics.horizontal_inset * 2.0,
+    );
+    LayoutSize::new(min_width as f32, intrinsic_height as f32)
+}
+
+fn resolved_text_styled(text: &Text, env: &Environment) -> StyledStr {
+    text.resolve(env).content.get()
+}
+
+pub(crate) fn measure_picker_intrinsic(
+    picker: &PickerConfig,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    let theme = widget_theme(env);
+    let items = picker.items.get();
+    assert!(
+        !(items.is_empty()),
+        "hydrolysis picker requires at least one item"
+    );
+    let item_count = items.len();
+
+    match picker.style {
+        PickerStyle::Automatic | PickerStyle::Menu => {
+            let metrics = theme.picker_metrics(PickerStyle::Menu);
+            let mut max_item_width: f64 = 0.0;
+            let mut max_item_height: f64 = 0.0;
+            for item in &items {
+                let styled = resolved_text_styled(&item.content, env);
+                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+                max_item_width = max_item_width.max(f64::from(size.width));
+                max_item_height = max_item_height.max(f64::from(size.height));
+            }
+
+            let width = (max_item_width + metrics.horizontal_inset * 2.0 + metrics.indicator_space)
+                .max(metrics.min_width);
+            let height = (max_item_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
+            LayoutSize::new(width as f32, height as f32)
+        }
+        PickerStyle::Radio => {
+            let metrics = theme.picker_metrics(PickerStyle::Radio);
+            let mut max_item_width: f64 = 0.0;
+            let mut total_height = 0.0;
+            for (index, item) in items.iter().enumerate() {
+                let styled = resolved_text_styled(&item.content, env);
+                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
+                max_item_width = max_item_width.max(f64::from(size.width));
+                total_height += f64::from(size.height).max(metrics.radio_indicator_size);
+                if index + 1 < item_count {
+                    total_height += metrics.radio_row_spacing;
+                }
+            }
+            let width = (metrics.horizontal_inset * 2.0
+                + metrics.radio_indicator_size
+                 + metrics.radio_label_spacing
+                + max_item_width)
+                .max(metrics.min_width);
+            let height = (metrics.vertical_inset * 2.0 + total_height).max(metrics.min_height);
+            LayoutSize::new(width as f32, height as f32)
+        }
+        _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+    }
+}
