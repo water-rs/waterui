@@ -286,15 +286,15 @@ impl Project {
             gtk4::platform::clean_gtk4, hydrolysis::platform::clean_hydrolysis,
         };
 
+        if self.is_playground() {
+            crate::water_dir::remove_project_build_cache(self.root()).await?;
+            return Ok(());
+        }
+
         // Clean Rust target directory
         let target_dir = self.target_dir();
         if target_dir.exists() {
             smol::fs::remove_dir_all(target_dir).await?;
-        }
-
-        if self.is_playground() {
-            crate::water_dir::remove_playground_cache(self.root()).await?;
-            return Ok(());
         }
 
         // Clean Apple backend if configured
@@ -374,9 +374,9 @@ pub enum FailToOpenProject {
     #[error("Failed to initialize backend: {0}")]
     BackendInit(#[from] crate::backend::FailToInitBackend),
 
-    /// Failed to manage the playground cache directory.
-    #[error("Failed to prepare playground managed cache: {0}")]
-    WaterDir(#[from] eyre::Report),
+    /// Failed to manage the global build cache directory.
+    #[error("Failed to prepare managed build cache: {0}")]
+    BuildCache(#[from] eyre::Report),
 }
 
 /// Errors that can occur when creating a new `WaterUI` project.
@@ -398,6 +398,10 @@ pub enum FailToCreateProject {
     /// Failed to get Cargo metadata.
     #[error("Failed to get Cargo metadata: {0}")]
     TargetDirError(#[from] cargo_metadata::Error),
+
+    /// Failed to resolve the managed build cache path.
+    #[error("Failed to resolve managed build cache: {0}")]
+    BuildCache(#[from] eyre::Report),
 
     /// Failed to initialize git repository.
     #[error("Failed to initialize git repository: {0}")]
@@ -540,7 +544,9 @@ impl Project {
             .await
             .map_err(FailToCreateProject::TargetDirError)?;
         let managed_backends_root = if options.package_type == PackageType::Playground {
-            path.join(".water")
+            crate::water_dir::project_build_cache_dir(&path)
+                .await
+                .map_err(FailToCreateProject::BuildCache)?
         } else {
             path.join(manifest.backends.path())
         };
@@ -736,7 +742,7 @@ impl Project {
         use crate::backend::Backend;
 
         let path = path.as_ref().to_path_buf();
-        let mut manifest = Manifest::open(path.join("Water.toml"))
+        let manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
 
@@ -763,11 +769,9 @@ impl Project {
         }
 
         let managed_backends_root = if is_playground {
-            let managed_backends_root = crate::water_dir::ensure_valid(&path)
+            crate::water_dir::ensure_project_build_cache(&path)
                 .await
-                .map_err(FailToOpenProject::WaterDir)?;
-            manifest.backends.set_path(".water");
-            managed_backends_root
+                .map_err(FailToOpenProject::BuildCache)?
         } else {
             path.join(manifest.backends.path())
         };
