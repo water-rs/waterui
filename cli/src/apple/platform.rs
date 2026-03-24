@@ -3,10 +3,12 @@
 //! This module provides utility functions for building and packaging Apple apps.
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
+use std::fmt::Write;
 use std::ffi::OsString;
+use std::env;
 use std::path::{Path, PathBuf};
-use std::{env, fmt::Write};
 
+use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
 use smol::fs;
 use target_lexicon::Architecture;
@@ -19,6 +21,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
+    templates::FontRegistrationTemplateEntry,
     utils::{copy_file, run_command_os},
 };
 
@@ -376,31 +379,37 @@ async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Resu
     Ok(())
 }
 
-/// Template for WaterUIFonts.swift
-const WATERUI_FONTS_TEMPLATE: &str =
-    include_str!("../templates/apple/AppName/WaterUIFonts.swift.tpl");
+#[derive(Template)]
+#[template(path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl", escape = "none")]
+struct WaterUiFontsSwiftTemplate<'a> {
+    font_entries: &'a [FontRegistrationTemplateEntry],
+}
 
 /// Generate WaterUIFonts.swift file for registering custom fonts.
 async fn generate_font_registration_swift(
     fonts: &[ResolvedFont],
     dest_dir: &Path,
 ) -> eyre::Result<()> {
-    // Build font entries
-    let font_entries: String = fonts
+    let font_entries = fonts
         .iter()
         .map(|font| {
-            let file_name = font
+            FontRegistrationTemplateEntry {
+                family_name: font.name.clone(),
+                file_name: font
                 .path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            format!("            (\"{}\", \"{}\"),", font.name, file_name)
+                .unwrap_or_default()
+                .to_string(),
+            }
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect::<Vec<_>>();
 
-    // Render template
-    let content = WATERUI_FONTS_TEMPLATE.replace("__FONT_ENTRIES__", &font_entries);
+    let content = WaterUiFontsSwiftTemplate {
+        font_entries: &font_entries,
+    }
+    .render()
+    .map_err(|error| eyre::eyre!("Failed to render WaterUIFonts.swift template: {error}"))?;
 
     let swift_path = dest_dir.join("WaterUIFonts.swift");
     fs::write(&swift_path, content).await?;

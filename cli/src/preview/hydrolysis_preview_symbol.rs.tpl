@@ -1,13 +1,13 @@
-pub(crate) const PREVIEW_OUTPUT_ENV: &str = "__PREVIEW_OUTPUT_ENV__";
-pub(crate) const PREVIEW_WIDTH_ENV: &str = "__PREVIEW_WIDTH_ENV__";
-pub(crate) const PREVIEW_HEIGHT_ENV: &str = "__PREVIEW_HEIGHT_ENV__";
+pub(crate) const PREVIEW_OUTPUT_ENV: &str = "{{ preview_output_env }}";
+pub(crate) const PREVIEW_WIDTH_ENV: &str = "{{ preview_width_env }}";
+pub(crate) const PREVIEW_HEIGHT_ENV: &str = "{{ preview_height_env }}";
 
 fn ensure_preview_crate_is_linked() {
-    let _ = __CRATE_NAME_IDENT__::app as fn(waterui::env::Environment) -> waterui::app::App;
+    let _ = {{ crate_name_ident }}::app as fn(waterui::env::Environment) -> waterui::app::App;
 }
 
 unsafe extern "C" {
-    #[link_name = "__PREVIEW_SYMBOL__"]
+    #[link_name = "{{ preview_symbol }}"]
     fn waterui_hydrolysis_preview_entry() -> *mut ();
 }
 

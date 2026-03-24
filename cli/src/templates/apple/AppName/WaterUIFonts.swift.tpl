@@ -8,7 +8,9 @@ private let logger = Logger(subsystem: "dev.waterui", category: "fonts")
 enum WaterUIFonts {
     static func register() {
         let fonts: [(String, String)] = [
-__FONT_ENTRIES__
+{% for entry in font_entries %}
+            ("{{ entry.family_name }}", "{{ entry.file_name }}"),
+{% endfor %}
         ]
         logger.debug("Registering \(fonts.count) fonts...")
 
