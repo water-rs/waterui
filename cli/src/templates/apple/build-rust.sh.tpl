@@ -7,13 +7,13 @@ if [ "${WATERUI_SKIP_RUST_BUILD:-}" = "1" ]; then
     exit 0
 fi
 
-if [ "__IS_PLAYGROUND__" = "true" ]; then
+if [ "{% if ctx.is_playground() %}true{% else %}false{% endif %}" = "true" ]; then
     echo "Skipping Rust build (playground support app is managed by water run/package)"
     exit 0
 fi
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/__PROJECT_ROOT_RELATIVE_PATH__" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/{{ ctx.project_root_relative_path() }}" && pwd )"
 
 # Xcode runs build scripts in a restricted shell environment without the user's
 # full PATH. Add common tool locations explicitly.

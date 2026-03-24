@@ -30,7 +30,7 @@ val targetAbis = (System.getenv("WATERUI_ANDROID_ABIS") ?: "arm64-v8a,x86_64")
     .filter { it.isNotEmpty() }
 
 // Resolve the user project root from the generated backend project location.
-val projectRoot = rootProject.projectDir.resolve("__PROJECT_ROOT_RELATIVE_PATH__").canonicalFile
+val projectRoot = rootProject.projectDir.resolve("{{ ctx.project_root_relative_path() }}").canonicalFile
 
 // Determine build type from Gradle's build variant
 val isRelease = gradle.startParameter.taskNames.any {
@@ -109,11 +109,11 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders"
 // =============================================================================
 
 android {
-    namespace = "__ANDROID_NAMESPACE__"
+    namespace = "{{ ctx.android_package_name() }}"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "__BUNDLE_IDENTIFIER__"
+        applicationId = "{{ ctx.bundle_identifier }}"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -162,7 +162,7 @@ kotlin {
 
 dependencies {
     // Use GitHub dependency in remote dev mode, local backend otherwise
-    if (__USE_REMOTE_DEV_BACKEND__) {
+    if ({{ ctx.use_remote_dev_backend }}) {
         // JitPack multi-module format: com.github.USER:REPO-SUBMODULE:BRANCH-SNAPSHOT
         implementation("com.github.water-rs:android-backend:0.2.0")
     } else {

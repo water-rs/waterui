@@ -12,14 +12,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = __APP_NAME__.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = {{ ctx.app_name }}.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D01867752E6C818300802E96 /* libwaterui_app.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libwaterui_app.a; path = "$(BUILT_PRODUCTS_DIR)/libwaterui_app.a"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		D01867602E6C7BBB00802E96 /* __APP_NAME__ */ = {
+		D01867602E6C7BBB00802E96 /* {{ ctx.app_name }} */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = __APP_NAME__;
+			path = {{ ctx.app_name }};
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -40,7 +40,7 @@
 		D01867552E6C7BBB00802E96 = {
 			isa = PBXGroup;
 			children = (
-				D01867602E6C7BBB00802E96 /* __APP_NAME__ */,
+				D01867602E6C7BBB00802E96 /* {{ ctx.app_name }} */,
 				D01867742E6C818200802E96 /* Frameworks */,
 				D018675F2E6C7BBB00802E96 /* Products */,
 			);
@@ -49,7 +49,7 @@
 		D018675F2E6C7BBB00802E96 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */,
+				D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -65,9 +65,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-        D018675D2E6C7BBB00802E96 /* __CRATE_NAME__ */ = {
+        D018675D2E6C7BBB00802E96 /* {{ ctx.crate_name }} */ = {
 			isa = PBXNativeTarget;
-            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__CRATE_NAME__" */;
+            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "{{ ctx.crate_name }}" */;
 			buildPhases = (
 				D0000001000000000000001 /* Build Rust Library */,
 				D018675A2E6C7BBB00802E96 /* Sources */,
@@ -79,14 +79,14 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				D01867602E6C7BBB00802E96 /* __APP_NAME__ */,
+				D01867602E6C7BBB00802E96 /* {{ ctx.app_name }} */,
 			);
-            name = "__CRATE_NAME__";
+            name = "{{ ctx.crate_name }}";
             packageProductDependencies = (
                 D01867792E6C82CA00802E96 /* WaterUI */,
             );
-            productName = "__APP_NAME__";
-            productReference = D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */;
+            productName = "{{ ctx.app_name }}";
+            productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */;
             productType = "com.apple.product-type.application";
         };
 /* End PBXNativeTarget section */
@@ -104,7 +104,7 @@
 					};
 				};
 			};
-            buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_DISPLAY_NAME__" */;
+            buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "{{ ctx.app_display_name }}" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -114,14 +114,14 @@
 			mainGroup = D01867552E6C7BBB00802E96;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-__SWIFT_PACKAGE_REFERENCE_ENTRY__
+{{ ctx.swift_package_reference_entry() }}
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D018675F2E6C7BBB00802E96 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-                D018675D2E6C7BBB00802E96 /* __CRATE_NAME__ */,
+                D018675D2E6C7BBB00802E96 /* {{ ctx.crate_name }} */,
             );
         };
 /* End PBXProject section */
@@ -293,7 +293,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = "__APP_NAME__/__APP_NAME__.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "{{ ctx.app_name }}/{{ ctx.app_name }}.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
@@ -307,7 +307,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = __MACOS_LSUIELEMENT__;
+				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
@@ -326,7 +326,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lwaterui_app -lc++ -framework VideoToolbox";
-				PRODUCT_BUNDLE_IDENTIFIER = __BUNDLE_IDENTIFIER__;
+				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -342,7 +342,9 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				TARGETED_DEVICE_FAMILY = "1,2,4,7";
 				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 				XROS_DEPLOYMENT_TARGET = 2.5;
-__IOS_PERMISSION_KEYS__
+{% for permission in ctx.ios_permissions %}
+								{{ permission.plist_key }} = "{{ permission.escaped_description() }}";
+{% endfor %}
 			};
 			name = Debug;
 		};
@@ -352,7 +354,7 @@ __IOS_PERMISSION_KEYS__
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = "__APP_NAME__/__APP_NAME__.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "{{ ctx.app_name }}/{{ ctx.app_name }}.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
@@ -366,7 +368,7 @@ __IOS_PERMISSION_KEYS__
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = __MACOS_LSUIELEMENT__;
+				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
@@ -385,7 +387,7 @@ __IOS_PERMISSION_KEYS__
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lwaterui_app -lc++ -framework VideoToolbox";
-				PRODUCT_BUNDLE_IDENTIFIER = __BUNDLE_IDENTIFIER__;
+				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -401,14 +403,16 @@ __IOS_PERMISSION_KEYS__
 				TARGETED_DEVICE_FAMILY = "1,2,4,7";
 				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 				XROS_DEPLOYMENT_TARGET = 2.5;
-__IOS_PERMISSION_KEYS__
+{% for permission in ctx.ios_permissions %}
+								{{ permission.plist_key }} = "{{ permission.escaped_description() }}";
+{% endfor %}
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-        D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_DISPLAY_NAME__" */ = {
+        D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "{{ ctx.app_display_name }}" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D01867682E6C7BBD00802E96 /* Debug */,
@@ -417,7 +421,7 @@ __IOS_PERMISSION_KEYS__
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__CRATE_NAME__" */ = {
+        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "{{ ctx.crate_name }}" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D018676B2E6C7BBD00802E96 /* Debug */,
@@ -428,7 +432,7 @@ __IOS_PERMISSION_KEYS__
 		};
 /* End XCConfigurationList section */
 
-__SWIFT_PACKAGE_REFERENCE_SECTION__
+{{ ctx.swift_package_reference_section() }}
 
 /* Begin XCSwiftPackageProductDependency section */
 		D01867792E6C82CA00802E96 /* WaterUI */ = {
