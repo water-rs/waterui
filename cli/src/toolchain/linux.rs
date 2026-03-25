@@ -275,18 +275,16 @@ impl LinuxPackageManager {
         if probe.starts_with("gtk4") {
             return Some(match self {
                 Self::Apt => "libgtk-4-dev",
-                Self::Dnf => "gtk4-devel",
+                Self::Dnf | Self::Zypper => "gtk4-devel",
                 Self::Pacman => "gtk4",
-                Self::Zypper => "gtk4-devel",
                 Self::Apk => "gtk4.0-dev",
             });
         }
         if probe.starts_with("pango") {
             return Some(match self {
                 Self::Apt => "libpango1.0-dev",
-                Self::Dnf => "pango-devel",
+                Self::Dnf | Self::Zypper => "pango-devel",
                 Self::Pacman => "pango",
-                Self::Zypper => "pango-devel",
                 Self::Apk => "pango-dev",
             });
         }
@@ -374,11 +372,11 @@ fn unsupported_manager_hint() -> String {
     let zypper_hint = LinuxPackageManager::Zypper.install_hint(&required_packages_to_owned(
         LinuxPackageManager::Zypper.required_packages(),
     ));
-    let apk_hint = LinuxPackageManager::Apk.install_hint(&required_packages_to_owned(
+    let alpine_hint = LinuxPackageManager::Apk.install_hint(&required_packages_to_owned(
         LinuxPackageManager::Apk.required_packages(),
     ));
     format!(
-        "Install required packages manually. Debian/Ubuntu: `{apt_hint}`; Fedora/RHEL: `{dnf_hint}`; Arch: `{pacman_hint}`; openSUSE: `{zypper_hint}`; Alpine: `{apk_hint}`."
+        "Install required packages manually. Debian/Ubuntu: `{apt_hint}`; Fedora/RHEL: `{dnf_hint}`; Arch: `{pacman_hint}`; openSUSE: `{zypper_hint}`; Alpine: `{alpine_hint}`."
     )
 }
 
@@ -455,9 +453,10 @@ pub async fn install_java_jdk() -> eyre::Result<()> {
 
     let packages: Vec<String> = match manager {
         LinuxPackageManager::Apt => vec![String::from("openjdk-21-jdk")],
-        LinuxPackageManager::Dnf => vec![String::from("java-21-openjdk-devel")],
+        LinuxPackageManager::Dnf | LinuxPackageManager::Zypper => {
+            vec![String::from("java-21-openjdk-devel")]
+        }
         LinuxPackageManager::Pacman => vec![String::from("jdk-openjdk")],
-        LinuxPackageManager::Zypper => vec![String::from("java-21-openjdk-devel")],
         LinuxPackageManager::Apk => vec![String::from("openjdk21-jdk")],
     };
 

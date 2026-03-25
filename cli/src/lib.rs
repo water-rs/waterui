@@ -1,7 +1,7 @@
 //! `WaterUI` CLI library for managing cross-platform builds and development workflows.
 pub mod android;
 pub mod apple;
-pub mod assets;
+pub(crate) mod assets;
 pub mod backend;
 pub mod brew;
 pub mod build;
@@ -17,11 +17,12 @@ pub mod macos_bundle;
 pub mod platform;
 pub mod preview;
 pub mod project;
+/// Strongly typed project identifiers and permission keys shared across CLI workflows.
 pub mod project_types;
 pub(crate) mod runtime_compat;
 pub(crate) mod runtime_fingerprint;
 pub(crate) mod support_app;
-pub mod templates;
+pub(crate) mod templates;
 pub mod toolchain;
 pub mod utils;
 pub mod water_dir;

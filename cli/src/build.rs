@@ -10,10 +10,10 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
-pub fn lib_extension_for_triple(triple: &Triple) -> &'static str {
+pub const fn lib_extension_for_triple(triple: &Triple) -> &'static str {
     match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX { .. } => "dylib",
-        OperatingSystem::Windows { .. } => "dll",
+        OperatingSystem::Windows => "dll",
         // Linux, Android, iOS, and most others use .so for cdylib
         _ => "so",
     }
@@ -354,14 +354,14 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         // host-side build scripts (for example `coreaudio-sys`), which then try to
         // parse host frameworks against the simulator SDK and fail. Bindgen supports
         // target-qualified env vars, so scope the override to the actual Cargo target.
-        if self.triple.environment == Environment::Sim {
-            if let Some(clang_args) = self.bindgen_clang_args_for_simulator().await {
-                let bindgen_target_key = format!(
-                    "BINDGEN_EXTRA_CLANG_ARGS_{}",
-                    self.triple.to_string().replace('-', "_")
-                );
-                cmd = cmd.env(bindgen_target_key, clang_args);
-            }
+        if self.triple.environment == Environment::Sim
+            && let Some(clang_args) = self.bindgen_clang_args_for_simulator().await
+        {
+            let bindgen_target_key = format!(
+                "BINDGEN_EXTRA_CLANG_ARGS_{}",
+                self.triple.to_string().replace('-', "_")
+            );
+            cmd = cmd.env(bindgen_target_key, clang_args);
         }
 
         if release {
@@ -381,6 +381,9 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
     }
 
     /// Resolve the Cargo library artifact directory for this build target and profile.
+    ///
+    /// # Errors
+    /// Returns an error if Cargo metadata cannot be read for this build target.
     pub async fn lib_output_dir(&self, release: bool) -> Result<PathBuf, RustBuildError> {
         let target_directory = self.target_directory().await?;
         Ok(target_directory
@@ -453,10 +456,10 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
 fn combined_build_output(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stderr.is_empty() {
-        stderr.to_string()
-    } else {
+    if stderr.is_empty() {
         stdout.to_string()
+    } else {
+        stderr.to_string()
     }
 }
 
