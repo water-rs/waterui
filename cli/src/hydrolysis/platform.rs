@@ -49,6 +49,9 @@ struct HydrolysisWebIndexTemplate<'a> {
 }
 
 /// Build hydrolysis binary for the host platform.
+///
+/// # Errors
+/// Returns an error if the platform is unsupported, the backend is missing, or Cargo fails.
 pub async fn build_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
@@ -58,6 +61,9 @@ pub async fn build_hydrolysis(
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables.
+///
+/// # Errors
+/// Returns an error if the platform is unsupported, the backend is missing, or Cargo fails.
 pub async fn build_hydrolysis_with_envs(
     project: &Project,
     platform: TargetPlatform,
@@ -68,6 +74,9 @@ pub async fn build_hydrolysis_with_envs(
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and args.
+///
+/// # Errors
+/// Returns an error if the platform is unsupported, the backend is missing, or Cargo fails.
 pub async fn build_hydrolysis_with_envs_and_args(
     project: &Project,
     platform: TargetPlatform,
@@ -129,10 +138,10 @@ pub async fn build_hydrolysis_with_envs_and_args(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let details = if !stderr.is_empty() {
-            stderr.to_string()
-        } else {
+        let details = if stderr.is_empty() {
             stdout.to_string()
+        } else {
+            stderr.to_string()
         };
         bail!(
             "Failed to build hydrolysis backend with cargo (status {}):\n{}",
@@ -145,6 +154,9 @@ pub async fn build_hydrolysis_with_envs_and_args(
 }
 
 /// Resolve the built hydrolysis backend binary path for the given profile.
+///
+/// # Errors
+/// Returns an error if neither the canonical nor underscored backend binary can be found.
 pub fn built_hydrolysis_binary_path(project: &Project, profile: &str) -> eyre::Result<PathBuf> {
     let target_dir = project.backend_target_dir("hydrolysis").join(profile);
     let binary_name = project.hydrolysis_backend_crate_name();
@@ -175,6 +187,9 @@ pub fn built_hydrolysis_binary_path(project: &Project, profile: &str) -> eyre::R
 }
 
 /// Clean Cargo build artifacts for hydrolysis.
+///
+/// # Errors
+/// Returns an error if `cargo clean` fails or generated web output cannot be removed.
 pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let cargo_toml = backend_path.join("Cargo.toml");
@@ -207,6 +222,9 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 ///
 /// Linux/Windows return a binary artifact path.
 /// macOS returns a `.app` bundle path.
+///
+/// # Errors
+/// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
 pub async fn package_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
@@ -269,6 +287,7 @@ pub async fn package_hydrolysis(
 }
 
 /// Check if a platform is supported by the hydrolysis backend.
+#[must_use]
 pub const fn is_hydrolysis_platform(platform: TargetPlatform) -> bool {
     matches!(
         platform,
@@ -306,6 +325,9 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
 }
 
 /// Build the Hydrolysis web site in debug mode for `water run --platform web`.
+///
+/// # Errors
+/// Returns an error if the web site cannot be packaged.
 pub async fn prepare_hydrolysis_web_dev_site(project: &Project) -> eyre::Result<PathBuf> {
     package_hydrolysis_web_site(project, true, true).await
 }
@@ -320,6 +342,9 @@ pub struct HydrolysisWebDevServer {
 
 impl HydrolysisWebDevServer {
     /// Start serving the provided Hydrolysis web site root on a random localhost port.
+    ///
+    /// # Errors
+    /// Returns an error if the local TCP listener cannot be bound.
     pub async fn start(site_root: PathBuf) -> eyre::Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -488,7 +513,11 @@ async fn write_hydrolysis_web_shell(project: &Project, site_root: &Path) -> eyre
             .map_err(|error| eyre::eyre!("Failed to render hydrolysis index template: {error}"))?,
     )
     .await?;
-    fs::write(site_root.join("bootstrap.js"), HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE).await?;
+    fs::write(
+        site_root.join("bootstrap.js"),
+        HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE,
+    )
+    .await?;
     fs::write(site_root.join("style.css"), HYDROLYSIS_WEB_STYLE_TEMPLATE).await?;
     Ok(())
 }
@@ -532,12 +561,9 @@ async fn serve_http_request(
         return Ok(());
     }
 
-    let file_path = match resolve_site_path(site_root, path) {
-        Ok(path) => path,
-        Err(_) => {
-            write_response(stream, 404, "text/plain; charset=utf-8", b"Not Found").await?;
-            return Ok(());
-        }
+    let Ok(file_path) = resolve_site_path(site_root, path) else {
+        write_response(stream, 404, "text/plain; charset=utf-8", b"Not Found").await?;
+        return Ok(());
     };
     let body = match fs::read(&file_path).await {
         Ok(body) => body,
@@ -626,7 +652,7 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         Some("wasm") => "application/wasm",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",

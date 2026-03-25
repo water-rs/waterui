@@ -18,6 +18,11 @@ pub struct Args {
 
 const MAX_AUTO_FIX_PASSES: usize = 3;
 
+struct DoctorSummary {
+    all_ok: bool,
+    fixable_items: Vec<DoctorItem>,
+}
+
 fn print_missing_item(item: &DoctorItem) {
     let is_fixable = item.is_fixable();
     if let Some(message) = &item.message {
@@ -93,121 +98,139 @@ fn collect_remaining_missing(items: Vec<DoctorItem>) -> (usize, usize, Vec<Docto
 pub async fn run(args: Args) -> Result<()> {
     header!("Checking development environment...");
 
-    let spinner = shell::spinner("Running diagnostics...");
+    let items = run_diagnostics("Running diagnostics...").await;
+    let summary = print_diagnostics(items);
+    handle_doctor_result(args.fix, summary).await;
+    Ok(())
+}
+
+async fn run_diagnostics(message: &str) -> Vec<DoctorItem> {
+    let spinner = shell::spinner(message);
     let items = doctor().await;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
+    items
+}
 
-    let mut all_ok = true;
-    let mut fixable_items = Vec::new();
+fn print_diagnostics(items: Vec<DoctorItem>) -> DoctorSummary {
+    let mut summary = DoctorSummary {
+        all_ok: true,
+        fixable_items: Vec::new(),
+    };
 
     for item in items {
         match item.status {
-            CheckStatus::Ok => {
-                success!("{}", item.name);
-            }
+            CheckStatus::Ok => success!("{}", item.name),
             CheckStatus::Missing => {
-                all_ok = false;
+                summary.all_ok = false;
                 print_missing_item(&item);
-
-                // Collect fixable items
                 if item.is_fixable() {
-                    fixable_items.push(item);
+                    summary.fixable_items.push(item);
                 }
             }
-            CheckStatus::Skipped => {
-                if let Some(msg) = &item.message {
-                    line!("  - {} (skipped: {})", item.name, msg);
-                } else {
-                    line!("  - {} (skipped)", item.name);
-                }
-            }
+            CheckStatus::Skipped => print_skipped_item(&item),
         }
     }
+    summary
+}
 
+fn print_skipped_item(item: &DoctorItem) {
+    if let Some(msg) = &item.message {
+        line!("  - {} (skipped: {})", item.name, msg);
+    } else {
+        line!("  - {} (skipped)", item.name);
+    }
+}
+
+async fn handle_doctor_result(fix: bool, summary: DoctorSummary) {
     line!();
-    if all_ok {
+    if summary.all_ok {
         success!("All checks passed!");
-    } else if args.fix {
-        if fixable_items.is_empty() {
+    } else if fix {
+        if summary.fixable_items.is_empty() {
             note!("Nothing to fix automatically. Please fix issues manually.");
         } else {
-            let mut pending_fixable = fixable_items;
-            let mut pass = 1usize;
-
-            loop {
-                if pass == 1 {
-                    header!("Attempting to fix {} issue(s)...", pending_fixable.len());
-                } else {
-                    header!(
-                        "Attempting to fix {} additional issue(s)... (pass {pass}/{MAX_AUTO_FIX_PASSES})",
-                        pending_fixable.len()
-                    );
-                }
-
-                install_fixable_items(pending_fixable).await;
-
-                line!();
-                let verify_spinner = shell::spinner("Re-running diagnostics...");
-                let verification_items = doctor().await;
-                if let Some(pb) = verify_spinner {
-                    pb.finish_and_clear();
-                }
-
-                let (remaining_missing, remaining_manual, next_fixable) =
-                    collect_remaining_missing(verification_items);
-
-                if remaining_missing == 0 {
-                    success!("All detected issues were fixed.");
-                    break;
-                }
-
-                if next_fixable.is_empty() {
-                    if remaining_manual > 0 {
-                        warn!(
-                            "{remaining_missing} issue(s) remain, including {remaining_manual} issue(s) that require manual steps."
-                        );
-                        note!(
-                            "Follow the [manual] next-step guidance above, then run `water doctor` again."
-                        );
-                    } else {
-                        warn!(
-                            "{remaining_missing} fixable issue(s) still remain. Re-run `water doctor --fix` or inspect failure logs above."
-                        );
-                    }
-                    break;
-                }
-
-                if pass >= MAX_AUTO_FIX_PASSES {
-                    warn!(
-                        "{remaining_missing} issue(s) remain after {MAX_AUTO_FIX_PASSES} auto-fix pass(es)."
-                    );
-                    if remaining_manual > 0 {
-                        note!(
-                            "Some remaining issues require manual steps. Follow the [manual] guidance above, then re-run `water doctor --fix`."
-                        );
-                    } else {
-                        note!(
-                            "Remaining issues are still fixable. Re-run `water doctor --fix` to continue."
-                        );
-                    }
-                    break;
-                }
-
-                pending_fixable = next_fixable;
-                pass += 1;
-                line!();
-            }
+            attempt_auto_fix_loop(summary.fixable_items).await;
         }
-    } else if !fixable_items.is_empty() {
+    } else if !summary.fixable_items.is_empty() {
         warn!(
             "Some checks failed. Run `water doctor --fix` to attempt automatic fixes for {} issue(s).",
-            fixable_items.len()
+            summary.fixable_items.len()
         );
     } else {
         warn!("Some checks failed. See above for details.");
     }
+}
 
-    Ok(())
+async fn attempt_auto_fix_loop(mut pending_fixable: Vec<DoctorItem>) {
+    let mut pass = 1usize;
+
+    loop {
+        print_auto_fix_header(pass, pending_fixable.len());
+        install_fixable_items(pending_fixable).await;
+        line!();
+
+        let verification_items = run_diagnostics("Re-running diagnostics...").await;
+        let (remaining_missing, remaining_manual, next_fixable) =
+            collect_remaining_missing(verification_items);
+
+        if remaining_missing == 0 {
+            success!("All detected issues were fixed.");
+            break;
+        }
+
+        if should_stop_auto_fix(pass, remaining_missing, remaining_manual, &next_fixable) {
+            break;
+        }
+
+        pending_fixable = next_fixable;
+        pass += 1;
+        line!();
+    }
+}
+
+fn print_auto_fix_header(pass: usize, pending_count: usize) {
+    if pass == 1 {
+        header!("Attempting to fix {pending_count} issue(s)...");
+    } else {
+        header!(
+            "Attempting to fix {pending_count} additional issue(s)... (pass {pass}/{MAX_AUTO_FIX_PASSES})"
+        );
+    }
+}
+
+fn should_stop_auto_fix(
+    pass: usize,
+    remaining_missing: usize,
+    remaining_manual: usize,
+    next_fixable: &[DoctorItem],
+) -> bool {
+    if next_fixable.is_empty() {
+        if remaining_manual > 0 {
+            warn!(
+                "{remaining_missing} issue(s) remain, including {remaining_manual} issue(s) that require manual steps."
+            );
+            note!("Follow the [manual] next-step guidance above, then run `water doctor` again.");
+        } else {
+            warn!(
+                "{remaining_missing} fixable issue(s) still remain. Re-run `water doctor --fix` or inspect failure logs above."
+            );
+        }
+        return true;
+    }
+
+    if pass >= MAX_AUTO_FIX_PASSES {
+        warn!("{remaining_missing} issue(s) remain after {MAX_AUTO_FIX_PASSES} auto-fix pass(es).");
+        if remaining_manual > 0 {
+            note!(
+                "Some remaining issues require manual steps. Follow the [manual] guidance above, then re-run `water doctor --fix`."
+            );
+        } else {
+            note!("Remaining issues are still fixable. Re-run `water doctor --fix` to continue.");
+        }
+        return true;
+    }
+
+    false
 }

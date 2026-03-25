@@ -30,6 +30,9 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on Linux";
 // ============================================================================
 
 /// Build GTK4 binary for the host platform.
+///
+/// # Errors
+/// Returns an error if the backend manifest is missing, the host is unsupported, or Cargo fails.
 pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
     ensure_linux_host()?;
 
@@ -63,10 +66,10 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let details = if !stderr.is_empty() {
-            stderr.to_string()
-        } else {
+        let details = if stderr.is_empty() {
             stdout.to_string()
+        } else {
+            stderr.to_string()
         };
         bail!(
             "Failed to build GTK4 backend with cargo (status {}):\n{}",
@@ -86,6 +89,9 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 // ============================================================================
 
 /// Clean Cargo build artifacts for GTK4.
+///
+/// # Errors
+/// Returns an error if the host is unsupported or `cargo clean` fails.
 pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
     ensure_linux_host()?;
 
@@ -115,6 +121,9 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 // ============================================================================
 
 /// Package a GTK4 app (locate the built binary).
+///
+/// # Errors
+/// Returns an error if the host is unsupported, assets cannot be staged, or the built binary is missing.
 pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
     ensure_linux_host()?;
 
@@ -164,6 +173,7 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
 // ============================================================================
 
 /// Check if a platform is supported by the GTK4 backend.
+#[must_use]
 pub const fn is_gtk4_platform(platform: TargetPlatform) -> bool {
     matches!(platform, TargetPlatform::Linux)
 }

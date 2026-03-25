@@ -1,11 +1,11 @@
 //! Shared toolchain checks for terminal commands.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail};
 
 use waterui_cli::{
-    android::toolchain::{
+    android::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
         AndroidSdkPlatforms, Java, Kotlin,
     },
@@ -53,18 +53,18 @@ fn android_doctor_item_in_scope(name: &str, scope: AndroidCheckScope) -> bool {
 }
 
 fn format_path_or_missing(label: &str, path: Option<&Path>) -> String {
-    match path {
-        Some(path) => format!("- {label}: {}", path.display()),
-        None => format!("- {label}: <not detected>"),
-    }
+    path.map_or_else(
+        || format!("- {label}: <not detected>"),
+        |path| format!("- {label}: {}", path.display()),
+    )
 }
 
 async fn android_detection_summary() -> String {
     let sdk_root = AndroidSdk::detect_path();
     let d8_jar = AndroidSdk::d8_jar_path();
     let ndk_root = AndroidNdk::detect_path();
-    let java_bin = Java::detect_path().await;
-    let java_home = Java::detect_home().await;
+    let java_bin: Option<PathBuf> = Java::detect_path().await;
+    let java_home: Option<PathBuf> = Java::detect_home().await;
 
     [
         "Detected Android/JDK configuration:".to_string(),
@@ -83,10 +83,10 @@ fn format_doctor_missing_item(
     is_fixable: bool,
 ) -> String {
     let mode = if is_fixable { "fixable" } else { "manual" };
-    match message {
-        Some(message) => format!("- {name} [{mode}]: {message}"),
-        None => format!("- {name} [{mode}]"),
-    }
+    message.map_or_else(
+        || format!("- {name} [{mode}]"),
+        |message| format!("- {name} [{mode}]: {message}"),
+    )
 }
 
 async fn android_doctor_summary(scope: AndroidCheckScope) -> String {

@@ -31,9 +31,9 @@ pub enum CliPreviewPlatform {
 impl From<CliPreviewPlatform> for PreviewPlatform {
     fn from(p: CliPreviewPlatform) -> Self {
         match p {
-            CliPreviewPlatform::Ios => PreviewPlatform::IosSimulator,
-            CliPreviewPlatform::Macos => PreviewPlatform::Macos,
-            CliPreviewPlatform::Android => PreviewPlatform::Android,
+            CliPreviewPlatform::Ios => Self::IosSimulator,
+            CliPreviewPlatform::Macos => Self::Macos,
+            CliPreviewPlatform::Android => Self::Android,
         }
     }
 }
@@ -63,7 +63,7 @@ pub struct Args {
     #[arg(long, value_enum)]
     backend: Option<CliPreviewBackend>,
 
-    /// Frame size "WIDTHxHEIGHT" (default: 375x667).
+    /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
     #[arg(short, long, default_value = "375x667")]
     frame: String,
 
@@ -105,16 +105,16 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Detect sccache for compilation caching
     let sccache = Sccache;
-    let sccache_path = match sccache.path().await {
-        Ok(path) => Some(path),
-        Err(_) => {
+    let sccache_path = sccache.path().await.map_or_else(
+        |_| {
             warn!(
                 "sccache not found. Build efficiency may be reduced. Install with: {}",
                 sccache_install_hint()
             );
             None
-        }
-    };
+        },
+        Some,
+    );
 
     if backend == CliPreviewBackend::Hydrolysis {
         let spinner = shell::spinner("Building and rendering with hydrolysis...");
@@ -185,7 +185,7 @@ pub async fn run(args: Args) -> Result<()> {
         }
         Err(err) => {
             // On failure, terminate the preview app to avoid reusing a broken process.
-            let _ = session.shutdown().await;
+            session.shutdown().await?;
             Err(err)
         }
     }
@@ -203,9 +203,10 @@ fn resolve_preview_backend(
     let backend = backend_override.unwrap_or(default_backend);
     let supported = matches!(
         (platform, backend),
-        (CliPreviewPlatform::Ios, CliPreviewBackend::Apple)
-            | (CliPreviewPlatform::Macos, CliPreviewBackend::Apple)
-            | (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis)
+        (
+            CliPreviewPlatform::Ios | CliPreviewPlatform::Macos,
+            CliPreviewBackend::Apple
+        ) | (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis)
             | (CliPreviewPlatform::Android, CliPreviewBackend::Android)
     );
     if !supported {
@@ -273,7 +274,7 @@ async fn render_with_symbol(
     }
 }
 
-/// Parse frame size from "WIDTHxHEIGHT" string.
+/// Parse frame size from `WIDTHxHEIGHT` string.
 fn parse_frame(s: &str) -> Result<(f32, f32)> {
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {

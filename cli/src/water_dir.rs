@@ -62,18 +62,27 @@ const fn default_build_cache_cleanup_after_unused_days() -> u64 {
 }
 
 /// Return the Water home directory root at `~/.water`.
+///
+/// # Errors
+/// Returns an error if the current user's home directory cannot be determined.
 pub fn water_home_dir() -> eyre::Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("Could not determine home directory"))?;
     Ok(home.join(".water"))
 }
 
 /// Ensure `~/.water/config.toml` exists and return the parsed configuration.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be created or the config cannot be read or written.
 pub async fn ensure_global_config() -> eyre::Result<WaterConfig> {
     let water_home = water_home_dir()?;
     ensure_global_config_in(&water_home).await
 }
 
 /// Return the global managed build-cache root at `~/.water/build_cache`.
+///
+/// # Errors
+/// Returns an error if the Water config cannot be loaded or the cache root cannot be created.
 pub async fn build_cache_root() -> eyre::Result<PathBuf> {
     let water_home = water_home_dir()?;
     let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
@@ -81,6 +90,9 @@ pub async fn build_cache_root() -> eyre::Result<PathBuf> {
 }
 
 /// Return the managed build-cache directory for a project.
+///
+/// # Errors
+/// Returns an error if the project root cannot be canonicalized or the global cache root cannot be resolved.
 pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
     let cache_root = build_cache_root().await?;
@@ -88,6 +100,9 @@ pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBu
 }
 
 /// Ensure the managed build-cache directory exists for a project and return it.
+///
+/// # Errors
+/// Returns an error if the project root cannot be canonicalized, config loading fails, or cache directories cannot be created.
 pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir()?;
@@ -96,6 +111,9 @@ pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<Pat
 }
 
 /// Remove the managed build cache for a project.
+///
+/// # Errors
+/// Returns an error if the project root cannot be canonicalized or cache entries cannot be removed.
 pub async fn remove_project_build_cache(project_root: &Path) -> eyre::Result<()> {
     let project_root = canonicalize_project_root(project_root)?;
     let cache_root = build_cache_root().await?;

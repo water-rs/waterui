@@ -68,7 +68,10 @@ pub async fn run(args: Args) -> Result<()> {
         BackendCommand::Remove(remove) => {
             remove_backend(&mut project, remove.backend, remove.yes).await
         }
-        BackendCommand::List => list_backends(&project),
+        BackendCommand::List => {
+            list_backends(&project);
+            Ok(())
+        }
     }
 }
 
@@ -188,7 +191,7 @@ async fn remove_backend(project: &mut Project, backend: BackendName, yes: bool) 
     Ok(())
 }
 
-fn list_backends(project: &Project) -> Result<()> {
+fn list_backends(project: &Project) {
     header!("Configured backends");
     let mut configured = 0usize;
 
@@ -212,10 +215,9 @@ fn list_backends(project: &Project) -> Result<()> {
     if configured == 0 {
         line!("  (none)");
     }
-    Ok(())
 }
 
-fn is_backend_configured(project: &Project, backend: BackendName) -> bool {
+const fn is_backend_configured(project: &Project, backend: BackendName) -> bool {
     match backend {
         BackendName::Apple => project.apple_backend().is_some(),
         BackendName::Android => project.android_backend().is_some(),
