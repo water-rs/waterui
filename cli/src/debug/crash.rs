@@ -158,7 +158,7 @@ pub async fn find_macos_ips_crash_report_since(
         let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await;
         crash_debug!(
             "Found {} candidates with *.ips pattern",
-            candidates.as_ref().map_or(0, |v| v.len())
+            candidates.as_ref().map_or(0, std::vec::Vec::len)
         );
         if let Some(c) = candidates {
             best = pick_best_ips_report(c, app_identifier, pid, since).await;
@@ -229,11 +229,11 @@ async fn pick_best_ips_report(
                 );
                 continue;
             }
-            (None, Some(_expected_pid), None) => {
+            (None, Some(expected_pid), None) => {
                 crash_debug!(
                     "Skipping {} - no bundle_id and no pid in report (expected pid {})",
                     path.display(),
-                    _expected_pid
+                    expected_pid
                 );
                 continue;
             }
@@ -391,10 +391,10 @@ fn extract_ips_crash_summary(crash: &serde_json::Value) -> String {
         }
     }
 
-    if let Some(termination) = crash.get("termination") {
-        if let Some(indicator) = termination.get("indicator").and_then(|v| v.as_str()) {
-            parts.push(format!("Reason: {indicator}"));
-        }
+    if let Some(termination) = crash.get("termination")
+        && let Some(indicator) = termination.get("indicator").and_then(|v| v.as_str())
+    {
+        parts.push(format!("Reason: {indicator}"));
     }
 
     if parts.is_empty() {

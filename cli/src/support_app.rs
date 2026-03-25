@@ -5,10 +5,12 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, bail, eyre};
 use tracing::info;
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
     Ok(crate::water_dir::water_home_dir()?.join(name))
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn ensure_support_app<F, Fut>(
     path: &Path,
     metadata_file: &str,

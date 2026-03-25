@@ -12,7 +12,7 @@ pub mod rust;
 pub mod sccache;
 pub mod web;
 pub mod windows_arm64_llvm;
-pub mod winget;
+pub(crate) mod winget;
 /// A toolchain that cannot be fixed automatically.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Unfixable toolchain: {message}\nSuggestion: {suggestion}")]

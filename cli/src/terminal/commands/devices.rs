@@ -12,8 +12,8 @@ use smol::future::zip;
 use smol::process::Command;
 use waterui_cli::{
     android::{
+        AndroidSdk,
         device::{AndroidDevice, emulator_avd_name_with_adb},
-        toolchain::AndroidSdk,
     },
     apple::device::AppleSimulator,
     device::Device,
@@ -153,7 +153,7 @@ async fn run_json(args: Args) -> Result<()> {
 
 /// Scan iOS simulators.
 async fn scan_ios_devices() -> Result<Vec<AppleSimulator>> {
-    Ok(AppleSimulator::scan_ios().await?)
+    AppleSimulator::scan_ios().await
 }
 
 fn resolve_android_adb() -> Result<PathBuf> {
