@@ -1,4 +1,4 @@
-//! Platform abstraction for `WaterUI` CLI
+//! Platform abstraction for `WaterUI` CLI.
 
 use std::str::FromStr;
 
@@ -10,10 +10,10 @@ use target_lexicon::{
 // Target Platform Enum (New Architecture)
 // ============================================================================
 
-/// Target platform for building and running WaterUI apps.
+/// Target platform for building and running `WaterUI` apps.
 ///
 /// This enum replaces the old `Platform` trait with a simpler, more explicit model.
-/// Each variant represents a specific target platform that WaterUI can build for.
+/// Each variant represents a specific target platform that `WaterUI` can build for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetPlatform {
     // Apple platforms
@@ -62,6 +62,9 @@ pub enum TargetBackend {
 
 impl TargetPlatform {
     /// Get the target triple for this platform.
+    ///
+    /// # Panics
+    /// May panic if `target_lexicon` cannot resolve the current host triple for simulator or host-native targets.
     #[must_use]
     pub fn triple(&self) -> Triple {
         match self {
@@ -142,8 +145,7 @@ impl TargetPlatform {
                 environment: Environment::Android,
                 binary_format: target_lexicon::BinaryFormat::Elf,
             },
-            Self::Linux => Triple::host(),
-            Self::Windows => Triple::host(),
+            Self::Linux | Self::Windows => Triple::host(),
             Self::Web => Triple::from_str("wasm32-unknown-unknown")
                 .expect("web target triple must remain valid"),
         }
@@ -164,8 +166,7 @@ impl TargetPlatform {
             | Self::VisionOSSimulator => &[TargetBackend::Apple],
             Self::Android => &[TargetBackend::Android],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
-            Self::Windows => &[TargetBackend::Hydrolysis],
-            Self::Web => &[TargetBackend::Hydrolysis],
+            Self::Windows | Self::Web => &[TargetBackend::Hydrolysis],
         }
     }
 
@@ -184,8 +185,7 @@ impl TargetPlatform {
             | Self::VisionOSSimulator => TargetBackend::Apple,
             Self::Android => TargetBackend::Android,
             Self::Linux => TargetBackend::Gtk4,
-            Self::Windows => TargetBackend::Hydrolysis,
-            Self::Web => TargetBackend::Hydrolysis,
+            Self::Windows | Self::Web => TargetBackend::Hydrolysis,
         }
     }
 

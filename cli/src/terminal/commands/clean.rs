@@ -50,8 +50,8 @@ pub struct Args {
     #[arg(long, default_value = ".")]
     path: PathBuf,
 
-    /// Recursively find all valid WaterUI projects under `--path` and clean each playground
-    /// project's managed build cache plus each app project's Cargo target directory.
+    /// Recursively find all valid `WaterUI` projects under `--path` and clean each playground
+    /// project's managed build cache plus each app project's `Cargo` target directory.
     #[arg(short = 'r', long)]
     recursive: bool,
 
@@ -76,7 +76,7 @@ pub async fn run(args: Args) -> Result<()> {
                 args.backend
             );
         }
-        if args.path != PathBuf::from(".") {
+        if args.path != Path::new(".") {
             warn!(
                 "Ignoring `--path {}` when cleaning the global build cache",
                 args.path.display()
@@ -277,7 +277,7 @@ fn ensure_recursive_root_is_directory(root: &Path) -> Result<()> {
 
 async fn discover_projects(root: &Path) -> Result<Vec<PathBuf>> {
     let root = root.to_path_buf();
-    smol::unblock(move || discover_projects_blocking(&root)).await
+    Ok(smol::unblock(move || discover_projects_blocking(&root)).await)
 }
 
 #[derive(Debug)]
@@ -358,7 +358,7 @@ async fn resolve_target_dir(
     .await
 }
 
-fn discover_projects_blocking(root: &Path) -> Result<Vec<PathBuf>> {
+fn discover_projects_blocking(root: &Path) -> Vec<PathBuf> {
     let mut project_roots = BTreeSet::new();
     let mut builder = WalkBuilder::new(root);
     builder.hidden(false);
@@ -368,7 +368,7 @@ fn discover_projects_blocking(root: &Path) -> Result<Vec<PathBuf>> {
     builder.git_global(false);
     builder.git_exclude(false);
     builder.require_git(false);
-    builder.filter_entry(|entry| should_descend(entry));
+    builder.filter_entry(should_descend);
 
     for entry in builder.build() {
         let Ok(entry) = entry else {
@@ -393,7 +393,7 @@ fn discover_projects_blocking(root: &Path) -> Result<Vec<PathBuf>> {
         project_roots.insert(project_root.to_path_buf());
     }
 
-    Ok(project_roots.into_iter().collect())
+    project_roots.into_iter().collect()
 }
 
 fn should_descend(entry: &DirEntry) -> bool {
@@ -464,7 +464,7 @@ fn make_progress_bar(total: u64) -> Option<ProgressBar> {
 
 fn clean_parallelism() -> usize {
     std::thread::available_parallelism()
-        .map(|v| v.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(4)
         .clamp(2, 16)
 }

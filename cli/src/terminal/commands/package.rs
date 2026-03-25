@@ -14,6 +14,7 @@ use waterui_cli::{
     apple::toolchain::AppleSdk,
     backend::reinit_backend,
     build::BuildOptions,
+    device::Artifact,
     gtk4::{
         backend::Gtk4Backend,
         platform::{build_gtk4, package_gtk4},
@@ -114,35 +115,71 @@ pub struct Args {
     arch: Vec<AndroidArch>,
 }
 
+struct PackagingContext {
+    project: Project,
+    backend: TargetBackend,
+    build_options: BuildOptions,
+}
+
 /// Run the package command.
 pub async fn run(args: Args) -> Result<()> {
+    let context = prepare_packaging_context(&args).await?;
+    print_packaging_header(
+        &context.project,
+        args.platform,
+        context.backend,
+        args.release,
+        args.distribution,
+    );
+    check_packaging_toolchain(args.platform, context.backend).await?;
+    build_packaging_artifacts(&args, &context).await?;
+    package_artifact(&args, &context).await
+}
+
+async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let mut project = Project::open(&project_path).await?;
+    let project = Project::open(&project_path).await?;
     let backend = resolve_backend(args.platform, args.backend)?;
 
     validate_arch_args(backend, &args.arch)?;
     validate_desktop_backend_platform_on_host(args.platform, backend)?;
+    ensure_packaging_backend_ready(&project, backend)?;
+    let project = ensure_packaging_backend_generated(&project_path, project, backend).await?;
 
-    // Validate backend presence for app mode and lazily initialize generated backends in playground mode.
-    if !project.is_playground() {
-        match backend {
-            TargetBackend::Apple if project.apple_backend().is_none() => {
-                bail!("Apple backend is not configured. Run `water backend add apple`.")
-            }
-            TargetBackend::Android if project.android_backend().is_none() => {
-                bail!("Android backend is not configured. Run `water backend add android`.")
-            }
-            TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-                bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
-            }
-            TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-                bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
-            }
-            _ => {}
-        }
+    Ok(PackagingContext {
+        project,
+        backend,
+        build_options: BuildOptions::new(args.release),
+    })
+}
+
+fn ensure_packaging_backend_ready(project: &Project, backend: TargetBackend) -> Result<()> {
+    if project.is_playground() {
+        return Ok(());
     }
 
-    // Playground mode keeps generated backends in `.water`; regenerate managed backend glue when needed.
+    match backend {
+        TargetBackend::Apple if project.apple_backend().is_none() => {
+            bail!("Apple backend is not configured. Run `water backend add apple`.")
+        }
+        TargetBackend::Android if project.android_backend().is_none() => {
+            bail!("Android backend is not configured. Run `water backend add android`.")
+        }
+        TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+        }
+        TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn ensure_packaging_backend_generated(
+    project_path: &PathBuf,
+    project: Project,
+    backend: TargetBackend,
+) -> Result<Project> {
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
             let needs_reinit = project.gtk4_backend().is_none()
@@ -150,162 +187,245 @@ pub async fn run(args: Args) -> Result<()> {
                     .backend_path::<Gtk4Backend>()
                     .join("Cargo.toml")
                     .exists();
-            if needs_reinit {
-                let spinner = shell::spinner("Initializing GTK4 backend...");
-                reinit_backend::<Gtk4Backend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("GTK4 backend initialized");
-            }
+            ensure_packaging_generated_backend::<Gtk4Backend>(
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing GTK4 backend...",
+                "GTK4 backend initialized",
+            )
+            .await
         }
         TargetBackend::Hydrolysis if project.is_playground() => {
             let needs_reinit = project.hydrolysis_backend().is_none()
                 || HydrolysisBackend::requires_regeneration(&project)?;
-            if needs_reinit {
-                let spinner = shell::spinner("Initializing hydrolysis backend...");
-                reinit_backend::<HydrolysisBackend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Hydrolysis backend initialized");
-            }
+            ensure_packaging_generated_backend::<HydrolysisBackend>(
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing hydrolysis backend...",
+                "Hydrolysis backend initialized",
+            )
+            .await
         }
-        _ => {}
+        _ => Ok(project),
+    }
+}
+
+async fn ensure_packaging_generated_backend<T>(
+    project_path: &PathBuf,
+    project: Project,
+    needs_reinit: bool,
+    spinner_message: &str,
+    success_message: &str,
+) -> Result<Project>
+where
+    T: waterui_cli::backend::Backend,
+{
+    if !needs_reinit {
+        return Ok(project);
     }
 
-    let mode = if args.release { "release" } else { "debug" };
-    let dist = if args.distribution {
-        " (distribution)"
-    } else {
-        ""
-    };
+    let spinner = shell::spinner(spinner_message);
+    reinit_backend::<T>(&project).await?;
+    let project = Project::open(project_path).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("{success_message}");
+    Ok(project)
+}
 
+fn print_packaging_header(
+    project: &Project,
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    release: bool,
+    distribution: bool,
+) {
+    let mode = if release { "release" } else { "debug" };
+    let dist = if distribution { " (distribution)" } else { "" };
     header!(
         "Packaging {} for {} via {} ({}){}",
         project.crate_name(),
-        platform_name(args.platform),
+        platform_name(platform),
         backend_name(backend),
         mode,
         dist
     );
+}
 
-    // Step 1: Check toolchain
+async fn check_packaging_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(args.platform, backend).await?;
+    check_toolchain_for_backend(platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!("Toolchain ready");
+    Ok(())
+}
 
-    // Step 2: Build (package requires built artifacts)
-    let build_options = BuildOptions::new(args.release);
-    match backend {
+async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> Result<()> {
+    match context.backend {
         TargetBackend::Android => {
-            AndroidPlatform::clean_jni_libs(&project).await?;
-            for arch in &args.arch {
-                let abi = arch.to_abi();
-                let spinner =
-                    shell::spinner(format!("Building Rust library ({})...", abi.as_str()));
-                display_output(AndroidPlatform::new(abi).build(&project, build_options.clone()))
-                    .await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Built for {}", abi.as_str());
-            }
+            build_android_packaging_artifacts(
+                &context.project,
+                &args.arch,
+                context.build_options.clone(),
+            )
+            .await
         }
         TargetBackend::Apple => {
-            let spinner = shell::spinner("Building Rust library...");
-            display_output(build_rust_lib(
-                &project,
-                lib_platform(args.platform),
-                build_options,
-            ))
-            .await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Built Rust library");
+            build_apple_packaging_artifacts(
+                &context.project,
+                args.platform,
+                context.build_options.clone(),
+            )
+            .await
         }
         TargetBackend::Gtk4 => {
-            let spinner = shell::spinner("Building GTK4 app...");
-            display_output(build_gtk4(&project, build_options)).await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Built GTK4 app");
+            build_gtk4_packaging_artifacts(&context.project, context.build_options.clone()).await
         }
         TargetBackend::Hydrolysis => {
-            if args.platform != TargetPlatform::Web {
-                let spinner = shell::spinner("Building hydrolysis app...");
-                display_output(build_hydrolysis(
-                    &project,
-                    hydrolysis_platform(args.platform),
-                    build_options,
-                ))
-                .await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Built hydrolysis app");
-            }
+            build_hydrolysis_packaging_artifacts(
+                &context.project,
+                args.platform,
+                context.build_options.clone(),
+            )
+            .await
         }
     }
+}
 
-    // Step 3: Package
+async fn build_android_packaging_artifacts(
+    project: &Project,
+    arch: &[AndroidArch],
+    build_options: BuildOptions,
+) -> Result<()> {
+    AndroidPlatform::clean_jni_libs(project).await?;
+    for arch in arch {
+        let abi = arch.to_abi();
+        let spinner = shell::spinner(format!("Building Rust library ({})...", abi.as_str()));
+        display_output(AndroidPlatform::new(abi).build(project, build_options.clone())).await?;
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        success!("Built for {}", abi.as_str());
+    }
+    Ok(())
+}
+
+async fn build_apple_packaging_artifacts(
+    project: &Project,
+    platform: TargetPlatform,
+    build_options: BuildOptions,
+) -> Result<()> {
+    let spinner = shell::spinner("Building Rust library...");
+    display_output(build_rust_lib(
+        project,
+        lib_platform(platform),
+        build_options,
+    ))
+    .await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("Built Rust library");
+    Ok(())
+}
+
+async fn build_gtk4_packaging_artifacts(
+    project: &Project,
+    build_options: BuildOptions,
+) -> Result<()> {
+    let spinner = shell::spinner("Building GTK4 app...");
+    display_output(build_gtk4(project, build_options)).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("Built GTK4 app");
+    Ok(())
+}
+
+async fn build_hydrolysis_packaging_artifacts(
+    project: &Project,
+    platform: TargetPlatform,
+    build_options: BuildOptions,
+) -> Result<()> {
+    if platform == TargetPlatform::Web {
+        return Ok(());
+    }
+
+    let spinner = shell::spinner("Building hydrolysis app...");
+    display_output(build_hydrolysis(
+        project,
+        hydrolysis_platform(platform),
+        build_options,
+    ))
+    .await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("Built hydrolysis app");
+    Ok(())
+}
+
+async fn package_artifact(args: &Args, context: &PackagingContext) -> Result<()> {
     let spinner = shell::spinner("Packaging application...");
-    let package_options = PackageOptions::new(args.distribution, !args.release);
-    let artifact = match backend {
-        TargetBackend::Android => {
-            let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
-            display_output(AndroidPlatform::package_with_abis(
-                &project,
-                package_options,
-                &abis,
-            ))
-            .await?
-        }
-        TargetBackend::Apple => {
-            display_output(package_apple(
-                &project,
-                lib_platform(args.platform),
-                package_options,
-            ))
-            .await?
-        }
-        TargetBackend::Gtk4 => display_output(package_gtk4(&project, package_options)).await?,
-        TargetBackend::Hydrolysis => {
-            display_output(package_hydrolysis(
-                &project,
-                hydrolysis_platform(args.platform),
-                package_options,
-            ))
-            .await?
-        }
-    };
-
+    let artifact = display_output(package_artifact_inner(args, context)).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!("Packaged at {}", artifact.path().display());
-
     Ok(())
 }
 
+async fn package_artifact_inner(args: &Args, context: &PackagingContext) -> Result<Artifact> {
+    let package_options = PackageOptions::new(args.distribution, !args.release);
+    match context.backend {
+        TargetBackend::Android => {
+            let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
+            AndroidPlatform::package_with_abis(&context.project, package_options, &abis).await
+        }
+        TargetBackend::Apple => {
+            package_apple(
+                &context.project,
+                lib_platform(args.platform),
+                package_options,
+            )
+            .await
+        }
+        TargetBackend::Gtk4 => package_gtk4(&context.project, package_options).await,
+        TargetBackend::Hydrolysis => {
+            package_hydrolysis(
+                &context.project,
+                hydrolysis_platform(args.platform),
+                package_options,
+            )
+            .await
+        }
+    }
+}
+
 fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<TargetBackend> {
-    let supported = match (platform, backend) {
-        (TargetPlatform::Ios | TargetPlatform::IosSimulator, TargetBackend::Apple) => true,
-        (TargetPlatform::Android, TargetBackend::Android) => true,
-        (TargetPlatform::Macos, TargetBackend::Apple) => true,
-        (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Linux, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Web, TargetBackend::Hydrolysis) => true,
-        _ => false,
-    };
+    let supported = matches!(
+        (platform, backend),
+        (
+            TargetPlatform::Ios | TargetPlatform::IosSimulator,
+            TargetBackend::Apple
+        ) | (
+            TargetPlatform::Macos,
+            TargetBackend::Apple | TargetBackend::Hydrolysis
+        ) | (TargetPlatform::Android, TargetBackend::Android)
+            | (
+                TargetPlatform::Linux,
+                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+            )
+            | (
+                TargetPlatform::Windows | TargetPlatform::Web,
+                TargetBackend::Hydrolysis
+            )
+    );
 
     if !supported {
         bail!(

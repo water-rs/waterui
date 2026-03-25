@@ -450,16 +450,14 @@ impl<'a> PanicReport<'a> {
                     .iter()
                     .position(|l| l.starts_with("Crash report:"))
                     .map_or(lines.len(), |pos| i + pos);
-                if extra_end > i {
-                    let extra_lines: Vec<&str> = lines[i..extra_end]
+                if extra_end > i
+                    && lines[i..extra_end]
                         .iter()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    if !extra_lines.is_empty() {
-                        // We'll store the first line as extra
-                        extra = Some(lines[i].trim());
-                    }
+                        .map(|line| line.trim())
+                        .any(|line| !line.is_empty())
+                {
+                    // We'll store the first line as extra
+                    extra = Some(lines[i].trim());
                 }
             }
         }
@@ -479,12 +477,12 @@ impl Shell {
     /// Display a panic report with colored output and code context.
     pub fn panic_report(&self, report: &PanicReport<'_>) -> io::Result<()> {
         match &self.output {
-            ShellOut::Human => self.panic_report_human(report),
-            ShellOut::Json => self.panic_report_json(report),
+            ShellOut::Human => Self::panic_report_human(report),
+            ShellOut::Json => Self::panic_report_json(report),
         }
     }
 
-    fn panic_report_human(&self, report: &PanicReport<'_>) -> io::Result<()> {
+    fn panic_report_human(report: &PanicReport<'_>) -> io::Result<()> {
         use std::fs::File;
         use std::io::BufRead;
         use std::path::Path;
@@ -522,53 +520,52 @@ impl Shell {
             };
 
             // Try to read and display code context
-            if let Some(ref resolved) = resolved_path {
-                if let Ok(source_file) = File::open(resolved) {
-                    let reader = io::BufReader::new(source_file);
-                    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+            if let Some(ref resolved) = resolved_path
+                && let Ok(source_file) = File::open(resolved)
+            {
+                let reader = io::BufReader::new(source_file);
+                let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
-                    let line_idx = line.saturating_sub(1);
-                    let start = line_idx.saturating_sub(1);
-                    let end = (line_idx + 2).min(lines.len());
+                let line_idx = line.saturating_sub(1);
+                let start = line_idx.saturating_sub(1);
+                let end = (line_idx + 2).min(lines.len());
 
-                    // Calculate the width needed for line numbers
-                    let max_line_num = end;
-                    let line_num_width = max_line_num.to_string().len();
+                // Calculate the width needed for line numbers
+                let max_line_num = end;
+                let line_num_width = max_line_num.to_string().len();
 
-                    writeln!(stderr, "    {line_num_style}|{reset}")?;
+                writeln!(stderr, "    {line_num_style}|{reset}")?;
 
-                    for (idx, source_line) in lines[start..end].iter().enumerate() {
-                        let current_line = start + idx + 1;
-                        let is_panic_line = current_line == line;
+                for (idx, source_line) in lines[start..end].iter().enumerate() {
+                    let current_line = start + idx + 1;
+                    let is_panic_line = current_line == line;
 
-                        if is_panic_line {
-                            // Highlight the panic line
-                            writeln!(
-                                stderr,
-                                "{error_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {highlight_style}{source_line}{reset}"
-                            )?;
+                    if is_panic_line {
+                        // Highlight the panic line
+                        writeln!(
+                            stderr,
+                            "{error_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {highlight_style}{source_line}{reset}"
+                        )?;
 
-                            // Print the column indicator
-                            let col_offset = col.saturating_sub(1);
-                            let spaces = " ".repeat(col_offset);
-                            let carets = "^".repeat(
-                                source_line.len().saturating_sub(col_offset).min(20).max(1),
-                            );
-                            writeln!(
-                                stderr,
-                                "{:>line_num_width$} {line_num_style}|{reset} {spaces}{error_style}{carets}{reset}",
-                                ""
-                            )?;
-                        } else {
-                            writeln!(
-                                stderr,
-                                "{line_num_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {source_line}"
-                            )?;
-                        }
+                        // Print the column indicator
+                        let col_offset = col.saturating_sub(1);
+                        let spaces = " ".repeat(col_offset);
+                        let carets =
+                            "^".repeat(source_line.len().saturating_sub(col_offset).clamp(1, 20));
+                        writeln!(
+                            stderr,
+                            "{:>line_num_width$} {line_num_style}|{reset} {spaces}{error_style}{carets}{reset}",
+                            ""
+                        )?;
+                    } else {
+                        writeln!(
+                            stderr,
+                            "{line_num_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {source_line}"
+                        )?;
                     }
-
-                    writeln!(stderr, "    {line_num_style}|{reset}")?;
                 }
+
+                writeln!(stderr, "    {line_num_style}|{reset}")?;
             }
         }
 
@@ -587,7 +584,7 @@ impl Shell {
         stderr.flush()
     }
 
-    fn panic_report_json(&self, report: &PanicReport<'_>) -> io::Result<()> {
+    fn panic_report_json(report: &PanicReport<'_>) -> io::Result<()> {
         #[derive(Serialize)]
         struct JsonPanic<'a> {
             #[serde(rename = "type")]

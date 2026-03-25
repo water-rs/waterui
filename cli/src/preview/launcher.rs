@@ -68,6 +68,9 @@ pub struct BuiltDylib {
 
 impl PreviewSession {
     /// Build the user's project as a dylib.
+    ///
+    /// # Errors
+    /// Returns an error if the project cannot be opened, rebuilt, or fingerprinted.
     pub async fn build_dylib(&mut self, project_path: &std::path::Path) -> Result<BuiltDylib> {
         build_preview_dylib(
             project_path,
@@ -81,6 +84,9 @@ impl PreviewSession {
     }
 
     /// Render a preview and return PNG bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the preview app rejects the render or the transport fails.
     pub async fn render(
         &mut self,
         dylib: &BuiltDylib,
@@ -95,6 +101,9 @@ impl PreviewSession {
     }
 
     /// Shutdown the preview app if this session launched it.
+    ///
+    /// # Errors
+    /// This method currently does not return an operational error.
     pub async fn shutdown(&mut self) -> Result<()> {
         let _ = self.client.shutdown().await;
         if self.owns_app {
@@ -117,7 +126,7 @@ impl PreviewSession {
     }
 }
 
-pub(crate) async fn build_preview_dylib(
+async fn build_preview_dylib(
     project_path: &Path,
     platform: PreviewPlatform,
     watcher: &mut ProjectWatcher,
@@ -227,7 +236,7 @@ async fn compute_dylib_id(path: &Path) -> Result<DylibId> {
 
         let mut file = std::fs::File::open(&path)?;
         let mut hasher = sha2::Sha256::new();
-        let mut buf = [0u8; 64 * 1024];
+        let mut buf = vec![0u8; 64 * 1024];
         loop {
             let n = file.read(&mut buf)?;
             if n == 0 {
@@ -262,127 +271,168 @@ pub async fn launch_preview_session(
 ) -> Result<PreviewSession> {
     let requirements = resolve_preview_requirements(project_path).await?;
     let expected_fingerprint = requirements.runtime_fingerprint.clone();
-
     let tcp_config = PreviewTcpConfig::from_env()
         .map_err(|e| color_eyre::eyre::eyre!(e))
         .wrap_err("Invalid preview TCP config")?;
 
-    // First, try to connect to an already-running preview app
-    if let Ok(client) = PreviewAppClient::connect(tcp_config, &expected_fingerprint).await {
-        info!("Connected to existing preview app");
-        return Ok(PreviewSession {
-            client,
-            watcher: ProjectWatcher::new(),
-            platform,
-            dylib_path: None,
-            running: None,
-            owns_app: false,
-            sccache_path,
-            runtime_fingerprint: expected_fingerprint.clone(),
-        });
+    if let Some(session) = try_connect_existing_preview_app(
+        tcp_config,
+        &expected_fingerprint,
+        platform,
+        sccache_path.clone(),
+    )
+    .await?
+    {
+        return Ok(session);
     }
 
+    let project = open_preview_support_project(&requirements).await?;
+    let running = launch_preview_app_for_platform(&project, platform).await?;
+    build_preview_session_from_launch(
+        running,
+        platform,
+        tcp_config,
+        expected_fingerprint,
+        sccache_path,
+    )
+    .await
+}
+
+async fn try_connect_existing_preview_app(
+    tcp_config: PreviewTcpConfig,
+    expected_fingerprint: &str,
+    platform: PreviewPlatform,
+    sccache_path: Option<PathBuf>,
+) -> Result<Option<PreviewSession>> {
+    let Ok(client) = PreviewAppClient::connect(tcp_config, expected_fingerprint).await else {
+        return Ok(None);
+    };
+
+    info!("Connected to existing preview app");
+    Ok(Some(PreviewSession {
+        client,
+        watcher: ProjectWatcher::new(),
+        platform,
+        dylib_path: None,
+        running: None,
+        owns_app: false,
+        sccache_path,
+        runtime_fingerprint: expected_fingerprint.to_string(),
+    }))
+}
+
+async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
     info!("No preview app running, launching...");
-
-    // Ensure the preview support app exists and is up to date
     let preview_app_path = preview_support_path()?;
-    ensure_preview_support_app(&preview_app_path, &requirements).await?;
-
-    // Open the preview app project
-    let project = Project::open(&preview_app_path)
+    ensure_preview_support_app(&preview_app_path, requirements).await?;
+    Project::open(&preview_app_path)
         .await
-        .wrap_err("Failed to open preview app project")?;
+        .wrap_err("Failed to open preview app project")
+}
 
-    // Launch based on platform
-    let running = match platform {
-        PreviewPlatform::Macos => {
-            let backend = project
-                .apple_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
-            let device = Local;
-            device.launch().await?;
-            info!("Building and running preview app on macOS...");
-            let run_options = preview_run_options();
-            project
-                .run_with_options(backend, TargetPlatform::MacOS, device, run_options)
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
-        }
-        PreviewPlatform::IosSimulator => {
-            let backend = project
-                .apple_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
-
-            // Find an iOS simulator
-            let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
-            let simulator = simulators
-                .iter()
-                .find(|s| s.state == "Booted")
-                .cloned()
-                .or_else(|| simulators.into_iter().next())
-                .ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "No iOS simulator available. Please create one in Xcode."
-                    )
-                })?;
-
-            simulator.launch().await?;
-            info!("Building and running preview app on iOS Simulator...");
-            let run_options = preview_run_options();
-            project
-                .run_with_options(
-                    backend,
-                    TargetPlatform::IOSSimulator,
-                    simulator,
-                    run_options,
-                )
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
-        }
+async fn launch_preview_app_for_platform(
+    project: &Project,
+    platform: PreviewPlatform,
+) -> Result<Running> {
+    match platform {
+        PreviewPlatform::Macos => launch_preview_on_macos(project).await,
+        PreviewPlatform::IosSimulator => launch_preview_on_ios_simulator(project).await,
         PreviewPlatform::Ios => {
             bail!("Physical iOS devices are not yet supported for preview");
         }
-        PreviewPlatform::Android => {
-            let backend = project
-                .android_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Android backend not configured"))?;
+        PreviewPlatform::Android => launch_preview_on_android(project).await,
+    }
+}
 
-            // Find an Android device or emulator
-            let devices = crate::android::device::AndroidDevice::scan().await?;
+async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
+    let backend = project
+        .apple_backend()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+    let device = Local;
+    device.launch().await?;
+    info!("Building and running preview app on macOS...");
+    project
+        .run_with_options(
+            backend,
+            TargetPlatform::MacOS,
+            device,
+            preview_run_options(),
+        )
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+}
 
-            if let Some(device) = devices.into_iter().next() {
-                device.launch().await?;
-                info!("Building and running preview app on Android device...");
-                let run_options = preview_run_options();
-                project
-                    .run_android_with_options(backend, device, run_options)
-                    .await
-                    .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
-            } else {
-                // Try emulator
-                let avds = crate::android::platform::AndroidPlatform::list_avds().await?;
-                let avd_name = avds.into_iter().next().ok_or_else(|| {
-                    color_eyre::eyre::eyre!("No Android devices or emulators available.")
-                })?;
-                let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
-                emulator.launch().await?;
-                info!("Building and running preview app on Android emulator...");
-                let run_options = preview_run_options();
-                project
-                    .run_android_with_options(backend, emulator, run_options)
-                    .await
-                    .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
-            }
-        }
-    };
+async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
+    let backend = project
+        .apple_backend()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+    let simulator = select_preview_ios_simulator().await?;
+    simulator.launch().await?;
+    info!("Building and running preview app on iOS Simulator...");
+    project
+        .run_with_options(
+            backend,
+            TargetPlatform::IOSSimulator,
+            simulator,
+            preview_run_options(),
+        )
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+}
 
+async fn select_preview_ios_simulator() -> Result<crate::apple::device::AppleSimulator> {
+    let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
+    simulators
+        .iter()
+        .find(|simulator| simulator.state == "Booted")
+        .cloned()
+        .or_else(|| simulators.into_iter().next())
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("No iOS simulator available. Please create one in Xcode.")
+        })
+}
+
+async fn launch_preview_on_android(project: &Project) -> Result<Running> {
+    let backend = project
+        .android_backend()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Android backend not configured"))?;
+
+    if let Some(device) = crate::android::device::AndroidDevice::scan()
+        .await?
+        .into_iter()
+        .next()
+    {
+        device.launch().await?;
+        info!("Building and running preview app on Android device...");
+        return project
+            .run_android_with_options(backend, device, preview_run_options())
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"));
+    }
+
+    let avd_name = crate::android::platform::AndroidPlatform::list_avds()
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("No Android devices or emulators available."))?;
+    let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
+    emulator.launch().await?;
+    info!("Building and running preview app on Android emulator...");
+    project
+        .run_android_with_options(backend, emulator, preview_run_options())
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+}
+
+async fn build_preview_session_from_launch(
+    running: Running,
+    platform: PreviewPlatform,
+    tcp_config: PreviewTcpConfig,
+    expected_fingerprint: String,
+    sccache_path: Option<PathBuf>,
+) -> Result<PreviewSession> {
     info!("Preview app launched, waiting for TCP connection...");
-
-    // Wait for TCP connection while monitoring for crashes
-    let result =
-        wait_for_connection_or_crash(running, platform, tcp_config, &expected_fingerprint).await;
-
-    match result {
+    match wait_for_connection_or_crash(running, platform, tcp_config, &expected_fingerprint).await {
         ConnectionResult::Connected { client, running } => Ok(PreviewSession {
             client,
             watcher: ProjectWatcher::new(),
@@ -391,11 +441,9 @@ pub async fn launch_preview_session(
             running: Some(running),
             owns_app: true,
             sccache_path,
-            runtime_fingerprint: expected_fingerprint.clone(),
+            runtime_fingerprint: expected_fingerprint,
         }),
-        ConnectionResult::Crashed(message) => {
-            bail!("Preview app crashed:\n{message}")
-        }
+        ConnectionResult::Crashed(message) => bail!("Preview app crashed:\n{message}"),
         ConnectionResult::Exited => {
             bail!("Preview app exited unexpectedly.\nCheck the app logs for more information.")
         }
@@ -447,11 +495,17 @@ async fn wait_for_connection_or_crash(
         {
             match event {
                 DeviceEvent::Crashed(message) => {
-                    info!("App crashed after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
+                    info!(
+                        "App crashed after {}ms",
+                        u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
+                    );
                     return ConnectionResult::Crashed(message);
                 }
                 DeviceEvent::Exited => {
-                    info!("App exited after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
+                    info!(
+                        "App exited after {}ms",
+                        u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
+                    );
                     return ConnectionResult::Exited;
                 }
                 DeviceEvent::Log { level, message } => {
@@ -468,7 +522,7 @@ async fn wait_for_connection_or_crash(
         if let Ok(client) = PreviewAppClient::connect(tcp_config, expected_fingerprint).await {
             info!(
                 "Connected to preview app after {}ms",
-                (i + 1) * POLL_INTERVAL_MS as u32
+                u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
             );
             return ConnectionResult::Connected { client, running };
         }
@@ -501,12 +555,9 @@ fn preview_support_path() -> Result<PathBuf> {
 }
 
 /// Ensure the preview support app exists and matches the current project requirements.
-async fn ensure_preview_support_app(
-    path: &PathBuf,
-    requirements: &PreviewRequirements,
-) -> Result<()> {
+async fn ensure_preview_support_app(path: &Path, requirements: &PreviewRequirements) -> Result<()> {
     let desired_signature = preview_signature(requirements);
-    let scaffold_path = path.clone();
+    let scaffold_path = path.to_path_buf();
     let scaffold_requirements = requirements.clone();
     support_app::ensure_support_app(
         path,

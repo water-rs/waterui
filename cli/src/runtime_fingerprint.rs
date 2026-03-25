@@ -16,6 +16,7 @@ struct RuntimeFingerprintFile {
     absolute_path: PathBuf,
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn compute_runtime_fingerprint(
     waterui_root: &Path,
     waterui_core_id: &str,
@@ -31,7 +32,7 @@ fn compute_runtime_fingerprint_sync(waterui_root: &Path, waterui_core_id: &str) 
     }
 
     let mut files = Vec::new();
-    if !collect_runtime_fingerprint_files_from_git(waterui_root, &mut files)? {
+    if !collect_runtime_fingerprint_files_from_git(waterui_root, &mut files) {
         collect_runtime_fingerprint_files_from_fs(waterui_root, waterui_root, &mut files)?;
     }
     files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -50,7 +51,7 @@ fn compute_runtime_fingerprint_sync(waterui_root: &Path, waterui_core_id: &str) 
 }
 
 fn compute_git_clean_fingerprint(root: &Path, waterui_core_id: &str) -> Result<Option<String>> {
-    if !is_git_work_tree(root)? {
+    if !is_git_work_tree(root) {
         return Ok(None);
     }
 
@@ -92,7 +93,7 @@ fn compute_git_clean_fingerprint(root: &Path, waterui_core_id: &str) -> Result<O
     Ok(Some(format!("{waterui_core_id}:git:{commit}")))
 }
 
-fn is_git_work_tree(root: &Path) -> Result<bool> {
+fn is_git_work_tree(root: &Path) -> bool {
     let inside_work_tree = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -100,18 +101,18 @@ fn is_git_work_tree(root: &Path) -> Result<bool> {
         .arg("--is-inside-work-tree")
         .output();
     let Ok(inside_work_tree) = inside_work_tree else {
-        return Ok(false);
+        return false;
     };
-    Ok(inside_work_tree.status.success()
-        && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true")
+    inside_work_tree.status.success()
+        && String::from_utf8_lossy(&inside_work_tree.stdout).trim() == "true"
 }
 
 fn collect_runtime_fingerprint_files_from_git(
     root: &Path,
     files: &mut Vec<RuntimeFingerprintFile>,
-) -> Result<bool> {
-    if !is_git_work_tree(root)? {
-        return Ok(false);
+) -> bool {
+    if !is_git_work_tree(root) {
+        return false;
     }
 
     let mut seen = HashSet::new();
@@ -122,8 +123,8 @@ fn collect_runtime_fingerprint_files_from_git(
         &["ls-files", "--recurse-submodules", "-z"],
         files,
         &mut seen,
-    )? {
-        return Ok(false);
+    ) {
+        return false;
     }
 
     // Untracked files that are not ignored.
@@ -132,11 +133,11 @@ fn collect_runtime_fingerprint_files_from_git(
         &["ls-files", "--others", "--exclude-standard", "-z"],
         files,
         &mut seen,
-    )? {
-        return Ok(false);
+    ) {
+        return false;
     }
 
-    Ok(true)
+    true
 }
 
 fn collect_git_paths(
@@ -144,13 +145,13 @@ fn collect_git_paths(
     args: &[&str],
     files: &mut Vec<RuntimeFingerprintFile>,
     seen: &mut HashSet<PathBuf>,
-) -> Result<bool> {
+) -> bool {
     let command = Command::new("git").arg("-C").arg(root).args(args).output();
     let Ok(output) = command else {
-        return Ok(false);
+        return false;
     };
     if !output.status.success() {
-        return Ok(false);
+        return false;
     }
 
     for entry in output
@@ -171,7 +172,7 @@ fn collect_git_paths(
             absolute_path: absolute,
         });
     }
-    Ok(true)
+    true
 }
 
 fn collect_runtime_fingerprint_files_from_fs(
@@ -220,7 +221,7 @@ fn collect_runtime_fingerprint_files_from_fs(
 
 fn hash_file_contents(hasher: &mut sha2::Sha256, path: &Path) -> Result<()> {
     let mut file = std::fs::File::open(path)?;
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {

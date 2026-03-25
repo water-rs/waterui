@@ -18,6 +18,9 @@ struct InfoPlistTemplate<'a> {
 /// Package a compiled binary as a macOS `.app` bundle.
 ///
 /// `resources_dir` is optional and copied to `Contents/Resources` when present.
+///
+/// # Errors
+/// Returns an error if the binary is missing, template rendering fails, or bundle files cannot be created.
 pub async fn package_binary_as_app(
     binary_path: &Path,
     bundle_id: &str,
@@ -56,10 +59,10 @@ pub async fn package_binary_as_app(
         fs::set_permissions(&executable_dest, perms).await?;
     }
 
-    if let Some(src_resources) = resources_dir {
-        if src_resources.exists() {
-            copy_dir(src_resources, &bundle_resources_dir).await?;
-        }
+    if let Some(src_resources) = resources_dir
+        && src_resources.exists()
+    {
+        copy_dir(src_resources, &bundle_resources_dir).await?;
     }
 
     let plist = InfoPlistTemplate {

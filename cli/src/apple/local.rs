@@ -42,6 +42,9 @@ pub struct WindowInfo {
 ///
 /// A vector of `WindowInfo` for all windows owned by the process,
 /// sorted by window layer (main windows first).
+///
+/// # Errors
+/// Returns an error if Core Graphics window metadata cannot be queried.
 pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
     use core_foundation::array::CFArray;
     use core_foundation::dictionary::CFDictionary;
@@ -65,7 +68,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
             continue;
         };
         let owner_pid_num =
-            unsafe { CFNumber::wrap_under_get_rule(owner_pid_val.as_CFTypeRef() as *const _) };
+            unsafe { CFNumber::wrap_under_get_rule(owner_pid_val.as_CFTypeRef().cast()) };
         let Some(owner_pid) = owner_pid_num.to_i32() else {
             continue;
         };
@@ -81,7 +84,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
             continue;
         };
         let window_id_num =
-            unsafe { CFNumber::wrap_under_get_rule(window_id_val.as_CFTypeRef() as *const _) };
+            unsafe { CFNumber::wrap_under_get_rule(window_id_val.as_CFTypeRef().cast()) };
         let Some(window_id) = window_id_num.to_i32() else {
             continue;
         };
@@ -91,7 +94,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let name = window_dict
             .find(&name_key)
             .map(|v| {
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 cf_str.to_string()
             })
             .unwrap_or_default();
@@ -101,7 +104,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let owner_name = window_dict
             .find(&owner_name_key)
             .map(|v| {
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 cf_str.to_string()
             })
             .unwrap_or_default();
@@ -111,13 +114,13 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let layer = window_dict
             .find(&layer_key)
             .and_then(|v| {
-                let num = unsafe { CFNumber::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                let num = unsafe { CFNumber::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 num.to_i32()
             })
             .unwrap_or(0);
 
         windows.push(WindowInfo {
-            window_id: window_id as u32,
+            window_id: window_id.cast_unsigned(),
             name,
             owner_pid,
             owner_name,
@@ -195,7 +198,7 @@ pub async fn screenshot_window_bytes(window_id: u32) -> eyre::Result<Vec<u8>> {
 
 /// Perform a tap (click) gesture at the specified screen coordinates.
 ///
-/// Uses AppleScript to click at the given absolute screen position.
+/// Uses `AppleScript` to click at the given absolute screen position.
 ///
 /// # Arguments
 ///
@@ -231,8 +234,8 @@ pub async fn tap(x: u32, y: u32) -> eyre::Result<()> {
 
 /// Perform a swipe (drag) gesture on macOS.
 ///
-/// Uses AppleScript to simulate a drag from one point to another.
-/// Note: AppleScript's built-in drag is limited; this uses a click-based approximation.
+/// Uses `AppleScript` to simulate a drag from one point to another.
+/// Note: `AppleScript`'s built-in drag is limited; this uses a click-based approximation.
 ///
 /// # Arguments
 ///
@@ -244,7 +247,7 @@ pub async fn tap(x: u32, y: u32) -> eyre::Result<()> {
 ///
 /// Returns an error if the swipe fails.
 pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -> eyre::Result<()> {
-    let duration_sec = duration_ms.unwrap_or(300) as f64 / 1000.0;
+    let duration_sec = f64::from(duration_ms.unwrap_or(300)) / 1000.0;
 
     // AppleScript doesn't have native drag support
     // We simulate with click at start, delay, click at end
@@ -271,7 +274,7 @@ pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -
     Ok(())
 }
 
-/// Input text using AppleScript keystrokes.
+/// Input text using `AppleScript` keystrokes.
 ///
 /// Sends the given text as keystrokes to the frontmost application.
 ///

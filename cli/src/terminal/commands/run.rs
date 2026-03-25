@@ -112,6 +112,38 @@ async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::Crash
     .await
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BackendAvailability {
+    available: [bool; 4],
+}
+
+impl BackendAvailability {
+    const fn has(self, backend: TargetBackend) -> bool {
+        self.available[match backend {
+            TargetBackend::Apple => 0,
+            TargetBackend::Android => 1,
+            TargetBackend::Gtk4 => 2,
+            TargetBackend::Hydrolysis => 3,
+        }]
+    }
+}
+
+struct RunContext {
+    project: Project,
+    platform: TargetPlatform,
+    backend: TargetBackend,
+}
+
+struct DeviceSelection {
+    device: SelectedDevice,
+    needs_launch: bool,
+}
+
+struct BuildPlan {
+    lib_platform: LibTargetPlatform,
+    android_abi: Option<waterui_cli::android::platform::AndroidAbi>,
+}
+
 /// Target platform for running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TargetPlatform {
@@ -168,7 +200,7 @@ pub struct Args {
     #[arg(long, value_enum)]
     logs: Option<CliLogLevel>,
 
-    /// Include all native platform logs (NSLog, print, etc.), not just WaterUI logs.
+    /// Include all native platform logs (`NSLog`, `print`, etc.), not just `WaterUI` logs.
     /// This is noisy but useful for debugging native code issues.
     #[arg(long)]
     native_logs: bool,
@@ -210,33 +242,32 @@ fn resolve_backend(
 ) -> Result<TargetBackend> {
     // Default backends for each platform
     let default_backend = match platform {
-        TargetPlatform::Ios => TargetBackend::Apple,
-        TargetPlatform::Macos => TargetBackend::Apple,
+        TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
-        TargetPlatform::Windows => TargetBackend::Hydrolysis,
-        TargetPlatform::Web => TargetBackend::Hydrolysis,
+        TargetPlatform::Windows | TargetPlatform::Web => TargetBackend::Hydrolysis,
     };
 
     let backend = backend_override.unwrap_or(default_backend);
 
     // Validate backend supports platform
-    let supported = match (platform, backend) {
-        // Apple backend: iOS, macOS
-        (TargetPlatform::Ios, TargetBackend::Apple) => true,
-        (TargetPlatform::Macos, TargetBackend::Apple) => true,
-        // Android backend: Android
-        (TargetPlatform::Android, TargetBackend::Android) => true,
-        // GTK4 backend: Linux
-        (TargetPlatform::Linux, TargetBackend::Gtk4) => true,
-        // Hydrolysis backend: macOS, Linux, Windows
-        (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Linux, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Web, TargetBackend::Hydrolysis) => true,
-        // All other combinations are invalid
-        _ => false,
-    };
+    let supported = matches!(
+        (platform, backend),
+        (TargetPlatform::Ios, TargetBackend::Apple)
+            | (
+                TargetPlatform::Macos,
+                TargetBackend::Apple | TargetBackend::Hydrolysis
+            )
+            | (TargetPlatform::Android, TargetBackend::Android)
+            | (
+                TargetPlatform::Linux,
+                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+            )
+            | (
+                TargetPlatform::Windows | TargetPlatform::Web,
+                TargetBackend::Hydrolysis
+            )
+    );
 
     if !supported {
         bail!(
@@ -256,39 +287,20 @@ fn resolve_backend(
     Ok(backend)
 }
 
-fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetBackend] {
+const fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetBackend] {
     match platform {
         TargetPlatform::Ios => &[TargetBackend::Apple],
         TargetPlatform::Android => &[TargetBackend::Android],
         TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
         TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
-        TargetPlatform::Windows => &[TargetBackend::Hydrolysis],
-        TargetPlatform::Web => &[TargetBackend::Hydrolysis],
-    }
-}
-
-const fn has_configured_backend(
-    backend: TargetBackend,
-    has_apple: bool,
-    has_android: bool,
-    has_gtk4: bool,
-    has_hydrolysis: bool,
-) -> bool {
-    match backend {
-        TargetBackend::Apple => has_apple,
-        TargetBackend::Android => has_android,
-        TargetBackend::Gtk4 => has_gtk4,
-        TargetBackend::Hydrolysis => has_hydrolysis,
+        TargetPlatform::Windows | TargetPlatform::Web => &[TargetBackend::Hydrolysis],
     }
 }
 
 fn resolve_default_backend_for_project(
     platform: TargetPlatform,
     project_is_playground: bool,
-    has_apple: bool,
-    has_android: bool,
-    has_gtk4: bool,
-    has_hydrolysis: bool,
+    availability: BackendAvailability,
 ) -> TargetBackend {
     let backends = default_backend_priority(platform);
     if project_is_playground {
@@ -296,7 +308,7 @@ fn resolve_default_backend_for_project(
     }
 
     for backend in backends {
-        if has_configured_backend(*backend, has_apple, has_android, has_gtk4, has_hydrolysis) {
+        if availability.has(*backend) {
             return *backend;
         }
     }
@@ -304,27 +316,27 @@ fn resolve_default_backend_for_project(
     backends[0]
 }
 
-fn resolve_platform(platform_override: Option<TargetPlatform>) -> Result<TargetPlatform> {
+const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPlatform {
     if let Some(platform) = platform_override {
-        return Ok(platform);
+        return platform;
     }
 
     #[cfg(target_os = "macos")]
     {
-        return Ok(TargetPlatform::Macos);
+        TargetPlatform::Macos
     }
     #[cfg(target_os = "linux")]
     {
-        return Ok(TargetPlatform::Linux);
+        TargetPlatform::Linux
     }
     #[cfg(target_os = "windows")]
     {
-        return Ok(TargetPlatform::Windows);
+        TargetPlatform::Windows
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        bail!(
+        panic!(
             "`water run` could not determine a default platform for this host. Please pass --platform explicitly."
         );
     }
@@ -346,171 +358,35 @@ fn sccache_allowed() -> bool {
 
 /// Run the run command.
 pub async fn run(args: Args) -> Result<()> {
-    let project_path = crate::project_path::canonicalize(&args.path)?;
-    let mut project = Project::open(&project_path).await?;
-    let platform = resolve_platform(args.platform)?;
+    let context = prepare_run_context(&args).await?;
+    print_run_header(&context);
+    check_run_toolchain(context.platform, context.backend).await?;
 
-    // Resolve the backend to use
-    let backend = match args.backend {
-        Some(backend_override) => resolve_backend(platform, Some(backend_override))?,
-        None => {
-            let selected = resolve_default_backend_for_project(
-                platform,
-                project.is_playground(),
-                project.apple_backend().is_some(),
-                project.android_backend().is_some(),
-                project.gtk4_backend().is_some(),
-                project.hydrolysis_backend().is_some(),
-            );
-            resolve_backend(platform, Some(selected))?
-        }
-    };
-    validate_desktop_backend_platform_on_host(platform, backend)?;
-    validate_device_arg(platform, backend, args.device.as_deref())?;
-    validate_web_log_args(platform, args.logs, args.native_logs)?;
-
-    header!(
-        "Running {} on {} ({})",
-        project.crate_name(),
-        platform_name(platform),
-        backend_name(backend)
-    );
-
-    // Step 1: Check toolchain
-    let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(platform, backend).await?;
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
-    success!("Toolchain ready");
-
-    // Validate backend presence for app mode and lazily initialize generated backends in playground mode.
-    if !project.is_playground() {
-        match backend {
-            TargetBackend::Apple if project.apple_backend().is_none() => {
-                bail!("Apple backend is not configured. Run `water backend add apple`.")
-            }
-            TargetBackend::Android if project.android_backend().is_none() => {
-                bail!("Android backend is not configured. Run `water backend add android`.")
-            }
-            TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-                bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
-            }
-            TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-                bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
-            }
-            _ => {}
-        }
+    if context.platform == TargetPlatform::Web {
+        return run_web_app(&context.project).await;
     }
 
-    // Playground mode keeps generated backends in the global build cache; regenerate managed
-    // backend glue when needed.
-    match backend {
-        TargetBackend::Gtk4 if project.is_playground() => {
-            let needs_reinit = project.gtk4_backend().is_none()
-                || !project
-                    .backend_path::<Gtk4Backend>()
-                    .join("Cargo.toml")
-                    .exists();
-            if needs_reinit {
-                let spinner = shell::spinner("Initializing GTK4 backend...");
-                reinit_backend::<Gtk4Backend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("GTK4 backend initialized");
-            }
-        }
-        TargetBackend::Hydrolysis if project.is_playground() => {
-            let needs_reinit = project.hydrolysis_backend().is_none()
-                || HydrolysisBackend::requires_regeneration(&project)?;
-            if needs_reinit {
-                let spinner = shell::spinner("Initializing hydrolysis backend...");
-                reinit_backend::<HydrolysisBackend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Hydrolysis backend initialized");
-            }
-        }
-        _ => {}
-    }
-
-    if args.platform == Some(TargetPlatform::Web) {
-        let spinner = shell::spinner("Building Hydrolysis web app...");
-        let site_root = prepare_hydrolysis_web_dev_site(&project).await?;
-        if let Some(pb) = spinner {
-            pb.finish_and_clear();
-        }
-        success!("Built Hydrolysis web app at {}", site_root.display());
-
-        let server = HydrolysisWebDevServer::start(site_root).await?;
-        line!();
-        note!("Serving at http://{}/", server.address());
-        note!("Press Ctrl+C to stop the web server");
-        let _server = server;
-        futures::future::pending::<()>().await;
-        unreachable!("web dev server future should be cancelled by Ctrl+C")
-    }
-
-    // Step 2: Find device
-    let spinner = shell::spinner("Scanning for devices...");
-    let device = find_device(platform, backend, args.device.as_deref()).await?;
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
-
-    // Check if device needs launching
-    let needs_launch = device.needs_launch();
-    if needs_launch {
-        note!("Will launch: {}", device_name(&device));
-    } else {
-        success!("Found device: {}", device_name(&device));
-    }
-
-    // Step 3: Build, package, launch device, and run
-    // Launch happens in background while building for efficiency
-    let log_level = args.logs.map(LogLevel::from);
-    let native_logs = args.native_logs;
-
-    // Detect sccache for compilation caching unless explicitly disabled.
-    let sccache_path = if sccache_allowed() {
-        let sccache = Sccache;
-        match sccache.path().await {
-            Ok(path) => Some(path),
-            Err(_) => {
-                warn!(
-                    "sccache not found. Build efficiency may be reduced. Install with: {}",
-                    sccache_install_hint()
-                );
-                None
-            }
-        }
-    } else {
-        note!("Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)");
-        None
-    };
+    let selection =
+        select_run_device(context.platform, context.backend, args.device.as_deref()).await?;
+    let config = build_run_config(&args).await;
 
     #[cfg(target_os = "macos")]
-    let mut crash_ctx = match CrashReportContext::try_new(&project, platform, backend) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            warn!("Crash report augmentation disabled: {e}");
-            None
-        }
-    };
+    let mut crash_ctx =
+        match CrashReportContext::try_new(&context.project, context.platform, context.backend) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                warn!("Crash report augmentation disabled: {e}");
+                None
+            }
+        };
 
     let running = display_output(build_and_run(
-        &project,
-        platform,
-        backend,
-        device,
-        needs_launch,
-        log_level,
-        native_logs,
-        sccache_path,
+        &context.project,
+        context.platform,
+        context.backend,
+        selection.device,
+        selection.needs_launch,
+        config,
     ))
     .await?;
 
@@ -519,13 +395,245 @@ pub async fn run(args: Args) -> Result<()> {
     line!();
 
     // Stream device events
+    #[cfg(target_os = "macos")]
+    stream_running_events(running, context.backend, &mut crash_ctx).await;
+    #[cfg(not(target_os = "macos"))]
+    stream_running_events(running, context.backend).await;
+
+    Ok(())
+}
+
+async fn prepare_run_context(args: &Args) -> Result<RunContext> {
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let project = Project::open(&project_path).await?;
+    let platform = resolve_platform(args.platform);
+    let backend = resolve_run_backend(&project, platform, args.backend)?;
+
+    validate_desktop_backend_platform_on_host(platform, backend)?;
+    validate_device_arg(platform, backend, args.device.as_deref())?;
+    validate_web_log_args(platform, args.logs, args.native_logs)?;
+    ensure_run_backend_ready(&project, backend)?;
+    let project = ensure_generated_run_backend(&project_path, project, backend).await?;
+
+    Ok(RunContext {
+        project,
+        platform,
+        backend,
+    })
+}
+
+fn resolve_run_backend(
+    project: &Project,
+    platform: TargetPlatform,
+    backend_override: Option<TargetBackend>,
+) -> Result<TargetBackend> {
+    resolve_backend(
+        platform,
+        backend_override.or_else(|| {
+            Some(resolve_default_backend_for_project(
+                platform,
+                project.is_playground(),
+                backend_availability(project),
+            ))
+        }),
+    )
+}
+
+const fn backend_availability(project: &Project) -> BackendAvailability {
+    BackendAvailability {
+        available: [
+            project.apple_backend().is_some(),
+            project.android_backend().is_some(),
+            project.gtk4_backend().is_some(),
+            project.hydrolysis_backend().is_some(),
+        ],
+    }
+}
+
+fn ensure_run_backend_ready(project: &Project, backend: TargetBackend) -> Result<()> {
+    if project.is_playground() {
+        return Ok(());
+    }
+
+    match backend {
+        TargetBackend::Apple if project.apple_backend().is_none() => {
+            bail!("Apple backend is not configured. Run `water backend add apple`.")
+        }
+        TargetBackend::Android if project.android_backend().is_none() => {
+            bail!("Android backend is not configured. Run `water backend add android`.")
+        }
+        TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+        }
+        TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn ensure_generated_run_backend(
+    project_path: &PathBuf,
+    project: Project,
+    backend: TargetBackend,
+) -> Result<Project> {
+    match backend {
+        TargetBackend::Gtk4 if project.is_playground() => {
+            let needs_reinit = project.gtk4_backend().is_none()
+                || !project
+                    .backend_path::<Gtk4Backend>()
+                    .join("Cargo.toml")
+                    .exists();
+            ensure_generated_run_backend_impl::<Gtk4Backend>(
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing GTK4 backend...",
+                "GTK4 backend initialized",
+            )
+            .await
+        }
+        TargetBackend::Hydrolysis if project.is_playground() => {
+            let needs_reinit = project.hydrolysis_backend().is_none()
+                || HydrolysisBackend::requires_regeneration(&project)?;
+            ensure_generated_run_backend_impl::<HydrolysisBackend>(
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing hydrolysis backend...",
+                "Hydrolysis backend initialized",
+            )
+            .await
+        }
+        _ => Ok(project),
+    }
+}
+
+async fn ensure_generated_run_backend_impl<T>(
+    project_path: &PathBuf,
+    project: Project,
+    needs_reinit: bool,
+    spinner_message: &str,
+    success_message: &str,
+) -> Result<Project>
+where
+    T: waterui_cli::backend::Backend,
+{
+    if !needs_reinit {
+        return Ok(project);
+    }
+
+    let spinner = shell::spinner(spinner_message);
+    reinit_backend::<T>(&project).await?;
+    let project = Project::open(project_path).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("{success_message}");
+    Ok(project)
+}
+
+fn print_run_header(context: &RunContext) {
+    header!(
+        "Running {} on {} ({})",
+        context.project.crate_name(),
+        platform_name(context.platform),
+        backend_name(context.backend)
+    );
+}
+
+async fn check_run_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
+    let spinner = shell::spinner("Checking toolchain...");
+    check_toolchain_for_backend(platform, backend).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("Toolchain ready");
+    Ok(())
+}
+
+async fn run_web_app(project: &Project) -> Result<()> {
+    let spinner = shell::spinner("Building Hydrolysis web app...");
+    let site_root = prepare_hydrolysis_web_dev_site(project).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("Built Hydrolysis web app at {}", site_root.display());
+
+    let server = HydrolysisWebDevServer::start(site_root).await?;
+    line!();
+    note!("Serving at http://{}/", server.address());
+    note!("Press Ctrl+C to stop the web server");
+    let _server = server;
+    futures::future::pending::<()>().await;
+    unreachable!("web dev server future should be cancelled by Ctrl+C")
+}
+
+async fn select_run_device(
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    device_id: Option<&str>,
+) -> Result<DeviceSelection> {
+    let spinner = shell::spinner("Scanning for devices...");
+    let device = find_device(platform, backend, device_id).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
+    let needs_launch = device.needs_launch();
+    if needs_launch {
+        note!("Will launch: {}", device_name(&device));
+    } else {
+        success!("Found device: {}", device_name(&device));
+    }
+
+    Ok(DeviceSelection {
+        device,
+        needs_launch,
+    })
+}
+
+async fn build_run_config(args: &Args) -> BuildRunConfig {
+    let sccache_path = detect_sccache_path().await;
+    let mut run_options = RunOptions::new();
+    if let Some(level) = args.logs.map(LogLevel::from) {
+        run_options.set_log_level(level);
+    }
+    run_options.set_native_logs(args.native_logs);
+
+    BuildRunConfig {
+        run_options,
+        sccache_path,
+    }
+}
+
+async fn detect_sccache_path() -> Option<PathBuf> {
+    if !sccache_allowed() {
+        note!("Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)");
+        return None;
+    }
+
+    let sccache = Sccache;
+    sccache.path().await.map_or_else(
+        |_| {
+            warn!(
+                "sccache not found. Build efficiency may be reduced. Install with: {}",
+                sccache_install_hint()
+            );
+            None
+        },
+        Some,
+    )
+}
+
+#[cfg(target_os = "macos")]
+async fn stream_running_events(
+    running: Running,
+    backend: TargetBackend,
+    crash_ctx: &mut Option<CrashReportContext>,
+) {
     let mut running = std::pin::pin!(running);
-    let backend_log_name = match backend {
-        TargetBackend::Apple => "Apple",
-        TargetBackend::Android => "Android",
-        TargetBackend::Gtk4 => "GTK4",
-        TargetBackend::Hydrolysis => "Hydrolysis",
-    };
+    let backend_log_name = backend_name(backend);
 
     loop {
         let event = running.next().await;
@@ -534,14 +642,14 @@ pub async fn run(args: Args) -> Result<()> {
         let mut event = event;
 
         #[cfg(target_os = "macos")]
-        if let Some(DeviceEvent::Started) = event.as_ref() {
-            if let Some(ref mut ctx) = crash_ctx {
-                ctx.refresh_start();
-            }
+        if matches!(event.as_ref(), Some(DeviceEvent::Started))
+            && let Some(ctx) = crash_ctx.as_mut()
+        {
+            ctx.refresh_start();
         }
 
         #[cfg(target_os = "macos")]
-        if let Some(ref ctx) = crash_ctx {
+        if let Some(ctx) = crash_ctx.as_ref() {
             event = augment_event_with_crash_report(event, ctx).await;
         }
 
@@ -549,8 +657,18 @@ pub async fn run(args: Args) -> Result<()> {
             break;
         }
     }
+}
 
-    Ok(())
+#[cfg(not(target_os = "macos"))]
+async fn stream_running_events(running: Running, backend: TargetBackend) {
+    let mut running = std::pin::pin!(running);
+    let backend_log_name = backend_name(backend);
+
+    loop {
+        if handle_device_event(running.next().await, backend_log_name) {
+            break;
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -558,6 +676,8 @@ async fn augment_event_with_crash_report(
     event: Option<DeviceEvent>,
     ctx: &CrashReportContext,
 ) -> Option<DeviceEvent> {
+    use std::fmt::Write as _;
+
     match event {
         Some(DeviceEvent::Exited) => {
             if let Some(report) = find_latest_ips_report(ctx).await {
@@ -566,13 +686,11 @@ async fn augment_event_with_crash_report(
             Some(DeviceEvent::Exited)
         }
         Some(DeviceEvent::Crashed(mut msg)) => {
-            if !msg.contains("Crash report:") {
-                if let Some(report) = find_latest_ips_report(ctx).await {
-                    msg.push_str(&format!(
-                        "\n\nCrash report: {}",
-                        report.log_path().display()
-                    ));
-                }
+            if !msg.contains("Crash report:")
+                && let Some(report) = find_latest_ips_report(ctx).await
+            {
+                write!(msg, "\n\nCrash report: {}", report.log_path().display())
+                    .expect("write to String");
             }
             Some(DeviceEvent::Crashed(msg))
         }
@@ -587,10 +705,33 @@ async fn build_and_run(
     backend: TargetBackend,
     device: SelectedDevice,
     needs_launch: bool,
-    log_level: Option<LogLevel>,
-    native_logs: bool,
-    sccache_path: Option<PathBuf>,
+    config: BuildRunConfig,
 ) -> Result<Running> {
+    let build_plan = resolve_build_plan(cli_platform, backend, &device)?;
+    let launch_task = spawn_device_launch_task(device, needs_launch);
+
+    shell::status(">", "Building...");
+    build_for_backend(project, backend, &build_plan, build_options(&config)).await?;
+
+    shell::status(">", "Packaging...");
+    let artifact = package_for_backend(project, backend, &build_plan).await?;
+
+    if needs_launch {
+        shell::status(">", "Waiting for device...");
+    }
+    let device = launch_task.await?;
+
+    shell::status(">", "Running...");
+    let running = run_with_options(device, artifact, config.run_options).await?;
+
+    Ok(running)
+}
+
+fn resolve_build_plan(
+    cli_platform: TargetPlatform,
+    backend: TargetBackend,
+    device: &SelectedDevice,
+) -> Result<BuildPlan> {
     let lib_platform = match cli_platform {
         TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
@@ -599,18 +740,35 @@ async fn build_and_run(
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => panic!("web run should not enter build_and_run"),
     };
+    let android_abi = resolve_android_abi(backend, device)?;
 
-    let android_abi = match (backend, &device) {
-        (TargetBackend::Android, SelectedDevice::AndroidDevice(dev)) => Some(dev.abi()),
-        (TargetBackend::Android, SelectedDevice::AndroidEmulator(emu)) => Some(emu.expected_abi()),
+    Ok(BuildPlan {
+        lib_platform,
+        android_abi,
+    })
+}
+
+fn resolve_android_abi(
+    backend: TargetBackend,
+    device: &SelectedDevice,
+) -> Result<Option<waterui_cli::android::platform::AndroidAbi>> {
+    match (backend, device) {
+        (TargetBackend::Android, SelectedDevice::AndroidDevice(dev)) => Ok(Some(dev.abi())),
+        (TargetBackend::Android, SelectedDevice::AndroidEmulator(emu)) => {
+            Ok(Some(emu.expected_abi()))
+        }
         (TargetBackend::Android, _) => {
             bail!("Internal error: Android backend requires an Android device")
         }
-        _ => None,
-    };
+        _ => Ok(None),
+    }
+}
 
-    // Launch device in background while building (if needed)
-    let launch_task = smol::spawn(async move {
+fn spawn_device_launch_task(
+    device: SelectedDevice,
+    needs_launch: bool,
+) -> smol::Task<Result<SelectedDevice>> {
+    smol::spawn(async move {
         if needs_launch {
             match &device {
                 SelectedDevice::AppleSimulator(sim) => sim.launch().await?,
@@ -619,23 +777,29 @@ async fn build_and_run(
                 SelectedDevice::AndroidEmulator(emu) => emu.launch().await?,
             }
         }
-        Ok::<_, color_eyre::eyre::Report>(device)
-    });
+        Ok(device)
+    })
+}
 
-    // Build and package while device launches in background
-    shell::status(">", "Building...");
-    let mut build_options = BuildOptions::new(false);
-    if let Some(ref sccache) = sccache_path {
-        build_options = build_options.with_sccache(sccache.clone());
-    }
+fn build_options(config: &BuildRunConfig) -> BuildOptions {
+    config.sccache_path.as_ref().map_or_else(
+        || BuildOptions::new(false),
+        |sccache| BuildOptions::new(false).with_sccache(sccache.clone()),
+    )
+}
 
-    // Build based on backend, not platform
+async fn build_for_backend(
+    project: &Project,
+    backend: TargetBackend,
+    plan: &BuildPlan,
+    build_options: BuildOptions,
+) -> Result<()> {
     match backend {
         TargetBackend::Apple => {
-            build_rust_lib(project, lib_platform, build_options).await?;
+            build_rust_lib(project, plan.lib_platform, build_options).await?;
         }
         TargetBackend::Android => {
-            let abi = android_abi.ok_or_else(|| {
+            let abi = plan.android_abi.ok_or_else(|| {
                 color_eyre::eyre::eyre!("Internal error: missing Android ABI for build")
             })?;
             AndroidPlatform::clean_jni_libs(project).await?;
@@ -647,54 +811,44 @@ async fn build_and_run(
             build_gtk4(project, build_options).await?;
         }
         TargetBackend::Hydrolysis => {
-            build_hydrolysis(project, lib_platform, build_options).await?;
+            build_hydrolysis(project, plan.lib_platform, build_options).await?;
         }
     }
+    Ok(())
+}
 
-    shell::status(">", "Packaging...");
+async fn package_for_backend(
+    project: &Project,
+    backend: TargetBackend,
+    plan: &BuildPlan,
+) -> Result<Artifact> {
     let package_options = PackageOptions::new(false, true);
-
-    // Package based on backend, not platform
-    let artifact = match backend {
-        TargetBackend::Apple => package_apple(project, lib_platform, package_options).await?,
+    match backend {
+        TargetBackend::Apple => package_apple(project, plan.lib_platform, package_options).await,
         TargetBackend::Android => {
-            let abi = android_abi.ok_or_else(|| {
+            let abi = plan.android_abi.ok_or_else(|| {
                 color_eyre::eyre::eyre!("Internal error: missing Android ABI for packaging")
             })?;
-            AndroidPlatform::package_with_abis(project, package_options, &[abi]).await?
+            AndroidPlatform::package_with_abis(project, package_options, &[abi]).await
         }
-        TargetBackend::Gtk4 => package_gtk4(project, package_options).await?,
+        TargetBackend::Gtk4 => package_gtk4(project, package_options).await,
         TargetBackend::Hydrolysis => {
-            package_hydrolysis(project, lib_platform, package_options).await?
+            package_hydrolysis(project, plan.lib_platform, package_options).await
         }
-    };
-
-    // Wait for device to be ready
-    if needs_launch {
-        shell::status(">", "Waiting for device...");
     }
-    let device = launch_task.await?;
+}
 
-    shell::status(">", "Running...");
-    let running = run_with_options(device, artifact, log_level, native_logs).await?;
-
-    Ok(running)
+struct BuildRunConfig {
+    run_options: RunOptions,
+    sccache_path: Option<PathBuf>,
 }
 
 /// Run artifact on device.
 async fn run_with_options(
     device: SelectedDevice,
     artifact: Artifact,
-    log_level: Option<LogLevel>,
-    native_logs: bool,
+    run_options: RunOptions,
 ) -> Result<Running> {
-    let mut run_options = RunOptions::new();
-
-    if let Some(level) = log_level {
-        run_options.set_log_level(level);
-    }
-    run_options.set_native_logs(native_logs);
-
     let running = match device {
         SelectedDevice::AppleSimulator(sim) => sim.run(artifact, run_options).await?,
         SelectedDevice::Local(local) => local.run(artifact, run_options).await?,
@@ -1022,8 +1176,9 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{
-        TargetBackend, TargetPlatform, resolve_backend, resolve_default_backend_for_project,
-        resolve_platform, validate_desktop_backend_platform_on_host, validate_device_arg,
+        BackendAvailability, TargetBackend, TargetPlatform, resolve_backend,
+        resolve_default_backend_for_project, resolve_platform,
+        validate_desktop_backend_platform_on_host, validate_device_arg,
     };
 
     #[test]
@@ -1081,10 +1236,9 @@ mod tests {
             resolve_default_backend_for_project(
                 TargetPlatform::Linux,
                 false,
-                false,
-                false,
-                false,
-                true
+                BackendAvailability {
+                    available: [false, false, false, true],
+                }
             ),
             TargetBackend::Hydrolysis
         );
@@ -1092,10 +1246,9 @@ mod tests {
             resolve_default_backend_for_project(
                 TargetPlatform::Macos,
                 false,
-                false,
-                false,
-                false,
-                true
+                BackendAvailability {
+                    available: [false, false, false, true],
+                }
             ),
             TargetBackend::Hydrolysis
         );
@@ -1103,10 +1256,9 @@ mod tests {
             resolve_default_backend_for_project(
                 TargetPlatform::Linux,
                 false,
-                false,
-                false,
-                false,
-                false
+                BackendAvailability {
+                    available: [false, false, false, false],
+                }
             ),
             TargetBackend::Gtk4
         );
@@ -1118,10 +1270,9 @@ mod tests {
             resolve_default_backend_for_project(
                 TargetPlatform::Macos,
                 true,
-                false,
-                false,
-                false,
-                true
+                BackendAvailability {
+                    available: [false, false, false, true],
+                }
             ),
             TargetBackend::Apple
         );
@@ -1129,10 +1280,9 @@ mod tests {
             resolve_default_backend_for_project(
                 TargetPlatform::Linux,
                 true,
-                false,
-                false,
-                false,
-                true
+                BackendAvailability {
+                    available: [false, false, false, true],
+                }
             ),
             TargetBackend::Gtk4
         );
@@ -1141,28 +1291,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn resolve_platform_defaults_to_host_on_macos() {
-        assert_eq!(
-            resolve_platform(None).expect("default platform"),
-            TargetPlatform::Macos
-        );
+        assert_eq!(resolve_platform(None), TargetPlatform::Macos);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn resolve_platform_defaults_to_host_on_linux() {
-        assert_eq!(
-            resolve_platform(None).expect("default platform"),
-            TargetPlatform::Linux
-        );
+        assert_eq!(resolve_platform(None), TargetPlatform::Linux);
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn resolve_platform_defaults_to_host_on_windows() {
-        assert_eq!(
-            resolve_platform(None).expect("default platform"),
-            TargetPlatform::Windows
-        );
+        assert_eq!(resolve_platform(None), TargetPlatform::Windows);
     }
 
     #[cfg(target_os = "macos")]

@@ -135,6 +135,7 @@ pub fn compare_images(before: &[u8], after: &[u8]) -> eyre::Result<DiffResult> {
     }
 
     let changed = changed_pixels > 0;
+    #[allow(clippy::cast_possible_truncation)]
     let percentage = (f64::from(changed_pixels) / f64::from(total_pixels) * 100.0) as f32;
 
     let bbox = if changed {
