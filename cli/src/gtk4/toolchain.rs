@@ -23,10 +23,10 @@ struct PkgConfigProbe {
 
 impl PkgConfigProbe {
     fn display(self) -> String {
-        match self.min_version {
-            Some(min) => format!("{}>={min}", self.module),
-            None => self.module.to_owned(),
-        }
+        self.min_version.map_or_else(
+            || self.module.to_owned(),
+            |min| format!("{}>={min}", self.module),
+        )
     }
 }
 
@@ -129,10 +129,10 @@ async fn missing_pkg_config_probes() -> Vec<String> {
             missing.push(probe.display());
             continue;
         }
-        if let Some(min_version) = probe.min_version {
-            if !check_module_min_version(probe.module, min_version).await {
-                missing.push(probe.display());
-            }
+        if let Some(min_version) = probe.min_version
+            && !check_module_min_version(probe.module, min_version).await
+        {
+            missing.push(probe.display());
         }
     }
 
@@ -140,7 +140,7 @@ async fn missing_pkg_config_probes() -> Vec<String> {
 }
 
 /// Get platform-specific suggestion for installing GTK4.
-fn install_gtk4_suggestion() -> &'static str {
+const fn install_gtk4_suggestion() -> &'static str {
     "GTK4 was not discoverable via pkg-config. Ensure GTK4 development packages are installed for your distribution and `pkg-config --exists gtk4` succeeds."
 }
 

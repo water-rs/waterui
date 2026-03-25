@@ -265,10 +265,11 @@ async fn write_apple_theme_json(theme: &ThemeConfig, dest_dir: &Path) -> eyre::R
         theme.muted_foreground.as_deref(),
         theme.accent.as_deref(),
         theme.accent_foreground.as_deref(),
-    ] {
-        if let Some(value) = value {
-            validate_hex_color(value)?;
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_hex_color(value)?;
     }
     let bytes = serde_json::to_vec_pretty(theme)?;
     fs::write(dest_dir.join("WaterUITheme.json"), bytes).await?;
@@ -496,7 +497,11 @@ fn generate_default_app_icon(accent: Option<&str>) -> eyre::Result<image::Dynami
             let dx = x - center;
             let dy = y - center;
             if dx * dx + dy * dy <= circle_radius * circle_radius {
-                image.put_pixel(x as u32, y as u32, image::Rgba([255, 255, 255, 235]));
+                image.put_pixel(
+                    x.cast_unsigned(),
+                    y.cast_unsigned(),
+                    image::Rgba([255, 255, 255, 235]),
+                );
             }
         }
     }

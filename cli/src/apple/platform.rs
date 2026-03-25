@@ -3,9 +3,9 @@
 //! This module provides utility functions for building and packaging Apple apps.
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
-use std::fmt::Write;
-use std::ffi::OsString;
 use std::env;
+use std::ffi::OsString;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
@@ -30,6 +30,9 @@ use crate::{
 // ============================================================================
 
 /// Build Rust library for an Apple platform.
+///
+/// # Errors
+/// Returns an error if the Rust build fails or the expected Apple archive cannot be copied.
 pub async fn build_rust_lib(
     project: &Project,
     platform: TargetPlatform,
@@ -198,6 +201,9 @@ fn inject_other_ldflags(content: &str, required_flags: &[&str]) -> (String, bool
 // ============================================================================
 
 /// Clean Xcode build artifacts for an Apple platform.
+///
+/// # Errors
+/// Returns an error if `xcodebuild clean` fails or generated build directories cannot be removed.
 pub async fn clean_apple(project: &Project) -> eyre::Result<()> {
     let Some(backend) = project.apple_backend() else {
         return Ok(()); // Nothing to clean if no backend configured
@@ -232,6 +238,9 @@ pub async fn clean_apple(project: &Project) -> eyre::Result<()> {
 // ============================================================================
 
 /// Package an Apple app using xcodebuild.
+///
+/// # Errors
+/// Returns an error if the backend is missing, packaging prerequisites are invalid, or `xcodebuild` fails.
 pub async fn package_apple(
     project: &Project,
     platform: TargetPlatform,
@@ -380,7 +389,10 @@ async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Resu
 }
 
 #[derive(Template)]
-#[template(path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl", escape = "none")]
+#[template(
+    path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl",
+    escape = "none"
+)]
 struct WaterUiFontsSwiftTemplate<'a> {
     font_entries: &'a [FontRegistrationTemplateEntry],
 }
@@ -392,16 +404,14 @@ async fn generate_font_registration_swift(
 ) -> eyre::Result<()> {
     let font_entries = fonts
         .iter()
-        .map(|font| {
-            FontRegistrationTemplateEntry {
-                family_name: font.name.clone(),
-                file_name: font
+        .map(|font| FontRegistrationTemplateEntry {
+            family_name: font.name.clone(),
+            file_name: font
                 .path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string(),
-            }
         })
         .collect::<Vec<_>>();
 
@@ -424,6 +434,7 @@ async fn generate_font_registration_swift(
 // ============================================================================
 
 /// Check if a platform is supported by the Apple backend.
+#[must_use]
 pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
     matches!(
         platform,

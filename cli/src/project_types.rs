@@ -3,21 +3,25 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
+/// Canonical `Cargo` crate name used by a `WaterUI` project and its generated backends.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CrateName(String);
 
 impl CrateName {
+    /// Returns the validated crate name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Converts the crate name into a Rust identifier by replacing hyphens with underscores.
     #[must_use]
     pub fn rust_ident(&self) -> RustIdent {
         RustIdent(self.0.replace('-', "_"))
     }
 
+    /// Returns a sibling crate name with the provided suffix appended in Cargo naming style.
     #[must_use]
     pub fn with_suffix(&self, suffix: &str) -> Self {
         Self(format!("{}-{suffix}", self.0))
@@ -75,10 +79,12 @@ impl From<&CrateName> for String {
     }
 }
 
+/// Rust identifier derived from project naming metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RustIdent(String);
 
 impl RustIdent {
+    /// Returns the identifier as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -105,16 +111,22 @@ impl Deref for RustIdent {
     }
 }
 
+/// Reverse-DNS application identifier shared across generated platform manifests.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct BundleIdentifier(String);
 
 impl BundleIdentifier {
+    /// Returns the bundle identifier as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Converts the bundle identifier into an Android package name when it satisfies Java rules.
+    ///
+    /// # Errors
+    /// Returns an error when the identifier is not a valid Java-style Android package name.
     pub fn android_package_name(&self) -> Result<AndroidPackageName, String> {
         AndroidPackageName::try_from(self.0.clone())
     }
@@ -171,10 +183,12 @@ impl From<&BundleIdentifier> for String {
     }
 }
 
+/// Android package name validated against Java package segment rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AndroidPackageName(String);
 
 impl AndroidPackageName {
+    /// Returns the Android package name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -201,12 +215,16 @@ Set `[package].bundle_identifier` in `Water.toml` to a valid Java package name (
 
         for segment in value.split('.') {
             if segment.is_empty() {
-                return Err(format!("Invalid Android package name: '{value}' (empty segment)."));
+                return Err(format!(
+                    "Invalid Android package name: '{value}' (empty segment)."
+                ));
             }
 
             let mut chars = segment.chars();
             let Some(first) = chars.next() else {
-                return Err(format!("Invalid Android package name: '{value}' (empty segment)."));
+                return Err(format!(
+                    "Invalid Android package name: '{value}' (empty segment)."
+                ));
             };
 
             if !(first.is_ascii_alphabetic() || first == '_') {
@@ -246,26 +264,42 @@ impl Deref for AndroidPackageName {
     }
 }
 
+/// Logical permission keys that scaffold platform-specific manifest entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionKey {
+    /// Network access.
     Internet,
+    /// Camera capture.
     Camera,
+    /// Microphone recording.
     Microphone,
+    /// Fine-grained location access.
     Location,
+    /// Coarse-grained location access.
     CoarseLocation,
+    /// Read access to shared storage.
     Storage,
+    /// Write access to shared storage.
     WriteStorage,
+    /// Photo library access.
     PhotoLibrary,
+    /// Contacts access.
     Contacts,
+    /// Calendar access.
     Calendars,
+    /// Bluetooth access.
     Bluetooth,
+    /// Legacy Android Bluetooth administration access.
     BluetoothAdmin,
+    /// Vibration access.
     Vibrate,
+    /// Wake lock access.
     WakeLock,
 }
 
 impl PermissionKey {
+    /// Returns the Android manifest permission name for this logical permission when one exists.
     #[must_use]
     pub const fn android_permission_name(self) -> Option<&'static str> {
         match self {
@@ -284,6 +318,7 @@ impl PermissionKey {
         }
     }
 
+    /// Returns the generated Info.plist usage-description key for this permission when iOS requires one.
     #[must_use]
     pub const fn ios_plist_key(self) -> Option<&'static str> {
         match self {

@@ -23,12 +23,12 @@ pub struct RustToolchainInstallation {
 }
 
 impl RustToolchainInstallation {
-    fn require_stable_install(&mut self) {
+    const fn require_stable_install(&mut self) {
         self.install_stable_toolchain = true;
         self.update_stable_toolchain = false;
     }
 
-    fn require_stable_update(&mut self) {
+    const fn require_stable_update(&mut self) {
         if !self.install_stable_toolchain {
             self.update_stable_toolchain = true;
         }
@@ -131,142 +131,250 @@ impl Toolchain for RustToolchain {
     type Installation = RustToolchainInstallation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        let rustup_available = which("rustup").await.is_ok();
-        let cargo_available = which("cargo").await.is_ok();
-        let rustc_available = which("rustc").await.is_ok();
-
-        if !rustup_available && (!cargo_available || !rustc_available) {
-            return Err(ToolchainError::unfixable(
-                "Rust toolchain is incomplete (`cargo` and/or `rustc` is missing from PATH).",
-                "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
-            ));
-        }
-
+        let availability = detect_rust_tool_availability().await;
+        ensure_minimum_rust_tools(availability)?;
         let mut installation = RustToolchainInstallation::default();
+        check_active_toolchain(availability.rustup_available, &mut installation).await?;
+        ensure_cargo_available(availability, &mut installation)?;
+        let host_target =
+            check_rustc_version_and_host_target(availability, &mut installation).await?;
+        check_installed_targets(availability.rustup_available, &installation, host_target).await?;
 
-        if rustup_available {
-            match run_command("rustup", ["show", "active-toolchain"]).await {
-                Ok(_) => {}
-                Err(error) => {
-                    let error_message = error.to_string();
-                    if is_no_active_toolchain_error(&error_message) {
-                        installation.require_stable_install();
-                    } else {
-                        return Err(ToolchainError::unfixable(
-                            format!(
-                                "rustup is installed but cannot report an active toolchain: {error_message}"
-                            ),
-                            "Run `rustup self update` and `rustup toolchain install stable`; if that fails, reinstall rustup from https://rustup.rs.",
-                        ));
-                    }
-                }
-            }
-        }
+        installation
+            .has_actions()
+            .then_some(ToolchainError::fixable(installation))
+            .map_or(Ok(()), Err)
+    }
+}
 
-        if !cargo_available {
-            if rustup_available {
+#[derive(Debug, Clone, Copy)]
+struct RustToolAvailability {
+    rustup_available: bool,
+    cargo_available: bool,
+    rustc_available: bool,
+}
+
+fn ensure_minimum_rust_tools(
+    availability: RustToolAvailability,
+) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+    if !availability.rustup_available
+        && (!availability.cargo_available || !availability.rustc_available)
+    {
+        return Err(ToolchainError::unfixable(
+            "Rust toolchain is incomplete (`cargo` and/or `rustc` is missing from PATH).",
+            "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
+        ));
+    }
+    Ok(())
+}
+
+async fn detect_rust_tool_availability() -> RustToolAvailability {
+    RustToolAvailability {
+        rustup_available: which("rustup").await.is_ok(),
+        cargo_available: which("cargo").await.is_ok(),
+        rustc_available: which("rustc").await.is_ok(),
+    }
+}
+
+async fn check_active_toolchain(
+    rustup_available: bool,
+    installation: &mut RustToolchainInstallation,
+) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+    if !rustup_available {
+        return Ok(());
+    }
+
+    match run_command("rustup", ["show", "active-toolchain"]).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let error_message = error.to_string();
+            if is_no_active_toolchain_error(&error_message) {
                 installation.require_stable_install();
+                Ok(())
             } else {
-                return Err(ToolchainError::unfixable(
-                    "`cargo` is not available on PATH.",
-                    "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
-                ));
+                Err(ToolchainError::unfixable(
+                    format!(
+                        "rustup is installed but cannot report an active toolchain: {error_message}"
+                    ),
+                    "Run `rustup self update` and `rustup toolchain install stable`; if that fails, reinstall rustup from https://rustup.rs.",
+                ))
             }
-        }
-
-        let mut host_target = None;
-
-        if rustc_available {
-            match run_command("rustc", ["--version"]).await {
-                Ok(version_output) => {
-                    let installed_version = parse_rustc_version(&version_output).map_err(|error| {
-                        ToolchainError::unfixable(
-                            format!("Failed to parse `rustc --version` output `{}`: {error}", version_output.trim()),
-                            "Run `rustc --version` manually. If output is malformed, reinstall rustup from https://rustup.rs.",
-                        )
-                    })?;
-
-                    let required_version = required_rust_version().map_err(|error| {
-                        ToolchainError::unfixable(
-                            format!("Invalid required Rust version `{REQUIRED_RUST_VERSION}`: {error}"),
-                            "Reinstall waterui-cli from source to restore a valid embedded Rust requirement.",
-                        )
-                    })?;
-
-                    if installed_version < required_version {
-                        if rustup_available {
-                            installation.require_stable_update();
-                        } else {
-                            return Err(ToolchainError::unfixable(
-                                format!(
-                                    "Detected Rust {installed_version}, but waterui-cli requires at least Rust {required_version}."
-                                ),
-                                format!(
-                                    "Install Rust {required_version} or newer. Recommended: install rustup from https://rustup.rs, then run `rustup update stable`."
-                                ),
-                            ));
-                        }
-                    }
-
-                    if rustup_available && !installation.install_stable_toolchain {
-                        let rustc_verbose = run_command("rustc", ["-vV"]).await.map_err(|error| {
-                            ToolchainError::unfixable(
-                                format!("`rustc -vV` failed: {error}"),
-                                "Run `rustc -vV` manually; if it fails, reinstall rustup from https://rustup.rs.",
-                            )
-                        })?;
-                        host_target = Some(parse_host_target(&rustc_verbose).map_err(|error| {
-                            ToolchainError::unfixable(
-                                format!("Could not parse host target from `rustc -vV`: {error}"),
-                                "Ensure `rustc -vV` includes a `host: <target>` line; reinstall rustup if the output is incomplete.",
-                            )
-                        })?);
-                    }
-                }
-                Err(error) => {
-                    if rustup_available {
-                        installation.require_stable_install();
-                    } else {
-                        return Err(ToolchainError::unfixable(
-                            format!("`rustc` exists on PATH but failed to run: {error}"),
-                            "Reinstall Rust toolchain via rustup from https://rustup.rs.",
-                        ));
-                    }
-                }
-            }
-        } else if rustup_available {
-            installation.require_stable_install();
-        } else {
-            return Err(ToolchainError::unfixable(
-                "`rustc` is not available on PATH.",
-                "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
-            ));
-        }
-
-        if rustup_available && !installation.install_stable_toolchain {
-            let installed_targets = installed_rustup_targets().await.map_err(|error| {
-                ToolchainError::unfixable(
-                    format!("Failed to list installed Rust targets: {error}"),
-                    "Run `rustup target list --installed`; if it fails, repair rustup with `rustup self update` or reinstall rustup.",
-                )
-            })?;
-
-            if let Some(host_target) = host_target {
-                if !installed_targets
-                    .iter()
-                    .any(|target| target == &host_target)
-                {
-                    installation.require_host_target(host_target);
-                }
-            }
-        }
-
-        if installation.has_actions() {
-            Err(ToolchainError::fixable(installation))
-        } else {
-            Ok(())
         }
     }
+}
+
+fn ensure_cargo_available(
+    availability: RustToolAvailability,
+    installation: &mut RustToolchainInstallation,
+) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+    if availability.cargo_available {
+        return Ok(());
+    }
+    if availability.rustup_available {
+        installation.require_stable_install();
+        Ok(())
+    } else {
+        Err(ToolchainError::unfixable(
+            "`cargo` is not available on PATH.",
+            "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
+        ))
+    }
+}
+
+async fn check_rustc_version_and_host_target(
+    availability: RustToolAvailability,
+    installation: &mut RustToolchainInstallation,
+) -> Result<Option<String>, ToolchainError<RustToolchainInstallation>> {
+    if !availability.rustc_available {
+        return handle_missing_rustc(availability.rustup_available, installation);
+    }
+
+    let version_output = run_command("rustc", ["--version"]).await.map_err(|error| {
+        let error_message = error.to_string();
+        rustc_run_error(availability.rustup_available, &error_message)
+    })?;
+    let installed_version = parse_installed_rustc_version(&version_output)?;
+    let required_version = parse_required_rustc_version()?;
+    maybe_require_rust_update(
+        availability.rustup_available,
+        &installed_version,
+        &required_version,
+        installation,
+    )?;
+
+    if !availability.rustup_available || installation.install_stable_toolchain {
+        return Ok(None);
+    }
+
+    let rustc_verbose = run_command("rustc", ["-vV"]).await.map_err(|error| {
+        ToolchainError::unfixable(
+            format!("`rustc -vV` failed: {error}"),
+            "Run `rustc -vV` manually; if it fails, reinstall rustup from https://rustup.rs.",
+        )
+    })?;
+    parse_host_target_value(&rustc_verbose).map(Some)
+}
+
+fn handle_missing_rustc(
+    rustup_available: bool,
+    installation: &mut RustToolchainInstallation,
+) -> Result<Option<String>, ToolchainError<RustToolchainInstallation>> {
+    if rustup_available {
+        installation.require_stable_install();
+        Ok(None)
+    } else {
+        Err(ToolchainError::unfixable(
+            "`rustc` is not available on PATH.",
+            "Install rustup from https://rustup.rs, then run `rustup toolchain install stable`.",
+        ))
+    }
+}
+
+fn rustc_run_error(
+    rustup_available: bool,
+    error_message: &str,
+) -> ToolchainError<RustToolchainInstallation> {
+    if rustup_available {
+        let mut installation = RustToolchainInstallation::default();
+        installation.require_stable_install();
+        ToolchainError::fixable(installation)
+    } else {
+        ToolchainError::unfixable(
+            format!("`rustc` exists on PATH but failed to run: {error_message}"),
+            "Reinstall Rust toolchain via rustup from https://rustup.rs.",
+        )
+    }
+}
+
+fn parse_installed_rustc_version(
+    version_output: &str,
+) -> Result<Version, ToolchainError<RustToolchainInstallation>> {
+    parse_rustc_version(version_output).map_err(|error| {
+        ToolchainError::unfixable(
+            format!(
+                "Failed to parse `rustc --version` output `{}`: {error}",
+                version_output.trim()
+            ),
+            "Run `rustc --version` manually. If output is malformed, reinstall rustup from https://rustup.rs.",
+        )
+    })
+}
+
+fn parse_required_rustc_version() -> Result<Version, ToolchainError<RustToolchainInstallation>> {
+    required_rust_version().map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Invalid required Rust version `{REQUIRED_RUST_VERSION}`: {error}"),
+            "Reinstall waterui-cli from source to restore a valid embedded Rust requirement.",
+        )
+    })
+}
+
+fn maybe_require_rust_update(
+    rustup_available: bool,
+    installed_version: &Version,
+    required_version: &Version,
+    installation: &mut RustToolchainInstallation,
+) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+    if installed_version >= required_version {
+        return Ok(());
+    }
+
+    if rustup_available {
+        installation.require_stable_update();
+        Ok(())
+    } else {
+        Err(ToolchainError::unfixable(
+            format!(
+                "Detected Rust {installed_version}, but waterui-cli requires at least Rust {required_version}."
+            ),
+            format!(
+                "Install Rust {required_version} or newer. Recommended: install rustup from https://rustup.rs, then run `rustup update stable`."
+            ),
+        ))
+    }
+}
+
+fn parse_host_target_value(
+    rustc_verbose: &str,
+) -> Result<String, ToolchainError<RustToolchainInstallation>> {
+    parse_host_target(rustc_verbose).map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Could not parse host target from `rustc -vV`: {error}"),
+            "Ensure `rustc -vV` includes a `host: <target>` line; reinstall rustup if the output is incomplete.",
+        )
+    })
+}
+
+async fn check_installed_targets(
+    rustup_available: bool,
+    installation: &RustToolchainInstallation,
+    host_target: Option<String>,
+) -> Result<(), ToolchainError<RustToolchainInstallation>> {
+    if !rustup_available || installation.install_stable_toolchain {
+        return Ok(());
+    }
+
+    let Some(host_target) = host_target else {
+        return Ok(());
+    };
+
+    let installed_targets = installed_rustup_targets().await.map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Failed to list installed Rust targets: {error}"),
+            "Run `rustup target list --installed`; if it fails, repair rustup with `rustup self update` or reinstall rustup.",
+        )
+    })?;
+
+    if installed_targets
+        .iter()
+        .any(|target| target == &host_target)
+    {
+        return Ok(());
+    }
+
+    let mut installation = installation.clone();
+    installation.require_host_target(host_target);
+    Err(ToolchainError::fixable(installation))
 }
 
 async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {

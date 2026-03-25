@@ -40,6 +40,9 @@ impl Project {
     /// Run the `WaterUI` project with explicit run options.
     ///
     /// This allows callers (like preview) to inject extra environment variables.
+    ///
+    /// # Errors
+    /// Returns an error if building, packaging, or launching the app fails.
     pub async fn run_with_options<B: Backend, D: Device>(
         &self,
         backend: &B,
@@ -64,8 +67,11 @@ impl Project {
 
     /// Run the Android backend for the specific target ABI of the device.
     ///
-    /// This is required because Android packaging is ABI-dependent (e.g., x86_64 emulator vs
-    /// arm64-v8a physical device).
+    /// This is required because Android packaging is ABI-dependent (e.g., `x86_64` emulator vs
+    /// `arm64-v8a` physical device).
+    ///
+    /// # Errors
+    /// Returns an error if building, packaging, or launching the Android app fails.
     pub async fn run_android_with_options<D: Device + AndroidAbiProvider>(
         &self,
         _backend: &AndroidBackend,
@@ -138,7 +144,7 @@ impl Project {
 
     /// Get the crate name of the project.
     #[must_use]
-    pub fn crate_name(&self) -> &CrateName {
+    pub const fn crate_name(&self) -> &CrateName {
         &self.crate_name
     }
 
@@ -439,13 +445,10 @@ impl Project {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let ctx = TemplateContext::for_project_manifest(
-            manifest,
-            self.crate_name().clone(),
-            app_name,
-        )
-        .with_backend_project_path(self.ffi_crate_path())
-        .with_project_root_path(self.root.clone());
+        let ctx =
+            TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
+                .with_backend_project_path(self.ffi_crate_path())
+                .with_project_root_path(self.root.clone());
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
             .await
@@ -707,7 +710,7 @@ impl Project {
     /// Returns an error if deleting files or saving manifest fails.
     pub async fn remove_android_backend(&mut self) -> eyre::Result<()> {
         if let Some(backend) = self.android_backend() {
-            let path = backend.project_path().to_path_buf();
+            let path = backend.project_path().clone();
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_android();
@@ -721,7 +724,7 @@ impl Project {
     /// Returns an error if deleting files or saving manifest fails.
     pub async fn remove_gtk4_backend(&mut self) -> eyre::Result<()> {
         if let Some(backend) = self.gtk4_backend() {
-            let path = backend.project_path().to_path_buf();
+            let path = backend.project_path().clone();
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_gtk4();
@@ -734,7 +737,7 @@ impl Project {
     /// Returns an error if deleting files or saving manifest fails.
     pub async fn remove_hydrolysis_backend(&mut self) -> eyre::Result<()> {
         if let Some(backend) = self.hydrolysis_backend() {
-            let path = backend.project_path().to_path_buf();
+            let path = backend.project_path().clone();
             self.remove_backend_relative_dir(&path).await?;
         }
         self.manifest.backends.clear_hydrolysis();
@@ -1056,7 +1059,8 @@ fn is_default_assets_path(path: &str) -> bool {
     path == "assets"
 }
 
-fn is_false(value: &bool) -> bool {
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
     !*value
 }
 

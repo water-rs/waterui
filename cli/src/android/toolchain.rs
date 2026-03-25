@@ -15,24 +15,11 @@ use crate::{
     brew::Brew,
     toolchain::{
         Installation, Toolchain, ToolchainError,
-        cmake::Cmake,
         linux::{has_supported_package_manager, install_java_jdk},
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{command, run_command, run_command_output_os, which},
 };
-
-/// Complete Android toolchain including SDK, platforms, NDK, Rust targets, platform-tools, Java, and CMake.
-pub type AndroidToolchain = (
-    AndroidSdk,
-    AndroidSdkPlatforms,
-    AndroidBuildTools,
-    AndroidNdk,
-    AndroidRustTargets,
-    AndroidPlatformTools,
-    Java,
-    Cmake,
-);
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -73,22 +60,8 @@ const fn is_linux_arm_host() -> bool {
             || cfg!(target_arch = "arm64ec"))
 }
 
-fn android_linux_arm_manual_suggestion() -> &'static str {
+const fn android_linux_arm_manual_suggestion() -> &'static str {
     "Automatic Android SDK/NDK installation is disabled on ARM Linux hosts. Provide compatible Android tools manually, or use an x86_64 Linux/macOS/Windows host for Android builds."
-}
-
-/// Host-specific Android Studio installation guidance.
-#[must_use]
-pub const fn android_studio_install_suggestion() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "Install Android Studio with winget: `winget install --id Google.AndroidStudio --exact`."
-    } else if cfg!(target_os = "macos") {
-        "Install Android Studio with Homebrew: `brew install --cask android-studio`, or download it from https://developer.android.com/studio."
-    } else if cfg!(target_os = "linux") {
-        "Install Android Studio from https://developer.android.com/studio."
-    } else {
-        "Install Android Studio from https://developer.android.com/studio."
-    }
 }
 
 /// Android command-line tools guidance for headless/server environments.
@@ -135,26 +108,6 @@ pub const fn android_build_tools_install_suggestion() -> &'static str {
     "Install Android SDK Build-Tools with `sdkmanager --install \"build-tools;<version>\"` (or Android Studio SDK Manager)."
 }
 
-/// Guidance for installing Rust Android targets needed by Android build/package workflows.
-#[must_use]
-pub const fn android_rust_targets_install_suggestion() -> &'static str {
-    "Install Rust Android targets with `rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-androideabi i686-linux-android`."
-}
-
-/// Host-specific Java installation guidance for Android Gradle builds.
-#[must_use]
-pub const fn java_install_suggestion() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "Install JDK with winget: `winget install --id Microsoft.OpenJDK.21 --exact`, or use Android Studio's bundled JBR."
-    } else if cfg!(target_os = "macos") {
-        "Install JDK with Homebrew: `brew install --cask temurin`, or use Android Studio's bundled JBR."
-    } else if cfg!(target_os = "linux") {
-        "Install JDK with your package manager (for example `openjdk-21-jdk`, `java-21-openjdk-devel`, or `jdk-openjdk`), or use Android Studio's bundled JBR."
-    } else {
-        "Install a JDK and set `JAVA_HOME`, or use Android Studio's bundled JBR."
-    }
-}
-
 /// Host-specific Kotlin compiler guidance.
 #[must_use]
 pub const fn kotlin_install_suggestion() -> &'static str {
@@ -162,14 +115,12 @@ pub const fn kotlin_install_suggestion() -> &'static str {
         "Install Android Studio (includes Kotlin), or install Kotlin manually and set `KOTLIN_HOME`."
     } else if cfg!(target_os = "macos") {
         "Install Android Studio (includes Kotlin), or install Kotlin manually and ensure `kotlinc` is in PATH."
-    } else if cfg!(target_os = "linux") {
-        "Install Android Studio (includes Kotlin), or install Kotlin manually and ensure `kotlinc` is in PATH."
     } else {
         "Install Kotlin compiler (`kotlinc`) and set `KOTLIN_HOME` if needed."
     }
 }
 
-fn sdkmanager_search_names() -> &'static [&'static str] {
+const fn sdkmanager_search_names() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
         &["sdkmanager.bat", "sdkmanager.exe", "sdkmanager"]
     } else {
@@ -177,7 +128,7 @@ fn sdkmanager_search_names() -> &'static [&'static str] {
     }
 }
 
-fn sdkmanager_binary_name() -> &'static str {
+const fn sdkmanager_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "sdkmanager.bat"
     } else {
@@ -185,7 +136,7 @@ fn sdkmanager_binary_name() -> &'static str {
     }
 }
 
-fn cmdline_tools_host_tag() -> Option<&'static str> {
+const fn cmdline_tools_host_tag() -> Option<&'static str> {
     if cfg!(target_os = "windows") {
         Some("win")
     } else if cfg!(target_os = "macos") {
@@ -541,7 +492,7 @@ fn parse_android_build_tools_version(package_id: &str) -> Option<&str> {
 fn parse_numeric_prefix(segment: &str) -> u64 {
     let digits: String = segment
         .chars()
-        .take_while(|ch| ch.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>();
     digits.parse().unwrap_or(0)
 }
@@ -552,7 +503,7 @@ fn compare_version_segments(left: &[u64], right: &[u64]) -> Ordering {
         let l = left.get(idx).copied().unwrap_or(0);
         let r = right.get(idx).copied().unwrap_or(0);
         match l.cmp(&r) {
-            Ordering::Equal => continue,
+            Ordering::Equal => {}
             ordering => return ordering,
         }
     }
@@ -1410,7 +1361,7 @@ async fn verify_android_platform_tools_executable(
     ))
 }
 
-async fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
     let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
     let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
     let mut candidates = entries
@@ -1437,7 +1388,7 @@ async fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
 async fn verify_ndk_host_toolchain_executable(
     ndk_path: &Path,
 ) -> Result<(), ToolchainError<AndroidNdkInstallation>> {
-    let clang_path = ndk_host_clang_path(ndk_path).await.ok_or_else(|| {
+    let clang_path = ndk_host_clang_path(ndk_path).ok_or_else(|| {
         ToolchainError::unfixable(
             "Android NDK toolchain is incomplete (`clang` was not found under toolchains/llvm/prebuilt).",
             android_ndk_install_suggestion(),
@@ -1533,8 +1484,8 @@ impl Java {
     ///
     /// Priority order:
     /// 1. Android Studio's bundled JBR (guaranteed compatible with AGP)
-    /// 2. JAVA_HOME environment variable (may be incompatible)
-    /// 3. Java from PATH (fallback)
+    /// 2. `JAVA_HOME` environment variable (may be incompatible)
+    /// 3. Java from `PATH`
     pub async fn detect_path() -> Option<PathBuf> {
         if cfg!(target_os = "macos") {
             const ANDROID_STUDIO_JBRS: &[&str] = &[
@@ -1549,19 +1500,17 @@ impl Java {
             }
         }
 
-        if cfg!(target_os = "linux") {
-            if let Ok(home) = env::var("HOME") {
-                let paths = [
-                    format!(
-                        "{home}/.local/share/JetBrains/Toolbox/apps/android-studio/jbr/bin/java"
-                    ),
-                    format!("{home}/android-studio/jbr/bin/java"),
-                ];
-                for path in paths {
-                    let java_path = PathBuf::from(&path);
-                    if java_path.exists() {
-                        return Some(java_path);
-                    }
+        if cfg!(target_os = "linux")
+            && let Ok(home) = env::var("HOME")
+        {
+            let paths = [
+                format!("{home}/.local/share/JetBrains/Toolbox/apps/android-studio/jbr/bin/java"),
+                format!("{home}/android-studio/jbr/bin/java"),
+            ];
+            for path in paths {
+                let java_path = PathBuf::from(&path);
+                if java_path.exists() {
+                    return Some(java_path);
                 }
             }
         }
@@ -1596,7 +1545,7 @@ impl Java {
         which("java").await.ok()
     }
 
-    /// Get the JAVA_HOME directory (parent of bin/).
+    /// Get the `JAVA_HOME` directory (parent of `bin/`).
     pub async fn detect_home() -> Option<PathBuf> {
         let java_path = Self::detect_path().await?;
         java_path.parent()?.parent().map(PathBuf::from)
@@ -1746,40 +1695,34 @@ impl Kotlin {
             }
         }
 
-        if cfg!(target_os = "linux") {
-            if let Ok(home) = env::var("HOME") {
-                let paths = [
-                    format!(
-                        "{home}/.local/share/JetBrains/Toolbox/apps/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"
-                    ),
-                    format!("{home}/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
-                ];
-                for path in paths {
-                    let kotlinc_path = PathBuf::from(&path);
-                    if kotlinc_path.exists() {
-                        return Some(kotlinc_path);
-                    }
-                }
-            }
-        }
-
-        if cfg!(target_os = "windows") {
-            if let Ok(program_files) = env::var("ProgramFiles") {
-                let kotlinc_path = PathBuf::from(&program_files)
-                    .join("Android/Android Studio/plugins/Kotlin/kotlinc/bin/kotlinc.bat");
+        if cfg!(target_os = "linux")
+            && let Ok(home) = env::var("HOME")
+        {
+            let paths = [
+                format!(
+                    "{home}/.local/share/JetBrains/Toolbox/apps/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"
+                ),
+                format!("{home}/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
+            ];
+            for path in paths {
+                let kotlinc_path = PathBuf::from(&path);
                 if kotlinc_path.exists() {
                     return Some(kotlinc_path);
                 }
             }
         }
 
-        None
-    }
+        if cfg!(target_os = "windows")
+            && let Ok(program_files) = env::var("ProgramFiles")
+        {
+            let kotlinc_path = PathBuf::from(&program_files)
+                .join("Android/Android Studio/plugins/Kotlin/kotlinc/bin/kotlinc.bat");
+            if kotlinc_path.exists() {
+                return Some(kotlinc_path);
+            }
+        }
 
-    /// Get the KOTLIN_HOME directory (parent of bin/).
-    pub async fn detect_home() -> Option<PathBuf> {
-        let kotlinc_path = Self::detect_path().await?;
-        kotlinc_path.parent()?.parent().map(PathBuf::from)
+        None
     }
 }
 
@@ -1857,17 +1800,17 @@ impl AndroidNdk {
 
         let sdk_path = AndroidSdk::detect_path()?;
         let ndk_dir = sdk_path.join("ndk");
-        if ndk_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&ndk_dir) {
-                let mut versions: Vec<PathBuf> = entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|entry| entry.path())
-                    .filter(|path| path.is_dir())
-                    .collect();
-                versions.sort();
-                if let Some(latest) = versions.last() {
-                    return Some(latest.clone());
-                }
+        if ndk_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&ndk_dir)
+        {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(std::result::Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect();
+            versions.sort();
+            if let Some(latest) = versions.last() {
+                return Some(latest.clone());
             }
         }
 

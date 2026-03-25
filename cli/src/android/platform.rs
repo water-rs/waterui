@@ -260,6 +260,26 @@ pub struct AndroidPlatform {
     abi: AndroidAbi,
 }
 
+struct AndroidBuildContext {
+    abi: AndroidAbi,
+    ndk_path: PathBuf,
+    linker: PathBuf,
+    ar: PathBuf,
+    cxx: PathBuf,
+    target_underscore: String,
+    target_upper: String,
+    llvm_envs: Vec<(String, std::ffi::OsString)>,
+    java_home: PathBuf,
+    java_bin_dir: PathBuf,
+    kotlin_compiler: PathBuf,
+    kotlin_bin_dir: PathBuf,
+    kotlin_home: PathBuf,
+    sdk_path: PathBuf,
+    android_jar: PathBuf,
+    wrapper_toolchain: PathBuf,
+    android_platform: String,
+}
+
 impl AndroidPlatform {
     /// Create a new Android platform with the specified ABI.
     #[must_use]
@@ -322,7 +342,7 @@ impl AndroidPlatform {
 
     /// Get the target triple for this Android platform.
     #[must_use]
-    pub fn triple(&self) -> Triple {
+    pub const fn triple(&self) -> Triple {
         let architecture = match self.abi {
             AndroidAbi::Arm64V8a => Architecture::Aarch64(Aarch64Architecture::Aarch64),
             AndroidAbi::X86_64 => Architecture::X86_64,
@@ -350,167 +370,12 @@ impl AndroidPlatform {
 
         let abi = self.abi();
         let triple = self.triple();
-
-        // Get NDK path for configuring the linker
-        let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
-            eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
-        })?;
-
-        // Configure NDK environment for cargo
-        let linker = ndk_linker_path(&ndk_path, abi);
-        let ar = ndk_ar_path(&ndk_path);
-        let cxx = ndk_cxx_path(&ndk_path, abi);
-
-        let target_underscore = triple.to_string().replace('-', "_");
-        let target_upper = target_underscore.to_uppercase();
-
-        let llvm_envs = WindowsArm64LlvmToolchain
-            .cargo_envs()
-            .await
-            .map_err(|error| match error {
-                ToolchainError::Fixable(_) => eyre::eyre!(
-                    "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-                ),
-                ToolchainError::Unfixable(unfixable) => {
-                    eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-                }
-            })?;
-
-        // Build with RustBuild
-        // Enable android-jni feature for waterui-ffi to generate JNI bindings in Rust
-        let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
-            .with_feature("waterui-ffi/android-jni");
-        if let Some(sccache_path) = options.sccache_path() {
-            build = build.with_sccache(sccache_path.to_path_buf());
-        }
-        for (key, value) in llvm_envs {
-            build = build.with_env(key, value);
-        }
-
-        let java_home = Java::detect_home().await.ok_or_else(|| {
-            eyre::eyre!(
-                "Java runtime not found. Install a JDK (or Android Studio JBR), then re-run `water doctor --fix`."
-            )
-        })?;
-        let java_bin_dir = java_home.join("bin");
-
-        let kotlin_compiler = Kotlin::detect_path().await.ok_or_else(|| {
-            eyre::eyre!(
-                "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
-            )
-        })?;
-        let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
-            eyre::eyre!(
-                "Failed to determine Kotlin bin directory from `{}`.",
-                kotlin_compiler.display()
-            )
-        })?;
-        let kotlin_home = kotlin_bin_dir.parent().map(PathBuf::from).ok_or_else(|| {
-            eyre::eyre!(
-                "Failed to determine KOTLIN_HOME from `{}`.",
-                kotlin_bin_dir.display()
-            )
-        })?;
-
-        let sdk_path = AndroidSdk::detect_path().ok_or_else(|| {
-            eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
-        })?;
-        let android_jar = unblock(AndroidSdk::android_jar_path)
-            .await
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Android platforms not found in SDK at {}. Install an Android platform (SDK) in Android Studio.",
-                    sdk_path.display()
-                )
-            })?;
-
-        let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi).await?;
-        let android_platform = format!("android-{ANDROID_MIN_API_LEVEL}");
-
-        build = build
-            // For cargo/rustc linker
-            .with_env(
-                format!("CARGO_TARGET_{target_upper}_LINKER"),
-                linker.as_os_str(),
-            )
-            .with_env(format!("CARGO_TARGET_{target_upper}_AR"), ar.as_os_str())
-            // For cc-rs crate (used by ring, aws-lc-sys, etc.) - uses underscore format
-            .with_env(format!("CC_{target_underscore}"), linker.as_os_str())
-            .with_env(format!("CXX_{target_underscore}"), cxx.as_os_str())
-            .with_env(format!("AR_{target_underscore}"), ar.as_os_str())
-            // For CMake-based builds (aws-lc-sys, etc.)
-            .with_env("ANDROID_NDK", ndk_path.as_os_str())
-            .with_env("ANDROID_NDK_HOME", ndk_path.as_os_str())
-            .with_env("ANDROID_NDK_ROOT", ndk_path.as_os_str())
-            // Android SDK environment variables (needed by waterkit and other crates)
-            .with_env("ANDROID_HOME", sdk_path.as_os_str())
-            .with_env("ANDROID_SDK_ROOT", sdk_path.as_os_str())
-            .with_env("ANDROID_JAR", android_jar.as_os_str())
-            .with_env("JAVA_HOME", java_home.as_os_str())
-            .with_env("KOTLIN_HOME", kotlin_home.as_os_str())
-            .with_env("KOTLINC", kotlin_compiler.as_os_str())
-            // CMake toolchain wrapper
-            .with_env("CMAKE_TOOLCHAIN_FILE", wrapper_toolchain.as_os_str())
-            .with_env(
-                format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
-                wrapper_toolchain.as_os_str(),
-            )
-            .with_env("CMAKE_ASM_COMPILER", linker.as_os_str())
-            .with_env("ANDROID_ABI", abi.as_str())
-            .with_env("ANDROID_PLATFORM", android_platform)
-            // Allow pkg-config probes that are intentionally scoped to cross targets.
-            // This is required by cross-target native dependency build scripts.
-            .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
-            .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
-            .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{}", triple), "1");
-
-        let current_path = std::env::var_os("PATH")
-            .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
-        let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
-        paths.insert(0, java_bin_dir);
-        paths.insert(0, kotlin_bin_dir);
-        let new_path = std::env::join_paths(paths).map_err(|error| {
-            eyre::eyre!("Failed to construct PATH for Java/Kotlin compiler resolution: {error}")
-        })?;
-        build = build.with_env("PATH", new_path);
+        let build_context = resolve_android_build_context(abi, &triple).await?;
+        let build = configure_android_rust_build(project, &triple, &build_context, &options)?;
 
         let lib_dir = build.build_lib(options.is_release()).await?;
-
-        // Get the crate name and find the built .so file
-        let lib_name = project.ffi_crate_name().replace('-', "_");
-        let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
-
-        if !source_lib.exists() {
-            bail!(
-                "Rust shared library not found at {}. Did the build succeed?",
-                source_lib.display()
-            );
-        }
-
-        // Determine output directory: use specified output_dir or default to jniLibs
-        let output_dir = options.output_dir().map_or_else(
-            || {
-                project
-                    .backend_path::<AndroidBackend>()
-                    .join("app/src/main/jniLibs")
-                    .join(abi.as_str())
-            },
-            std::path::Path::to_path_buf,
-        );
-        fs::create_dir_all(&output_dir).await?;
-
-        // Copy with standardized name
-        let dest_lib = output_dir.join("libwaterui_app.so");
-        copy_file(&source_lib, &dest_lib).await?;
-
-        // Some dependencies (e.g., C++-backed crates) dynamically link against
-        // `libc++_shared.so`. Bundle it so apps don't fail at dlopen time.
-        let libcxx_path = ndk_libcxx_path(&ndk_path, abi);
-        if libcxx_path.exists() {
-            let dest_libcxx = output_dir.join("libc++_shared.so");
-            copy_file(&libcxx_path, &dest_libcxx).await?;
-        }
-
+        copy_android_build_outputs(project, &options, abi, &build_context.ndk_path, &lib_dir)
+            .await?;
         Ok(lib_dir)
     }
 
@@ -630,11 +495,225 @@ impl AndroidPlatform {
     }
 }
 
+async fn resolve_android_build_context(
+    abi: AndroidAbi,
+    triple: &Triple,
+) -> eyre::Result<AndroidBuildContext> {
+    let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
+        eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
+    })?;
+    let linker = ndk_linker_path(&ndk_path, abi);
+    let ar = ndk_ar_path(&ndk_path);
+    let cxx = ndk_cxx_path(&ndk_path, abi);
+    let target_underscore = triple.to_string().replace('-', "_");
+    let target_upper = target_underscore.to_uppercase();
+    let llvm_envs = resolve_windows_arm64_llvm_envs().await?;
+    let (java_home, java_bin_dir) = resolve_java_home().await?;
+    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home().await?;
+    let (sdk_path, android_jar) = resolve_android_sdk_paths().await?;
+    let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi).await?;
+
+    Ok(AndroidBuildContext {
+        abi,
+        ndk_path,
+        linker,
+        ar,
+        cxx,
+        target_underscore,
+        target_upper,
+        llvm_envs,
+        java_home,
+        java_bin_dir,
+        kotlin_compiler,
+        kotlin_bin_dir,
+        kotlin_home,
+        sdk_path,
+        android_jar,
+        wrapper_toolchain,
+        android_platform: format!("android-{ANDROID_MIN_API_LEVEL}"),
+    })
+}
+
+async fn resolve_windows_arm64_llvm_envs() -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
+    WindowsArm64LlvmToolchain
+        .cargo_envs()
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })
+}
+
+async fn resolve_java_home() -> eyre::Result<(PathBuf, PathBuf)> {
+    let java_home = Java::detect_home().await.ok_or_else(|| {
+        eyre::eyre!(
+            "Java runtime not found. Install a JDK (or Android Studio JBR), then re-run `water doctor --fix`."
+        )
+    })?;
+    let java_bin_dir = java_home.join("bin");
+    Ok((java_home, java_bin_dir))
+}
+
+async fn resolve_kotlin_home() -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
+    let kotlin_compiler = Kotlin::detect_path().await.ok_or_else(|| {
+        eyre::eyre!(
+            "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
+        )
+    })?;
+    let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
+        eyre::eyre!(
+            "Failed to determine Kotlin bin directory from `{}`.",
+            kotlin_compiler.display()
+        )
+    })?;
+    let kotlin_home = kotlin_bin_dir.parent().map(PathBuf::from).ok_or_else(|| {
+        eyre::eyre!(
+            "Failed to determine KOTLIN_HOME from `{}`.",
+            kotlin_bin_dir.display()
+        )
+    })?;
+    Ok((kotlin_compiler, kotlin_bin_dir, kotlin_home))
+}
+
+async fn resolve_android_sdk_paths() -> eyre::Result<(PathBuf, PathBuf)> {
+    let sdk_path = AndroidSdk::detect_path().ok_or_else(|| {
+        eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
+    })?;
+    let android_jar = unblock(AndroidSdk::android_jar_path)
+        .await
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Android platforms not found in SDK at {}. Install an Android platform (SDK) in Android Studio.",
+                sdk_path.display()
+            )
+        })?;
+    Ok((sdk_path, android_jar))
+}
+
+fn configure_android_rust_build(
+    project: &Project,
+    triple: &Triple,
+    context: &AndroidBuildContext,
+    options: &BuildOptions,
+) -> eyre::Result<RustBuild> {
+    let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
+        .with_feature("waterui-ffi/android-jni");
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
+    }
+    for (key, value) in &context.llvm_envs {
+        build = build.with_env(key.clone(), value.clone());
+    }
+
+    build = build
+        .with_env(
+            format!("CARGO_TARGET_{}_LINKER", context.target_upper),
+            context.linker.as_os_str(),
+        )
+        .with_env(
+            format!("CARGO_TARGET_{}_AR", context.target_upper),
+            context.ar.as_os_str(),
+        )
+        .with_env(
+            format!("CC_{}", context.target_underscore),
+            context.linker.as_os_str(),
+        )
+        .with_env(
+            format!("CXX_{}", context.target_underscore),
+            context.cxx.as_os_str(),
+        )
+        .with_env(
+            format!("AR_{}", context.target_underscore),
+            context.ar.as_os_str(),
+        )
+        .with_env("ANDROID_NDK", context.ndk_path.as_os_str())
+        .with_env("ANDROID_NDK_HOME", context.ndk_path.as_os_str())
+        .with_env("ANDROID_NDK_ROOT", context.ndk_path.as_os_str())
+        .with_env("ANDROID_HOME", context.sdk_path.as_os_str())
+        .with_env("ANDROID_SDK_ROOT", context.sdk_path.as_os_str())
+        .with_env("ANDROID_JAR", context.android_jar.as_os_str())
+        .with_env("JAVA_HOME", context.java_home.as_os_str())
+        .with_env("KOTLIN_HOME", context.kotlin_home.as_os_str())
+        .with_env("KOTLINC", context.kotlin_compiler.as_os_str())
+        .with_env(
+            "CMAKE_TOOLCHAIN_FILE",
+            context.wrapper_toolchain.as_os_str(),
+        )
+        .with_env(
+            format!("CMAKE_TOOLCHAIN_FILE_{}", context.target_underscore),
+            context.wrapper_toolchain.as_os_str(),
+        )
+        .with_env("CMAKE_ASM_COMPILER", context.linker.as_os_str())
+        .with_env("ANDROID_ABI", context.abi.as_str())
+        .with_env("ANDROID_PLATFORM", &context.android_platform)
+        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .with_env(
+            format!("PKG_CONFIG_ALLOW_CROSS_{}", context.target_underscore),
+            "1",
+        )
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{triple}"), "1");
+
+    let current_path = std::env::var_os("PATH")
+        .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+    paths.insert(0, context.java_bin_dir.clone());
+    paths.insert(0, context.kotlin_bin_dir.clone());
+    let new_path = std::env::join_paths(paths).map_err(|error| {
+        eyre::eyre!("Failed to construct PATH for Java/Kotlin compiler resolution: {error}")
+    })?;
+
+    Ok(build.with_env("PATH", new_path))
+}
+
+async fn copy_android_build_outputs(
+    project: &Project,
+    options: &BuildOptions,
+    abi: AndroidAbi,
+    ndk_path: &Path,
+    lib_dir: &Path,
+) -> eyre::Result<()> {
+    let lib_name = project.ffi_crate_name().replace('-', "_");
+    let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
+
+    if !source_lib.exists() {
+        bail!(
+            "Rust shared library not found at {}. Did the build succeed?",
+            source_lib.display()
+        );
+    }
+
+    let output_dir = options.output_dir().map_or_else(
+        || {
+            project
+                .backend_path::<AndroidBackend>()
+                .join("app/src/main/jniLibs")
+                .join(abi.as_str())
+        },
+        std::path::Path::to_path_buf,
+    );
+    fs::create_dir_all(&output_dir).await?;
+    copy_file(&source_lib, &output_dir.join("libwaterui_app.so")).await?;
+
+    let libcxx_path = ndk_libcxx_path(ndk_path, abi);
+    if libcxx_path.exists() {
+        copy_file(&libcxx_path, &output_dir.join("libc++_shared.so")).await?;
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // Clean
 // ============================================================================
 
 /// Clean Gradle build artifacts for Android.
+///
+/// # Errors
+/// Returns an error if the Gradle clean command fails.
 pub async fn clean_android(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<AndroidBackend>();
     let gradlew = backend_path.join(if cfg!(windows) {
@@ -670,6 +749,7 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
 // ============================================================================
 
 /// Check if a platform is supported by the Android backend.
+#[must_use]
 pub const fn is_android_platform(platform: TargetPlatform) -> bool {
     matches!(platform, TargetPlatform::Android)
 }
@@ -706,7 +786,10 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
 }
 
 #[derive(Template)]
-#[template(path = "src/templates/android_dynamic/WaterUIFonts.kt.tpl", escape = "none")]
+#[template(
+    path = "src/templates/android_dynamic/WaterUIFonts.kt.tpl",
+    escape = "none"
+)]
 struct WaterUiFontsKotlinTemplate<'a> {
     namespace: &'a str,
     font_entries: &'a [FontRegistrationTemplateEntry],

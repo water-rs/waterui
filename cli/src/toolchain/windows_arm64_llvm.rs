@@ -33,6 +33,9 @@ impl WindowsArm64LlvmToolchain {
     /// for Windows ARM64 C/C++/ASM compilation.
     ///
     /// Returns an empty list on hosts where this toolchain is not required.
+    ///
+    /// # Errors
+    /// Returns an error if this host requires LLVM tools and they cannot be located.
     pub async fn cargo_envs(
         &self,
     ) -> Result<Vec<(String, OsString)>, ToolchainError<WindowsArm64LlvmInstallation>> {
@@ -177,8 +180,7 @@ async fn ensure_llvm_tools_available()
         Err(ToolchainError::unfixable(
             format!("Windows ARM64 LLVM tooling is missing: {missing}"),
             format!(
-                "Install Microsoft App Installer to enable `winget`, or install LLVM manually and ensure both `{}` and `{}` are available.",
-                DEFAULT_CLANG_CL_PATH, DEFAULT_LLVM_LIB_PATH
+                "Install Microsoft App Installer to enable `winget`, or install LLVM manually and ensure both `{DEFAULT_CLANG_CL_PATH}` and `{DEFAULT_LLVM_LIB_PATH}` are available."
             ),
         ))
     }

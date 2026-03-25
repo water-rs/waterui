@@ -109,15 +109,12 @@ impl Backend for AndroidBackend {
             })
             .collect();
 
-        let ctx = TemplateContext::for_project_manifest(
-            manifest,
-            project.crate_name().clone(),
-            app_name,
-        )
-        .with_backend_project_path(project.backend_path::<Self>())
-        .with_project_root_path(project.root().to_path_buf())
-        .with_android_backend_path(android_backend_path)
-        .with_android_permissions(android_permissions);
+        let ctx =
+            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf())
+                .with_android_backend_path(android_backend_path)
+                .with_android_permissions(android_permissions);
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

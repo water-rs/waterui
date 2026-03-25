@@ -24,9 +24,9 @@ pub enum CliInspectorPlatform {
 impl From<CliInspectorPlatform> for InspectorPlatform {
     fn from(platform: CliInspectorPlatform) -> Self {
         match platform {
-            CliInspectorPlatform::Ios => InspectorPlatform::IosSimulator,
-            CliInspectorPlatform::Macos => InspectorPlatform::Macos,
-            CliInspectorPlatform::Android => InspectorPlatform::Android,
+            CliInspectorPlatform::Ios => Self::IosSimulator,
+            CliInspectorPlatform::Macos => Self::Macos,
+            CliInspectorPlatform::Android => Self::Android,
         }
     }
 }

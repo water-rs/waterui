@@ -29,6 +29,9 @@ struct HydrolysisPreviewSymbolTemplate<'a> {
 }
 
 /// Render a preview via the managed Hydrolysis backend binary.
+///
+/// # Errors
+/// Returns an error if the managed backend cannot be prepared, built, or executed.
 pub async fn render_preview_with_hydrolysis(
     project_path: &Path,
     symbol: &str,

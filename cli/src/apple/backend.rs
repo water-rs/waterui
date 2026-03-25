@@ -137,10 +137,11 @@ impl Backend for AppleBackend {
             .iter()
             .filter(|(_, entry)| entry.is_enabled())
             .filter_map(|(key, entry)| {
-                key.ios_plist_key().map(|plist_key| templates::IosPermissionTemplateEntry {
-                    plist_key,
-                    description: entry.description().to_string(),
-                })
+                key.ios_plist_key()
+                    .map(|plist_key| templates::IosPermissionTemplateEntry {
+                        plist_key,
+                        description: entry.description().to_string(),
+                    })
             })
             .collect();
         let ctx =
