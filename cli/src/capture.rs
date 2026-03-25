@@ -53,6 +53,9 @@ pub fn generate_screenshot_filename() -> PathBuf {
 }
 
 /// Capture a screenshot from a device.
+///
+/// # Errors
+/// Returns an error if the target device cannot be reached or the screenshot command fails.
 pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
     match detect_platform(device_id) {
         DevicePlatform::Ios => apple::device::screenshot(device_id, output).await,
@@ -61,6 +64,9 @@ pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
 }
 
 /// Verify that a device exists and return its platform.
+///
+/// # Errors
+/// Returns an error if the device cannot be found on the inferred platform.
 pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
     let platform = detect_platform(device_id);
 

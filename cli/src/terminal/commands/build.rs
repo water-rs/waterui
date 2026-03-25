@@ -95,24 +95,63 @@ pub struct Args {
     output_dir: Option<PathBuf>,
 }
 
+struct BuildContext {
+    project: Project,
+    backend: TargetBackend,
+    build_options: BuildOptions,
+}
+
 /// Run the build command.
 pub async fn run(args: Args) -> Result<()> {
-    let project_path = crate::project_path::canonicalize(&args.path)?;
-    let mut project = Project::open(&project_path).await?;
+    let context = prepare_build_context(&args).await?;
+    print_build_header(
+        &context.project,
+        args.platform,
+        context.backend,
+        args.release,
+    );
+    check_build_toolchain(args.platform, context.backend).await?;
+    let result = execute_build(&args, &context).await;
 
+    handle_build_result(result, args.output_dir)
+}
+
+async fn prepare_build_context(args: &Args) -> Result<BuildContext> {
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let project = Project::open(&project_path).await?;
+    ensure_app_project(&project)?;
+
+    let backend = resolve_and_validate_backend(args)?;
+    ensure_backend_configured(&project, backend)?;
+    let project = ensure_generated_backend_ready(&project_path, project, backend).await?;
+    let build_options = build_options(args, backend);
+
+    Ok(BuildContext {
+        project,
+        backend,
+        build_options,
+    })
+}
+
+fn ensure_app_project(project: &Project) -> Result<()> {
     if project.package_type() != PackageType::App {
         bail!(
             "`water build` is only supported for app mode projects.\n\
              Playground projects are managed by `water run` and `water package`."
         );
     }
+    Ok(())
+}
 
+fn resolve_and_validate_backend(args: &Args) -> Result<TargetBackend> {
     let backend = resolve_backend(args.platform, args.backend)?;
     validate_desktop_backend_platform_on_host(args.platform, backend)?;
     validate_arch_args(backend, args.arch)?;
     validate_output_dir_args(backend, args.output_dir.as_ref())?;
+    Ok(backend)
+}
 
-    // Validate backend is configured in app mode.
+fn ensure_backend_configured(project: &Project, backend: TargetBackend) -> Result<()> {
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
             bail!("Apple backend is not configured. Run `water backend add apple`.")
@@ -126,45 +165,72 @@ pub async fn run(args: Args) -> Result<()> {
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
             bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
         }
-        _ => {}
+        _ => Ok(()),
     }
+}
 
-    // Safety net for generated Rust backends if backend config exists but directory missing.
+async fn ensure_generated_backend_ready(
+    project_path: &PathBuf,
+    project: Project,
+    backend: TargetBackend,
+) -> Result<Project> {
     match backend {
-        TargetBackend::Gtk4 => {
-            let cargo_toml = project.backend_path::<Gtk4Backend>().join("Cargo.toml");
-            if !cargo_toml.exists() {
-                let spinner = shell::spinner("Re-initializing GTK4 backend...");
-                reinit_backend::<Gtk4Backend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("GTK4 backend re-initialized");
-            }
+        TargetBackend::Gtk4
+            if !project
+                .backend_path::<Gtk4Backend>()
+                .join("Cargo.toml")
+                .exists() =>
+        {
+            reinitialize_generated_backend::<Gtk4Backend>(
+                project_path,
+                &project,
+                "Re-initializing GTK4 backend...",
+                "GTK4 backend re-initialized",
+            )
+            .await
         }
-        TargetBackend::Hydrolysis => {
-            let cargo_toml = project
+        TargetBackend::Hydrolysis
+            if !project
                 .backend_path::<HydrolysisBackend>()
-                .join("Cargo.toml");
-            if !cargo_toml.exists() {
-                let spinner = shell::spinner("Re-initializing hydrolysis backend...");
-                reinit_backend::<HydrolysisBackend>(&project).await?;
-                project = Project::open(&project_path).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Hydrolysis backend re-initialized");
-            }
+                .join("Cargo.toml")
+                .exists() =>
+        {
+            reinitialize_generated_backend::<HydrolysisBackend>(
+                project_path,
+                &project,
+                "Re-initializing hydrolysis backend...",
+                "Hydrolysis backend re-initialized",
+            )
+            .await
         }
-        _ => {}
+        _ => Ok(project),
     }
+}
 
-    let mut build_options = if let Some(ref output_dir) = args.output_dir {
-        BuildOptions::new(args.release).with_output_dir(output_dir)
-    } else {
-        BuildOptions::new(args.release)
-    };
+async fn reinitialize_generated_backend<T>(
+    project_path: &PathBuf,
+    project: &Project,
+    spinner_message: &str,
+    success_message: &str,
+) -> Result<Project>
+where
+    T: waterui_cli::backend::Backend,
+{
+    let spinner = shell::spinner(spinner_message);
+    reinit_backend::<T>(project).await?;
+    let project = Project::open(project_path).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("{success_message}");
+    Ok(project)
+}
+
+fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
+    let mut build_options = args.output_dir.as_ref().map_or_else(
+        || BuildOptions::new(args.release),
+        |output_dir| BuildOptions::new(args.release).with_output_dir(output_dir),
+    );
 
     if backend == TargetBackend::Apple
         && let Some(triple) = apple_target_triple_override(args.platform, args.arch)
@@ -172,34 +238,61 @@ pub async fn run(args: Args) -> Result<()> {
         build_options = build_options.with_target_triple(triple);
     }
 
-    let mode = if args.release { "release" } else { "debug" };
+    build_options
+}
+
+fn print_build_header(
+    project: &Project,
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    release: bool,
+) {
+    let mode = if release { "release" } else { "debug" };
     header!(
         "Building {} for {} via {} ({})",
         project.crate_name(),
-        platform_name(args.platform),
+        platform_name(platform),
         backend_name(backend),
         mode
     );
+}
 
-    // Step 1: Check toolchain
+async fn check_build_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(args.platform, backend).await?;
+    check_toolchain_for_backend(platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!("Toolchain ready");
+    Ok(())
+}
 
-    // Step 2: Build
+async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
     let spinner = shell::spinner("Compiling...");
     let result = display_output(async {
-        match backend {
+        match context.backend {
             TargetBackend::Apple => {
-                build_for_apple(&project, args.platform, args.arch, build_options).await
+                build_for_apple(
+                    &context.project,
+                    args.platform,
+                    args.arch,
+                    context.build_options.clone(),
+                )
+                .await
             }
-            TargetBackend::Android => build_for_android(&project, args.arch, build_options).await,
-            TargetBackend::Gtk4 => build_gtk4(&project, build_options).await,
+            TargetBackend::Android => {
+                build_for_android(&context.project, args.arch, context.build_options.clone()).await
+            }
+            TargetBackend::Gtk4 => {
+                build_gtk4(&context.project, context.build_options.clone()).await
+            }
             TargetBackend::Hydrolysis => {
-                build_hydrolysis(&project, lib_platform(args.platform), build_options).await
+                build_hydrolysis(
+                    &context.project,
+                    lib_platform(args.platform),
+                    context.build_options.clone(),
+                )
+                .await
             }
         }
     })
@@ -209,10 +302,14 @@ pub async fn run(args: Args) -> Result<()> {
         pb.finish_and_clear();
     }
 
+    result
+}
+
+fn handle_build_result(result: Result<PathBuf>, output_dir: Option<PathBuf>) -> Result<()> {
     match result {
         Ok(output_path) => {
             success!("Build output at {}", output_path.display());
-            if let Some(output_dir) = args.output_dir {
+            if let Some(output_dir) = output_dir {
                 success!("Copied library to {}", output_dir.display());
             }
             Ok(())
@@ -229,23 +326,30 @@ fn resolve_backend(
     backend_override: Option<TargetBackend>,
 ) -> Result<TargetBackend> {
     let default_backend = match platform {
-        TargetPlatform::Ios | TargetPlatform::IosSimulator => TargetBackend::Apple,
+        TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
+            TargetBackend::Apple
+        }
         TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Macos => TargetBackend::Apple,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
     };
     let backend = backend_override.unwrap_or(default_backend);
 
-    let supported = match (platform, backend) {
-        (TargetPlatform::Ios | TargetPlatform::IosSimulator, TargetBackend::Apple) => true,
-        (TargetPlatform::Android, TargetBackend::Android) => true,
-        (TargetPlatform::Macos, TargetBackend::Apple) => true,
-        (TargetPlatform::Macos, TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Linux, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) => true,
-        (TargetPlatform::Windows, TargetBackend::Hydrolysis) => true,
-        _ => false,
-    };
+    let supported = matches!(
+        (platform, backend),
+        (
+            TargetPlatform::Ios | TargetPlatform::IosSimulator,
+            TargetBackend::Apple
+        ) | (
+            TargetPlatform::Macos,
+            TargetBackend::Apple | TargetBackend::Hydrolysis
+        ) | (TargetPlatform::Android, TargetBackend::Android)
+            | (
+                TargetPlatform::Linux,
+                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+            )
+            | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
+    );
     if !supported {
         bail!(
             "Backend {:?} does not support platform {:?}.\n\
@@ -332,17 +436,16 @@ async fn build_for_apple(
                 target_arch
             )
         }
-        (
-            TargetPlatform::IosSimulator,
-            None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64),
-        ) => build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await,
+        (TargetPlatform::IosSimulator, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
+            build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await
+        }
         (TargetPlatform::IosSimulator, Some(target_arch)) => {
             bail!(
                 "iOS Simulator only supports arm64 or x86_64, not {:?}",
                 target_arch
             )
         }
-        (TargetPlatform::Macos, None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64)) => {
+        (TargetPlatform::Macos, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
             build_rust_lib(project, LibTargetPlatform::MacOS, options).await
         }
         (TargetPlatform::Macos, Some(target_arch)) => {
@@ -453,7 +556,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
     }
 }
 
-fn apple_target_triple_override(
+const fn apple_target_triple_override(
     platform: TargetPlatform,
     arch: Option<TargetArch>,
 ) -> Option<Triple> {

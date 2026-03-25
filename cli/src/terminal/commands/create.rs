@@ -39,8 +39,18 @@ pub struct Args {
     mode: ProjectMode,
 }
 
+struct CreatePlan {
+    name: String,
+    bundle_id: String,
+    backends: Vec<Backend>,
+    package_type: PackageType,
+    waterui_path: Option<PathBuf>,
+    folder_name: String,
+    project_path: PathBuf,
+}
+
 /// Backend options for scaffolding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     Apple,
     Android,
@@ -89,83 +99,113 @@ impl Backend {
 
 /// Run the create command.
 pub async fn run(args: Args) -> Result<()> {
+    let plan = resolve_create_plan(&args)?;
+    header!("Creating WaterUI project: {}", plan.name);
+    let mut project = create_project(&plan).await?;
+    initialize_requested_backends(&mut project, &plan).await?;
+    print_create_summary(&plan);
+    Ok(())
+}
+
+fn resolve_create_plan(args: &Args) -> Result<CreatePlan> {
     let interactive = shell::is_interactive();
     let package_type = args.mode.package_type();
+    let name = resolve_project_name(args, interactive)?;
+    let waterui_path = resolve_waterui_path(args, interactive)?;
+    let bundle_id = resolve_bundle_id(args, interactive, &name)?;
+    let backends = resolve_backends(args, interactive, package_type)?;
 
-    // Gather config - use CLI args if provided, otherwise prompt
-    let name = match args.name.clone() {
-        Some(n) => n,
-        None if interactive => prompt_name()?,
-        None => return Err(color_eyre::eyre::eyre!("Project name is required")),
-    };
-
-    // Resolve waterui_path (--dev prompts for local path)
-    let waterui_path = if args.dev {
-        let user_input = if interactive {
-            prompt_waterui_path()?
-        } else {
-            ".".to_string()
-        };
-
-        // Convert user input to a path relative to the new project directory
-        // If user inputs ".", it becomes "../" in the new project
-        let input_path = std::path::Path::new(&user_input);
-        let relative_to_new_project = if input_path.is_relative() {
-            // For relative paths, prepend "../" since we're going one level deeper
-            std::path::PathBuf::from("..").join(input_path)
-        } else {
-            // For absolute paths, use as-is
-            input_path.to_path_buf()
-        };
-
-        Some(relative_to_new_project)
-    } else {
-        args.waterui_path.clone()
-    };
-
-    let bundle_id = match args.bundle_id.clone() {
-        Some(id) => id,
-        None if interactive => prompt_bundle_id(&name)?,
-        None => default_bundle_id(&name),
-    };
-
-    if package_type == PackageType::Playground && args.backends.is_some() {
-        bail!("Playground mode does not support --backends; backend projects are auto-managed.");
-    }
-
-    let backends = if package_type == PackageType::Playground {
-        Vec::new()
-    } else {
-        match &args.backends {
-            Some(values) => parse_backends(values)?,
-            None if interactive => prompt_backends()?,
-            None => vec![Backend::Apple, Backend::Android],
-        }
-    };
-
-    if package_type == PackageType::App && backends.is_empty() {
-        bail!("At least one backend is required. Choose from: apple, android, gtk4, hydrolysis.");
-    }
     if package_type == PackageType::App {
         validate_backends_on_host(&backends)?;
     }
 
-    // Compute project path
     let folder_name = name.to_kebab_case();
     let project_path = std::env::current_dir()?.join(&folder_name);
 
-    header!("Creating WaterUI project: {}", name);
+    Ok(CreatePlan {
+        name,
+        bundle_id,
+        backends,
+        package_type,
+        waterui_path,
+        folder_name,
+        project_path,
+    })
+}
 
-    // Create project using library API
+fn resolve_project_name(args: &Args, interactive: bool) -> Result<String> {
+    match args.name.clone() {
+        Some(name) => Ok(name),
+        None if interactive => prompt_name(),
+        None => Err(eyre!("Project name is required")),
+    }
+}
+
+fn resolve_waterui_path(args: &Args, interactive: bool) -> Result<Option<PathBuf>> {
+    if !args.dev {
+        return Ok(args.waterui_path.clone());
+    }
+
+    let user_input = if interactive {
+        prompt_waterui_path()?
+    } else {
+        ".".to_string()
+    };
+    let input_path = std::path::Path::new(&user_input);
+    let relative_to_new_project = if input_path.is_relative() {
+        PathBuf::from("..").join(input_path)
+    } else {
+        input_path.to_path_buf()
+    };
+
+    Ok(Some(relative_to_new_project))
+}
+
+fn resolve_bundle_id(args: &Args, interactive: bool, name: &str) -> Result<String> {
+    match args.bundle_id.clone() {
+        Some(bundle_id) => Ok(bundle_id),
+        None if interactive => prompt_bundle_id(name),
+        None => Ok(default_bundle_id(name)),
+    }
+}
+
+fn resolve_backends(
+    args: &Args,
+    interactive: bool,
+    package_type: PackageType,
+) -> Result<Vec<Backend>> {
+    if package_type == PackageType::Playground {
+        if args.backends.is_some() {
+            bail!(
+                "Playground mode does not support --backends; backend projects are auto-managed."
+            );
+        }
+        return Ok(Vec::new());
+    }
+
+    let backends = match &args.backends {
+        Some(values) => parse_backends(values)?,
+        None if interactive => prompt_backends()?,
+        None => vec![Backend::Apple, Backend::Android],
+    };
+
+    if backends.is_empty() {
+        bail!("At least one backend is required. Choose from: apple, android, gtk4, hydrolysis.");
+    }
+
+    Ok(backends)
+}
+
+async fn create_project(plan: &CreatePlan) -> Result<Project> {
     let spinner = shell::spinner("Creating project files...");
-    let mut project = Project::create(
-        &project_path,
+    let project = Project::create(
+        &plan.project_path,
         CreateOptions {
-            name: name.clone(),
-            bundle_identifier: BundleIdentifier::try_from(bundle_id.as_str())
+            name: plan.name.clone(),
+            bundle_identifier: BundleIdentifier::try_from(plan.bundle_id.as_str())
                 .map_err(|error| eyre!(error))?,
-            package_type,
-            waterui_path,
+            package_type: plan.package_type,
+            waterui_path: plan.waterui_path.clone(),
             author: whoami::username(),
         },
     )
@@ -174,62 +214,62 @@ pub async fn run(args: Args) -> Result<()> {
         pb.finish_and_clear();
     }
     success!("Created Cargo.toml and src/lib.rs");
+    Ok(project)
+}
 
-    // Initialize backends (skip for playground projects)
-    if package_type == PackageType::App {
-        let has_apple = backends.iter().any(|b| matches!(b, Backend::Apple));
-        let has_android = backends.iter().any(|b| matches!(b, Backend::Android));
-        let has_gtk4 = backends.iter().any(|b| matches!(b, Backend::Gtk4));
-        let has_hydrolysis = backends.iter().any(|b| matches!(b, Backend::Hydrolysis));
-
-        if has_apple {
-            let spinner = shell::spinner("Scaffolding Apple backend...");
-            project.init_apple_backend().await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Created Apple backend");
-        }
-
-        if has_android {
-            let spinner = shell::spinner("Scaffolding Android backend...");
-            project.init_android_backend().await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Created Android backend");
-        }
-
-        if has_gtk4 {
-            let spinner = shell::spinner("Scaffolding GTK4 backend...");
-            project.init_gtk4_backend().await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Created GTK4 backend");
-        }
-
-        if has_hydrolysis {
-            let spinner = shell::spinner("Scaffolding hydrolysis backend...");
-            project.init_hydrolysis_backend().await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!("Created hydrolysis backend");
-        }
+async fn initialize_requested_backends(project: &mut Project, plan: &CreatePlan) -> Result<()> {
+    if plan.package_type != PackageType::App {
+        return Ok(());
     }
 
-    // Final message
+    initialize_backend_if_requested(project, &plan.backends, Backend::Apple).await?;
+    initialize_backend_if_requested(project, &plan.backends, Backend::Android).await?;
+    initialize_backend_if_requested(project, &plan.backends, Backend::Gtk4).await?;
+    initialize_backend_if_requested(project, &plan.backends, Backend::Hydrolysis).await
+}
+
+async fn initialize_backend_if_requested(
+    project: &mut Project,
+    backends: &[Backend],
+    backend: Backend,
+) -> Result<()> {
+    if !backends.contains(&backend) {
+        return Ok(());
+    }
+
+    let (spinner_message, success_message) = match backend {
+        Backend::Apple => ("Scaffolding Apple backend...", "Created Apple backend"),
+        Backend::Android => ("Scaffolding Android backend...", "Created Android backend"),
+        Backend::Gtk4 => ("Scaffolding GTK4 backend...", "Created GTK4 backend"),
+        Backend::Hydrolysis => (
+            "Scaffolding hydrolysis backend...",
+            "Created hydrolysis backend",
+        ),
+    };
+
+    let spinner = shell::spinner(spinner_message);
+    match backend {
+        Backend::Apple => project.init_apple_backend().await?,
+        Backend::Android => project.init_android_backend().await?,
+        Backend::Gtk4 => project.init_gtk4_backend().await?,
+        Backend::Hydrolysis => project.init_hydrolysis_backend().await?,
+    }
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    success!("{success_message}");
+    Ok(())
+}
+
+fn print_create_summary(plan: &CreatePlan) {
     line!();
-    success!("Project created at {}", project_path.display());
+    success!("Project created at {}", plan.project_path.display());
     line!();
     line!("Next steps:");
-    line!("  cd {folder_name}");
-    if let Some(command) = next_run_command(package_type, &backends) {
+    line!("  cd {}", plan.folder_name);
+    if let Some(command) = next_run_command(plan.package_type, &plan.backends) {
         line!("  {command}");
     }
-
-    Ok(())
 }
 
 fn prompt_name() -> Result<String> {

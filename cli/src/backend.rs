@@ -197,6 +197,9 @@ pub trait Backend: Sized + Send + Sync {
 /// 3. Calls `Backend::init()` to re-scaffold the backend
 ///
 /// This allows template updates to be applied while keeping expensive build caches.
+///
+/// # Errors
+/// Returns an error if the backend directory cannot be read, cleaned, or re-initialized.
 pub async fn reinit_backend<B: Backend>(project: &Project) -> Result<B, FailToInitBackend> {
     let backend_path = project.backend_path::<B>();
 

@@ -62,7 +62,7 @@ enum Commands {
     /// Preview a view function as PNG.
     Preview(preview::Args),
 
-    /// Launch the WaterUI inspector app.
+    /// Launch the `WaterUI` inspector app.
     Inspector(inspector::Args),
 }
 

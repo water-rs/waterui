@@ -21,7 +21,9 @@ use std::path::Path;
 
 use crate::{
     debug,
-    device::{Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running},
+    device::{
+        Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running, format_panic_message,
+    },
     utils::run_command,
 };
 
@@ -34,6 +36,171 @@ struct PanicInfo {
     payload: String,
     /// The source location where the panic occurred
     location: Option<String>,
+}
+
+async fn install_simulator_artifact(udid: &str, artifact_path: &Path) -> Result<(), FailToRun> {
+    let install_output = Command::new("xcrun")
+        .args(["simctl", "install", udid])
+        .arg(artifact_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install app: {error}")))?;
+    if install_output.status.success() {
+        return Ok(());
+    }
+
+    Err(FailToRun::Install(eyre!(
+        "Failed to install app:\n{}\n{}",
+        String::from_utf8_lossy(&install_output.stdout).trim(),
+        String::from_utf8_lossy(&install_output.stderr).trim(),
+    )))
+}
+
+fn simulator_process_name(artifact: &Artifact) -> Result<String, FailToRun> {
+    artifact
+        .path()
+        .file_stem()
+        .ok_or_else(|| {
+            FailToRun::Run(eyre!(
+                "Artifact path has no filename: {}",
+                artifact.path().display()
+            ))
+        })?
+        .to_str()
+        .ok_or_else(|| {
+            FailToRun::Run(eyre!(
+                "Artifact filename is not valid UTF-8: {}",
+                artifact.path().display()
+            ))
+        })
+        .map(std::string::ToString::to_string)
+}
+
+fn simulator_env_vars(options: &crate::device::RunOptions) -> Vec<(String, String)> {
+    options
+        .env_vars()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+async fn launch_simulator_app(
+    udid: &str,
+    bundle_id: &str,
+    env_vars: &[(String, String)],
+) -> Result<u32, FailToRun> {
+    let mut launch = Command::new("xcrun");
+    launch
+        .arg("simctl")
+        .arg("launch")
+        .arg("--terminate-running-process")
+        .arg(udid)
+        .arg(bundle_id);
+
+    for (key, value) in env_vars {
+        launch.env(format!("SIMCTL_CHILD_{key}"), value);
+    }
+
+    let launch_output = launch
+        .output()
+        .await
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
+    if !launch_output.status.success() {
+        return Err(FailToRun::Launch(eyre!(
+            "Failed to launch app:\n{}\n{}",
+            String::from_utf8_lossy(&launch_output.stdout).trim(),
+            String::from_utf8_lossy(&launch_output.stderr).trim(),
+        )));
+    }
+
+    parse_simctl_launch_pid(&String::from_utf8_lossy(&launch_output.stdout)).ok_or_else(|| {
+        FailToRun::Launch(eyre!(
+            "Failed to parse PID from simctl launch output: {}",
+            String::from_utf8_lossy(&launch_output.stdout).trim()
+        ))
+    })
+}
+
+fn spawn_simulator_termination(udid: String, bundle_id: String) {
+    let spawn_result = std::thread::Builder::new()
+        .name("waterui-simctl-terminate".to_string())
+        .spawn(move || {
+            match std::process::Command::new("xcrun")
+                .args(["simctl", "terminate", &udid, &bundle_id])
+                .output()
+            {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    tracing::error!(
+                        "Failed to terminate app on simulator: status={}, stdout={}, stderr={}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stdout).trim(),
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+                Err(error) => {
+                    tracing::error!("Failed to terminate app on simulator: {error}");
+                }
+            }
+        });
+
+    if let Err(error) = spawn_result {
+        tracing::error!("Failed to spawn simulator termination thread: {error}");
+    }
+}
+
+struct SimulatorExitContext {
+    device_name: String,
+    device_identifier: String,
+    bundle_id: String,
+    process_name: String,
+    pid: u32,
+    start_time: Timestamp,
+    start_instant: Instant,
+}
+
+fn spawn_simulator_exit_monitor(
+    sender: Sender<DeviceEvent>,
+    panic_rx: Receiver<PanicInfo>,
+    context: SimulatorExitContext,
+) {
+    spawn(async move {
+        wait_for_pid_exit(context.pid).await;
+
+        if let Ok(info) = panic_rx.try_recv() {
+            let _ = sender.try_send(DeviceEvent::Crashed(format_panic_message(
+                &info.payload,
+                info.location.as_deref(),
+            )));
+            return;
+        }
+
+        if let Some(report) = poll_for_crash_report(
+            &context.device_name,
+            &context.device_identifier,
+            &context.bundle_id,
+            &context.process_name,
+            Some(context.pid),
+            context.start_time,
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
+            return;
+        }
+
+        if let Some(panic_msg) =
+            fetch_recent_panic_logs(context.start_instant, Some(context.pid)).await
+        {
+            let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
+            return;
+        }
+
+        let _ = sender.try_send(DeviceEvent::Exited);
+    })
+    .detach();
 }
 
 /// Start streaming logs from a `WaterUI` app.
@@ -75,55 +242,55 @@ fn start_log_stream(
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    if let Ok(mut log_child) = log_cmd.spawn() {
-        if let Some(stdout) = log_child.stdout.take() {
-            // Move log_child into the async task to keep it alive
-            spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Some(Ok(line)) = lines.next().await {
-                    // Skip header lines from `log stream`
-                    if line.starts_with("Filtering") || line.starts_with("Timestamp") {
-                        continue;
-                    }
+    if let Ok(mut log_child) = log_cmd.spawn()
+        && let Some(stdout) = log_child.stdout.take()
+    {
+        // Move log_child into the async task to keep it alive
+        spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Some(Ok(line)) = lines.next().await {
+                // Skip header lines from `log stream`
+                if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+                    continue;
+                }
 
-                    // Extract panic info from log line if present (only first panic via try_send)
-                    if line.contains("panic.payload=") {
-                        if let Some(info) = extract_panic_info_from_log(&line) {
-                            let _ = panic_tx.try_send(info);
-                        }
-                    }
+                // Extract panic info from log line if present (only first panic via try_send)
+                if line.contains("panic.payload=")
+                    && let Some(info) = extract_panic_info_from_log(&line)
+                {
+                    let _ = panic_tx.try_send(info);
+                }
 
-                    // Only send log events to display if user requested logs
-                    if log_level.is_some() {
-                        // Parse log level from compact format: "timestamp Ty Process..."
-                        // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
-                        // Fault is Apple's highest severity - used by panic handler
-                        let level = if line.contains(" F ") || line.contains(" E ") {
-                            tracing::Level::ERROR
-                        } else if line.contains(" W ") {
-                            tracing::Level::WARN
-                        } else if line.contains(" D ") {
-                            tracing::Level::DEBUG
-                        } else {
-                            tracing::Level::INFO
-                        };
+                // Only send log events to display if user requested logs
+                if log_level.is_some() {
+                    // Parse log level from compact format: "timestamp Ty Process..."
+                    // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
+                    // Fault is Apple's highest severity - used by panic handler
+                    let level = if line.contains(" F ") || line.contains(" E ") {
+                        tracing::Level::ERROR
+                    } else if line.contains(" W ") {
+                        tracing::Level::WARN
+                    } else if line.contains(" D ") {
+                        tracing::Level::DEBUG
+                    } else {
+                        tracing::Level::INFO
+                    };
 
-                        if sender
-                            .try_send(DeviceEvent::Log {
-                                level,
-                                message: line,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
+                    if sender
+                        .try_send(DeviceEvent::Log {
+                            level,
+                            message: line,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
-                // Keep log_child alive until stream ends, then let it drop to kill the process
-                drop(log_child);
-            })
-            .detach();
-        }
+            }
+            // Keep log_child alive until stream ends, then let it drop to kill the process
+            drop(log_child);
+        })
+        .detach();
     }
 
     panic_rx
@@ -277,10 +444,10 @@ fn parse_simctl_launch_pid(stdout: &str) -> Option<u32> {
             continue;
         }
 
-        if let Some((_, pid_part)) = line.rsplit_once(':') {
-            if let Ok(pid) = pid_part.trim().parse::<u32>() {
-                return Some(pid);
-            }
+        if let Some((_, pid_part)) = line.rsplit_once(':')
+            && let Ok(pid) = pid_part.trim().parse::<u32>()
+        {
+            return Some(pid);
         }
 
         if let Ok(pid) = line.parse::<u32>() {
@@ -463,118 +630,24 @@ impl Device for AppleSimulator {
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         info!("Installing app on apple simulator {}", self.name);
-        let install_output = Command::new("xcrun")
-            .args(["simctl", "install", &self.udid])
-            .arg(artifact.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| FailToRun::Install(eyre!("Failed to install app: {e}")))?;
-        if !install_output.status.success() {
-            return Err(FailToRun::Install(eyre!(
-                "Failed to install app:\n{}\n{}",
-                String::from_utf8_lossy(&install_output.stdout).trim(),
-                String::from_utf8_lossy(&install_output.stderr).trim(),
-            )));
-        }
+        install_simulator_artifact(&self.udid, artifact.path()).await?;
 
         info!("Launching app on apple simulator {}", self.name);
 
         let start_time = Timestamp::now();
         let start_instant = Instant::now();
-
         let bundle_id = artifact.bundle_id().to_string();
-        let process_name = artifact
-            .path()
-            .file_stem()
-            .ok_or_else(|| {
-                FailToRun::Run(eyre!(
-                    "Artifact path has no filename: {}",
-                    artifact.path().display()
-                ))
-            })?
-            .to_str()
-            .ok_or_else(|| {
-                FailToRun::Run(eyre!(
-                    "Artifact filename is not valid UTF-8: {}",
-                    artifact.path().display()
-                ))
-            })?
-            .to_string();
-
+        let process_name = simulator_process_name(&artifact)?;
         let log_level = options.log_level();
         let native_logs = options.native_logs();
-        let env_vars: Vec<(String, String)> = options
-            .env_vars()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-
-        let mut launch = Command::new("xcrun");
-
-        launch
-            .arg("simctl")
-            .arg("launch")
-            .arg("--terminate-running-process")
-            .arg(&self.udid)
-            .arg(&bundle_id);
-
-        for (key, value) in &env_vars {
-            // Use `SIMCTL_CHILD_KEY` = Value for environment variables
-            launch.env(format!("SIMCTL_CHILD_{key}"), value);
-        }
-
-        let launch_output = launch
-            .output()
-            .await
-            .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
-
-        if !launch_output.status.success() {
-            return Err(FailToRun::Launch(eyre!(
-                "Failed to launch app:\n{}\n{}",
-                String::from_utf8_lossy(&launch_output.stdout).trim(),
-                String::from_utf8_lossy(&launch_output.stderr).trim(),
-            )));
-        }
-
-        let pid = parse_simctl_launch_pid(&String::from_utf8_lossy(&launch_output.stdout))
-            .ok_or_else(|| {
-                FailToRun::Launch(eyre!(
-                    "Failed to parse PID from simctl launch output: {}",
-                    String::from_utf8_lossy(&launch_output.stdout).trim()
-                ))
-            })?;
+        let env_vars = simulator_env_vars(&options);
+        let pid = launch_simulator_app(&self.udid, &bundle_id, &env_vars).await?;
 
         // Create a Running instance - termination will use simctl terminate
         let udid = self.udid.clone();
         let bundle_id_for_termination = bundle_id.clone();
         let (running, sender) = Running::new(move || {
-            // Run termination in a dedicated thread so drop never re-enters the smol runtime.
-            let spawn_result = std::thread::Builder::new()
-                .name("waterui-simctl-terminate".to_string())
-                .spawn(move || {
-                    match std::process::Command::new("xcrun")
-                        .args(["simctl", "terminate", &udid, &bundle_id_for_termination])
-                        .output()
-                    {
-                        Ok(output) if output.status.success() => {}
-                        Ok(output) => {
-                            tracing::error!(
-                                "Failed to terminate app on simulator: status={}, stdout={}, stderr={}",
-                                output.status,
-                                String::from_utf8_lossy(&output.stdout).trim(),
-                                String::from_utf8_lossy(&output.stderr).trim()
-                            );
-                        }
-                        Err(err) => {
-                            tracing::error!("Failed to terminate app on simulator: {err}");
-                        }
-                    }
-                });
-
-            if let Err(err) = spawn_result {
-                tracing::error!("Failed to spawn simulator termination thread: {err}");
-            }
+            spawn_simulator_termination(udid, bundle_id_for_termination);
         });
 
         // Start log streaming and get panic info receiver
@@ -582,47 +655,19 @@ impl Device for AppleSimulator {
         let panic_rx = start_log_stream(sender.clone(), log_level, pid, native_logs);
 
         // Monitor the actual app process and classify crash vs normal exit.
-        let device_name = self.name.clone();
-        let device_identifier = self.udid.clone();
-        let sender_for_exit = sender;
-        spawn(async move {
-            wait_for_pid_exit(pid).await;
-
-            // Priority 1: Use panic info from log stream (immediate - no waiting)
-            if let Ok(info) = panic_rx.try_recv() {
-                let mut msg = format!("Panic: {}", info.payload);
-                if let Some(loc) = &info.location {
-                    msg.push_str(&format!("\n  at {loc}"));
-                }
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(msg));
-                return;
-            }
-
-            // Priority 2: Poll for crash report (slower, but has more details for non-panic crashes)
-            if let Some(report) = poll_for_crash_report(
-                &device_name,
-                &device_identifier,
-                &bundle_id,
-                &process_name,
-                Some(pid),
+        spawn_simulator_exit_monitor(
+            sender,
+            panic_rx,
+            SimulatorExitContext {
+                device_name: self.name.clone(),
+                device_identifier: self.udid.clone(),
+                bundle_id,
+                process_name,
+                pid,
                 start_time,
-                Duration::from_secs(10),
-            )
-            .await
-            {
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(report.to_string()));
-                return;
-            }
-
-            // Priority 3: Try unified log (fallback)
-            if let Some(panic_msg) = fetch_recent_panic_logs(start_instant, Some(pid)).await {
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(panic_msg));
-                return;
-            }
-
-            let _ = sender_for_exit.try_send(DeviceEvent::Exited);
-        })
-        .detach();
+                start_instant,
+            },
+        );
 
         Ok(running)
     }
@@ -650,6 +695,9 @@ impl Device for AppleSimulator {
 
 impl AppleSimulator {
     /// Scan iOS simulators only.
+    ///
+    /// # Errors
+    /// Returns an error if `simctl` cannot be queried for available simulators.
     pub async fn scan_ios() -> eyre::Result<Vec<Self>> {
         let ios_filter = |s: &Self| {
             s.is_available

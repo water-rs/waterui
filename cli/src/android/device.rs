@@ -134,7 +134,6 @@ impl AndroidAbiProvider for AndroidEmulator {
 /// - Launching the app
 /// - Monitoring process state
 /// - Streaming logs
-#[allow(clippy::too_many_lines)]
 async fn run_on_android(
     device_id: &str,
     artifact: Artifact,
@@ -142,123 +141,165 @@ async fn run_on_android(
 ) -> Result<Running, FailToRun> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
+    let env_vars = collect_android_env_vars(&options);
 
-    let env_vars: Vec<(String, String)> = options
+    install_android_artifact(&adb, device_id, artifact.path()).await?;
+    launch_android_app(
+        &adb,
+        build_android_start_args(device_id, &artifact, &env_vars),
+    )
+    .await?;
+
+    // Wait for the process to start and get its PID
+    let pid = wait_for_app_pid(&adb, device_id, artifact.bundle_id()).await?;
+
+    let adb_for_kill = adb.clone();
+    let device_id_for_kill = device_id.to_string();
+    let device_id_for_monitor = device_id.to_string();
+    let bundle_id_for_kill = artifact.bundle_id().to_string();
+    let bundle_id_for_monitor = artifact.bundle_id().to_string();
+    let log_level = options.log_level();
+
+    let (running, sender) = Running::new(move || {
+        spawn_android_force_stop(adb_for_kill, device_id_for_kill, bundle_id_for_kill);
+    });
+
+    spawn_android_runtime_tasks(
+        &adb,
+        device_id,
+        device_id_for_monitor,
+        bundle_id_for_monitor,
+        pid,
+        log_level,
+        sender,
+    );
+
+    Ok(running)
+}
+
+fn collect_android_env_vars(options: &RunOptions) -> Vec<(String, String)> {
+    options
         .env_vars()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
 
-    // Install the APK on the device with -r flag to replace existing installation
-    // This handles both cases: fresh install and reinstall over existing app
-    let install_output = Command::new(&adb)
+async fn install_android_artifact(
+    adb: &Path,
+    device_id: &str,
+    artifact_path: &Path,
+) -> Result<(), FailToRun> {
+    let install_output = Command::new(adb)
         .args(["-s", device_id, "install", "-r"])
-        .arg(artifact.path())
+        .arg(artifact_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
-    if !install_output.status.success() {
-        return Err(FailToRun::Install(eyre!(
-            "Failed to install APK:\n{}\n{}",
-            String::from_utf8_lossy(&install_output.stdout).trim(),
-            String::from_utf8_lossy(&install_output.stderr).trim(),
-        )));
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install APK: {error}")))?;
+
+    if install_output.status.success() {
+        return Ok(());
     }
 
-    // Launch the app (pass env vars as intent extras).
-    //
-    // We use the "waterui.env.<KEY>" namespace to avoid collisions.
-    // MainActivity reads these extras and calls Os.setenv() before loading native libraries.
+    Err(FailToRun::Install(eyre!(
+        "Failed to install APK:\n{}\n{}",
+        String::from_utf8_lossy(&install_output.stdout).trim(),
+        String::from_utf8_lossy(&install_output.stderr).trim(),
+    )))
+}
+
+fn build_android_start_args(
+    device_id: &str,
+    artifact: &Artifact,
+    env_vars: &[(String, String)],
+) -> Vec<String> {
     let mut start_args = vec![
         "-s".to_string(),
         device_id.to_string(),
         "shell".to_string(),
         "am".to_string(),
         "start".to_string(),
-        "-S".to_string(), // force-stop target app before starting (ensures env takes effect)
+        "-S".to_string(),
         "-n".to_string(),
         format!("{}/.MainActivity", artifact.bundle_id()),
     ];
 
-    for (key, value) in &env_vars {
+    for (key, value) in env_vars {
         start_args.push("--es".to_string());
         start_args.push(format!("waterui.env.{key}"));
         start_args.push(value.clone());
     }
 
-    let output = Command::new(&adb)
+    start_args
+}
+
+async fn launch_android_app(adb: &Path, start_args: Vec<String>) -> Result<(), FailToRun> {
+    let output = Command::new(adb)
         .args(&start_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
 
-    if !output.status.success() {
-        return Err(FailToRun::Launch(eyre!(
-            "Failed to launch app:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        )));
+    if output.status.success() {
+        return Ok(());
     }
 
-    // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(&adb, device_id, artifact.bundle_id()).await?;
+    Err(FailToRun::Launch(eyre!(
+        "Failed to launch app:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim(),
+    )))
+}
 
-    let adb_for_kill = adb.clone();
-    let identifier_for_kill = device_id.to_string();
-    let identifier_for_monitor = device_id.to_string();
-    let bundle_id_for_kill = artifact.bundle_id().to_string();
-    let bundle_id_for_monitor = artifact.bundle_id().to_string();
-    let log_level = options.log_level();
+fn spawn_android_force_stop(adb: PathBuf, device_id: String, bundle_id: String) {
+    let spawn_result = std::thread::Builder::new()
+        .name("waterui-android-force-stop".to_string())
+        .spawn(move || {
+            let result = std::process::Command::new(&adb)
+                .args(["-s", &device_id, "shell", "am", "force-stop", &bundle_id])
+                .output();
 
-    let (running, sender) = Running::new(move || {
-        let spawn_result = std::thread::Builder::new()
-            .name("waterui-android-force-stop".to_string())
-            .spawn(move || {
-                let result = std::process::Command::new(&adb_for_kill)
-                    .args([
-                        "-s",
-                        &identifier_for_kill,
-                        "shell",
-                        "am",
-                        "force-stop",
-                        &bundle_id_for_kill,
-                    ])
-                    .output();
-
-                match result {
-                    Ok(output) => {
-                        tracing::debug!(
-                            "Force-stop command executed: status={}, stdout={}, stderr={}",
-                            output.status,
-                            String::from_utf8_lossy(&output.stdout),
-                            String::from_utf8_lossy(&output.stderr)
-                        );
-                    }
-                    Err(error) => {
-                        error!("Failed to stop app {}: {}", bundle_id_for_kill, error);
-                    }
+            match result {
+                Ok(output) => {
+                    tracing::debug!(
+                        "Force-stop command executed: status={}, stdout={}, stderr={}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
                 }
-            });
+                Err(error) => {
+                    error!("Failed to stop app {}: {}", bundle_id, error);
+                }
+            }
+        });
 
-        if let Err(error) = spawn_result {
-            error!("Failed to spawn force-stop worker thread: {error}");
-        }
-    });
+    if let Err(error) = spawn_result {
+        error!("Failed to spawn force-stop worker thread: {error}");
+    }
+}
 
-    // Clone sender for different tasks before moving
+fn spawn_android_runtime_tasks(
+    adb: &Path,
+    device_id: &str,
+    device_id_for_monitor: String,
+    bundle_id_for_monitor: String,
+    pid: u32,
+    log_level: Option<LogLevel>,
+    sender: Sender<DeviceEvent>,
+) {
     let sender_for_monitor = sender.clone();
     let sender_for_panic = sender.clone();
     let sender_for_logs = sender;
+    let adb_for_monitor = adb.to_path_buf();
 
-    // Spawn a background task to monitor the process
-    let adb_for_monitor = adb.clone();
     smol::spawn(async move {
         monitor_android_process(
             adb_for_monitor,
-            &identifier_for_monitor,
+            &device_id_for_monitor,
             &bundle_id_for_monitor,
             pid,
             sender_for_monitor,
@@ -267,31 +308,25 @@ async fn run_on_android(
     })
     .detach();
 
-    // Always stream logs at fatal level to capture panics, with optional display
-    let adb_for_logs = adb;
-    let identifier_for_logs = device_id.to_string();
-    let panic_rx = start_android_log_stream(
-        adb_for_logs,
-        identifier_for_logs,
-        pid,
-        log_level,
-        sender_for_logs,
-    );
-
-    // Listen for panic info and send as crash event
+    let panic_rx = start_android_log_stream(adb, device_id, pid, log_level, sender_for_logs);
     spawn(async move {
         if let Ok(info) = panic_rx.recv().await {
-            // Format panic message for panic_report() display
-            let mut msg = format!("Panic: {}", info.payload);
-            if let Some(loc) = info.location {
-                msg = format!("{msg}\n  at {loc}");
-            }
-            let _ = sender_for_panic.send(DeviceEvent::Crashed(msg)).await;
+            let _ = sender_for_panic
+                .send(DeviceEvent::Crashed(format_android_panic(&info)))
+                .await;
         }
     })
     .detach();
+}
 
-    Ok(running)
+fn format_android_panic(info: &PanicInfo) -> String {
+    let mut msg = format!("Panic: {}", info.payload);
+    if let Some(location) = &info.location {
+        msg.push('\n');
+        msg.push_str("  at ");
+        msg.push_str(location);
+    }
+    msg
 }
 
 /// Wait for an app to start and return its PID.
@@ -300,10 +335,9 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
         smol::Timer::after(std::time::Duration::from_millis(200)).await;
         if let Ok(output) =
             run_command_os(adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
+            && let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next()
         {
-            if let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next() {
-                return Ok(pid);
-            }
+            return Ok(pid);
         }
     }
 
@@ -578,8 +612,8 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32) -> bool {
 /// Always streams at minimum fatal level to capture panics.
 /// Returns a receiver for panic info that fires if a panic is detected.
 fn start_android_log_stream(
-    adb: PathBuf,
-    device_id: String,
+    adb: &Path,
+    device_id: &str,
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
@@ -591,12 +625,12 @@ fn start_android_log_stream(
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
     // Always stream at fatal level to capture panics, even if user didn't request logs
-    let priority = log_level.map_or('F', |l| l.to_android_priority());
+    let priority = log_level.map_or('F', super::super::device::LogLevel::to_android_priority);
 
     // Build logcat command with PID filter and minimum priority
     let pid_arg = format!("--pid={pid}");
-    let mut cmd = Command::new(&adb);
-    cmd.args(["-s", &device_id, "logcat", "-v", "threadtime"])
+    let mut cmd = Command::new(adb);
+    cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
@@ -624,10 +658,10 @@ fn start_android_log_stream(
             let Ok(line) = result else { break };
 
             // Extract panic info from log line if present (only first panic via try_send)
-            if line.contains("panic.payload=") {
-                if let Some(info) = extract_panic_info_from_log(&line) {
-                    let _ = panic_tx.try_send(info);
-                }
+            if line.contains("panic.payload=")
+                && let Some(info) = extract_panic_info_from_log(&line)
+            {
+                let _ = panic_tx.try_send(info);
             }
 
             // Only send log events to display if user requested logs

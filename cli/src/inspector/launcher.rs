@@ -56,7 +56,10 @@ pub struct InspectorSession {
 
 impl InspectorSession {
     /// Shutdown the inspector app if this session launched it.
-    pub async fn shutdown(&mut self) -> Result<()> {
+    ///
+    /// # Errors
+    /// This method currently does not return an operational error.
+    pub fn shutdown(&mut self) -> Result<()> {
         if self.owns_app {
             self.running.take();
         }
@@ -73,6 +76,9 @@ impl InspectorSession {
 }
 
 /// Launch (or relaunch) an inspector support app.
+///
+/// # Errors
+/// Returns an error if the support project cannot be prepared or the inspector app fails to launch.
 pub async fn launch_inspector_session(
     project_path: &Path,
     platform: InspectorPlatform,
