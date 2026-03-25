@@ -363,20 +363,20 @@ async fn run_capture_by_pid(
 }
 
 /// Build gesture options from args.
-fn build_gesture_options(
+const fn build_gesture_options(
     diff: bool,
     diff_output: Option<PathBuf>,
     delay: u32,
 ) -> gesture::GestureOptions {
-    let mut options = gesture::GestureOptions::default();
-    options.diff = diff;
-    options.diff_output = diff_output;
-    options.delay_ms = Some(delay);
-    options
+    gesture::GestureOptions {
+        diff,
+        diff_output,
+        delay_ms: Some(delay),
+    }
 }
 
 /// Print diff result if present.
-fn print_diff_result(result: &gesture::GestureResult, diff_output: &Option<PathBuf>) {
+fn print_diff_result(result: &gesture::GestureResult, diff_output: Option<&std::path::Path>) {
     if let Some(diff) = &result.diff {
         if let Some(path) = diff_output {
             success!("Diff image saved to {}", path.display());
@@ -397,7 +397,7 @@ async fn run_tap(args: TapArgs) -> Result<()> {
     match gesture::tap(device_id, args.x, args.y, &options).await {
         Ok(result) => {
             success!("Tap at ({}, {})", args.x, args.y);
-            print_diff_result(&result, &args.diff_output);
+            print_diff_result(&result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
@@ -425,7 +425,7 @@ async fn run_swipe(args: SwipeArgs) -> Result<()> {
                 args.to.0,
                 args.to.1
             );
-            print_diff_result(&result, &args.diff_output);
+            print_diff_result(&result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
@@ -447,7 +447,7 @@ async fn run_text(args: TextArgs) -> Result<()> {
     match gesture::text(device_id, &args.input, &options).await {
         Ok(result) => {
             success!("Text input: \"{}\"", args.input);
-            print_diff_result(&result, &args.diff_output);
+            print_diff_result(&result, args.diff_output.as_deref());
             Ok(())
         }
         Err(e) => {
@@ -497,16 +497,26 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
 
         // Get frame info
         let frame = elem.get("frame");
-        let (x, y, w, h) = if let Some(f) = frame {
+        let (x, y, w, h) = frame.map_or((0.0, 0.0, 0.0, 0.0), |frame| {
             (
-                f.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                f.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                f.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                f.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                frame
+                    .get("x")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                frame
+                    .get("y")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                frame
+                    .get("width")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                frame
+                    .get("height")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
             )
-        } else {
-            (0.0, 0.0, 0.0, 0.0)
-        };
+        });
 
         // Calculate center point for tapping
         let center_x = x + w / 2.0;
@@ -514,25 +524,21 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
 
         // Only show elements with a label or value
         if label != "-" || !value.is_empty() {
+            let display_value = if value.is_empty() { label } else { value };
+            let label_suffix = if value.is_empty() || label == "-" {
+                String::new()
+            } else {
+                format!(" ({label})")
+            };
             line!(
                 "[{}] {} \"{}\"{}",
                 i,
                 elem_type,
-                if !value.is_empty() { value } else { label },
-                if !value.is_empty() && label != "-" {
-                    format!(" ({})", label)
-                } else {
-                    String::new()
-                }
+                display_value,
+                label_suffix
             );
             line!(
-                "    tap: --x {} --y {}  (frame: {:.0},{:.0} {}x{})",
-                center_x as u32,
-                center_y as u32,
-                x,
-                y,
-                w as u32,
-                h as u32
+                "    tap: --x {center_x:.0} --y {center_y:.0}  (frame: {x:.0},{y:.0} {w:.0}x{h:.0})"
             );
         }
     }
