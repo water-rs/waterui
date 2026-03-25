@@ -79,13 +79,10 @@ impl Backend for Gtk4Backend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let ctx = TemplateContext::for_project_manifest(
-            manifest,
-            project.crate_name().clone(),
-            app_name,
-        )
-        .with_backend_project_path(project.backend_path::<Self>())
-        .with_project_root_path(project.root().to_path_buf());
+        let ctx =
+            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf());
 
         templates::gtk4::scaffold(
             &project.backend_path::<Self>(),

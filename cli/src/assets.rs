@@ -1,7 +1,7 @@
-//! Asset and font management for WaterUI projects.
+//! Asset and font management for `WaterUI` projects.
 //!
 //! This module provides functionality to:
-//! - Scan dependency crates for font declarations in `[package.metadata.waterui.assets]`
+//! - Scan dependency crates for font declarations in `[[package.metadata.waterui.assets.font]]`
 //! - Resolve fonts from local paths, remote URLs, or built-in registry
 //! - Download remote fonts with caching
 //! - Copy assets to platform-specific locations
@@ -13,7 +13,6 @@ use cargo_metadata::PackageId;
 use color_eyre::eyre::{self, Context, OptionExt};
 use serde::{Deserialize, Serialize};
 use smol::fs;
-use smol::stream::StreamExt;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 use waterkit_fs::WaterFs;
@@ -205,14 +204,14 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
         // Process font declarations
         for font_meta in waterui_meta.assets.font {
             // Skip if required feature is not enabled
-            if let Some(required) = &font_meta.required_feature {
-                if !enabled_features.contains(required.as_str()) {
-                    debug!(
-                        "Skipping font '{}': feature '{}' not enabled for {}",
-                        font_meta.name, required, package.name
-                    );
-                    continue;
-                }
+            if let Some(required) = &font_meta.required_feature
+                && !enabled_features.contains(required.as_str())
+            {
+                debug!(
+                    "Skipping font '{}': feature '{}' not enabled for {}",
+                    font_meta.name, required, package.name
+                );
+                continue;
             }
 
             let source = if let Some(local_path) = font_meta.local_path {
@@ -316,15 +315,14 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
                     .find(|(n, _)| *n == name)
                     .map(|(_, url)| *url);
 
-                match url {
-                    Some(url) => download_font(&name, url, &cache_dir).await?,
-                    None => {
-                        warn!(
-                            "Font '{}' not found in built-in registry (declared by {})",
-                            name, decl.crate_name
-                        );
-                        continue;
-                    }
+                if let Some(url) = url {
+                    download_font(&name, url, &cache_dir).await?
+                } else {
+                    warn!(
+                        "Font '{}' not found in built-in registry (declared by {})",
+                        name, decl.crate_name
+                    );
+                    continue;
                 }
             }
         };
@@ -381,91 +379,64 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
 
     // Use URL hash as filename to avoid conflicts
     let hash = sha256_hex(url);
-    if url.ends_with(".zip") {
-        let extract_dir = cache_dir.join(&hash);
-        if extract_dir.exists() {
-            debug!(
-                "Font '{}' already extracted at {}",
-                name,
-                extract_dir.display()
-            );
-            return find_font_file(&extract_dir, name).await;
-        }
-
-        let cache_file = cache_dir.join(format!("{hash}.zip"));
-        let cache_len = match fs::metadata(&cache_file).await {
-            Ok(metadata) => Some(metadata.len()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(error).wrap_err_with(|| {
-                    format!(
-                        "Failed to read cached font metadata for '{}' at {}",
-                        name,
-                        cache_file.display()
-                    )
-                });
-            }
-        };
-        if let Some(cache_len) = cache_len {
-            if cache_len == 0 {
-                warn!(
-                    "Ignoring empty cached font '{}' at {}",
-                    name,
-                    cache_file.display()
-                );
-                let _ = fs::remove_file(&cache_file).await;
-            } else {
-                debug!("Font '{}' already cached at {}", name, cache_file.display());
-                return find_font_in_extracted_zip(&cache_file, name).await;
-            }
-        }
-
-        info!("Downloading font '{}' from {}", name, url);
-        let bytes = download_remote_bytes(url)
-            .await
-            .map_err(eyre::Report::new)
-            .wrap_err_with(|| format!("Failed to download font from {url}"))?;
-
-        match write_bytes_atomically(&cache_file, &bytes)
-            .await
-            .map_err(eyre::Report::new)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to finalize cache file for '{}' at {}",
-                    name,
-                    cache_file.display()
-                )
-            })? {
-            AtomicWriteOutcome::Written => {}
-            AtomicWriteOutcome::ReusedExisting => {
-                debug!(
-                    "Font cache race detected for '{}', reusing {}",
-                    name,
-                    cache_file.display()
-                );
-            }
-        }
-
-        return find_font_in_extracted_zip(&cache_file, name).await;
+    if is_zip_url(url) {
+        return download_zip_font(name, url, cache_dir, &hash).await;
     }
 
+    download_file_font(name, url, cache_dir, &hash).await
+}
+
+fn is_zip_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("zip"))
+}
+
+async fn download_zip_font(
+    name: &str,
+    url: &str,
+    cache_dir: &Path,
+    hash: &str,
+) -> eyre::Result<PathBuf> {
+    let extract_dir = cache_dir.join(hash);
+    if extract_dir.exists() {
+        debug!(
+            "Font '{}' already extracted at {}",
+            name,
+            extract_dir.display()
+        );
+        return find_font_file(&extract_dir, name).await;
+    }
+
+    let cache_file = cache_dir.join(format!("{hash}.zip"));
+    if let Some(cache_len) = cached_file_len(name, &cache_file).await? {
+        if cache_len == 0 {
+            warn!(
+                "Ignoring empty cached font '{}' at {}",
+                name,
+                cache_file.display()
+            );
+            let _ = fs::remove_file(&cache_file).await;
+        } else {
+            debug!("Font '{}' already cached at {}", name, cache_file.display());
+            return find_font_in_extracted_zip(&cache_file, name).await;
+        }
+    }
+
+    cache_downloaded_font(name, url, &cache_file).await?;
+    find_font_in_extracted_zip(&cache_file, name).await
+}
+
+async fn download_file_font(
+    name: &str,
+    url: &str,
+    cache_dir: &Path,
+    hash: &str,
+) -> eyre::Result<PathBuf> {
     let cache_file = cache_dir.join(format!("{hash}.ttf"));
 
     // If already cached, return the path
-    let cache_len = match fs::metadata(&cache_file).await {
-        Ok(metadata) => Some(metadata.len()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error).wrap_err_with(|| {
-                format!(
-                    "Failed to read cached font metadata for '{}' at {}",
-                    name,
-                    cache_file.display()
-                )
-            });
-        }
-    };
-    if let Some(cache_len) = cache_len {
+    if let Some(cache_len) = cached_file_len(name, &cache_file).await? {
         if cache_len == 0 {
             warn!(
                 "Ignoring empty cached font '{}' at {}",
@@ -479,13 +450,33 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
         }
     }
 
+    cache_downloaded_font(name, url, &cache_file).await?;
+
+    Ok(cache_file)
+}
+
+async fn cached_file_len(name: &str, cache_file: &Path) -> eyre::Result<Option<u64>> {
+    match fs::metadata(cache_file).await {
+        Ok(metadata) => Ok(Some(metadata.len())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).wrap_err_with(|| {
+            format!(
+                "Failed to read cached font metadata for '{}' at {}",
+                name,
+                cache_file.display()
+            )
+        }),
+    }
+}
+
+async fn cache_downloaded_font(name: &str, url: &str, cache_file: &Path) -> eyre::Result<()> {
     info!("Downloading font '{}' from {}", name, url);
     let bytes = download_remote_bytes(url)
         .await
         .map_err(eyre::Report::new)
         .wrap_err_with(|| format!("Failed to download font from {url}"))?;
 
-    match write_bytes_atomically(&cache_file, &bytes)
+    match write_bytes_atomically(cache_file, &bytes)
         .await
         .map_err(eyre::Report::new)
         .wrap_err_with(|| {
@@ -504,8 +495,7 @@ async fn download_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<
             );
         }
     }
-
-    Ok(cache_file)
+    Ok(())
 }
 
 /// Finds a font file in an extracted zip archive.
@@ -746,24 +736,6 @@ pub async fn stage_project_assets_for_web(project: &Project, site_root: &Path) -
     web::stage_for_web(project, site_root).await
 }
 
-/// Copies project assets to a destination directory.
-///
-/// Preserves directory structure within the assets folder.
-pub async fn copy_project_assets(project: &Project, dest: &Path) -> eyre::Result<()> {
-    let assets_dir = project.assets_dir();
-
-    if !assets_dir.exists() {
-        debug!("Assets directory does not exist: {}", assets_dir.display());
-        return Ok(());
-    }
-
-    info!("Copying project assets from {}", assets_dir.display());
-
-    copy_dir_recursive(&assets_dir, dest).await?;
-
-    Ok(())
-}
-
 /// Copies fonts to a destination directory.
 pub async fn copy_fonts(fonts: &[ResolvedFont], dest: &Path) -> eyre::Result<()> {
     fs::create_dir_all(dest).await?;
@@ -844,42 +816,6 @@ async fn write_hydrolysis_web_font_manifest(
     )
     .await?;
     Ok(())
-}
-
-/// Recursively copies a directory.
-async fn copy_dir_recursive(src: &Path, dest: &Path) -> eyre::Result<()> {
-    fs::create_dir_all(dest).await?;
-
-    let mut entries = fs::read_dir(src).await?;
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(file_name) = path.file_name() else {
-            warn!("Skipping path without file name: {}", path.display());
-            continue;
-        };
-        let dest_path = dest.join(file_name);
-
-        if is_symlink(&path)? {
-            warn!("Skipping symlink while copying assets: {}", path.display());
-            continue;
-        }
-
-        if path.is_dir() {
-            Box::pin(copy_dir_recursive(&path, &dest_path)).await?;
-        } else {
-            fs::copy(&path, &dest_path).await?;
-        }
-    }
-
-    Ok(())
-}
-
-fn is_symlink(path: &Path) -> eyre::Result<bool> {
-    Ok(std::fs::symlink_metadata(path)
-        .wrap_err_with(|| format!("Failed to read metadata for {}", path.display()))?
-        .file_type()
-        .is_symlink())
 }
 
 #[cfg(test)]

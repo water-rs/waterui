@@ -209,7 +209,10 @@ impl TemplateContext {
 
     /// Set Android permissions for template rendering.
     #[must_use]
-    pub fn with_android_permissions(mut self, permissions: Vec<AndroidPermissionTemplateEntry>) -> Self {
+    pub fn with_android_permissions(
+        mut self,
+        permissions: Vec<AndroidPermissionTemplateEntry>,
+    ) -> Self {
         self.android_permissions = permissions;
         self
     }
@@ -466,10 +469,7 @@ fn scaffold_template_dispatch_path(namespace: TemplateNamespace, relative_path: 
     if relative_path.starts_with("src/templates/") {
         return relative_path;
     }
-    format!(
-        "{}/{relative_path}",
-        namespace.scaffold_template_prefix()
-    )
+    format!("{}/{relative_path}", namespace.scaffold_template_prefix())
 }
 
 macro_rules! define_scaffold_templates {
@@ -521,7 +521,10 @@ macro_rules! define_scaffold_templates {
 }
 
 #[derive(Template)]
-#[template(path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl", escape = "none")]
+#[template(
+    path = "src/templates/apple/AppName/WaterUIFonts.swift.tpl",
+    escape = "none"
+)]
 struct ScaffoldAppleFontTemplate<'a> {
     font_entries: &'a [FontRegistrationTemplateEntry],
 }
@@ -1018,10 +1021,9 @@ async fn write_native_backend_bin_cargo_toml(
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
     let mut manifest = Manifest::<()>::default();
-    manifest.package = Some(Package::new(package_name.to_string(), "0.1.0".to_string()));
-    if let Some(ref mut package) = manifest.package {
-        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
-    }
+    let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+    package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+    manifest.package = Some(package);
 
     manifest.dependencies.insert(
         ctx.crate_name.to_string(),
@@ -1035,7 +1037,7 @@ async fn write_native_backend_bin_cargo_toml(
         let features = dependency
             .features
             .iter()
-            .map(|item| item.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>();
 
         if let Some(waterui_path) = &ctx.waterui_path
@@ -1083,6 +1085,157 @@ fn dependency_version(version: &str) -> SupportDependencyValue {
     SupportDependencyValue::Simple(version.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct GeneratedCargoManifest<T> {
+    package: GeneratedPackageSection,
+    lib: GeneratedLibSection,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
+    features: std::collections::BTreeMap<String, Vec<String>>,
+    dependencies: std::collections::BTreeMap<String, T>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
+    target: std::collections::BTreeMap<String, GeneratedTargetSection<T>>,
+    workspace: GeneratedWorkspaceSection,
+}
+
+#[derive(serde::Serialize)]
+struct GeneratedPackageSection {
+    name: String,
+    version: String,
+    edition: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    authors: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct GeneratedLibSection {
+    #[serde(rename = "crate-type")]
+    crate_type: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct GeneratedTargetSection<T> {
+    dependencies: std::collections::BTreeMap<String, T>,
+}
+
+#[derive(serde::Serialize)]
+struct GeneratedWorkspaceSection {}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum GeneratedDependencyValue {
+    Simple(String),
+    Detailed(GeneratedDependencyDetail),
+}
+
+#[derive(serde::Serialize, Clone)]
+struct GeneratedDependencyDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
+    default_features: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    features: Vec<String>,
+}
+
+impl GeneratedDependencyValue {
+    const fn detailed(detail: GeneratedDependencyDetail) -> Self {
+        Self::Detailed(detail)
+    }
+
+    fn simple(version: &str) -> Self {
+        Self::Simple(version.to_string())
+    }
+}
+
+impl GeneratedDependencyDetail {
+    fn path(path: &Path) -> Self {
+        Self {
+            version: None,
+            path: Some(normalize_path_for_config(path)),
+            default_features: None,
+            features: Vec::new(),
+        }
+    }
+
+    fn version(version: &str) -> Self {
+        Self {
+            version: Some(version.to_string()),
+            path: None,
+            default_features: None,
+            features: Vec::new(),
+        }
+    }
+
+    const fn with_default_features(mut self, default_features: bool) -> Self {
+        self.default_features = Some(default_features);
+        self
+    }
+
+    fn with_features(mut self, features: &[&str]) -> Self {
+        self.features = features
+            .iter()
+            .map(|feature| (*feature).to_string())
+            .collect();
+        self
+    }
+}
+
+fn generated_package(name: &str, authors: Vec<String>) -> GeneratedPackageSection {
+    GeneratedPackageSection {
+        name: name.to_string(),
+        version: "0.1.0".to_string(),
+        edition: "2024".to_string(),
+        authors,
+    }
+}
+
+fn generated_lib(crate_types: &[&str]) -> GeneratedLibSection {
+    GeneratedLibSection {
+        crate_type: crate_types
+            .iter()
+            .map(|crate_type| (*crate_type).to_string())
+            .collect(),
+    }
+}
+
+fn generated_dependency_from_spec(
+    ctx: &TemplateContext,
+    spec: NativeBackendDependencySpec<'_>,
+) -> GeneratedDependencyDetail {
+    let detail = if let Some(waterui_path) = &ctx.waterui_path
+        && let Some(path_kind) = spec.path_kind
+    {
+        GeneratedDependencyDetail {
+            version: None,
+            path: Some(compute_native_backend_dependency_path(
+                ctx,
+                waterui_path,
+                path_kind,
+            )),
+            default_features: None,
+            features: Vec::new(),
+        }
+    } else {
+        GeneratedDependencyDetail::version(spec.version)
+    };
+
+    detail.with_features(spec.features)
+}
+
+fn render_generated_cargo_toml<T: serde::Serialize>(
+    manifest: &GeneratedCargoManifest<T>,
+) -> io::Result<String> {
+    toml::to_string_pretty(manifest)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io::Result<()> {
+    fs::create_dir_all(base_dir).await?;
+    fs::write(base_dir.join("Cargo.toml"), toml_string).await
+}
+
 /// Apple backend templates.
 pub mod apple {
     use super::{Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir};
@@ -1125,7 +1278,13 @@ pub mod android {
     /// # Errors
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        scaffold_dir(TemplateNamespace::Android, &embedded::ANDROID, base_dir, ctx).await?;
+        scaffold_dir(
+            TemplateNamespace::Android,
+            &embedded::ANDROID,
+            base_dir,
+            ctx,
+        )
+        .await?;
 
         // Make gradlew executable
         #[cfg(unix)]
@@ -1182,7 +1341,7 @@ pub mod gtk4 {
         scaffold_dir(TemplateNamespace::Gtk4, &embedded::GTK4, base_dir, ctx).await
     }
 
-    /// Generate GTK4 Cargo.toml programmatically using cargo_toml crate.
+    /// Generate `GTK4` `Cargo.toml` programmatically using the `cargo_toml` crate.
     async fn generate_cargo_toml(
         base_dir: &Path,
         ctx: &TemplateContext,
@@ -1201,10 +1360,13 @@ pub mod gtk4 {
 /// Hydrolysis backend templates.
 pub mod hydrolysis {
     use super::{
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedDependencyValue,
+        GeneratedTargetSection, GeneratedWorkspaceSection, NativeBackendDependencyPathKind,
+        NativeBackendDependencySpec, Path, TemplateContext, TemplateNamespace,
+        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, embedded, io, scaffold_dir,
+        write_generated_cargo_toml,
     };
+    use std::collections::BTreeMap;
 
     /// Write all hydrolysis templates to the given directory.
     ///
@@ -1217,7 +1379,13 @@ pub mod hydrolysis {
         package_name: &str,
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
-        scaffold_dir(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, base_dir, ctx).await
+        scaffold_dir(
+            TemplateNamespace::Hydrolysis,
+            &embedded::HYDROLYSIS,
+            base_dir,
+            ctx,
+        )
+        .await
     }
 
     async fn generate_cargo_toml(
@@ -1225,213 +1393,137 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        use serde::Serialize;
-        use std::collections::BTreeMap;
-
-        #[derive(Serialize)]
-        struct CargoManifest {
-            package: PackageSection,
-            lib: LibSection,
-            features: BTreeMap<String, Vec<String>>,
-            dependencies: BTreeMap<String, DependencyValue>,
-            target: BTreeMap<String, TargetSection>,
-            workspace: WorkspaceSection,
-        }
-
-        #[derive(Serialize)]
-        struct PackageSection {
-            name: String,
-            version: String,
-            edition: String,
-        }
-
-        #[derive(Serialize)]
-        struct LibSection {
-            #[serde(rename = "crate-type")]
-            crate_type: Vec<String>,
-        }
-
-        #[derive(Serialize)]
-        struct TargetSection {
-            dependencies: BTreeMap<String, DependencyValue>,
-        }
-
-        #[derive(Serialize)]
-        struct WorkspaceSection {}
-
-        #[derive(Serialize)]
-        #[serde(untagged)]
-        enum DependencyValue {
-            Simple(String),
-            Detailed(DependencyDetail),
-        }
-
-        #[derive(Serialize)]
-        struct DependencyDetail {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            version: Option<String>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            path: Option<String>,
-            #[serde(rename = "default-features")]
-            default_features: bool,
-            #[serde(default, skip_serializing_if = "Vec::is_empty")]
-            features: Vec<String>,
-        }
-
-        fn dependency_from_spec(
-            ctx: &TemplateContext,
-            spec: NativeBackendDependencySpec<'_>,
-        ) -> DependencyValue {
-            let features = spec
-                .features
-                .iter()
-                .map(|item| item.to_string())
-                .collect::<Vec<_>>();
-
-            if let Some(waterui_path) = &ctx.waterui_path
-                && let Some(path_kind) = spec.path_kind
-            {
-                return DependencyValue::Detailed(DependencyDetail {
-                    version: None,
-                    path: Some(compute_native_backend_dependency_path(
-                        ctx,
-                        waterui_path,
-                        path_kind,
-                    )),
-                    default_features: false,
-                    features,
-                });
-            }
-
-            DependencyValue::Detailed(DependencyDetail {
-                version: Some(spec.version.to_string()),
-                path: None,
-                default_features: false,
-                features,
-            })
-        }
-
-        let mut dependencies = BTreeMap::new();
-        dependencies.insert(
-            ctx.crate_name.to_string(),
-            DependencyValue::Detailed(DependencyDetail {
-                version: None,
-                path: Some(ctx.project_root_relative_path()),
-                default_features: false,
-                features: Vec::new(),
-            }),
-        );
-        dependencies.insert(
-            "waterui".to_string(),
-            match dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(
-                    "waterui",
-                    WATERUI_VERSION,
-                    &[],
-                    Some(NativeBackendDependencyPathKind::WateruiRoot),
-                ),
-            ) {
-                DependencyValue::Simple(version) => DependencyValue::Detailed(DependencyDetail {
-                    version: Some(version),
-                    path: None,
-                    default_features: false,
-                    features: Vec::new(),
-                }),
-                DependencyValue::Detailed(mut detail) => {
-                    detail.default_features = false;
-                    DependencyValue::Detailed(detail)
-                }
-            },
-        );
-
-        let mut native_dependencies = BTreeMap::new();
-        native_dependencies.insert(
-            "hydrolysis".to_string(),
-            dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(
-                    "hydrolysis",
-                    WATERUI_HYDROLYSIS_VERSION,
-                    &["winit"],
-                    Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                        "hydrolysis",
-                    )),
-                ),
-            ),
-        );
-        native_dependencies.insert(
-            "pollster".to_string(),
-            DependencyValue::Simple("0.4".to_string()),
-        );
-        native_dependencies.insert(
-            "waterui-preview".to_string(),
-            dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(
-                    "waterui-preview",
-                    WATERUI_VERSION,
-                    &[],
-                    Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
-                        "components/preview",
-                    )),
-                ),
-            ),
-        );
-
-        let mut wasm_dependencies = BTreeMap::new();
-        wasm_dependencies.insert(
-            "hydrolysis".to_string(),
-            dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(
-                    "hydrolysis",
-                    WATERUI_HYDROLYSIS_VERSION,
-                    &["web"],
-                    Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                        "hydrolysis",
-                    )),
-                ),
-            ),
-        );
-        wasm_dependencies.insert(
-            "wasm-bindgen".to_string(),
-            DependencyValue::Simple("0.2".to_string()),
-        );
-
-        let mut target = BTreeMap::new();
-        target.insert(
-            "cfg(not(target_arch = \"wasm32\"))".to_string(),
-            TargetSection {
-                dependencies: native_dependencies,
-            },
-        );
-        target.insert(
-            "cfg(target_arch = \"wasm32\")".to_string(),
-            TargetSection {
-                dependencies: wasm_dependencies,
-            },
-        );
-
-        let manifest = CargoManifest {
-            package: PackageSection {
-                name: package_name.to_string(),
-                version: "0.1.0".to_string(),
-                edition: "2024".to_string(),
-            },
-            lib: LibSection {
-                crate_type: vec!["cdylib".to_string(), "rlib".to_string()],
-            },
+        let manifest = GeneratedCargoManifest {
+            package: super::generated_package(package_name, Vec::new()),
+            lib: super::generated_lib(&["cdylib", "rlib"]),
             features: BTreeMap::from([("waterui-preview-mode".to_string(), Vec::new())]),
-            dependencies,
-            target,
-            workspace: WorkspaceSection {},
+            dependencies: cargo_dependencies(ctx),
+            target: cargo_target_dependencies(ctx),
+            workspace: GeneratedWorkspaceSection {},
         };
 
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::create_dir_all(base_dir).await?;
-        fs::write(base_dir.join("Cargo.toml"), toml_string).await
+        write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
+    }
+
+    fn cargo_dependencies(ctx: &TemplateContext) -> BTreeMap<String, GeneratedDependencyValue> {
+        BTreeMap::from([
+            (
+                ctx.crate_name.to_string(),
+                GeneratedDependencyValue::detailed(GeneratedDependencyDetail {
+                    version: None,
+                    path: Some(ctx.project_root_relative_path()),
+                    default_features: None,
+                    features: Vec::new(),
+                }),
+            ),
+            (
+                "waterui".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui",
+                            WATERUI_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WateruiRoot),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+        ])
+    }
+
+    fn cargo_target_dependencies(
+        ctx: &TemplateContext,
+    ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>> {
+        BTreeMap::from([
+            (
+                "cfg(not(target_arch = \"wasm32\"))".to_string(),
+                GeneratedTargetSection {
+                    dependencies: native_target_dependencies(ctx),
+                },
+            ),
+            (
+                "cfg(target_arch = \"wasm32\")".to_string(),
+                GeneratedTargetSection {
+                    dependencies: wasm_target_dependencies(ctx),
+                },
+            ),
+        ])
+    }
+
+    fn native_target_dependencies(
+        ctx: &TemplateContext,
+    ) -> BTreeMap<String, GeneratedDependencyValue> {
+        BTreeMap::from([
+            (
+                "hydrolysis".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "hydrolysis",
+                            WATERUI_HYDROLYSIS_VERSION,
+                            &["winit"],
+                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                                "hydrolysis",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+            (
+                "pollster".to_string(),
+                GeneratedDependencyValue::simple("0.4"),
+            ),
+            (
+                "waterui-preview".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-preview",
+                            WATERUI_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                                "components/preview",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+        ])
+    }
+
+    fn wasm_target_dependencies(
+        ctx: &TemplateContext,
+    ) -> BTreeMap<String, GeneratedDependencyValue> {
+        BTreeMap::from([
+            (
+                "hydrolysis".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "hydrolysis",
+                            WATERUI_HYDROLYSIS_VERSION,
+                            &["web"],
+                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                                "hydrolysis",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
+            (
+                "wasm-bindgen".to_string(),
+                GeneratedDependencyValue::simple("0.2"),
+            ),
+        ])
     }
 }
 
@@ -1440,9 +1532,9 @@ pub mod ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        NativeBackendDependencyPathKind, Path, TemplateContext, WATERUI_FFI_VERSION,
-        TemplateNamespace, WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs, io,
-        normalize_path_for_config, scaffold_dir,
+        NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace,
+        WATERUI_FFI_VERSION, WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs,
+        io, normalize_path_for_config, scaffold_dir,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -1465,10 +1557,9 @@ pub mod ffi {
         package_name: &str,
     ) -> io::Result<()> {
         let mut manifest = Manifest::<()>::default();
-        manifest.package = Some(Package::new(package_name.to_string(), "0.1.0".to_string()));
-        if let Some(ref mut package) = manifest.package {
-            package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
-        }
+        let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        manifest.package = Some(package);
 
         manifest.lib = Some(Product {
             crate_type: vec![
@@ -1487,38 +1578,44 @@ pub mod ffi {
             })),
         );
 
-        let waterui_dependency = if let Some(waterui_path) = &ctx.waterui_path {
-            Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(compute_native_backend_dependency_path(
-                    ctx,
-                    waterui_path,
-                    NativeBackendDependencyPathKind::WateruiRoot,
-                )),
-                default_features: false,
-                ..Default::default()
-            }))
-        } else {
-            Dependency::Detailed(Box::new(DependencyDetail {
-                version: Some(WATERUI_VERSION.to_string()),
-                default_features: false,
-                ..Default::default()
-            }))
-        };
+        let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
+            || {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    version: Some(WATERUI_VERSION.to_string()),
+                    default_features: false,
+                    ..Default::default()
+                }))
+            },
+            |waterui_path| {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    path: Some(compute_native_backend_dependency_path(
+                        ctx,
+                        waterui_path,
+                        NativeBackendDependencyPathKind::WateruiRoot,
+                    )),
+                    default_features: false,
+                    ..Default::default()
+                }))
+            },
+        );
         manifest
             .dependencies
             .insert("waterui".to_string(), waterui_dependency);
 
-        let ffi_dependency = if let Some(waterui_path) = &ctx.waterui_path {
-            Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(normalize_path_for_config(&waterui_path.join("ffi"))),
-                ..Default::default()
-            }))
-        } else {
-            Dependency::Detailed(Box::new(DependencyDetail {
-                version: Some(WATERUI_FFI_VERSION.to_string()),
-                ..Default::default()
-            }))
-        };
+        let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
+            || {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    version: Some(WATERUI_FFI_VERSION.to_string()),
+                    ..Default::default()
+                }))
+            },
+            |waterui_path| {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    path: Some(normalize_path_for_config(&waterui_path.join("ffi"))),
+                    ..Default::default()
+                }))
+            },
+        );
         manifest
             .dependencies
             .insert("waterui-ffi".to_string(), ffi_dependency);
@@ -1538,9 +1635,11 @@ pub mod root {
     use crate::templates::WATERUI_VERSION;
 
     use super::{
-        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
-        render_scaffold_template,
+        GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedTargetSection,
+        GeneratedWorkspaceSection, Path, TemplateContext, TemplateNamespace, embedded, fs, io,
+        render_scaffold_template, write_generated_cargo_toml,
     };
+    use std::collections::BTreeMap;
 
     /// Root template files (only .tpl files at the root level, excluding Cargo.toml).
     static ROOT_TEMPLATES: &[&str] = &["lib.rs.tpl", ".gitignore.tpl"];
@@ -1586,124 +1685,46 @@ pub mod root {
 
     /// Generate Cargo.toml programmatically using serde-compatible structs for type safety.
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        use serde::Serialize;
-        use std::collections::BTreeMap;
-
-        #[derive(Serialize)]
-        struct CargoManifest {
-            package: PackageSection,
-            lib: LibSection,
-            dependencies: BTreeMap<String, DependencyDetail>,
-            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-            target: BTreeMap<String, TargetSection>,
-            workspace: WorkspaceSection,
-        }
-
-        #[derive(Serialize)]
-        struct PackageSection {
-            name: String,
-            version: String,
-            edition: String,
-            authors: Vec<String>,
-        }
-
-        #[derive(Serialize)]
-        struct LibSection {
-            #[serde(rename = "crate-type")]
-            crate_type: Vec<String>,
-        }
-
-        #[derive(Serialize)]
-        struct WorkspaceSection {}
-
-        #[derive(Serialize)]
-        struct TargetSection {
-            dependencies: BTreeMap<String, DependencyDetail>,
-        }
-
-        #[derive(Serialize, Clone)]
-        struct DependencyDetail {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            path: Option<String>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            version: Option<String>,
-            #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
-            default_features: Option<bool>,
-            #[serde(skip_serializing_if = "Vec::is_empty")]
-            features: Vec<String>,
-        }
-
-        let mut dependencies = BTreeMap::new();
-        let mut target = BTreeMap::new();
-
-        fn path_dependency(path: &Path) -> DependencyDetail {
-            DependencyDetail {
-                path: Some(normalize_path_for_config(path)),
-                version: None,
-                default_features: None,
-                features: Vec::new(),
-            }
-        }
-
-        fn version_dependency(version: &str) -> DependencyDetail {
-            DependencyDetail {
-                path: None,
-                version: Some(version.to_string()),
-                default_features: None,
-                features: Vec::new(),
-            }
-        }
-
-        let mut waterui_dependency = if let Some(waterui_path) = &ctx.waterui_path {
-            path_dependency(waterui_path)
-        } else {
-            version_dependency(WATERUI_VERSION)
-        };
-        waterui_dependency.default_features = Some(false);
-        dependencies.insert("waterui".to_string(), waterui_dependency.clone());
-
-        let mut native_dependencies = BTreeMap::new();
-        let mut native_waterui_dependency = waterui_dependency;
-        native_waterui_dependency.features = vec![
-            "assets".to_string(),
-            "media".to_string(),
-            "webview".to_string(),
-            "flow-markdown".to_string(),
-        ];
-        native_dependencies.insert("waterui".to_string(), native_waterui_dependency);
-
-        if !native_dependencies.is_empty() {
-            target.insert(
-                "cfg(not(target_arch = \"wasm32\"))".to_string(),
-                TargetSection {
-                    dependencies: native_dependencies,
-                },
-            );
-        }
-
-        let manifest = CargoManifest {
-            package: PackageSection {
-                name: ctx.crate_name.to_string(),
-                version: "0.1.0".to_string(),
-                edition: "2024".to_string(),
-                authors: vec![ctx.author.clone()],
-            },
-            lib: LibSection {
-                crate_type: vec!["lib".to_string()],
-            },
-            dependencies,
-            target,
-            workspace: WorkspaceSection {},
+        let waterui_dependency = waterui_dependency(ctx);
+        let manifest = GeneratedCargoManifest {
+            package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
+            lib: super::generated_lib(&["lib"]),
+            features: BTreeMap::new(),
+            dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
+            target: native_target_section(waterui_dependency),
+            workspace: GeneratedWorkspaceSection {},
         };
 
-        // Serialize to TOML
-        let toml_string = toml::to_string_pretty(&manifest)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
+    }
 
-        let cargo_path = base_dir.join("Cargo.toml");
-        fs::write(&cargo_path, toml_string).await?;
+    fn waterui_dependency(ctx: &TemplateContext) -> GeneratedDependencyDetail {
+        ctx.waterui_path
+            .as_ref()
+            .map_or_else(
+                || GeneratedDependencyDetail::version(WATERUI_VERSION),
+                |waterui_path| GeneratedDependencyDetail::path(waterui_path),
+            )
+            .with_default_features(false)
+    }
 
-        Ok(())
+    fn native_target_section(
+        waterui_dependency: GeneratedDependencyDetail,
+    ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyDetail>> {
+        BTreeMap::from([(
+            "cfg(not(target_arch = \"wasm32\"))".to_string(),
+            GeneratedTargetSection {
+                dependencies: BTreeMap::from([(
+                    "waterui".to_string(),
+                    waterui_dependency.with_features(&[
+                        "assets",
+                        "media",
+                        "webview",
+                        "flow-markdown",
+                    ]),
+                )]),
+            },
+        )])
     }
 }
 
@@ -1747,7 +1768,13 @@ pub mod preview {
         generate_cargo_toml(base_dir, ctx).await?;
 
         // Scaffold remaining template files (lib.rs)
-        scaffold_dir(TemplateNamespace::Preview, &embedded::PREVIEW, base_dir, ctx).await
+        scaffold_dir(
+            TemplateNamespace::Preview,
+            &embedded::PREVIEW,
+            base_dir,
+            ctx,
+        )
+        .await
     }
 
     /// Generate preview app Cargo.toml programmatically.
@@ -1817,7 +1844,13 @@ pub mod inspector {
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx).await?;
-        scaffold_dir(TemplateNamespace::Inspector, &embedded::INSPECTOR, base_dir, ctx).await
+        scaffold_dir(
+            TemplateNamespace::Inspector,
+            &embedded::INSPECTOR,
+            base_dir,
+            ctx,
+        )
+        .await
     }
 
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {

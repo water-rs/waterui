@@ -6,5 +6,9 @@ pub mod backend;
 pub mod device;
 /// Android platform configuration.
 pub mod platform;
-/// Android SDK/NDK toolchain management.
-pub mod toolchain;
+pub(crate) mod toolchain;
+
+pub use self::toolchain::{
+    AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
+    AndroidSdkPlatforms, Java, Kotlin,
+};

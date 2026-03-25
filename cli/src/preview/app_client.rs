@@ -39,13 +39,12 @@ impl PreviewAppClient {
         expected_waterui_core_fingerprint: &str,
     ) -> Result<Self> {
         let preferred = preferred_port(config);
-        if let Some(port) = preferred {
-            if let Some(client) =
+        if let Some(port) = preferred
+            && let Some(client) =
                 Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
-            {
-                LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
-                return Ok(client);
-            }
+        {
+            LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
+            return Ok(client);
         }
 
         for port in config.ports() {
@@ -117,6 +116,9 @@ impl PreviewAppClient {
     }
 
     /// Render a view symbol to PNG bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the preview app rejects the request or the transport fails.
     pub async fn render(
         &mut self,
         dylib_id: DylibId,
@@ -131,6 +133,9 @@ impl PreviewAppClient {
     }
 
     /// Render a view symbol, loading dylib bytes from file only when needed.
+    ///
+    /// # Errors
+    /// Returns an error if the preview app cannot be queried or the dylib file cannot be read.
     pub async fn render_with_dylib_file(
         &mut self,
         dylib_id: DylibId,
@@ -180,6 +185,9 @@ impl PreviewAppClient {
     }
 
     /// Render a view symbol, returning structured app errors for caller handling.
+    ///
+    /// # Errors
+    /// Returns an error if the preview app cannot render the symbol or the transport fails.
     pub async fn render_with_dylib_source(
         &mut self,
         dylib_id: DylibId,
@@ -246,6 +254,9 @@ impl PreviewAppClient {
     }
 
     /// Ask the preview app to shut down.
+    ///
+    /// # Errors
+    /// Returns an error if the shutdown request cannot be sent or the app replies with an unexpected message.
     pub async fn shutdown(&mut self) -> Result<()> {
         let response = self.request(AppRequest::Shutdown).await?;
         match response {
@@ -316,8 +327,7 @@ fn connect_timeout() -> Duration {
     std::env::var("WATERUI_PREVIEW_CONNECT_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
 }
 
 fn handshake_timeout() -> Duration {
@@ -325,8 +335,7 @@ fn handshake_timeout() -> Duration {
     std::env::var("WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
 }
 
 fn request_timeout() -> Duration {
@@ -334,8 +343,7 @@ fn request_timeout() -> Duration {
     std::env::var("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
 }
 
 fn render_request_timeout() -> Duration {
@@ -343,8 +351,7 @@ fn render_request_timeout() -> Duration {
     std::env::var("WATERUI_PREVIEW_RENDER_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
 }
 
 fn request_timeout_for(request: &AppRequest) -> Duration {
@@ -354,7 +361,7 @@ fn request_timeout_for(request: &AppRequest) -> Duration {
     }
 }
 
-fn request_kind(request: &AppRequest) -> &'static str {
+const fn request_kind(request: &AppRequest) -> &'static str {
     match request {
         AppRequest::Ping => "Ping",
         AppRequest::HasDylib { .. } => "HasDylib",
