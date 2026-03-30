@@ -1,17 +1,13 @@
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, measure_view_dimensions,
-    normalize_layout_view,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_view_dimensions, normalize_layout_view,
 };
 use waterui_core::dynamic::Dynamic;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 
 impl HydroNativeView for Native<Dynamic> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_dynamic(ctx.renderer_mut(), render_ctx, view, env);
     }

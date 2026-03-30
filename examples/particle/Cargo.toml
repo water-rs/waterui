@@ -11,4 +11,5 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui.workspace = true
 waterui-ffi.workspace = true
+waterui-graphics.workspace = true
 waterui-particle.workspace = true

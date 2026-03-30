@@ -1,16 +1,17 @@
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::lazy::{
     resolve_table_visible_rows, resolve_visible_column_window, table_metrics_from_slot,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, TABLE_HEADER_HEIGHT,
-    measure_table_metrics,
-    refresh_table_slot_baseline, table_data_cell_rect, table_header_cell_rect, transformed_rect,
-    update_table_slot_visible_cell_widths,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TABLE_HEADER_HEIGHT,
+    WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
+    table_header_cell_rect, transformed_rect, update_table_slot_visible_cell_widths,
 };
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui_core::layout::Size as LayoutSize;
@@ -21,11 +22,7 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use super::{draw_scroll_indicators, inset_rect, widget_theme};
 
 impl HydroNativeView for Native<TableConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_table(ctx, view, env);
     }
 
@@ -42,7 +39,7 @@ impl HydroNativeView for Native<TableConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         let columns = renderer.read_signal(&view.as_inner().columns);
         if columns.is_empty() {
@@ -70,7 +67,11 @@ impl HydroNativeView for Native<TableConfig> {
             let scroll_metrics = handle.metrics();
             let row_window = {
                 let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
-                resolve_table_visible_rows(scroll_metrics.offset_y, viewport.height(), slot.max_rows)
+                resolve_table_visible_rows(
+                    scroll_metrics.offset_y,
+                    viewport.height(),
+                    slot.max_rows,
+                )
             };
             let mut column_window = {
                 let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
@@ -122,8 +123,8 @@ impl HydroNativeView for Native<TableConfig> {
             let mut x_offset = column_window.leading_offset;
             for column_index in column_window.start..column_window.end {
                 let column = &columns[column_index];
-                let width =
-                    renderer.lazy.lazy_table_controller.slots[slot_index].column_widths[column_index];
+                let width = renderer.lazy.lazy_table_controller.slots[slot_index].column_widths
+                    [column_index];
                 let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
                 let header_view = AnyView::new(column.label());
                 let mut header_node = AccessibilityNode::new(
@@ -195,7 +196,9 @@ pub(crate) fn render_table(
         return;
     }
     let viewport = ctx.bounds;
-    let handle = ctx.renderer_mut().take_pending_scroll_handle("render_table");
+    let handle = ctx
+        .renderer_mut()
+        .take_pending_scroll_handle("render_table");
     let scroll_metrics = handle.metrics();
     let slot_index = ctx.renderer_mut().lazy.lazy_table_controller.bind();
     {
@@ -216,7 +219,14 @@ pub(crate) fn render_table(
     };
     {
         let (slot, state) = ctx.renderer_mut().table_slot_and_state_mut(slot_index);
-        update_table_slot_visible_cell_widths(&columns, slot, row_window, column_window, state, env);
+        update_table_slot_visible_cell_widths(
+            &columns,
+            slot,
+            row_window,
+            column_window,
+            state,
+            env,
+        );
     }
     {
         let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
@@ -253,7 +263,11 @@ pub(crate) fn render_table(
         let width = table_metrics.column_widths[column_index];
         let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
         let header_view = AnyView::new(column.label());
-        ctx.dispatch_in_rect_without_accessibility(env, header_view, inset_rect(header_cell, 8.0, 6.0));
+        ctx.dispatch_in_rect_without_accessibility(
+            env,
+            header_view,
+            inset_rect(header_cell, 8.0, 6.0),
+        );
 
         let rows = column.rows();
         for row_index in row_window.start..row_window.end {

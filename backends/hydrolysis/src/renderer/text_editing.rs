@@ -681,11 +681,15 @@ impl HydrolysisRenderer {
         if self.text_editing.focused_text_input.get().is_none() {
             return false;
         }
-        let mut next = self.text_editing.text_caret_next_frame_at.unwrap_or_else(|| {
-            self.reset_text_caret_animation(now);
-            self.text_editing.text_caret_next_frame_at
-                .expect("hydrolysis text caret animation state missing next frame timestamp")
-        });
+        let mut next = self
+            .text_editing
+            .text_caret_next_frame_at
+            .unwrap_or_else(|| {
+                self.reset_text_caret_animation(now);
+                self.text_editing
+                    .text_caret_next_frame_at
+                    .expect("hydrolysis text caret animation state missing next frame timestamp")
+            });
         if now < next {
             return false;
         }
@@ -759,7 +763,8 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn active_text_context_menu_target(&self) -> Option<usize> {
-        self.text_editing.active_text_context_menu
+        self.text_editing
+            .active_text_context_menu
             .as_ref()
             .map(|menu| match menu {
                 ActiveTextContextMenu::Overlay { index, .. }
@@ -1168,7 +1173,13 @@ impl HydrolysisRenderer {
         point: vello::kurbo::Point,
         env: &Environment,
     ) -> bool {
-        let Some(target) = self.text_editing.text_input_targets.as_slice().get(index).cloned() else {
+        let Some(target) = self
+            .text_editing
+            .text_input_targets
+            .as_slice()
+            .get(index)
+            .cloned()
+        else {
             return false;
         };
         let entries = Self::build_text_context_menu_entries(&target);

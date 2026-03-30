@@ -1,9 +1,9 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, measure_picker_intrinsic,
-    transformed_rect,
-};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_picker_intrinsic, transformed_rect,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -12,9 +12,9 @@ use accesskit::{
 use nami::{Binding, Signal};
 use std::rc::Rc;
 use waterui_core::Environment;
+use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
-use waterui_core::Native;
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
@@ -22,11 +22,7 @@ use waterui_text::styled::StyledStr;
 use super::util::widget_theme;
 
 impl HydroNativeView for Native<PickerConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_picker(ctx, view, env);
     }
 
@@ -38,7 +34,7 @@ impl HydroNativeView for Native<PickerConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
@@ -60,7 +56,9 @@ impl HydroNativeView for Native<PickerConfig> {
                     let mut option_labels = Vec::with_capacity(items.len());
                     let mut max_item_text_height: f64 = 0.0;
                     for item in &items {
-                        let label = renderer.read_resolved_text_styled(&item.content, env).to_plain();
+                        let label = renderer
+                            .read_resolved_text_styled(&item.content, env)
+                            .to_plain();
                         let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
                             renderer.state_mut(),
                             StyledStr::plain(label.clone()),
@@ -83,13 +81,16 @@ impl HydroNativeView for Native<PickerConfig> {
                     node.add_action(AccessibilityAction::Focus);
                     node.add_action(AccessibilityAction::Click);
                     let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
-                    let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height, metrics);
-                    let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
+                    let row_height =
+                        menu_picker_row_height(ctx.bounds, max_item_text_height, metrics);
+                    let popup_rect =
+                        menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
                     for (index, item) in items.iter().enumerate() {
-                        let mut option = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                            env,
-                            AccessibilityNodeRole::ListBoxOption,
-                        ));
+                        let mut option =
+                            AccessibilityNode::new(renderer.resolve_accessibility_role(
+                                env,
+                                AccessibilityNodeRole::ListBoxOption,
+                            ));
                         option.set_label(option_labels[index].as_str().to_owned());
                         let is_selected = item.tag == selected;
                         option.set_selected(is_selected);
@@ -158,10 +159,11 @@ impl HydroNativeView for Native<PickerConfig> {
                             break;
                         }
                         row_y = row_rect.y1 + metrics.radio_row_spacing;
-                        let mut option = AccessibilityNode::new(renderer.resolve_accessibility_role(
-                            env,
-                            AccessibilityNodeRole::RadioButton,
-                        ));
+                        let mut option =
+                            AccessibilityNode::new(renderer.resolve_accessibility_role(
+                                env,
+                                AccessibilityNodeRole::RadioButton,
+                            ));
                         option.set_label(label);
                         let is_selected = item.tag == selected;
                         option.set_toggled(AccessibilityToggled::from(is_selected));
@@ -261,7 +263,9 @@ pub(crate) fn render_menu_picker(
     let mut option_texts = Vec::with_capacity(items.len());
     let mut max_item_text_height: f64 = 0.0;
     for item in &items {
-        let styled = ctx.renderer_mut().read_resolved_text_styled(&item.content, env);
+        let styled = ctx
+            .renderer_mut()
+            .read_resolved_text_styled(&item.content, env);
         let plain = styled.to_plain();
         let size = HydrolysisRenderer::measure_text_intrinsic_size(
             ctx.state_mut(),
@@ -371,7 +375,9 @@ pub(crate) fn render_radio_picker(
     let bounds = ctx.bounds;
     let mut row_y = bounds.y0 + metrics.vertical_inset;
     for item in items {
-        let label = ctx.renderer_mut().read_resolved_text_styled(&item.content, env);
+        let label = ctx
+            .renderer_mut()
+            .read_resolved_text_styled(&item.content, env);
         let label_size =
             HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label.clone(), env);
         let row_height = f64::from(label_size.height).max(metrics.radio_indicator_size);
@@ -407,15 +413,16 @@ pub(crate) fn render_radio_picker(
 
         let tag = item.tag;
         let hit_transform = ctx.hit_transform;
-        ctx.renderer_mut().register_pointer_target(transformed_rect(hit_transform, row_rect), {
-            let selection = selection.clone();
-            move |_renderer, _point, _env| {
-                if selection.get() == tag {
-                    return false;
+        ctx.renderer_mut()
+            .register_pointer_target(transformed_rect(hit_transform, row_rect), {
+                let selection = selection.clone();
+                move |_renderer, _point, _env| {
+                    if selection.get() == tag {
+                        return false;
+                    }
+                    selection.set(tag);
+                    true
                 }
-                selection.set(tag);
-                true
-            }
-        });
+            });
     }
 }

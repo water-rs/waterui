@@ -1,10 +1,14 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic, transformed_rect,
-};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic,
+    transformed_rect,
+};
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole, Toggled as AccessibilityToggled};
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+    Toggled as AccessibilityToggled,
+};
 use nami::Signal;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
@@ -17,11 +21,7 @@ pub(crate) const CONTROL_SPRING_STIFFNESS: f32 = 300.0;
 pub(crate) const CONTROL_SPRING_DAMPING: f32 = 20.0;
 
 impl HydroNativeView for Native<ToggleConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment,
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_toggle(ctx, view, env);
     }
 
@@ -114,11 +114,12 @@ pub(crate) fn render_toggle(
 
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let toggle_binding = toggle.toggle;
-    ctx.renderer_mut().register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
-        let next = !toggle_binding.get();
-        toggle_binding.set(next);
-        true
-    });
+    ctx.renderer_mut()
+        .register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
+            let next = !toggle_binding.get();
+            toggle_binding.set(next);
+            true
+        });
 }
 
 pub(crate) fn measure_toggle_intrinsic(
