@@ -12,7 +12,7 @@ use jiff::{
     civil::{Date, Weekday},
 };
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_controls::button;
+use waterui_controls::{IntoLabel, button};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, Environment, View};
 use waterui_layout::frame::Frame;
@@ -55,8 +55,8 @@ impl Calendar {
 
     /// Sets the label displayed above the calendar.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.label = AnyView::new(label.into_label());
         self
     }
 
