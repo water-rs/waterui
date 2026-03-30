@@ -1,11 +1,14 @@
 use crate::engine::{Brush, DrawContext};
-use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic, transformed_rect,
-};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic,
+    transformed_rect,
+};
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
@@ -17,11 +20,7 @@ pub(crate) const STEPPER_BUTTON_SPACING: f64 = 4.0;
 pub(crate) const STEPPER_LABEL_SPACING: f64 = 8.0;
 
 impl HydroNativeView for Native<StepperConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment,
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_stepper(ctx, view, env);
     }
 

@@ -475,9 +475,9 @@ where
         );
 
         let destination = AnyViewBuilder::new(self.content);
-        button(self.label)
-            .extract::<NavigationController>()
-            .action(move |receiver| receiver.push_builder(destination.clone()))
+        button(self.label).action(move |receiver: NavigationController| {
+            receiver.push_builder(destination.clone())
+        })
     }
 }
 
@@ -494,8 +494,7 @@ where
 
         let value = self.value;
         button(self.label)
-            .extract::<NavigationPathController<T>>()
-            .action(move |controller| controller.push(value.clone()))
+            .action(move |controller: NavigationPathController<T>| controller.push(value.clone()))
     }
 }
 

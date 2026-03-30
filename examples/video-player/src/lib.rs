@@ -117,8 +117,8 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
     );
 
     button(label)
-        .with_state(&selected_for_action)
-        .action(move |s: Binding<usize>| s.set(index))
+        .action(move |State(s): State<Binding<usize>>| s.set(index))
+        .state(&selected_for_action)
         .foreground(Srgb::WHITE)
         .background(bg.computed())
 }

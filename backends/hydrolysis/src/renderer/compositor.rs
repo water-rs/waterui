@@ -520,7 +520,8 @@ impl HydrolysisRenderer {
                 Some(GpuSurfaceCompositorState::new(device, queue, target_format));
             return;
         }
-        self.compositor.gpu_surface_compositor
+        self.compositor
+            .gpu_surface_compositor
             .as_mut()
             .expect("hydrolysis renderer: missing gpu surface compositor state")
             .ensure_target_format(device, queue, target_format);
@@ -625,7 +626,8 @@ impl HydrolysisRenderer {
         target_format: wgpu::TextureFormat,
     ) -> wgpu::TextureView {
         self.ensure_gpu_surface_compositor_state(device, queue, target_format);
-        self.compositor.gpu_surface_compositor
+        self.compositor
+            .gpu_surface_compositor
             .as_ref()
             .expect("hydrolysis renderer: missing gpu surface compositor state")
             .white_mask_view

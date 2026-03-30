@@ -39,7 +39,8 @@ use executor_core::spawn_local;
 use nami::Binding;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::handler::{SharedAction, shared_action};
+use waterui_core::extract::State;
+use waterui_core::handler::{Handler, SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnimationExt, AnyView, View};
 use waterui_icon::SystemIcon;
@@ -131,6 +132,8 @@ pub struct Snackbar {
     duration: Duration,
     /// Position on screen.
     position: SnackbarPosition,
+    /// State injected into the action button environment.
+    captured_env: waterui_core::Environment,
 }
 
 impl core::fmt::Debug for Snackbar {
@@ -155,6 +158,7 @@ impl Snackbar {
             action: None,
             duration: Duration::from_secs(3),
             position: SnackbarPosition::default(),
+            captured_env: waterui_core::Environment::new(),
         }
     }
 
@@ -167,8 +171,6 @@ impl Snackbar {
 
     /// Adds an action button to the snackbar.
     ///
-    /// Use `.handler()` to set the callback, or `.with_state()` to capture state first.
-    ///
     /// # Examples
     ///
     /// Simple action:
@@ -177,12 +179,12 @@ impl Snackbar {
     ///     .action("Undo").handler(|| println!("Undo!"))
     /// ```
     ///
-    /// With state:
+    /// With injected state:
     /// ```rust,ignore
     /// Snackbar::new("Item deleted")
     ///     .action("Undo")
-    ///     .with_state(&items)
-    ///     .handler(|items| items.restore())
+    ///     .handler(|State(items): State<Items>| items.restore())
+    ///     .state(&items)
     /// ```
     #[must_use]
     pub fn action(self, label: impl Into<Str>) -> SnackbarActionBuilder {
@@ -207,6 +209,13 @@ impl Snackbar {
     #[must_use]
     pub const fn position(mut self, position: SnackbarPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Injects cloneable state into this snackbar's action environment.
+    #[must_use]
+    pub fn state<T: Clone + 'static>(mut self, state: &T) -> Self {
+        self.captured_env = self.captured_env.extending(State(state.clone()));
         self
     }
 }
@@ -388,6 +397,7 @@ impl SnackbarManager {
         // Add action button if present
         if let Some(action) = snackbar.action {
             let action_label = action.label.clone();
+            let captured_env = snackbar.captured_env.clone();
 
             AnyView::new(
                 hstack((
@@ -395,10 +405,9 @@ impl SnackbarManager {
                     spacer(),
                     button(text(action_label).bold())
                         .style(ButtonStyle::Borderless)
-                        .extract::<waterui_core::Environment>()
-                        .action(move |env| {
+                        .action(move |env: waterui_core::Environment| {
                             // Execute action handler with the live view environment.
-                            action.handler.call(&env);
+                            action.handler.call(&captured_env.layered_on(&env));
                             manager.dismiss();
                         }),
                 ))
@@ -430,61 +439,10 @@ pub struct SnackbarActionBuilder {
 impl SnackbarActionBuilder {
     /// Sets the action handler (no state).
     #[must_use]
-    pub fn handler(mut self, handler: impl FnMut() + 'static) -> Snackbar {
+    pub fn handler<Args>(mut self, handler: impl Handler<Args, ()> + 'static) -> Snackbar {
         self.snackbar.action = Some(SnackbarAction {
             label: self.label,
             handler: shared_action(handler),
-        });
-        self.snackbar
-    }
-
-    /// Adds state to capture for the action.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> SnackbarActionStatefulBuilder<T> {
-        SnackbarActionStatefulBuilder {
-            snackbar: self.snackbar,
-            label: self.label,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for snackbar actions with captured state.
-pub struct SnackbarActionStatefulBuilder<State> {
-    snackbar: Snackbar,
-    label: Str,
-    state: State,
-}
-
-impl<S> core::fmt::Debug for SnackbarActionStatefulBuilder<S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SnackbarActionStatefulBuilder")
-            .field("label", &self.label)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S: Clone + 'static> SnackbarActionStatefulBuilder<S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(
-        self,
-        state: &T,
-    ) -> SnackbarActionStatefulBuilder<(S, T)> {
-        SnackbarActionStatefulBuilder {
-            snackbar: self.snackbar,
-            label: self.label,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the action handler with captured state.
-    #[must_use]
-    pub fn handler(mut self, mut handler: impl FnMut(S) + 'static) -> Snackbar {
-        let state = self.state;
-        self.snackbar.action = Some(SnackbarAction {
-            label: self.label,
-            handler: shared_action(move || handler(state.clone())),
         });
         self.snackbar
     }

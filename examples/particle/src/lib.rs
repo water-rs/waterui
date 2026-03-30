@@ -18,7 +18,7 @@ fn title_label(color: impl Into<Color>) -> impl View {
         .foreground(color)
 }
 
-fn rain() -> impl View {
+pub fn rain_system() -> ParticleSystem {
     ParticleSystem::new(10000)
         .emit_from_rect(1.5, 0.1)
         .at(0.5, -0.05)
@@ -36,6 +36,10 @@ fn rain() -> impl View {
         .wind(0.05, 0.0) // Subtle wind
         .stretch_with_velocity()
         .softness(0.4) // Slightly softer to antialias thin lines
+}
+
+pub fn rain() -> impl View {
+    rain_system()
 }
 
 fn snow() -> impl View {
@@ -82,7 +86,7 @@ fn fog() -> impl View {
         .softness(1.0) // Maximum softness for cloud/fog
 }
 
-fn flame() -> impl View {
+pub fn flame_system() -> ParticleSystem {
     ParticleSystem::new(3000)
         .emit_from_rect(0.05, 0.0) // Small source
         .at(0.5, 0.8)
@@ -98,6 +102,10 @@ fn flame() -> impl View {
         .gravity(0.0, -1.0) // Rise
         .additive()
         .softness(0.6) // Soft plasma look
+}
+
+pub fn flame() -> impl View {
+    flame_system()
 }
 
 fn firework() -> impl View {
@@ -220,7 +228,7 @@ fn confetti_view() -> impl View {
     ))
 }
 
-fn explosion() -> impl View {
+pub fn explosion_system() -> ParticleSystem {
     // "Shatter" / "Explosion" - Square debris
     ParticleSystem::new(20000)
         .emit_from_circle(0.05)
@@ -237,6 +245,10 @@ fn explosion() -> impl View {
         .gravity(0.0, 3.0) // Heavy pieces fall
         .shape(ParticleShape::Rect) // Square blocks
         .softness(0.0) // Hard edges
+}
+
+pub fn explosion() -> impl View {
+    explosion_system()
 }
 
 fn bounce_box() -> impl View {
@@ -302,35 +314,35 @@ fn main() -> impl View {
             vstack((
                 hstack((
                     Button::new(text("Rain"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(0)),
+                        .action(|State(m): State<Binding<i32>>| m.set(0))
+                        .state(&mode),
                     Button::new(text("Snow"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(1)),
+                        .action(|State(m): State<Binding<i32>>| m.set(1))
+                        .state(&mode),
                     Button::new(text("Fog"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(2)),
+                        .action(|State(m): State<Binding<i32>>| m.set(2))
+                        .state(&mode),
                 ))
                 .spacing(10.0),
                 hstack((
                     Button::new(text("Flame"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(3)),
+                        .action(|State(m): State<Binding<i32>>| m.set(3))
+                        .state(&mode),
                     Button::new(text("Firework"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(4)),
+                        .action(|State(m): State<Binding<i32>>| m.set(4))
+                        .state(&mode),
                 ))
                 .spacing(10.0),
                 hstack((
                     Button::new(text("Confetti"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(5)),
+                        .action(|State(m): State<Binding<i32>>| m.set(5))
+                        .state(&mode),
                     Button::new(text("Explosion"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(6)),
+                        .action(|State(m): State<Binding<i32>>| m.set(6))
+                        .state(&mode),
                     Button::new(text("Bounce Box"))
-                        .with_state(&mode)
-                        .action(|m: Binding<i32>| m.set(7)),
+                        .action(|State(m): State<Binding<i32>>| m.set(7))
+                        .state(&mode),
                 ))
                 .spacing(10.0),
             ))

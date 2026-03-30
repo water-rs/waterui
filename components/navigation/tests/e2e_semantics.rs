@@ -53,8 +53,12 @@ fn split_view() -> impl View {
             let selection = selection.clone();
             move || {
                 vstack((waterui::component::button("Select Detail")
-                    .with_state(&selection)
-                    .action(|selection| selection.set(Some(7))),))
+                    .action(
+                        |waterui::State(selection): waterui::State<Binding<Option<i32>>>| {
+                            selection.set(Some(7));
+                        },
+                    )
+                    .state(&selection),))
             }
         },
         |value| NavigationView::new("Detail", Text::new(format!("detail:{value}"))),
