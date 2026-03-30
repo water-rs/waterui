@@ -1,7 +1,7 @@
 //! A card is a styled container that groups related content.
 use crate::prelude::*;
 use waterui_layout::stack::vstack;
-use waterui_text::font::Title;
+use waterui_text::{IntoText, font::Title};
 
 /// A card widget that displays optional title, subtitle, and content.
 #[derive(Debug, Clone)]
@@ -25,15 +25,15 @@ impl<Content> Card<Content> {
     }
     /// Sets the title of the card.
     #[must_use]
-    pub fn title<T: Into<Text>>(mut self, title: T) -> Self {
-        self.title = Some(title.into().font(Title));
+    pub fn title(mut self, title: impl IntoText) -> Self {
+        self.title = Some(title.into_text().font(Title));
         self
     }
 
     /// Sets the subtitle of the card.
     #[must_use]
-    pub fn subtitle<T: Into<Text>>(mut self, subtitle: T) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
     }
 }

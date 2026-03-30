@@ -25,6 +25,7 @@ use waterui_core::{
     extract::Use, handler::ViewBuilder, impl_extractor, layout::StretchAxis, raw_view,
 };
 use waterui_graphics::color::Color;
+use waterui_text::IntoText;
 
 pub use search::NavigationSearch;
 pub use split::{NavigationSplitLayout, NavigationSplitView};
@@ -503,11 +504,11 @@ impl NavigationView {
     ///
     /// # Arguments
     ///
-    /// * `title` - The title to display in the navigation bar (can be any View)
+    /// * `title` - The semantic title to display in the navigation bar
     /// * `content` - The content view to display
-    pub fn new(title: impl View, content: impl View) -> Self {
+    pub fn new(title: impl IntoText, content: impl View) -> Self {
         let bar = Bar {
-            title: AnyView::new(title),
+            title: AnyView::new(title.into_text()),
             ..Default::default()
         };
 
@@ -564,7 +565,7 @@ impl NavigationView {
 
     /// Installs a navigation-scoped search field in the bar chrome.
     #[must_use]
-    pub fn searchable(mut self, text: &Binding<Str>, prompt: impl Into<Str>) -> Self {
+    pub fn searchable(mut self, text: &Binding<Str>, prompt: impl IntoText) -> Self {
         self.bar.search = Some(NavigationSearch::new(text, prompt));
         self
     }
@@ -574,9 +575,9 @@ impl NavigationView {
 ///
 /// # Arguments
 ///
-/// * `title` - The title to display in the navigation bar (any View)
+/// * `title` - The semantic title to display in the navigation bar
 /// * `view` - The content view to display
-pub fn navigation(title: impl View, view: impl View) -> NavigationView {
+pub fn navigation(title: impl IntoText, view: impl View) -> NavigationView {
     NavigationView::new(title, view)
 }
 

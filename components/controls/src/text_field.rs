@@ -8,7 +8,7 @@ use nami::{Binding, Computed};
 use waterui_core::Str;
 use waterui_core::configurable;
 use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
-use waterui_text::{Text, TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
 use crate::label::IntoLabel;
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
@@ -130,8 +130,8 @@ impl TextField {
 
     /// Sets the prompt for the text field.
     #[must_use]
-    pub fn prompt(mut self, prompt: impl Into<Text>) -> Self {
-        self.0.prompt = prompt.into();
+    pub fn prompt(mut self, prompt: impl IntoText) -> Self {
+        self.0.prompt = prompt.into_text();
         self
     }
 

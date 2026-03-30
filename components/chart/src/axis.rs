@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use waterui_core::Str;
+use waterui_text::{IntoText, Text};
 
 /// Configuration for a chart axis.
 ///
@@ -29,7 +30,7 @@ pub struct AxisConfig {
     tick_count: usize,
     format: TickFormat,
     show_grid: bool,
-    label: Option<Str>,
+    label: Option<Text>,
 }
 
 impl AxisConfig {
@@ -67,8 +68,8 @@ impl AxisConfig {
 
     /// Sets axis label (e.g., "Price ($)").
     #[must_use]
-    pub fn label(mut self, label: impl Into<Str>) -> Self {
-        self.label = Some(label.into());
+    pub fn label(mut self, label: impl IntoText) -> Self {
+        self.label = Some(label.into_text());
         self
     }
 
@@ -80,8 +81,8 @@ impl AxisConfig {
 
     /// Returns the axis label, if set.
     #[must_use]
-    pub fn axis_label(&self) -> Option<&str> {
-        self.label.as_deref()
+    pub fn axis_label(&self) -> Option<&Text> {
+        self.label.as_ref()
     }
 
     /// Computes nice tick values for given bounds.

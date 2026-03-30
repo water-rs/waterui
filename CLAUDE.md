@@ -41,6 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `Type::new(...)` is the general constructor and should accept the most general shape that the component can render.
   - Free function constructors like `button(...)` are ergonomic convenience entry points and may accept narrower semantic input types for better defaults.
   - Example: `Button::new(...)` should remain the general constructor for arbitrary label views, while `button(...)` is the ergonomic constructor that accepts `IntoLabel` so literals, i18n-friendly text, and default accessibility semantics compose naturally.
+  - For semantic text and label APIs, prefer `IntoText` / `IntoLabel` over raw `impl View` so string literals naturally enter the i18n-aware semantic text pipeline. Only accept `impl View` when the API is intentionally for arbitrary visual composition rather than semantic text or labels.
 </important>
 
 ## Build Commands

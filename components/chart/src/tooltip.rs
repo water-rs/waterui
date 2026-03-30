@@ -5,7 +5,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::{Computed, SignalExt as _};
-use waterui_core::Str;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
@@ -14,7 +13,7 @@ use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{RoundedRectangle, ShapeExt};
-use waterui_text::text;
+use waterui_text::{IntoText, Text};
 
 use crate::interaction::{ChartViewport, HitResult};
 
@@ -27,7 +26,7 @@ const TOOLTIP_MIN_TOP_CLEARANCE: f32 = 56.0;
 #[derive(Debug, Clone, Default)]
 pub struct TooltipContent {
     /// Optional title line.
-    pub title: Option<Str>,
+    pub title: Option<Text>,
     /// Value lines to display.
     pub values: Vec<TooltipValue>,
 }
@@ -36,9 +35,9 @@ pub struct TooltipContent {
 #[derive(Debug, Clone)]
 pub struct TooltipValue {
     /// Label for the value.
-    pub label: Str,
+    pub label: Text,
     /// The value to display.
-    pub value: Str,
+    pub value: Text,
     /// Optional color indicator.
     pub color: Option<Srgb>,
 }
@@ -46,10 +45,10 @@ pub struct TooltipValue {
 impl TooltipValue {
     /// Creates a new tooltip value.
     #[must_use]
-    pub fn new(label: impl Into<Str>, value: impl Into<Str>) -> Self {
+    pub fn new(label: impl IntoText, value: impl IntoText) -> Self {
         Self {
-            label: label.into(),
-            value: value.into(),
+            label: label.into_text(),
+            value: value.into_text(),
             color: None,
         }
     }
@@ -71,14 +70,14 @@ impl TooltipContent {
 
     /// Sets the title.
     #[must_use]
-    pub fn title(mut self, title: impl Into<Str>) -> Self {
-        self.title = Some(title.into());
+    pub fn title(mut self, title: impl IntoText) -> Self {
+        self.title = Some(title.into_text());
         self
     }
 
     /// Adds a value line.
     #[must_use]
-    pub fn value(mut self, label: impl Into<Str>, value: impl Into<Str>) -> Self {
+    pub fn value(mut self, label: impl IntoText, value: impl IntoText) -> Self {
         self.values.push(TooltipValue::new(label, value));
         self
     }
@@ -87,8 +86,8 @@ impl TooltipContent {
     #[must_use]
     pub fn colored_value(
         mut self,
-        label: impl Into<Str>,
-        value: impl Into<Str>,
+        label: impl IntoText,
+        value: impl IntoText,
         color: impl Into<Srgb>,
     ) -> Self {
         self.values
@@ -182,9 +181,7 @@ impl View for Tooltip {
 
         // Add title if present
         if let Some(title) = &self.content.title {
-            views.push(AnyView::new(
-                text((*title).clone()).color(text_color.clone()),
-            ));
+            views.push(AnyView::new(title.clone().color(text_color.clone())));
         }
 
         // Add values with optional color indicators
@@ -194,8 +191,8 @@ impl View for Tooltip {
                 let indicator = Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
                     .width(8.0)
                     .height(8.0);
-                let line =
-                    text(alloc::format!("{}: {}", val.label, val.value)).color(text_color.clone());
+                let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                    .color(text_color.clone());
                 AnyView::new(HStack::new(
                     VerticalAlignment::Center,
                     6.0,
@@ -203,7 +200,8 @@ impl View for Tooltip {
                 ))
             } else {
                 AnyView::new(
-                    text(alloc::format!("{}: {}", val.label, val.value)).color(text_color.clone()),
+                    (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                        .color(text_color.clone()),
                 )
             };
             views.push(value_view);
