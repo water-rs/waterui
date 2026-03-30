@@ -6,7 +6,8 @@ use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed};
 use waterui_core::Str;
 use waterui_core::{
     AnyView, Environment, View,
-    handler::{SharedAction, shared_action},
+    extract::State,
+    handler::{Handler, SharedAction, shared_action},
     layout::StretchAxis,
     raw_view,
 };
@@ -146,6 +147,8 @@ pub struct Command {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    /// Local state layered onto the environment when the action runs.
+    pub captured_env: Environment,
 }
 
 impl_constant!(Command);
@@ -165,11 +168,15 @@ impl Command {
         let label = self.label;
         let resolved_label = label.__text().resolve(env);
         let icon = label.__icon();
+        let action = self.action;
+        let captured_env = self.captured_env;
         ResolvedCommand {
             label: resolved_label,
             semantic_label: label,
             icon,
-            action: self.action,
+            action: shared_action(move |env: Environment| {
+                action.call(&captured_env.layered_on(&env))
+            }),
             disabled: self.disabled,
             selected: self.selected,
             shortcut: self.shortcut,
@@ -196,6 +203,13 @@ impl Command {
         self.shortcut = Some(shortcut);
         self
     }
+
+    /// Injects cloneable state into this command's action environment.
+    #[must_use]
+    pub fn state<T: Clone + 'static>(mut self, state: &T) -> Self {
+        self.captured_env = self.captured_env.extending(State(state.clone()));
+        self
+    }
 }
 
 /// Ergonomic extension for constructing commands from label-like values.
@@ -208,62 +222,30 @@ pub trait CommandExt: IntoLabel + Sized {
 
     /// Creates a command with an action and no captured state.
     #[must_use]
-    fn action(self, action: impl FnMut() + 'static) -> Command {
+    fn action<Args>(self, action: impl Handler<Args, ()> + 'static) -> Command {
         self.command().action(action)
     }
 }
 
 impl<T: IntoLabel> CommandExt for T {}
 
-/// Builder for creating commands with captured state.
+/// Builder for creating commands.
 #[derive(Debug, Clone)]
 pub struct CommandBuilder {
     label: Label,
 }
 
 impl CommandBuilder {
-    /// Sets the action for this command (no state).
+    /// Sets the action for this command.
     #[must_use]
-    pub fn action(self, action: impl FnMut() + 'static) -> Command {
+    pub fn action<Args>(self, action: impl Handler<Args, ()> + 'static) -> Command {
         Command {
             label: self.label,
             action: shared_action(action),
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
-        }
-    }
-
-    /// Adds state to capture for the action.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> CommandStatefulBuilder<T> {
-        CommandStatefulBuilder {
-            label: self.label,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for commands with captured state.
-#[derive(Debug, Clone)]
-pub struct CommandStatefulBuilder<State> {
-    label: Label,
-    state: State,
-}
-
-waterui_core::impl_stateful_builder!(CommandStatefulBuilder; state; label);
-
-impl<S: Clone + 'static> CommandStatefulBuilder<S> {
-    /// Sets the action for this command with captured state.
-    #[must_use]
-    pub fn action(self, mut action: impl FnMut(S) + 'static) -> Command {
-        let state = self.state;
-        Command {
-            label: self.label,
-            action: shared_action(move || action(state.clone())),
-            disabled: Computed::constant(false),
-            selected: Computed::constant(false),
-            shortcut: None,
+            captured_env: Environment::new(),
         }
     }
 }

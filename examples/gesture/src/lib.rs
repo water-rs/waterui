@@ -29,8 +29,8 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View {
         text("Tap Me!")
             .padding()
             .background(TAP_COLOR.with_opacity(0.3))
-            .with_state(tap_count)
-            .gesture(TapGesture::new(), |c| *c.get_mut() += 1),
+            .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .state(tap_count),
     ))
     .padding()
 }
@@ -47,8 +47,8 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
         text("Double Tap Me!")
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
-            .with_state(double_tap_count)
-            .gesture(TapGesture::repeat(2), |c| *c.get_mut() += 1),
+            .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .state(double_tap_count),
     ))
     .padding()
 }
@@ -65,8 +65,11 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View {
         text("Long Press Me!")
             .padding()
             .background(LONG_PRESS_COLOR.with_opacity(0.3))
-            .with_state(long_press_count)
-            .gesture(LongPressGesture::new(500), |c| *c.get_mut() += 1),
+            .gesture(
+                LongPressGesture::new(500),
+                |State(c): State<Binding<i32>>| *c.get_mut() += 1,
+            )
+            .state(long_press_count),
     ))
     .padding()
 }
@@ -82,8 +85,8 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View {
             .width(200.0)
             .height(100.0)
             .background(DRAG_COLOR.with_opacity(0.3))
-            .with_state(drag_count)
-            .gesture(DragGesture::new(5.0), |c| *c.get_mut() += 1),
+            .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .state(drag_count),
     ))
     .padding()
 }
@@ -98,10 +101,11 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View {
         text("Tap then Long Press")
             .padding()
             .background(CHAINED_COLOR.with_opacity(0.3))
-            .with_state(chained_status)
-            .gesture(TapGesture::new().then(LongPressGesture::new(300)), |s| {
-                s.set("Chained gesture completed!")
-            }),
+            .gesture(
+                TapGesture::new().then(LongPressGesture::new(300)),
+                |State(s): State<Binding<&'static str>>| s.set("Chained gesture completed!"),
+            )
+            .state(chained_status),
     ))
     .padding()
 }
@@ -115,8 +119,8 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
         text("Simple Tap")
             .padding()
             .background(ON_TAP_COLOR.with_opacity(0.3))
-            .with_state(tap_count)
-            .on_tap(|c| *c.get_mut() += 1),
+            .on_tap(|State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .state(tap_count),
     ))
     .padding()
 }

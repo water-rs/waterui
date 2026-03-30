@@ -27,8 +27,9 @@ use waterkit_video::{
 };
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
-    AnyView, Binding, Environment, SignalExt as _, View, binding,
+    AnyView, Binding, Environment, SignalExt as _, State, View, binding,
     dynamic::Dynamic,
+    env::With,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
 use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle, wgpu};
@@ -912,11 +913,12 @@ fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
 fn picture_in_picture_button(request: Binding<u64>) -> impl View {
     #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
     {
-        return AnyView::new(
-            button("PiP")
-                .with_state(&request)
-                .action(|request| request.set(request.get().wrapping_add(1))),
-        );
+        return AnyView::new(With::new(
+            button("PiP").action(|State(request): State<Binding<u64>>| {
+                request.set(request.get().wrapping_add(1));
+            }),
+            State(request),
+        ));
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
@@ -969,20 +971,28 @@ fn player_controls(
         },
     );
 
-    let subtitle_toggle = button(Text::display(
-        subtitle_track_labels
-            .zip(&subtitle_selection)
-            .map(|(track_labels, selection)| {
-                subtitle_selection_label(&track_labels, selection).unwrap_or_else(|message| message)
-            }),
-    ))
-    .with_state(&subtitle_selection)
-    .with_state(&subtitle_track_labels)
-    .action(move |(selection, track_labels)| {
-        let next = next_subtitle_selection(&track_labels.get(), selection.get())
-            .expect("subtitle selection state must resolve");
-        selection.set(next);
-    });
+    let subtitle_toggle = With::new(
+        With::new(
+            button(Text::display(
+                subtitle_track_labels
+                    .zip(&subtitle_selection)
+                    .map(|(track_labels, selection)| {
+                        subtitle_selection_label(&track_labels, selection)
+                            .unwrap_or_else(|message| message)
+                    }),
+            ))
+            .action(
+                move |State(selection): State<Binding<SubtitleSelection>>,
+                      State(track_labels): State<Binding<Vec<String>>>| {
+                    let next = next_subtitle_selection(&track_labels.get(), selection.get())
+                        .expect("subtitle selection state must resolve");
+                    selection.set(next);
+                },
+            ),
+            State(subtitle_selection),
+        ),
+        State(subtitle_track_labels),
+    );
 
     let previous_button = Dynamic::watch(has_previous.clone(), {
         let on_event = on_event.clone();
@@ -1003,47 +1013,61 @@ fn player_controls(
 
     let transport = hstack((
         previous_button,
-        button("Back 10s")
-            .with_state(&progress)
-            .with_state(&duration_seconds)
-            .action(|(value, duration)| {
-                let duration = duration.get();
-                if duration <= f64::EPSILON {
-                    return;
-                }
+        With::new(
+            With::new(
+                button("Back 10s").action(
+                    |State(value): State<Binding<f64>>, State(duration): State<Binding<f64>>| {
+                        let duration = duration.get();
+                        if duration <= f64::EPSILON {
+                            return;
+                        }
 
-                let delta = (10.0 / duration).min(1.0);
-                value.set((value.get() - delta).max(0.0));
-            }),
-        button(Text::display(
-            is_playing
-                .clone()
-                .map(|playing| if playing { "Pause" } else { "Play" }),
-        ))
-        .with_state(&is_playing)
-        .action(|playing| playing.set(!playing.get())),
-        button(Text::display(
-            muted
-                .clone()
-                .map(|is_muted| if is_muted { "Unmute" } else { "Mute" }),
-        ))
-        .with_state(&muted)
-        .action(|is_muted| is_muted.set(!is_muted.get())),
+                        let delta = (10.0 / duration).min(1.0);
+                        value.set((value.get() - delta).max(0.0));
+                    },
+                ),
+                State(progress.clone()),
+            ),
+            State(duration_seconds.clone()),
+        ),
+        With::new(
+            button(Text::display(
+                is_playing
+                    .clone()
+                    .map(|playing| if playing { "Pause" } else { "Play" }),
+            ))
+            .action(|State(playing): State<Binding<bool>>| playing.set(!playing.get())),
+            State(is_playing.clone()),
+        ),
+        With::new(
+            button(Text::display(
+                muted
+                    .clone()
+                    .map(|is_muted| if is_muted { "Unmute" } else { "Mute" }),
+            ))
+            .action(|State(is_muted): State<Binding<bool>>| is_muted.set(!is_muted.get())),
+            State(muted.clone()),
+        ),
         slider(0.0..=1.0, &volume_level),
         picture_in_picture_button(picture_in_picture_request),
         subtitle_toggle,
-        button("Forward 10s")
-            .with_state(&progress)
-            .with_state(&duration_seconds)
-            .action(|(value, duration)| {
-                let duration = duration.get();
-                if duration <= f64::EPSILON {
-                    return;
-                }
+        With::new(
+            With::new(
+                button("Forward 10s").action(
+                    |State(value): State<Binding<f64>>, State(duration): State<Binding<f64>>| {
+                        let duration = duration.get();
+                        if duration <= f64::EPSILON {
+                            return;
+                        }
 
-                let delta = (10.0 / duration).min(1.0);
-                value.set((value.get() + delta).min(1.0));
-            }),
+                        let delta = (10.0 / duration).min(1.0);
+                        value.set((value.get() + delta).min(1.0));
+                    },
+                ),
+                State(progress.clone()),
+            ),
+            State(duration_seconds.clone()),
+        ),
         next_button,
     ))
     .spacing(8.0);
@@ -1057,28 +1081,34 @@ fn player_controls(
 
     let speed_controls = hstack((
         playback_rate_label,
-        button("0.5x")
-            .with_state(&playback_rate)
-            .action(|rate| rate.set(0.5)),
-        button("1.0x")
-            .with_state(&playback_rate)
-            .action(|rate| rate.set(1.0)),
-        button("1.5x")
-            .with_state(&playback_rate)
-            .action(|rate| rate.set(1.5)),
-        button("2.0x")
-            .with_state(&playback_rate)
-            .action(|rate| rate.set(2.0)),
+        With::new(
+            button("0.5x").action(|State(rate): State<Binding<f32>>| rate.set(0.5)),
+            State(playback_rate.clone()),
+        ),
+        With::new(
+            button("1.0x").action(|State(rate): State<Binding<f32>>| rate.set(1.0)),
+            State(playback_rate.clone()),
+        ),
+        With::new(
+            button("1.5x").action(|State(rate): State<Binding<f32>>| rate.set(1.5)),
+            State(playback_rate.clone()),
+        ),
+        With::new(
+            button("2.0x").action(|State(rate): State<Binding<f32>>| rate.set(2.0)),
+            State(playback_rate),
+        ),
         slider(0.25..=2.0, &playback_rate_level),
-        button(Text::display(preserve_pitch.clone().map(|enabled| {
-            if enabled {
-                "Pitch Lock On"
-            } else {
-                "Pitch Lock Off"
-            }
-        })))
-        .with_state(&preserve_pitch)
-        .action(|enabled| enabled.set(!enabled.get())),
+        With::new(
+            button(Text::display(preserve_pitch.clone().map(|enabled| {
+                if enabled {
+                    "Pitch Lock On"
+                } else {
+                    "Pitch Lock Off"
+                }
+            })))
+            .action(|State(enabled): State<Binding<bool>>| enabled.set(!enabled.get())),
+            State(preserve_pitch),
+        ),
     ))
     .spacing(8.0);
 

@@ -1,15 +1,13 @@
 //! Icons Example - Demonstrates WaterUI's Icon System
 //!
-//! This example showcases 4 icon packs:
+//! This example showcases 3 icon packs:
 //! - SF Symbols (Apple platforms only, native rendering)
 //! - Material Design Icons (SVG rendering)
-//! - Font Awesome 7 (webfont rendering)
 //! - Lucide Icons (SVG rendering)
 
 use waterui::app::App;
 use waterui::prelude::*;
 
-use waterui_icons_fontawesome7 as fa;
 use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
 #[cfg(target_vendor = "apple")]
@@ -64,71 +62,23 @@ fn lucide_icons_demo() -> impl View {
     .padding()
 }
 
-/// Demo: Font Awesome Solid icons (webfont)
-fn fa_solid_demo() -> impl View {
-    vstack((
-        text("Font Awesome Solid").size(18.0),
-        hstack((
-            fa::solid::HOUSE.with_size(24.0),
-            fa::solid::USER.with_size(24.0),
-            fa::solid::GEAR.with_size(24.0),
-            fa::solid::HEART.with_size(24.0),
-            fa::solid::STAR.with_size(24.0),
-        ))
-        .spacing(16.0),
-    ))
-    .padding()
-}
-
-/// Demo: Font Awesome Regular icons (webfont)
-fn fa_regular_demo() -> impl View {
-    vstack((
-        text("Font Awesome Regular").size(18.0),
-        hstack((
-            fa::regular::HEART.with_size(24.0),
-            fa::regular::STAR.with_size(24.0),
-            fa::regular::BELL.with_size(24.0),
-            fa::regular::BOOKMARK.with_size(24.0),
-            fa::regular::USER.with_size(24.0),
-        ))
-        .spacing(16.0),
-    ))
-    .padding()
-}
-
-/// Demo: Font Awesome Brand icons (webfont)
-fn fa_brands_demo() -> impl View {
-    vstack((
-        text("Font Awesome Brands").size(18.0),
-        hstack((
-            fa::brands::GITHUB.with_size(24.0),
-            fa::brands::TWITTER.with_size(24.0),
-            fa::brands::APPLE.with_size(24.0),
-            fa::brands::GOOGLE.with_size(24.0),
-            fa::brands::DISCORD.with_size(24.0),
-        ))
-        .spacing(16.0),
-    ))
-    .padding()
-}
-
 /// Demo: Colored icons
 fn colored_icons_demo() -> impl View {
     vstack((
         text("Colored Icons").size(18.0),
         hstack((
-            fa::solid::HEART
-                .with_size(32.0)
-                .color(Color::srgb_hex("#EF4444")),
-            fa::solid::STAR
-                .with_size(32.0)
-                .color(Color::srgb_hex("#F59E0B")),
-            fa::solid::CIRCLE_CHECK
-                .with_size(32.0)
-                .color(Color::srgb_hex("#10B981")),
-            fa::solid::CIRCLE_INFO
-                .with_size(32.0)
-                .color(Color::srgb_hex("#3B82F6")),
+            mdi::heart()
+                .size(32.0, 32.0)
+                .tint(Color::srgb_hex("#EF4444")),
+            lucide::star()
+                .size(32.0, 32.0)
+                .tint(Color::srgb_hex("#F59E0B")),
+            mdi::check_circle()
+                .size(32.0, 32.0)
+                .tint(Color::srgb_hex("#10B981")),
+            mdi::information()
+                .size(32.0, 32.0)
+                .tint(Color::srgb_hex("#3B82F6")),
         ))
         .spacing(16.0),
     ))
@@ -140,12 +90,6 @@ fn icon_demos() -> impl View {
         material_icons_demo(),
         Divider,
         lucide_icons_demo(),
-        Divider,
-        fa_solid_demo(),
-        Divider,
-        fa_regular_demo(),
-        Divider,
-        fa_brands_demo(),
         Divider,
         colored_icons_demo(),
     ))
@@ -165,7 +109,7 @@ fn main() -> impl View {
     scroll(
         vstack((
             text("WaterUI Icon Packs").size(28.0),
-            text("4 icon packs: SF Symbols, MDI, FA7, Lucide"),
+            text("Icon packs: SF Symbols, MDI, Lucide"),
             Divider,
             all_demos(),
         ))

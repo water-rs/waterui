@@ -27,22 +27,22 @@ fn main_view() -> impl View {
     let controls = vstack((
         text("Map Example").title(),
         hstack((
-            button("Zoom In").with_state(&region).action(|r| {
+            button("Zoom In").action(|State(r): State<Binding<Region>>| {
                 let current = r.get();
                 r.set(Region::new(
                     current.center,
                     current.latitude_delta * 0.5,
                     current.longitude_delta * 0.5,
                 ));
-            }),
-            button("Zoom Out").with_state(&region).action(|r| {
+            }).state(&region),
+            button("Zoom Out").action(|State(r): State<Binding<Region>>| {
                 let current = r.get();
                 r.set(Region::new(
                     current.center,
                     current.latitude_delta * 2.0,
                     current.longitude_delta * 2.0,
                 ));
-            }),
+            }).state(&region),
         ))
         .spacing(8.0),
     ))
@@ -54,7 +54,7 @@ fn main_view() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view(), env)
+    App::new(main_view, env)
 }
 
 waterui_ffi::export!();

@@ -210,10 +210,10 @@ fn main() -> impl View {
 }
 
 fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
-    let selection = selection.clone();
+    let selection_text = selection.clone().map(|fruit| format!("{fruit:?}"));
     hstack((
         "Selected: ",
-        text(selection.map(|fruit| format!("{fruit:?}"))),
+        text!("{selection_text}"),
     ))
 }
 
@@ -235,8 +235,7 @@ fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
 }
 
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {
-    let files = files.clone();
-    text(files.map(|urls| {
+    let file_list_text = files.clone().map(|urls| {
         if urls.is_empty() {
             "No files selected".to_string()
         } else {
@@ -245,7 +244,8 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
-    }))
+    });
+    text!("{file_list_text}")
 }
 
 pub fn app(env: Environment) -> App {

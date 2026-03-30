@@ -2,9 +2,9 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use particle_example::{explosion, flame, rain};
-use waterui_core::Environment;
-use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
+use particle_example::{explosion_system, flame_system, rain_system};
+use waterui::prelude::Environment;
+use waterui_graphics::{OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize};
 use waterui_particle::ParticleSystem;
 
 struct SnapshotSpec {
@@ -49,7 +49,7 @@ fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
     fs::write(output_dir.join(format!("{}.raw.png", spec.name)), raw_png)
         .expect("raw particle png write should succeed");
 
-    let composited = waterui_graphics::gpu_surface::OffscreenRenderOutput {
+    let composited = OffscreenRenderOutput {
         width: output.width,
         height: output.height,
         rgba8: composite_over_opaque_background(&output.rgba8, spec.background),
@@ -77,21 +77,21 @@ fn main() {
             width: 540,
             height: 960,
             background: [0x0F, 0x17, 0x2A],
-            system: rain,
+            system: rain_system,
         },
         SnapshotSpec {
             name: "flame",
             width: 600,
             height: 600,
             background: [0x00, 0x00, 0x00],
-            system: flame,
+            system: flame_system,
         },
         SnapshotSpec {
             name: "explosion",
             width: 600,
             height: 600,
             background: [0x00, 0x00, 0x00],
-            system: explosion,
+            system: explosion_system,
         },
     ];
 

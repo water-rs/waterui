@@ -27,8 +27,8 @@ fn toolbar_action(
 ) -> impl View {
     button(label(title).icon(text(icon_tag).caption().bold()))
         .borderless()
-        .with_state(status)
-        .action(move |status| status.set(message.to_string()))
+        .action(move |State(status): State<Binding<String>>| status.set(message.to_string()))
+        .state(status)
 }
 
 fn toolbar_actions(status: &Binding<String>) -> impl View {
@@ -74,22 +74,14 @@ fn menu_section(selected: &Binding<String>) -> impl View {
         Menu::new(
             "Choose an Option",
             (
-                button("Option A")
-                    .with_state(selected)
-                    .action(|selected| selected.set("Option A".to_string())),
-                button("Option B")
-                    .with_state(selected)
-                    .action(|selected| selected.set("Option B".to_string())),
+                "Option A".action(|State(selected): State<Binding<String>>| selected.set("Option A".to_string())).state(selected),
+                "Option B".action(|State(selected): State<Binding<String>>| selected.set("Option B".to_string())).state(selected),
                 Divider,
                 Menu::new(
                     "More Options",
                     (
-                        button("Option C")
-                            .with_state(selected)
-                            .action(|selected| selected.set("Option C".to_string())),
-                        button("Reset")
-                            .with_state(selected)
-                            .action(|selected| selected.set("None".to_string())),
+                        "Option C".action(|State(selected): State<Binding<String>>| selected.set("Option C".to_string())).state(selected),
+                        "Reset".action(|State(selected): State<Binding<String>>| selected.set("None".to_string())).state(selected),
                     ),
                 ),
             ),
@@ -113,18 +105,12 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
         Menu::new(
             text("Actions").bold(),
             (
-                button("Edit")
-                    .with_state(action_log)
-                    .action(|log| log.set("Edit action triggered".to_string())),
-                button("Duplicate")
-                    .with_state(action_log)
-                    .action(|log| log.set("Duplicate action triggered".to_string())),
+                "Edit".action(|State(log): State<Binding<String>>| log.set("Edit action triggered".to_string())).state(action_log),
+                "Duplicate".action(|State(log): State<Binding<String>>| log.set("Duplicate action triggered".to_string())).state(action_log),
                 Divider,
                 Menu::new(
                     "Danger Zone",
-                    (button("Delete")
-                        .with_state(action_log)
-                        .action(|log| log.set("Delete action triggered".to_string())),),
+                    ("Delete".action(|State(log): State<Binding<String>>| log.set("Delete action triggered".to_string())).state(action_log),),
                 ),
             ),
         ),
@@ -148,19 +134,11 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
             .background(ORANGE_BG)
             .foreground(ORANGE_FG)
             .context_menu((
-                button("Copy")
-                    .with_state(context_action)
-                    .action(|action| action.set("Copied!".to_string())),
-                button("Cut")
-                    .with_state(context_action)
-                    .action(|action| action.set("Cut!".to_string())),
+                "Copy".action(|State(action): State<Binding<String>>| action.set("Copied!".to_string())).state(context_action),
+                "Cut".action(|State(action): State<Binding<String>>| action.set("Cut!".to_string())).state(context_action),
                 Divider,
-                button("Paste")
-                    .with_state(context_action)
-                    .action(|action| action.set("Pasted!".to_string())),
-                button("Select All")
-                    .with_state(context_action)
-                    .action(|action| action.set("Selected all!".to_string())),
+                "Paste".action(|State(action): State<Binding<String>>| action.set("Pasted!".to_string())).state(context_action),
+                "Select All".action(|State(action): State<Binding<String>>| action.set("Selected all!".to_string())).state(context_action),
             )),
         spacer().height(12.0),
         text!("{context_action}")
@@ -183,12 +161,8 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(RED)
                 .context_menu((
-                    button("Red Action 1")
-                        .with_state(view_action)
-                        .action(|action| action.set("Red Action 1".to_string())),
-                    button("Red Action 2")
-                        .with_state(view_action)
-                        .action(|action| action.set("Red Action 2".to_string())),
+                    "Red Action 1".action(|State(action): State<Binding<String>>| action.set("Red Action 1".to_string())).state(view_action),
+                    "Red Action 2".action(|State(action): State<Binding<String>>| action.set("Red Action 2".to_string())).state(view_action),
                 )),
             spacer().width(12.0),
             text("Green")
@@ -196,12 +170,8 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(GREEN)
                 .context_menu((
-                    button("Green Action 1")
-                        .with_state(view_action)
-                        .action(|action| action.set("Green Action 1".to_string())),
-                    button("Green Action 2")
-                        .with_state(view_action)
-                        .action(|action| action.set("Green Action 2".to_string())),
+                    "Green Action 1".action(|State(action): State<Binding<String>>| action.set("Green Action 1".to_string())).state(view_action),
+                    "Green Action 2".action(|State(action): State<Binding<String>>| action.set("Green Action 2".to_string())).state(view_action),
                 )),
             spacer().width(12.0),
             text("Blue")
@@ -209,12 +179,8 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .padding()
                 .background(BLUE)
                 .context_menu((
-                    button("Blue Action 1")
-                        .with_state(view_action)
-                        .action(|action| action.set("Blue Action 1".to_string())),
-                    button("Blue Action 2")
-                        .with_state(view_action)
-                        .action(|action| action.set("Blue Action 2".to_string())),
+                    "Blue Action 1".action(|State(action): State<Binding<String>>| action.set("Blue Action 1".to_string())).state(view_action),
+                    "Blue Action 2".action(|State(action): State<Binding<String>>| action.set("Blue Action 2".to_string())).state(view_action),
                 )),
         )),
         spacer().height(12.0),

@@ -3,7 +3,6 @@ mod compositor;
 mod hit_test;
 pub(crate) mod lazy;
 mod lifecycle;
-mod view_helpers;
 mod measurement;
 pub(crate) mod navigation_state;
 mod navigation_transition;
@@ -14,6 +13,7 @@ mod subview;
 #[cfg(test)]
 mod tests;
 mod text_editing;
+mod view_helpers;
 
 use accessibility::*;
 use compositor::*;
@@ -24,9 +24,16 @@ use core::time::Duration;
 use hit_test::*;
 use lazy::*;
 use lifecycle::*;
-use view_helpers::*;
 pub(crate) use measurement::*;
+use navigation_state::*;
+pub(crate) use navigation_transition::*;
+use popup_menu::*;
 pub(crate) use render_context::WidgetRenderContext;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::rc::Rc;
+use view_helpers::*;
 pub(crate) use view_helpers::{
     anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
     gesture_group_identity, normalize_layout_view, normalize_view_for_render, parley_alignment,
@@ -34,13 +41,6 @@ pub(crate) use view_helpers::{
     resolved_color_to_rgba8, resolved_gradient_to_brush, resolved_shape_to_path, rgba8_to_peniko,
     transformed_rect,
 };
-use navigation_state::*;
-pub(crate) use navigation_transition::*;
-use popup_menu::*;
-use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
@@ -150,8 +150,10 @@ pub(crate) use accessibility::{
 };
 pub(crate) use text_editing::{TextInputModel, TextSelectionSlot, clamp_to_char_boundary};
 
-type HydroRawHandlerFn = Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &mut dyn Any, &Environment)>;
-type HydroBoxedHandlerFn = Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, AnyView, &Environment)>;
+type HydroRawHandlerFn =
+    Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &mut dyn Any, &Environment)>;
+type HydroBoxedHandlerFn =
+    Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, AnyView, &Environment)>;
 
 struct HydroHandlerEntry {
     raw: HydroRawHandlerFn,
@@ -253,9 +255,11 @@ impl HydroDispatcher {
         let body_env = env
             .get::<LocalStateScope>()
             .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
-        let body = renderer.lifecycle.with_local_state_env(&body_env, move |render_env| {
-            AnyView::new(view.body(render_env))
-        });
+        let body = renderer
+            .lifecycle
+            .with_local_state_env(&body_env, move |render_env| {
+                AnyView::new(view.body(render_env))
+            });
         self.dispatch_boxed(renderer, body, &body_env, ctx);
     }
 
@@ -275,9 +279,11 @@ impl HydroDispatcher {
         let body_env = env
             .get::<LocalStateScope>()
             .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
-        let body = renderer.lifecycle.with_local_state_env(&body_env, move |render_env| {
-            AnyView::new(view.body(render_env))
-        });
+        let body = renderer
+            .lifecycle
+            .with_local_state_env(&body_env, move |render_env| {
+                AnyView::new(view.body(render_env))
+            });
         self.dispatch_boxed(renderer, body, &body_env, ctx);
     }
 }
@@ -383,9 +389,7 @@ pub(crate) trait HydroNativeView: View + Sized + 'static {
 }
 
 #[cfg(feature = "accessibility")]
-fn register_native_view<V: HydroNativeView>(
-    dispatcher: &mut HydroDispatcher,
-) {
+fn register_native_view<V: HydroNativeView>(dispatcher: &mut HydroDispatcher) {
     dispatcher.register::<V>(|renderer, ctx, view, env| {
         let accessibility_is_render_driven = V::accessibility_is_render_driven();
         let hidden_from_accessibility = env
@@ -420,9 +424,7 @@ fn register_native_view<V: HydroNativeView>(
 }
 
 #[cfg(not(feature = "accessibility"))]
-fn register_native_view<V: HydroNativeView>(
-    dispatcher: &mut HydroDispatcher,
-) {
+fn register_native_view<V: HydroNativeView>(dispatcher: &mut HydroDispatcher) {
     dispatcher.register::<V>(|renderer, ctx, view, env| {
         V::accessibility(renderer, ctx, &view, env);
         let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
@@ -653,7 +655,8 @@ impl HydrolysisRenderer {
 
     fn register_core_handlers(dispatcher: &mut HydroDispatcher) {
         dispatcher.register_renderer::<Str>(Self::render_str);
-        dispatcher.register_renderer::<Divider>(crate::widgets::divider::render_divider_with_renderer);
+        dispatcher
+            .register_renderer::<Divider>(crate::widgets::divider::render_divider_with_renderer);
         macro_rules! register_native {
             ($ty:ty) => {
                 register_native_view::<$ty>(dispatcher);
@@ -664,7 +667,8 @@ impl HydrolysisRenderer {
         dispatcher.register_renderer::<Metadata<Environment>>(Self::render_environment_metadata);
         dispatcher.register_renderer::<Metadata<Retain>>(Self::render_retain_metadata);
         dispatcher.register_renderer::<Metadata<Opacity>>(Self::render_opacity_metadata);
-        dispatcher.register_renderer::<Metadata<AppliedFilter>>(Self::render_applied_filter_metadata);
+        dispatcher
+            .register_renderer::<Metadata<AppliedFilter>>(Self::render_applied_filter_metadata);
         dispatcher.register_renderer::<Metadata<Scale>>(Self::render_scale_metadata);
         dispatcher.register_renderer::<Metadata<Rotation>>(Self::render_rotation_metadata);
         dispatcher.register_renderer::<Metadata<Offset>>(Self::render_offset_metadata);
@@ -674,8 +678,10 @@ impl HydrolysisRenderer {
         dispatcher.register_renderer::<Metadata<Focused>>(Self::render_focused_metadata);
         dispatcher.register_renderer::<Metadata<Hittable>>(Self::render_hittable_metadata);
         dispatcher.register_renderer::<Metadata<Cursor>>(Self::render_cursor_metadata);
-        dispatcher.register_renderer::<Metadata<GestureObserver>>(Self::render_gesture_observer_metadata);
-        dispatcher.register_renderer::<Metadata<LifeCycleHook>>(Self::render_lifecycle_hook_metadata);
+        dispatcher
+            .register_renderer::<Metadata<GestureObserver>>(Self::render_gesture_observer_metadata);
+        dispatcher
+            .register_renderer::<Metadata<LifeCycleHook>>(Self::render_lifecycle_hook_metadata);
         dispatcher.register_renderer::<Metadata<OnEvent>>(Self::render_on_event_metadata);
 
         Self::register_passthrough_metadata::<Secure>(dispatcher);
@@ -683,7 +689,8 @@ impl HydrolysisRenderer {
         Self::register_passthrough_metadata::<HighDynamicRange>(dispatcher);
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
         Self::register_passthrough_metadata::<ContextMenu>(dispatcher);
-        dispatcher.register_renderer::<Metadata<ResolvedContextMenu>>(Self::render_context_menu_metadata);
+        dispatcher
+            .register_renderer::<Metadata<ResolvedContextMenu>>(Self::render_context_menu_metadata);
         Self::register_passthrough_metadata::<Draggable>(dispatcher);
         Self::register_passthrough_metadata::<DropDestination>(dispatcher);
         Self::register_passthrough_metadata::<Background>(dispatcher);
@@ -709,15 +716,11 @@ impl HydrolysisRenderer {
         );
     }
 
-    fn register_passthrough_metadata<T: MetadataKey>(
-        dispatcher: &mut HydroDispatcher,
-    ) {
+    fn register_passthrough_metadata<T: MetadataKey>(dispatcher: &mut HydroDispatcher) {
         dispatcher.register_renderer::<Metadata<T>>(Self::render_passthrough_metadata::<T>);
     }
 
-    fn register_passthrough_ignorable_metadata<T: MetadataKey>(
-        dispatcher: &mut HydroDispatcher,
-    ) {
+    fn register_passthrough_ignorable_metadata<T: MetadataKey>(dispatcher: &mut HydroDispatcher) {
         dispatcher.register_renderer::<IgnorableMetadata<T>>(
             Self::render_passthrough_ignorable_metadata::<T>,
         );
@@ -728,7 +731,8 @@ impl HydrolysisRenderer {
     }
 
     fn topmost_text_input_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
-        self.text_editing.text_input_targets
+        self.text_editing
+            .text_input_targets
             .iter()
             .enumerate()
             .filter(|(_, target)| target.bounds.contains(point))
@@ -844,7 +848,12 @@ impl HydrolysisRenderer {
         }
         let child_transform = vello::kurbo::Affine::translate((rect.x0, rect.y0));
         let child_bounds = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
-        Self::dispatch_any(renderer, ctx.child(child_transform, child_bounds), env, content);
+        Self::dispatch_any(
+            renderer,
+            ctx.child(child_transform, child_bounds),
+            env,
+            content,
+        );
     }
 
     pub(crate) fn dispatch_in_rect_without_accessibility(
@@ -956,7 +965,8 @@ impl HydrolysisRenderer {
             .checked_add(1)
             .expect("text selection slot cursor overflow");
         if index == self.text_editing.text_selection_slots.len() {
-            self.text_editing.text_selection_slots
+            self.text_editing
+                .text_selection_slots
                 .push(Rc::new(RefCell::new(TextSelectionSlot::default())));
         }
         Rc::clone(&self.text_editing.text_selection_slots[index])
@@ -1053,7 +1063,12 @@ impl HydrolysisRenderer {
                 f64::from(rect.width()),
                 f64::from(rect.height()),
             );
-            Self::dispatch_any(renderer, ctx.child(child_transform, child_bounds), env, child);
+            Self::dispatch_any(
+                renderer,
+                ctx.child(child_transform, child_bounds),
+                env,
+                child,
+            );
         }
     }
 
@@ -1101,9 +1116,8 @@ impl HydrolysisRenderer {
             }
         };
         let window = resolve_visible_index_window(count, visible_start, visible_end, |index| {
-            let cached_extent = {
-                renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index]
-            };
+            let cached_extent =
+                { renderer.lazy.lazy_stack_controller.slots[slot_index].item_extents[index] };
             let extent = if let Some(extent) = cached_extent {
                 extent
             } else {
@@ -1317,7 +1331,10 @@ impl HydrolysisRenderer {
         if let Some(content) = update {
             let content = normalize_layout_view(content, env);
             let dimensions = measure_view_dimensions(&content, &mut renderer.state, env);
-            renderer.state.dynamic_intrinsic_cache.insert(identity, dimensions);
+            renderer
+                .state
+                .dynamic_intrinsic_cache
+                .insert(identity, dimensions);
             let local_ctx = ctx.with_identity_transforms(ctx.bounds);
             let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
             renderer
@@ -1867,7 +1884,9 @@ impl HydrolysisRenderer {
             let rounded =
                 vello::kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = vello::kurbo::Stroke::new(width);
-            renderer.scene.stroke(&stroke, ctx.transform, brush, None, &rounded);
+            renderer
+                .scene
+                .stroke(&stroke, ctx.transform, brush, None, &rounded);
             return;
         }
 
@@ -2035,7 +2054,10 @@ impl HydrolysisRenderer {
             .rewind_to(hover_cursor_start);
         renderer.hit_test.scroll_targets.truncate(scroll_start);
         let text_end = renderer.text_editing.text_input_targets.len();
-        renderer.text_editing.text_input_targets.truncate(text_start);
+        renderer
+            .text_editing
+            .text_input_targets
+            .truncate(text_start);
 
         if matches!(
             renderer.text_editing.focused_text_input.get(),
@@ -2371,8 +2393,7 @@ impl HydrolysisRenderer {
             self.compositor.active_scene_layers.len()
         );
         self.flush_vello_scene_layer();
-        self.lifecycle
-            .finish_rebuild_frame(&mut self.state);
+        self.lifecycle.finish_rebuild_frame(&mut self.state);
 
         if matches!(
             self.text_editing.focused_text_input.get(),
@@ -2392,9 +2413,12 @@ impl HydrolysisRenderer {
         self.hit_test.finish_rebuild_frame();
         self.lazy.finish_rebuild_frame();
         self.navigation.finish_rebuild_frame();
-        self.compositor.gpu_surface_slots.truncate(self.compositor.gpu_surface_cursor);
+        self.compositor
+            .gpu_surface_slots
+            .truncate(self.compositor.gpu_surface_cursor);
         self.popup_menu.finish_rebuild_frame();
-        self.text_editing.text_selection_slots
+        self.text_editing
+            .text_selection_slots
             .truncate(self.text_editing.text_selection_cursor);
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
@@ -2429,7 +2453,8 @@ impl HydrolysisRenderer {
             .expect("hydrolysis gpu surface slot cursor overflow");
 
         if index == self.compositor.gpu_surface_slots.len() {
-            self.compositor.gpu_surface_slots
+            self.compositor
+                .gpu_surface_slots
                 .push(EmbeddedGpuSurfaceRuntime::new(surface, env));
         } else {
             self.compositor.gpu_surface_slots[index].replace_surface(surface, env);
@@ -2480,14 +2505,16 @@ impl HydrolysisRenderer {
 
     pub(crate) fn pop_layer(&mut self) {
         self.scene.pop_layer();
-        self.compositor.active_scene_layers
+        self.compositor
+            .active_scene_layers
             .pop()
             .expect("hydrolysis renderer: pop_layer underflow");
     }
 
     fn flush_vello_scene_layer(&mut self) {
         assert!(
-            (self.scene.encoding().n_open_clips as usize) == self.compositor.active_scene_layers.len(),
+            (self.scene.encoding().n_open_clips as usize)
+                == self.compositor.active_scene_layers.len(),
             "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
             self.scene.encoding().n_open_clips,
             self.compositor.active_scene_layers.len()
@@ -2504,7 +2531,9 @@ impl HydrolysisRenderer {
             return;
         }
         let scene = core::mem::take(&mut self.scene);
-        self.compositor.render_layers.push(RenderLayer::Vello(scene));
+        self.compositor
+            .render_layers
+            .push(RenderLayer::Vello(scene));
 
         for layer in &self.compositor.active_scene_layers {
             layer.push_to_scene(&mut self.scene);
@@ -2518,7 +2547,8 @@ impl HydrolysisRenderer {
         bounds: vello::kurbo::Rect,
     ) {
         self.flush_vello_scene_layer();
-        self.compositor.render_layers
+        self.compositor
+            .render_layers
             .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
                 slot_index,
                 transform,
@@ -2933,8 +2963,6 @@ fn remap_accessibility_node_references(
         node.set_popup_for(remap_accessibility_node_id(node_id, id_map));
     }
 }
-
-
 
 pub use render_context::RenderContext;
 pub(crate) use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
