@@ -105,13 +105,9 @@ fn window_section(
         text(description).body(),
         spacer().height(8.0),
         hstack((
-            button("Open Window")
-                .with_state(state)
-                .action(|s| s.set(WindowState::Normal)),
+            button("Open Window").action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal)).state(state),
             spacer().width(12.0),
-            button("Close Window")
-                .with_state(state)
-                .action(|s| s.set(WindowState::Closed)),
+            button("Close Window").action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Closed)).state(state),
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))
@@ -120,7 +116,15 @@ fn window_section(
 
 /// Create a standard titled window with opaque background
 fn create_standard_window(state: Binding<WindowState>) -> Window {
-    Window::new("Standard Window", window_content("Standard Titled Window", "This window uses the default Titled style with an Opaque background.\n\nFeatures:\n• Title bar with controls\n• Opaque system background\n• Resizable and closable"))
+    Window::new(
+        "Standard Window",
+        move || {
+            window_content(
+                "Standard Titled Window",
+                "This window uses the default Titled style with an Opaque background.\n\nFeatures:\n• Title bar with controls\n• Opaque system background\n• Resizable and closable",
+            )
+        },
+    )
         .style(WindowStyle::Titled)
         // Default is opaque, no need to set background
         .resizable(true)
@@ -131,7 +135,15 @@ fn create_standard_window(state: Binding<WindowState>) -> Window {
 fn create_borderless_window(state: Binding<WindowState>) -> Window {
     let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
 
-    Window::new("Borderless Window", window_content("Borderless Window", "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)"))
+    Window::new(
+        "Borderless Window",
+        move || {
+            window_content(
+                "Borderless Window",
+                "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)",
+            )
+        },
+    )
         .style(WindowStyle::Borderless)
         .background(tinted_color)
         .resizable(true)
@@ -140,7 +152,15 @@ fn create_borderless_window(state: Binding<WindowState>) -> Window {
 
 /// Create a frosted glass window with material blur
 fn create_frosted_window(state: Binding<WindowState>) -> Window {
-    Window::new("Frosted Glass", window_content("Frosted Glass Window", "This window uses a Regular material blur for a frosted glass effect.\n\nFeatures:\n• Titled style\n• Material blur background\n• See-through with blur effect"))
+    Window::new(
+        "Frosted Glass",
+        move || {
+            window_content(
+                "Frosted Glass Window",
+                "This window uses a Regular material blur for a frosted glass effect.\n\nFeatures:\n• Titled style\n• Material blur background\n• See-through with blur effect",
+            )
+        },
+    )
         .style(WindowStyle::Titled)
         .background(Material::Regular)
         .resizable(true)
@@ -152,7 +172,7 @@ fn create_transparent_window(state: Binding<WindowState>) -> Window {
     // Use a semi-transparent color for the overlay effect
     let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.3);
 
-    Window::new("Transparent Overlay", transparent_window_content())
+    Window::new("Transparent Overlay", move || transparent_window_content())
         .style(WindowStyle::FullSizeContentView)
         .background(overlay_color)
         .resizable(true)
@@ -161,7 +181,15 @@ fn create_transparent_window(state: Binding<WindowState>) -> Window {
 
 /// Create an ultra-thin material window
 fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
-    Window::new("Ultra-Thin Material", window_content("Ultra-Thin Material Window", "This window uses an UltraThin material for a subtle frosted effect.\n\nFeatures:\n• Borderless style\n• Ultra-thin blur\n• Most transparent material"))
+    Window::new(
+        "Ultra-Thin Material",
+        move || {
+            window_content(
+                "Ultra-Thin Material Window",
+                "This window uses an UltraThin material for a subtle frosted effect.\n\nFeatures:\n• Borderless style\n• Ultra-thin blur\n• Most transparent material",
+            )
+        },
+    )
         .style(WindowStyle::Borderless)
         .background(Material::UltraThin)
         .resizable(true)
@@ -233,7 +261,7 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main(), env)
+    App::new(main, env)
 }
 
 waterui_ffi::export!();

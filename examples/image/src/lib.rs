@@ -94,32 +94,38 @@ fn custom_url_section() -> impl View {
         hstack((
             TextField::new(&url_input).prompt("Enter image URL"),
             button("Load")
-                .with_state(&url_input)
-                .with_state(&blur_value)
-                .with_state(&status_message)
-                .with_state(&handler)
-                .action(|(((url, blur), status), handler)| {
-                    let url_str = url.get();
-                    if url_str.is_empty() {
-                        status.set(String::from("Please enter a URL"));
-                        return;
-                    }
-                    status.set(String::from("Loading..."));
-                    // Pass blur binding for reactive updates
-                    let photo = Photo::new(url_str)
-                        .on_event({
-                            let status = status.clone();
-                            move |event| match event {
-                                PhotoEvent::Loaded => {
-                                    status.set(String::from("Loaded successfully"))
+                .bordered_prominent()
+                .action(
+                    |State(url): State<Binding<Str>>,
+                     State(blur): State<Binding<f64>>,
+                     State(status): State<Binding<String>>,
+                     State(handler): State<DynamicHandler>| {
+                        let url_str = url.get();
+                        if url_str.is_empty() {
+                            status.set(String::from("Please enter a URL"));
+                            return;
+                        }
+                        status.set(String::from("Loading..."));
+                        // Pass blur binding for reactive updates
+                        let photo = Photo::new(url_str)
+                            .on_event({
+                                let status = status.clone();
+                                move |event| match event {
+                                    PhotoEvent::Loaded => {
+                                        status.set(String::from("Loaded successfully"))
+                                    }
+                                    PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
                                 }
-                                PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
-                            }
-                        })
-                        .blur(blur.clone());
-                    handler.set(photo);
-                })
-                .bordered_prominent(),
+                            })
+                            .blur(blur.clone());
+                        handler.set(photo);
+                    },
+                )
+                .state(&url_input)
+                .state(&blur_value)
+                .state(&status_message)
+                .state(&handler)
+                ,
         )),
         text!("{status_message}").sub_headline(),
         photo_view,

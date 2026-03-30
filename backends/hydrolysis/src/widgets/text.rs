@@ -1,5 +1,6 @@
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
@@ -9,11 +10,7 @@ use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
 
 impl HydroNativeView for Native<TextConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_text_config(ctx.renderer_mut(), render_ctx, view, env);
     }
@@ -50,7 +47,7 @@ impl HydroNativeView for Native<TextConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {

@@ -2,7 +2,7 @@
 //!
 //! This example shows:
 //! - Making views draggable with `.draggable()`
-//! - Creating stateful drop zones with `.with_state().drop_destination()`
+//! - Creating stateful drop zones with `.state().drop_destination()`
 //! - Using `.drop_hover()` for visual feedback when dragging over drop zone
 //! - Spring animations on successful drop
 
@@ -66,8 +66,8 @@ fn fruit_basket(
     });
 
     vstack((
-        text(emojis_display).size(40.0),
-        text(count_display).size(14.0),
+        text!("{emojis_display}").size(40.0),
+        text!("{count_display}").size(14.0),
     ))
     .spacing(12.0)
     .padding_with(EdgeInsets::all(24.0))
@@ -76,9 +76,8 @@ fn fruit_basket(
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
     .scale(combined_scale.clone(), combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
-    .with_state(&collected)
-    .with_state(&bounce)
-    .drop_destination(|(collected, bounce), data: DragData| {
+    .drop_destination(
+        |State(collected): State<Binding<Vec<String>>>, State(bounce): State<Binding<f32>>, data: DragData| {
         // Add to collection
         let dropped_item = data.as_str().to_string();
         let mut current_items = collected.get();
@@ -98,8 +97,11 @@ fn fruit_basket(
             sleep(Duration::from_millis(200)).await;
             bounce.set(1.0);
         });
-    })
+    },
+    )
     .drop_hover(&is_hovering)
+    .state(&collected)
+    .state(&bounce)
 }
 
 fn main() -> impl View {
@@ -138,9 +140,7 @@ fn main() -> impl View {
             fruit_basket(is_hovering, collected.clone(), bounce),
             spacer().height(16.0),
             // Reset button
-            button("Clear Basket")
-                .with_state(&collected)
-                .action(|c| c.set(Vec::new())),
+            button("Clear Basket").action(|State(c): State<Binding<Vec<String>>>| c.set(Vec::new())).state(&collected),
             spacer(),
         ))
         .padding(),

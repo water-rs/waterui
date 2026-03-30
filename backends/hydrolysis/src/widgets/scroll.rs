@@ -1,24 +1,22 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, measure_view_intrinsic,
-    normalize_layout_view, transformed_rect,
-};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_view_intrinsic, normalize_layout_view, transformed_rect,
+};
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
-use waterui_core::layout::Size as LayoutSize;
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::layout::Size as LayoutSize;
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
 
 use super::widget_theme;
 
 impl HydroNativeView for Native<ScrollView> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_scroll_view(ctx, view, env);
     }
 
@@ -31,7 +29,7 @@ impl HydroNativeView for Native<ScrollView> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         let (axis, content) = view.as_inner().as_parts();
         let viewport = ctx.bounds;
@@ -146,9 +144,7 @@ pub(crate) fn render_scroll_view(
     ctx.renderer_mut().push_lazy_viewport(lazy_viewport);
     let content_ctx = ctx.child(content_transform, content_bounds);
     let renderer = ctx.renderer_mut();
-    HydrolysisRenderer::dispatch_any(
-        renderer, content_ctx, env, content,
-    );
+    HydrolysisRenderer::dispatch_any(renderer, content_ctx, env, content);
     ctx.renderer_mut().pop_lazy_viewport("render_scroll_view");
     ctx.pop_layer();
 

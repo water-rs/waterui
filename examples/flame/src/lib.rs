@@ -818,11 +818,11 @@ impl GpuView for FlameRenderer {
 }
 
 impl SubView for FlameRenderer {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        Size::new(
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

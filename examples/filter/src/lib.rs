@@ -19,6 +19,12 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
 
+fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View {
+    button(label)
+        .action(move |State(current): State<Binding<f64>>| current.set(value))
+        .state(binding)
+}
+
 /// Sample content for demonstrating filters
 fn sample_content() -> impl View {
     vstack((
@@ -52,10 +58,10 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View {
         sample_content().blur(animated_blur).min_height(100.0),
         Slider::new(0.0..=20.0, blur_radius),
         hstack((
-            button("0").with_state(blur_radius).action(|b| b.set(0.0)),
-            button("5").with_state(blur_radius).action(|b| b.set(5.0)),
-            button("10").with_state(blur_radius).action(|b| b.set(10.0)),
-            button("20").with_state(blur_radius).action(|b| b.set(20.0)),
+            set_f64_button("0", 0.0, blur_radius),
+            set_f64_button("5", 5.0, blur_radius),
+            set_f64_button("10", 10.0, blur_radius),
+            set_f64_button("20", 20.0, blur_radius),
         )),
     ))
     .padding()
@@ -76,10 +82,10 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
             .min_height(100.0),
         Slider::new(-1.0..=1.0, brightness),
         hstack((
-            button("-1").with_state(brightness).action(|b| b.set(-1.0)),
-            button("0").with_state(brightness).action(|b| b.set(0.0)),
-            button("0.5").with_state(brightness).action(|b| b.set(0.5)),
-            button("1").with_state(brightness).action(|b| b.set(1.0)),
+            set_f64_button("-1", -1.0, brightness),
+            set_f64_button("0", 0.0, brightness),
+            set_f64_button("0.5", 0.5, brightness),
+            set_f64_button("1", 1.0, brightness),
         )),
     ))
     .padding()
@@ -100,10 +106,10 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
             .min_height(100.0),
         Slider::new(0.0..=2.0, saturation),
         hstack((
-            button("0").with_state(saturation).action(|s| s.set(0.0)),
-            button("1").with_state(saturation).action(|s| s.set(1.0)),
-            button("1.5").with_state(saturation).action(|s| s.set(1.5)),
-            button("2").with_state(saturation).action(|s| s.set(2.0)),
+            set_f64_button("0", 0.0, saturation),
+            set_f64_button("1", 1.0, saturation),
+            set_f64_button("1.5", 1.5, saturation),
+            set_f64_button("2", 2.0, saturation),
         )),
     ))
     .padding()
@@ -124,10 +130,10 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View {
             .min_height(100.0),
         Slider::new(0.0..=2.0, contrast),
         hstack((
-            button("0").with_state(contrast).action(|c| c.set(0.0)),
-            button("1").with_state(contrast).action(|c| c.set(1.0)),
-            button("1.5").with_state(contrast).action(|c| c.set(1.5)),
-            button("2").with_state(contrast).action(|c| c.set(2.0)),
+            set_f64_button("0", 0.0, contrast),
+            set_f64_button("1", 1.0, contrast),
+            set_f64_button("1.5", 1.5, contrast),
+            set_f64_button("2", 2.0, contrast),
         )),
     ))
     .padding()
@@ -148,10 +154,10 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
             .min_height(100.0),
         Slider::new(0.0..=360.0, hue),
         hstack((
-            button("0").with_state(hue).action(|h| h.set(0.0)),
-            button("90").with_state(hue).action(|h| h.set(90.0)),
-            button("180").with_state(hue).action(|h| h.set(180.0)),
-            button("270").with_state(hue).action(|h| h.set(270.0)),
+            set_f64_button("0", 0.0, hue),
+            set_f64_button("90", 90.0, hue),
+            set_f64_button("180", 180.0, hue),
+            set_f64_button("270", 270.0, hue),
         )),
     ))
     .padding()
@@ -172,9 +178,9 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
             .min_height(100.0),
         Slider::new(0.0..=1.0, grayscale),
         hstack((
-            button("0").with_state(grayscale).action(|g| g.set(0.0)),
-            button("0.5").with_state(grayscale).action(|g| g.set(0.5)),
-            button("1").with_state(grayscale).action(|g| g.set(1.0)),
+            set_f64_button("0", 0.0, grayscale),
+            set_f64_button("0.5", 0.5, grayscale),
+            set_f64_button("1", 1.0, grayscale),
         )),
     ))
     .padding()
@@ -193,9 +199,9 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View {
         sample_content().opacity(animated_opacity).min_height(100.0),
         Slider::new(0.0..=1.0, opacity),
         hstack((
-            button("0").with_state(opacity).action(|o| o.set(0.0)),
-            button("0.5").with_state(opacity).action(|o| o.set(0.5)),
-            button("1").with_state(opacity).action(|o| o.set(1.0)),
+            set_f64_button("0", 0.0, opacity),
+            set_f64_button("0.5", 0.5, opacity),
+            set_f64_button("1", 1.0, opacity),
         )),
     ))
     .padding()
@@ -229,38 +235,24 @@ fn combined_section(
             .hue_rotation(animated_hue)
             .min_height(100.0),
         hstack((
-            button("Reset")
-                .with_state(combined_blur)
-                .with_state(combined_saturation)
-                .with_state(combined_hue)
-                .action(|((b, s), h)| {
-                    b.set(0.0);
-                    s.set(1.0);
-                    h.set(0.0);
-                }),
-            button("Dreamy")
-                .with_state(combined_blur)
-                .with_state(combined_saturation)
-                .action(|(b, s)| {
-                    b.set(3.0);
-                    s.set(0.7);
-                }),
-            button("Vibrant")
-                .with_state(combined_hue)
-                .with_state(combined_saturation)
-                .action(|(h, s)| {
-                    h.set(180.0);
-                    s.set(1.8);
-                }),
-            button("Vintage")
-                .with_state(combined_blur)
-                .with_state(combined_saturation)
-                .with_state(combined_hue)
-                .action(|((b, s), h)| {
-                    b.set(1.0);
-                    s.set(0.5);
-                    h.set(30.0);
-                }),
+            button("Reset").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>, State(h): State<Binding<f64>>| {
+                b.set(0.0);
+                s.set(1.0);
+                h.set(0.0);
+            }).state(combined_blur).state(combined_saturation).state(combined_hue),
+            button("Dreamy").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>| {
+                b.set(3.0);
+                s.set(0.7);
+            }).state(combined_blur).state(combined_saturation),
+            button("Vibrant").action(|State(h): State<Binding<f64>>, State(s): State<Binding<f64>>| {
+                h.set(180.0);
+                s.set(1.8);
+            }).state(combined_hue).state(combined_saturation),
+            button("Vintage").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>, State(h): State<Binding<f64>>| {
+                b.set(1.0);
+                s.set(0.5);
+                h.set(30.0);
+            }).state(combined_blur).state(combined_saturation).state(combined_hue),
         )),
     ))
     .padding()

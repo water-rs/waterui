@@ -26,8 +26,9 @@ pub(crate) use list::render_list;
 pub(crate) use navigation::{
     render_navigation_split_layout, render_navigation_stack, render_navigation_view,
 };
-pub(crate) use picker::{menu_picker_option_rect, menu_picker_popup_rect, menu_picker_row_height,
-    render_menu_picker, render_radio_picker,
+pub(crate) use picker::{
+    menu_picker_option_rect, menu_picker_popup_rect, menu_picker_row_height, render_menu_picker,
+    render_radio_picker,
 };
 pub(crate) use progress::render_progress;
 pub(crate) use scroll::{draw_scroll_indicators, render_scroll_view};

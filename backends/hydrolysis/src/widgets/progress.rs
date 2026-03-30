@@ -1,23 +1,19 @@
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, circle_arc_path,
-    measure_progress_intrinsic, measure_view_intrinsic, normalize_view_for_render,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    circle_arc_path, measure_progress_intrinsic, measure_view_intrinsic, normalize_view_for_render,
 };
-use core::f64::consts::TAU;
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use core::f64::consts::TAU;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui_core::layout::Size as LayoutSize;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::layout::Size as LayoutSize;
 
 use super::util::widget_theme;
 
 impl HydroNativeView for Native<ProgressConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_progress(ctx, view, env);
     }
 
@@ -61,7 +57,10 @@ pub(crate) fn render_progress(
     let mut progress = progress.into_inner();
     progress.label = normalize_view_for_render(progress.label, env);
     progress.value_label = normalize_view_for_render(progress.value_label, env);
-    let clamped = ctx.renderer_mut().read_signal(&progress.value).clamp(0.0, 1.0) as f64;
+    let clamped = ctx
+        .renderer_mut()
+        .read_signal(&progress.value)
+        .clamp(0.0, 1.0) as f64;
 
     match progress.style {
         ProgressStyle::Linear => {
@@ -108,7 +107,11 @@ pub(crate) fn render_progress(
                 ctx.bounds.y1,
             );
             if value_label_rect.height() > 0.0 {
-                ctx.dispatch_in_rect_without_accessibility(env, progress.value_label, value_label_rect);
+                ctx.dispatch_in_rect_without_accessibility(
+                    env,
+                    progress.value_label,
+                    value_label_rect,
+                );
             }
         }
         ProgressStyle::Circular => {

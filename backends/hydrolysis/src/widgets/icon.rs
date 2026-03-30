@@ -1,5 +1,6 @@
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
@@ -9,11 +10,7 @@ use waterui_icon::SystemIcon;
 use waterui_text::styled::StyledStr;
 
 impl HydroNativeView for Native<SystemIcon> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_system_icon(ctx.renderer_mut(), render_ctx, view, env);
     }
@@ -38,7 +35,8 @@ impl HydroNativeView for Native<SystemIcon> {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
             );
-            let label = renderer.resolve_accessibility_label(env, Some(icon.name.as_str().to_owned()));
+            let label =
+                renderer.resolve_accessibility_label(env, Some(icon.name.as_str().to_owned()));
             if let Some(label) = label {
                 node.set_label(label);
             }

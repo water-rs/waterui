@@ -154,35 +154,25 @@ fn main(webview: WebView) -> impl View {
         hstack((
             TextField::new(&address),
             button("Go")
-                .style(ButtonStyle::Bordered)
-                .with_state(&webview)
-                .with_state(&address)
-                .with_state(&status)
-                .action(|((wv, addr), status)| {
-                    if let Some(normalized) = normalize_address_input(addr.get().as_str()) {
-                        addr.set(normalized.clone());
-                        wv.go_to(normalized.as_str());
-                    } else {
-                        status.set(Str::from_static("Invalid URL"));
-                    }
-                }),
+                .style(ButtonStyle::Bordered).action(|State(wv): State<WebView>, State(addr): State<Binding<Str>>, State(status): State<Binding<Str>>| {
+                if let Some(normalized) = normalize_address_input(addr.get().as_str()) {
+                    addr.set(normalized.clone());
+                    wv.go_to(normalized.as_str());
+                } else {
+                    status.set(Str::from_static("Invalid URL"));
+                }
+            }).state(&webview).state(&address).state(&status),
         ))
         .spacing(8.0),
         hstack((
-            button("Back")
-                .with_state(&webview)
-                .action(|wv| wv.go_back())
+            button("Back").action(|State(wv): State<WebView>| wv.go_back()).state(&webview)
                 .disabled(can_go_back.clone().map(|b| !b)),
-            button("Forward")
-                .with_state(&webview)
-                .action(|wv| wv.go_forward())
+            button("Forward").action(|State(wv): State<WebView>| wv.go_forward()).state(&webview)
                 .disabled(can_go_forward.clone().map(|b| !b)),
         )),
         hstack((
-            button("Reload")
-                .with_state(&webview)
-                .action(|wv| wv.refresh()),
-            button("Stop").with_state(&webview).action(|wv| wv.stop()),
+            button("Reload").action(|State(wv): State<WebView>| wv.refresh()).state(&webview),
+            button("Stop").action(|State(wv): State<WebView>| wv.stop()).state(&webview),
         )),
         Toggle::new(&allow_redirects).label(text("Allow redirects")),
         text!("System User Agent: {system_user_agent}")
@@ -191,40 +181,35 @@ fn main(webview: WebView) -> impl View {
         vstack((
             TextField::new(&custom_user_agent).prompt("Custom user agent (optional)"),
             button("Apply Custom UA")
-                .style(ButtonStyle::Bordered)
-                .with_state(&webview)
-                .with_state(&custom_user_agent)
-                .action(|(wv, ua)| {
-                    let user_agent = ua.get();
-                    if user_agent.as_str().trim().is_empty() {
-                        wv.set_user_agent("");
-                    } else {
-                        wv.set_user_agent(user_agent.as_str());
-                    }
-                }),
+                .style(ButtonStyle::Bordered).action(|State(wv): State<WebView>, State(ua): State<Binding<Str>>| {
+                let user_agent = ua.get();
+                if user_agent.as_str().trim().is_empty() {
+                    wv.set_user_agent("");
+                } else {
+                    wv.set_user_agent(user_agent.as_str());
+                }
+            }).state(&webview).state(&custom_user_agent),
             button("Reset UA")
-                .style(ButtonStyle::Bordered)
-                .with_state(&webview)
-                .action(|wv| wv.set_user_agent("")),
+                .style(ButtonStyle::Bordered).action(|State(wv): State<WebView>| wv.set_user_agent("")).state(&webview),
         ))
         .spacing(8.0),
         vstack((
-            button("Inject JS").with_state(&webview).action(|wv| {
+            button("Inject JS").action(|State(wv): State<WebView>| {
                 wv.inject_script(
                     r#"document.documentElement.style.outline = "3px solid #22c55e";"#,
                     ScriptInjectionTime::DocumentEnd,
                 );
-            }),
+            }).state(&webview),
             button("Get Title (JS)")
                 .style(ButtonStyle::Bordered)
-                .with_state(&webview)
-                .with_state(&js_result)
-                .action_async(|(wv, result)| async move {
+                .action_async(|State(wv): State<WebView>, State(result): State<Binding<Str>>| async move {
                     match wv.run_javascript("document.title").await {
                         Ok(title) => result.set(title),
                         Err(err) => result.set(Str::from(format!("JS error: {err}"))),
                     }
-                }),
+                })
+                .state(&webview)
+                .state(&js_result),
         )),
         vstack((
             text("Status:")

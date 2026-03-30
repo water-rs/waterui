@@ -33,7 +33,7 @@ use core::{
     marker::PhantomData,
 };
 
-use alloc::{collections::BTreeMap, rc::Rc};
+use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 
 /// An `Environment` stores a map of types to values.
 ///
@@ -120,6 +120,22 @@ impl<K, V> Store<K, V> {
 }
 
 impl Environment {
+    fn insert_any(&mut self, key: TypeId, value: Rc<dyn Any>) {
+        match Rc::get_mut(&mut self.state) {
+            Some(EnvironmentState::Map(map)) => {
+                map.insert(key, value);
+            }
+            Some(EnvironmentState::Overlay {
+                key: overlay_key,
+                entry,
+                ..
+            }) if *overlay_key == key => {
+                *entry = EnvironmentEntry::Present(value);
+            }
+            _ => self.push_overlay(key, EnvironmentEntry::Present(value)),
+        }
+    }
+
     fn lookup_any_in_state(state: &EnvironmentState, key: TypeId) -> Option<&Rc<dyn Any>> {
         match state {
             EnvironmentState::Map(map) => map.get(&key),
@@ -150,6 +166,51 @@ impl Environment {
             key,
             entry,
         });
+    }
+
+    fn extend_from_state(&mut self, state: &EnvironmentState) {
+        match state {
+            EnvironmentState::Map(map) => {
+                for (key, value) in map {
+                    self.insert_any(*key, value.clone());
+                }
+            }
+            EnvironmentState::Overlay { parent, key, entry } => {
+                self.extend_from_state(parent.as_ref());
+                self.push_overlay(*key, entry.clone());
+            }
+        }
+    }
+
+    fn collect_matches_in_state<'a, T: 'static>(
+        state: &'a EnvironmentState,
+        matches: &mut Vec<&'a T>,
+    ) {
+        match state {
+            EnvironmentState::Map(map) => {
+                if let Some(value) = map.get(&TypeId::of::<T>()) {
+                    matches.push(
+                        value
+                            .downcast_ref::<T>()
+                            .expect("failed to downcast value while collecting environment state"),
+                    );
+                }
+            }
+            EnvironmentState::Overlay { parent, key, entry } => {
+                Self::collect_matches_in_state(parent.as_ref(), matches);
+                if *key != TypeId::of::<T>() {
+                    return;
+                }
+                match entry {
+                    EnvironmentEntry::Present(value) => matches.push(
+                        value
+                            .downcast_ref::<T>()
+                            .expect("failed to downcast value while collecting environment state"),
+                    ),
+                    EnvironmentEntry::Removed => matches.clear(),
+                }
+            }
+        }
     }
 
     /// Creates a new empty environment.
@@ -196,19 +257,7 @@ impl Environment {
     pub fn insert<T: 'static>(&mut self, value: T) {
         let key = TypeId::of::<T>();
         let value = Rc::new(value) as Rc<dyn Any>;
-        match Rc::get_mut(&mut self.state) {
-            Some(EnvironmentState::Map(map)) => {
-                map.insert(key, value);
-            }
-            Some(EnvironmentState::Overlay {
-                key: overlay_key,
-                entry,
-                ..
-            }) if *overlay_key == key => {
-                *entry = EnvironmentEntry::Present(value);
-            }
-            _ => self.push_overlay(key, EnvironmentEntry::Present(value)),
-        }
+        self.insert_any(key, value);
     }
 
     /// Inserts a view configuration hook into the environment.
@@ -278,6 +327,17 @@ impl Environment {
             .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
 
+    /// Retrieves the `index`-th visible value of type `T` from oldest to newest.
+    ///
+    /// This is primarily used by action extractors to support repeated
+    /// same-typed [`crate::extract::State`] values in a single handler.
+    #[must_use]
+    pub fn get_nth<T: 'static>(&self, index: usize) -> Option<&T> {
+        let mut matches = Vec::new();
+        Self::collect_matches_in_state(self.state.as_ref(), &mut matches);
+        matches.into_iter().nth(index)
+    }
+
     /// Retrieves a reference to a value from the environment by its type,
     /// inserting a new value if it does not already exist.
     ///
@@ -300,6 +360,17 @@ impl Environment {
     /// Returns an error if extraction fails (e.g., value not found).
     pub fn extract<T: Extractor>(&self) -> Result<T, anyhow::Error> {
         T::extract(self)
+    }
+
+    /// Replays this environment's overlays on top of `parent`.
+    ///
+    /// This preserves repeated same-typed overlay entries instead of collapsing
+    /// them into a single visible value.
+    #[must_use]
+    pub fn layered_on(&self, parent: &Self) -> Self {
+        let mut layered = parent.clone();
+        layered.extend_from_state(self.state.as_ref());
+        layered
     }
 }
 

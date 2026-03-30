@@ -59,10 +59,10 @@ pub mod prelude {
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
-        accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
-        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, navigation,
-        reactive, regional, shape, signal, style, task, text, widget, window,
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
+        ViewExt, accessibility, animation, app, color, component, cursor, drag_drop, entry, env,
+        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata,
+        navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
     pub use crate::include_markdown;
@@ -180,6 +180,7 @@ pub mod style;
 pub use waterui_core::{
     AnyView, Str, animation,
     env::{self, Environment},
+    extract::State,
     id::{self, Identifiable},
     impl_extractor, raw_view, views,
 };

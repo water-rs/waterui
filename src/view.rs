@@ -18,6 +18,8 @@ pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
+    extract::State,
+    handler::{Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
@@ -608,11 +610,10 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `lifecycle` - The lifecycle event to listen for
     /// * `handler` - The action to execute when the event occurs (called once)
-    fn lifecycle(
-        self,
-        lifecycle: LifeCycle,
-        handler: impl FnOnce() + 'static,
-    ) -> Metadata<LifeCycleHook> {
+    fn lifecycle<H, Args>(self, lifecycle: LifeCycle, handler: H) -> Metadata<LifeCycleHook>
+    where
+        H: HandlerOnce<Args, ()>,
+    {
         Metadata::new(self, LifeCycleHook::new(lifecycle, handler))
     }
 
@@ -624,7 +625,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
-    fn on_disappear(self, handler: impl FnOnce() + 'static) -> Metadata<LifeCycleHook> {
+    fn on_disappear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    where
+        H: HandlerOnce<Args, ()>,
+    {
         self.lifecycle(LifeCycle::Disappear, handler)
     }
 
@@ -651,7 +655,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view appears
-    fn on_appear(self, handler: impl FnOnce() + 'static) -> Metadata<LifeCycleHook> {
+    fn on_appear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    where
+        H: HandlerOnce<Args, ()>,
+    {
         self.lifecycle(LifeCycle::Appear, handler)
     }
 
@@ -662,7 +669,10 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `event` - The event to listen for
     /// * `handler` - The action to execute when the event occurs (can be called multiple times)
-    fn event(self, event: Event, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
+    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent>
+    where
+        H: Handler<Args, ()>,
+    {
         Metadata::new(self, OnEvent::new(event, handler))
     }
 
@@ -673,7 +683,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
-    fn on_hover_enter(self, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
+    fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    where
+        H: Handler<Args, ()>,
+    {
         self.event(Event::HoverEnter, handler)
     }
 
@@ -684,7 +697,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover ends
-    fn on_hover_exit(self, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
+    fn on_hover_exit<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    where
+        H: Handler<Args, ()>,
+    {
         self.event(Event::HoverExit, handler)
     }
 
@@ -890,11 +906,10 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture(
-        self,
-        gesture: impl Into<Gesture>,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+    fn gesture<H, Args>(self, gesture: impl Into<Gesture>, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         Metadata::new(self, GestureObserver::new(gesture).action(action))
     }
 
@@ -908,9 +923,9 @@ pub trait ViewExt: View + Sized {
     /// use waterui::gesture::{GestureObserver, TapGesture};
     ///
     /// view.gesture_observer(
-    ///     GestureObserver::new(TapGesture::repeat(2))
-    ///         .with_state(&counter)
-    ///         .action(|counter| counter.set(counter.get() + 1))
+    ///     GestureObserver::new(TapGesture::repeat(2)).action(
+    ///         |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
+    ///     )
     /// )
     /// ```
     fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
@@ -929,103 +944,130 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Click me").on_tap(|| println!("Clicked!"));
     /// ```
-    fn on_tap(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
+    fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.gesture(TapGesture::new(), action)
     }
 
     /// Adds a tap gesture recognizer to this view (SwiftUI naming style).
     ///
     /// Equivalent to [`ViewExt::on_tap`].
-    fn on_tap_gesture(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
+    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.on_tap(action)
     }
 
     /// Adds a tap gesture recognizer requiring an exact tap count.
-    fn on_tap_gesture_count(
-        self,
-        count: u32,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.gesture(TapGesture::repeat(count.max(1)), action)
     }
 
     /// Adds a long-press gesture recognizer to this view.
     ///
     /// `minimum_duration_ms` is expressed in milliseconds.
-    fn on_long_press_gesture(
+    fn on_long_press_gesture<H, Args>(
         self,
         minimum_duration_ms: u32,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+        action: H,
+    ) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.gesture(LongPressGesture::new(minimum_duration_ms), action)
     }
 
     /// Adds a gesture intended to recognize alongside existing gestures.
     ///
     /// This follows SwiftUI naming and currently maps to `gesture(...)`.
-    fn simultaneous_gesture(
+    fn simultaneous_gesture<H, Args>(
         self,
         gesture: impl Into<Gesture>,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+        action: H,
+    ) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.gesture(gesture, action)
     }
 
     /// Adds a gesture intended to have higher recognition precedence.
     ///
     /// This follows SwiftUI naming and currently maps to `gesture(...)`.
-    fn high_priority_gesture(
+    fn high_priority_gesture<H, Args>(
         self,
         gesture: impl Into<Gesture>,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+        action: H,
+    ) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.gesture(gesture, action)
     }
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
     #[must_use]
-    fn on_tap_haptic(
-        self,
-        intensity: Intensity,
-        mut action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
-        self.gesture(TapGesture::new(), move || {
+    fn on_tap_haptic<H, Args>(self, intensity: Intensity, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
+        let mut action = action;
+        self.gesture(TapGesture::new(), move |env: Environment| {
             trigger_impact_haptic(intensity);
-            action();
+            action.call(&env);
         })
     }
 
     /// Adds a tap gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
     #[must_use]
-    fn on_tap_haptic_default(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
+    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.on_tap_haptic(Intensity::MEDIUM, action)
     }
 
     /// Adds a long-press gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
     #[must_use]
-    fn on_long_press_haptic(
+    fn on_long_press_haptic<H, Args>(
         self,
         minimum_duration_ms: u32,
         intensity: Intensity,
-        mut action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
-        self.gesture(LongPressGesture::new(minimum_duration_ms), move || {
-            trigger_impact_haptic(intensity);
-            action();
-        })
+        action: H,
+    ) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
+        let mut action = action;
+        self.gesture(
+            LongPressGesture::new(minimum_duration_ms),
+            move |env: Environment| {
+                trigger_impact_haptic(intensity);
+                action.call(&env);
+            },
+        )
     }
 
     /// Adds a long-press gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
     #[must_use]
-    fn on_long_press_haptic_default(
+    fn on_long_press_haptic_default<H, Args>(
         self,
         minimum_duration_ms: u32,
-        action: impl FnMut() + 'static,
-    ) -> Metadata<GestureObserver> {
+        action: H,
+    ) -> Metadata<GestureObserver>
+    where
+        H: Handler<Args, ()>,
+    {
         self.on_long_press_haptic(minimum_duration_ms, Intensity::MEDIUM, action)
     }
 
@@ -1344,8 +1386,8 @@ pub trait ViewExt: View + Sized {
 
     /// Makes this view a drop destination for dragged content.
     ///
-    /// For simple cases without state, pass a handler directly. For stateful
-    /// handlers, use `.with_state(&x).drop_destination(|state, data| ...)`.
+    /// For simple cases without state, pass a handler directly. To inject
+    /// local state, use [`ViewExt::state`] and extract it in the handler.
     ///
     /// # Example
     ///
@@ -1359,19 +1401,23 @@ pub trait ViewExt: View + Sized {
     ///         println!("Received: {:?}", data);
     ///     });
     ///
-    /// // With state - use .with_state() first
+    /// // With injected state
     /// text!("Drop here")
-    ///     .with_state(&items)
-    ///     .with_state(&count)
-    ///     .drop_destination(|(items, count), data| {
-    ///         items.update(|v| v.push(data.as_str().to_string()));
-    ///         count.set(count.get() + 1);
-    ///     });
+    ///     .state(&items)
+    ///     .state(&count)
+    ///     .drop_destination(
+    ///         |State(items): State<Binding<Vec<String>>>,
+    ///          State(count): State<Binding<i32>>,
+    ///          data: DragData| {
+    ///             items.update(|v| v.push(data.as_str().to_string()));
+    ///             count.set(count.get() + 1);
+    ///         },
+    ///     );
     /// ```
-    fn drop_destination(
-        self,
-        on_drop: impl FnMut(DragData) + 'static,
-    ) -> Metadata<DropDestination> {
+    fn drop_destination<H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    where
+        H: Handler<Args, ()>,
+    {
         Metadata::new(self, DropDestination::new(on_drop))
     }
 
@@ -1442,370 +1488,30 @@ pub trait ViewExt: View + Sized {
             .hittable(hittable_value)
     }
 
-    /// Starts building a view with captured state for event handlers.
+    /// Injects cloneable state into this view subtree's environment.
     ///
-    /// The state value is cloned when this method is called. Chain multiple
-    /// `with_state` calls to capture multiple values - they accumulate as
-    /// nested tuples: `(first, second)`, then `((first, second), third)`.
-    ///
-    /// After capturing state, use event handlers like `on_hover_enter`,
-    /// `on_tap`, etc. which will receive the accumulated state.
+    /// Actions and event handlers can later extract the injected value using
+    /// [`waterui_core::extract::State`] in their handler parameters.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// text("Hover Me!")
-    ///     .with_state(&hover_count)
-    ///     .with_state(&is_hovered)
-    ///     .on_hover_enter(|(count, hovered)| {
-    ///         *count.get_mut() += 1;
-    ///         hovered.set(true);
-    ///     })
-    ///     .on_hover_exit(|(_, hovered)| {
+    ///     .state(&hover_count)
+    ///     .state(&is_hovered)
+    ///     .on_hover_enter(
+    ///         |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
+    ///             *count.get_mut() += 1;
+    ///             hovered.set(true);
+    ///         },
+    ///     )
+    ///     .on_hover_exit(|_, State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
     ///     })
     /// ```
-    fn with_state<T: Clone + 'static>(self, state: &T) -> StatefulView<Self, T> {
-        StatefulView {
-            view: self,
-            state: state.clone(),
-        }
+    fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
+        With::new(self, State(state.clone()))
     }
 }
 
 impl<V: View + Sized> ViewExt for V {}
-
-// ============================================================================
-// StatefulView - View wrapper with accumulated state for event handlers
-// ============================================================================
-
-/// A view wrapper that accumulates state for event handlers.
-///
-/// Created by calling [`ViewExt::with_state`]. Chain multiple `with_state`
-/// calls to accumulate state as nested tuples, then use event handlers
-/// like `on_hover_enter` which receive the accumulated state.
-///
-/// # State Accumulation
-///
-/// Each `with_state` call wraps the previous state in a tuple:
-/// - First call: `S`
-/// - Second call: `(S, T)`
-/// - Third call: `((S, T), U)`
-///
-/// # Example
-///
-/// ```rust,ignore
-/// text("Hover Me!")
-///     .padding()
-///     .background(color)
-///     // State accumulation starts here
-///     .with_state(&hover_count)
-///     .with_state(&is_hovered)
-///     // Handlers receive accumulated state
-///     .on_hover_enter(|(count, hovered)| {
-///         *count.get_mut() += 1;
-///         hovered.set(true);
-///     })
-///     .on_hover_exit(|(_, hovered)| {
-///         hovered.set(false);
-///     })
-/// ```
-#[derive(Debug, Clone)]
-pub struct StatefulView<V, S> {
-    view: V,
-    state: S,
-}
-
-impl<V: View, S: 'static> View for StatefulView<V, S> {
-    fn body(self, _env: &Environment) -> impl View {
-        self.view
-    }
-}
-
-impl<V: View, S: Clone + 'static> StatefulView<V, S> {
-    /// Adds another state value to the builder.
-    ///
-    /// The state accumulates as nested tuples: `(previous, new)`.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> StatefulView<V, (S, T)> {
-        StatefulView {
-            view: self.view,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Adds a handler that triggers when the cursor enters this view's bounds.
-    ///
-    /// The handler receives the accumulated state.
-    #[must_use]
-    pub fn on_hover_enter(
-        self,
-        mut handler: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<OnEvent>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                OnEvent::new(Event::HoverEnter, move || {
-                    handler(state_for_handler.clone());
-                }),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a handler that triggers when the cursor exits this view's bounds.
-    ///
-    /// The handler receives the accumulated state.
-    #[must_use]
-    pub fn on_hover_exit(
-        self,
-        mut handler: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<OnEvent>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                OnEvent::new(Event::HoverExit, move || handler(state_for_handler.clone())),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a handler that triggers when the view appears.
-    ///
-    /// The handler receives the accumulated state (moved, not cloned).
-    #[must_use]
-    pub fn on_appear(
-        self,
-        handler: impl FnOnce(S) + 'static,
-    ) -> StatefulView<Metadata<LifeCycleHook>, ()> {
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                LifeCycleHook::new(LifeCycle::Appear, move || handler(state_for_handler)),
-            ),
-            state: (),
-        }
-    }
-
-    /// Adds a handler that triggers when the view disappears.
-    ///
-    /// The handler receives the accumulated state (moved, not cloned).
-    #[must_use]
-    pub fn on_disappear(
-        self,
-        handler: impl FnOnce(S) + 'static,
-    ) -> StatefulView<Metadata<LifeCycleHook>, ()> {
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                LifeCycleHook::new(LifeCycle::Disappear, move || handler(state_for_handler)),
-            ),
-            state: (),
-        }
-    }
-
-    /// Adds a tap gesture recognizer that receives the accumulated state.
-    #[must_use]
-    pub fn on_tap(
-        self,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(TapGesture::new())
-                    .action(move || action(state_for_handler.clone())),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a tap gesture recognizer that receives the accumulated state (SwiftUI naming style).
-    #[must_use]
-    pub fn on_tap_gesture(
-        self,
-        action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        self.on_tap(action)
-    }
-
-    /// Adds a tap gesture recognizer requiring an exact tap count.
-    #[must_use]
-    pub fn on_tap_gesture_count(
-        self,
-        count: u32,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(TapGesture::repeat(count.max(1)))
-                    .action(move || action(state_for_handler.clone())),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a long-press gesture recognizer that receives the accumulated state.
-    #[must_use]
-    pub fn on_long_press_gesture(
-        self,
-        minimum_duration_ms: u32,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(LongPressGesture::new(minimum_duration_ms))
-                    .action(move || action(state_for_handler.clone())),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a tap gesture recognizer that receives the accumulated state and triggers haptic feedback.
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub fn on_tap_haptic(
-        self,
-        intensity: Intensity,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(TapGesture::new()).action(move || {
-                    trigger_impact_haptic(intensity);
-                    action(state_for_handler.clone());
-                }),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a tap gesture recognizer with medium haptic impact feedback.
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub fn on_tap_haptic_default(
-        self,
-        action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        self.on_tap_haptic(Intensity::MEDIUM, action)
-    }
-
-    /// Adds a long-press gesture recognizer that receives the accumulated state and triggers haptic feedback.
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub fn on_long_press_haptic(
-        self,
-        minimum_duration_ms: u32,
-        intensity: Intensity,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(LongPressGesture::new(minimum_duration_ms)).action(
-                    move || {
-                        trigger_impact_haptic(intensity);
-                        action(state_for_handler.clone());
-                    },
-                ),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a long-press gesture recognizer with medium haptic impact feedback.
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub fn on_long_press_haptic_default(
-        self,
-        minimum_duration_ms: u32,
-        action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        self.on_long_press_haptic(minimum_duration_ms, Intensity::MEDIUM, action)
-    }
-
-    /// Observes a gesture with the accumulated state.
-    #[must_use]
-    pub fn gesture(
-        self,
-        gesture: impl Into<Gesture>,
-        mut action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        let state = self.state.clone();
-        let state_for_handler = self.state;
-        StatefulView {
-            view: Metadata::new(
-                self.view,
-                GestureObserver::new(gesture).action(move || action(state_for_handler.clone())),
-            ),
-            state,
-        }
-    }
-
-    /// Adds a gesture intended to recognize alongside existing gestures.
-    #[must_use]
-    pub fn simultaneous_gesture(
-        self,
-        gesture: impl Into<Gesture>,
-        action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        self.gesture(gesture, action)
-    }
-
-    /// Adds a gesture intended to have higher recognition precedence.
-    #[must_use]
-    pub fn high_priority_gesture(
-        self,
-        gesture: impl Into<Gesture>,
-        action: impl FnMut(S) + 'static,
-    ) -> StatefulView<Metadata<GestureObserver>, S> {
-        self.gesture(gesture, action)
-    }
-
-    /// Makes this view a drop destination with the accumulated state.
-    ///
-    /// The handler receives both the accumulated state and the dropped data.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// view
-    ///     .with_state(&collected)
-    ///     .with_state(&bounce)
-    ///     .drop_destination(|(collected, bounce), data| {
-    ///         collected.update(|v| v.push(data.as_str().to_string()));
-    ///         bounce.set(1.2);
-    ///     })
-    ///     .drop_hover(&is_hovering)
-    /// ```
-    #[must_use]
-    pub fn drop_destination(
-        self,
-        mut handler: impl FnMut(S, DragData) + 'static,
-    ) -> Metadata<DropDestination> {
-        let state = self.state;
-        Metadata::new(
-            self.view,
-            DropDestination::new(move |data| handler(state.clone(), data)),
-        )
-    }
-}

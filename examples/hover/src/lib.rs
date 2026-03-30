@@ -62,15 +62,15 @@ fn hover_events_section(hover_count: &Binding<i32>, is_hovered: &Binding<bool>) 
                     })
                     .computed(),
             )
-            .with_state(hover_count)
-            .with_state(is_hovered)
-            .on_hover_enter(|(count, hovered)| {
+            .on_hover_enter(|State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
                 *count.get_mut() += 1;
                 hovered.set(true);
             })
-            .on_hover_exit(|(_, hovered)| {
+            .on_hover_exit(|_: Environment, State(hovered): State<Binding<bool>>| {
                 hovered.set(false);
-            }),
+            })
+            .state(hover_count)
+            .state(is_hovered),
     ))
     .padding()
 }
@@ -159,9 +159,9 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
                     .select(0.8, 1.0)
                     .with_animation(Animation::default()),
             )
-            .with_state(is_dragging)
-            .on_hover_enter(|dragging: Binding<bool>| dragging.set(true))
-            .on_hover_exit(|dragging: Binding<bool>| dragging.set(false)),
+            .on_hover_enter(|State(dragging): State<Binding<bool>>| dragging.set(true))
+            .on_hover_exit(|State(dragging): State<Binding<bool>>| dragging.set(false))
+            .state(is_dragging),
     ))
     .padding()
 }
