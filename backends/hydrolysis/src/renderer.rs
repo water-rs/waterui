@@ -2088,12 +2088,19 @@ impl HydrolysisRenderer {
     ) {
         let Metadata { content, value } = metadata;
         let GestureObserver {
-            gesture, action, ..
+            gesture,
+            mut action,
+            ..
         } = value;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let gesture_group_identity = gesture_group_identity(&content);
         let group_id = renderer.gesture_group_id_for_identity(gesture_group_identity);
-        renderer.register_gesture_target(bounds, group_id, gesture, action);
+        let captured_env = env.clone();
+        let layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
+            let action_env = captured_env.layered_on(runtime_env);
+            action(&action_env);
+        });
+        renderer.register_gesture_target(bounds, group_id, gesture, layered_action);
 
         Self::dispatch_any(renderer, ctx, env, content);
     }
@@ -2110,27 +2117,32 @@ impl HydrolysisRenderer {
         match event {
             Event::HoverEnter => {
                 let mut handler = value;
+                let captured_env = env.clone();
                 renderer.register_hover_enter_target(bounds, move |env| {
-                    handler.handle(env);
+                    let action_env = captured_env.layered_on(env);
+                    handler.handle(&action_env);
                     true
                 });
             }
             Event::HoverMove => {
                 let mut handler = value;
+                let captured_env = env.clone();
                 renderer.register_hover_move_target(bounds, move |point, env| {
-                    let hover_env =
-                        env.extending(HoverEvent::new(waterui_core::layout::Point::new(
-                            point.x as f32 - bounds.x0 as f32,
-                            point.y as f32 - bounds.y0 as f32,
-                        )));
+                    let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
+                        point.x as f32 - bounds.x0 as f32,
+                        point.y as f32 - bounds.y0 as f32,
+                    ));
+                    let hover_env = captured_env.layered_on(&env.extending(hover_event));
                     handler.handle(&hover_env);
                     true
                 });
             }
             Event::HoverExit => {
                 let mut handler = value;
+                let captured_env = env.clone();
                 renderer.register_hover_exit_target(bounds, move |env| {
-                    handler.handle(env);
+                    let action_env = captured_env.layered_on(env);
+                    handler.handle(&action_env);
                     true
                 });
             }

@@ -672,8 +672,19 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
     use waterui::gesture::{
         DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
     };
-    use waterui::prelude::button;
-    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui::prelude::text;
+    use waterui::{Binding, SignalExt as _, State, ViewExt as _};
+    use waterui_core::extract::Use;
+
+    #[derive(Clone)]
+    struct DragOffset(Binding<f32>);
+
+    #[derive(Clone)]
+    struct ZoomScale(Binding<f32>);
+
+    #[derive(Clone)]
+    struct HoverState(Binding<bool>);
+
     let offset = Binding::f32(0.0);
     let scale = Binding::f32(1.0);
     let hovered = Binding::bool(false);
@@ -683,36 +694,33 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
         let scale = scale.clone();
         let hovered = hovered.clone();
         move || {
+            let drag_offset_state = DragOffset(offset.clone());
+            let zoom_scale_state = ZoomScale(scale.clone());
+            let hover_state = HoverState(hovered.clone());
             let hovered_opacity = hovered.clone().map(|hovered| if hovered { 1.0 } else { 0.68 });
-            let drag_offset = offset.clone();
-            let magnify_scale = scale.clone();
-            let hovered_on_enter = hovered.clone();
-            let hovered_on_exit = hovered.clone();
-            let surface = button("interactive canvas")
-                .plain()
+            let surface = text("interactive canvas")
+                .padding()
                 .size(120.0, 120.0)
                 .offset(offset.clone(), 0.0)
                 .scale(scale.clone(), scale.clone())
                 .opacity(hovered_opacity);
             surface
                 .gesture_observer(GestureObserver::new(DragGesture::new(0.0)).action(
-                    move |env: Environment| {
-                        let drag = env
-                            .get::<DragEvent>()
-                            .expect("test drag gesture missing DragEvent");
-                        drag_offset.set(drag.translation.x);
+                    |State(DragOffset(offset)): State<DragOffset>, drag: Use<DragEvent>| {
+                        offset.set(drag.translation.x);
                     },
                 ))
+                .state(&drag_offset_state)
                 .gesture_observer(GestureObserver::new(MagnificationGesture::new(1.0)).action(
-                    move |env: Environment| {
-                        let magnification = env
-                            .get::<MagnificationEvent>()
-                            .expect("test magnification gesture missing MagnificationEvent");
-                        magnify_scale.set(magnification.scale);
+                    |State(ZoomScale(scale)): State<ZoomScale>,
+                     magnification: Use<MagnificationEvent>| {
+                        scale.set(magnification.scale);
                     },
                 ))
-                .on_hover_enter(move || hovered_on_enter.set(true))
-                .on_hover_exit(move || hovered_on_exit.set(false))
+                .state(&zoom_scale_state)
+                .on_hover_enter(|State(HoverState(hovered)): State<HoverState>| hovered.set(true))
+                .on_hover_exit(|State(HoverState(hovered)): State<HoverState>| hovered.set(false))
+                .state(&hover_state)
         }
     });
 
