@@ -88,13 +88,10 @@ where
                 children
                     .clone()
                     .into_iter()
-                    .map(|child_node| {
-                        Self {
-                            node: child_node,
-                            expanded: expanded.clone(),
-                            render_leaf: render_leaf.clone(),
-                        }
-                        .anyview()
+                    .map(|child_node| Self {
+                        node: child_node,
+                        expanded: expanded.clone(),
+                        render_leaf: render_leaf.clone(),
                     })
                     .collect::<VStack<_>>()
             })

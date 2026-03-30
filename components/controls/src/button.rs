@@ -384,7 +384,7 @@ impl Button<SemanticLabel, fn(&Environment)> {
     /// ```
     pub fn new(label: impl IntoLabel) -> Self {
         let label = label.into_label();
-        let accessibility_label = Some(label.__text().clone());
+        let accessibility_label = Some(label.semantic_text().clone());
         Self {
             label,
             action: noop,
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(
             command
                 .label
-                .__text()
+                .semantic_text()
                 .resolve(&Environment::default())
                 .content
                 .get()
@@ -560,7 +560,7 @@ mod tests {
         );
         let icon = command
             .label
-            .__icon()
+            .semantic_icon()
             .expect("semantic label icon should be preserved");
         assert_eq!(icon.name.as_str(), "magnifyingglass");
     }
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(
             command
                 .label
-                .__text()
+                .semantic_text()
                 .resolve(&Environment::default())
                 .content
                 .get()
@@ -590,7 +590,7 @@ mod tests {
                 .as_str(),
             "Accessible"
         );
-        assert!(command.label.__icon().is_none());
+        assert!(command.label.semantic_icon().is_none());
     }
 
     #[test]
