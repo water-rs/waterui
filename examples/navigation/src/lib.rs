@@ -52,9 +52,7 @@ fn main_view() -> impl View {
         home_view(counter.clone(), notifications.clone(), dark_mode.clone())
             .title("Navigation Demo")
             .navigation_bar_trailing(
-                button("Reset")
-                    .extract::<NavigationPathController<Route>>()
-                    .action(|path| path.clear()),
+                button("Reset").action(|path: NavigationPathController<Route>| path.clear()),
             ),
     )
     .destination(move |route| match route {
@@ -101,15 +99,11 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
         vstack((
             text("Shared Counter").sub_headline(),
             hstack((
-                button("-")
-                    .with_state(counter)
-                    .action(|value| value.set(value.get() - 1)),
+                button("-").action(|State(value): State<Binding<i32>>| value.set(value.get() - 1)).state(counter),
                 spacer_min(16.0),
                 text!("Count: {counter_display}").body(),
                 spacer_min(16.0),
-                button("+")
-                    .with_state(counter)
-                    .action(|value| value.set(value.get() + 1)),
+                button("+").action(|State(value): State<Binding<i32>>| value.set(value.get() + 1)).state(counter),
             )),
             text("This value stays live across the whole path.")
                 .caption()
@@ -133,20 +127,16 @@ fn topics_section(items: Vec<Topic>) -> impl View {
 
 fn topic_row(topic: Topic) -> impl View {
     let route = Route::Topic(topic.clone());
-    NavigationLink::value(
-        vstack((
-            hstack((
-                text(topic.title).sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            )),
-            text(topic.description)
-                .caption()
-                .foreground(MutedForeground),
-        ))
-        .padding_with(EdgeInsets::symmetric(8.0, 0.0)),
-        route,
-    )
+    vstack((
+        NavigationLink::value(
+            label(topic.title).icon(text(">")).trailing(),
+            route,
+        ),
+        text(topic.description)
+            .caption()
+            .foreground(MutedForeground),
+    ))
+    .padding_with(EdgeInsets::symmetric(8.0, 0.0))
 }
 
 fn settings_section(notifications: Binding<bool>, dark_mode: Binding<bool>) -> impl View {
@@ -156,12 +146,7 @@ fn settings_section(notifications: Binding<bool>, dark_mode: Binding<bool>) -> i
         Divider,
         spacer_min(16.0),
         NavigationLink::value(
-            hstack((
-                text("Settings").sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+            label("Settings").icon(text(">")).trailing(),
             Route::Settings,
         ),
     ))
@@ -186,12 +171,7 @@ fn detail_view(topic: Topic, counter: Binding<i32>) -> NavigationView {
             .background(SurfaceVariant),
             spacer_min(24.0),
             NavigationLink::value(
-                hstack((
-                    text("Go Deeper").sub_headline(),
-                    spacer(),
-                    text(">").foreground(MutedForeground),
-                ))
-                .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+                label("Go Deeper").icon(text(">")).trailing(),
                 Route::Nested(topic.clone()),
             ),
         ))
@@ -207,12 +187,7 @@ fn nested_detail_view(topic: Topic) -> NavigationView {
         text!("You navigated from: {title}", title = topic.title).body(),
         spacer_min(24.0),
         NavigationLink::value(
-            hstack((
-                text("Go Even Deeper").sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+            label("Go Even Deeper").icon(text(">")).trailing(),
             Route::Deepest,
         ),
     ))
@@ -270,22 +245,12 @@ fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>
 fn settings_links() -> impl View {
     vstack((
         NavigationLink::value(
-            hstack((
-                text("About").sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+            label("About").icon(text(">")).trailing(),
             Route::About,
         ),
         Divider,
         NavigationLink::value(
-            hstack((
-                text("Privacy Policy").sub_headline(),
-                spacer(),
-                text(">").foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
+            label("Privacy Policy").icon(text(">")).trailing(),
             Route::Privacy,
         ),
     ))
@@ -330,7 +295,7 @@ fn privacy_view() -> NavigationView {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view(), env)
+    App::new(main_view, env)
 }
 
 waterui_ffi::export!();

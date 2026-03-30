@@ -28,8 +28,10 @@ fn button_tap_triggers_action() {
     let mut app = mount_view(move || {
         control_shell(vstack((
             button("Increment")
-                .with_state(&count_for_view)
-                .action(|count| count.set(count.get() + 1)),
+                .action(|waterui::State(count): waterui::State<Binding<i32>>| {
+                    count.set(count.get() + 1);
+                })
+                .state(&count_for_view),
             waterui::text!("count:{count_for_view}").foreground(Srgb::WHITE),
         )))
     });

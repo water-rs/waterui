@@ -3,9 +3,11 @@
 //! This module provides type aliases for boxed closures that take an environment
 //! reference. These are used for event handlers and callbacks throughout the framework.
 
+use crate::extract::{ExtractionState, Extractor};
 use crate::{AnyView, View};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use core::any::type_name;
 use core::cell::RefCell;
 
 use crate::Environment;
@@ -23,32 +25,96 @@ pub type BoxedActionOnce<T = ()> = Box<dyn FnOnce(&Environment) -> T>;
 /// Type alias for a boxed action handler (backwards compatibility).
 pub type ActionObject = BoxedAction<()>;
 
-/// Creates a boxed action from a closure that ignores the environment.
-#[inline]
-pub fn boxed_action<F: FnMut() + 'static>(mut f: F) -> BoxedAction<()> {
-    Box::new(move |_env: &Environment| f())
+fn extract_or_panic<T: Extractor>(env: &Environment, state: &mut ExtractionState) -> T {
+    T::extract_from_action(env, state).unwrap_or_else(|error| {
+        panic!(
+            "failed to extract `{}` from environment for action: {error}",
+            type_name::<T>()
+        )
+    })
 }
 
-/// Creates a boxed action from a closure that takes the environment.
-#[inline]
-pub fn boxed_action_with_env<T: 'static, F: FnMut(&Environment) -> T + 'static>(
-    f: F,
-) -> BoxedAction<T> {
-    Box::new(f)
+/// A repeatable handler that can extract arguments from the environment.
+pub trait Handler<Args, T = ()>: 'static {
+    /// Invokes the handler using values extracted from `env`.
+    fn call(&mut self, env: &Environment) -> T;
 }
 
-/// Creates a boxed one-shot action from a closure that ignores the environment.
-#[inline]
-pub fn boxed_action_once<F: FnOnce() + 'static>(f: F) -> BoxedActionOnce<()> {
-    Box::new(move |_env: &Environment| f())
+/// A one-shot handler that can extract arguments from the environment.
+pub trait HandlerOnce<Args, T = ()>: 'static {
+    /// Invokes the handler once using values extracted from `env`.
+    fn call_once(self, env: &Environment) -> T;
 }
 
-/// Creates a boxed one-shot action from a closure that takes the environment.
+macro_rules! impl_handler {
+    () => {
+        impl<F, Output> Handler<(), Output> for F
+        where
+            F: FnMut() -> Output + 'static,
+        {
+            fn call(&mut self, _env: &Environment) -> Output {
+                self()
+            }
+        }
+
+        impl<F, Output> HandlerOnce<(), Output> for F
+        where
+            F: FnOnce() -> Output + 'static,
+        {
+            fn call_once(self, _env: &Environment) -> Output {
+                self()
+            }
+        }
+    };
+    ($($T:ident),+) => {
+        impl<Func, Output, $($T),+> Handler<($($T,)+), Output> for Func
+        where
+            Func: FnMut($($T),+) -> Output + 'static,
+            $($T: Extractor),+
+        {
+            #[allow(non_snake_case)]
+            fn call(&mut self, env: &Environment) -> Output {
+                let mut state = ExtractionState::default();
+                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
+                self($($T),+)
+            }
+        }
+
+        impl<Func, Output, $($T),+> HandlerOnce<($($T,)+), Output> for Func
+        where
+            Func: FnOnce($($T),+) -> Output + 'static,
+            $($T: Extractor),+
+        {
+            #[allow(non_snake_case)]
+            fn call_once(self, env: &Environment) -> Output {
+                let mut state = ExtractionState::default();
+                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
+                self($($T),+)
+            }
+        }
+    };
+}
+
+impl_handler!();
+impl_handler!(A);
+impl_handler!(A, B);
+impl_handler!(A, B, C);
+impl_handler!(A, B, C, D);
+impl_handler!(A, B, C, D, E);
+impl_handler!(A, B, C, D, E, F);
+impl_handler!(A, B, C, D, E, F, G);
+impl_handler!(A, B, C, D, E, F, G, H);
+
+/// Creates a boxed action from a handler.
 #[inline]
-pub fn boxed_action_once_with_env<T: 'static, F: FnOnce(&Environment) -> T + 'static>(
-    f: F,
-) -> BoxedActionOnce<T> {
-    Box::new(f)
+pub fn boxed_action<Args, T: 'static>(mut f: impl Handler<Args, T>) -> BoxedAction<T> {
+    Box::new(move |env: &Environment| f.call(env))
+}
+
+/// Creates a boxed one-shot action from a handler.
+#[inline]
+pub fn boxed_action_once<Args, T: 'static>(f: impl HandlerOnce<Args, T>) -> BoxedActionOnce<T> {
+    Box::new(move |env: &Environment| f.call_once(env))
 }
 
 // ============================================================================
@@ -62,10 +128,10 @@ pub fn boxed_action_once_with_env<T: 'static, F: FnOnce(&Environment) -> T + 'st
 #[derive(Clone)]
 pub struct SharedAction<T = ()>(Rc<RefCell<Box<dyn FnMut(&Environment) -> T>>>);
 
-impl<T> SharedAction<T> {
+impl<T: 'static> SharedAction<T> {
     /// Creates a new shared action from a closure.
-    pub fn new<F: FnMut(&Environment) -> T + 'static>(f: F) -> Self {
-        Self(Rc::new(RefCell::new(Box::new(f))))
+    pub fn new<Args>(f: impl Handler<Args, T>) -> Self {
+        Self(Rc::new(RefCell::new(boxed_action(f))))
     }
 
     /// Calls the action with the given environment.
@@ -82,94 +148,8 @@ impl<T> core::fmt::Debug for SharedAction<T> {
 
 /// Creates a shared action from a closure that ignores the environment.
 #[inline]
-pub fn shared_action<F: FnMut() + 'static>(mut f: F) -> SharedAction<()> {
-    SharedAction::new(move |_env: &Environment| f())
-}
-
-/// Creates a shared action from a closure that takes the environment.
-#[inline]
-pub fn shared_action_with_env<T: 'static, F: FnMut(&Environment) -> T + 'static>(
-    f: F,
-) -> SharedAction<T> {
+pub fn shared_action<Args, T: 'static>(f: impl Handler<Args, T>) -> SharedAction<T> {
     SharedAction::new(f)
-}
-
-// ============================================================================
-// State Accumulation Macro
-// ============================================================================
-
-/// Implements the `with_state` chaining method for stateful builder types.
-///
-/// This macro generates an impl block that adds `.with_state()` to accumulate
-/// state as nested tuples: `S` becomes `(S, T)`.
-///
-/// Use this for builders that already have state (like `MyBuilder<S>` where S
-/// is the state type). For the initial state transition (from no-state to
-/// has-state), implement that manually on the non-generic builder type.
-///
-/// # Usage
-///
-/// ```ignore
-/// // A builder that accumulates state
-/// pub struct MyStatefulBuilder<State> {
-///     label: Label,
-///     state: State,
-/// }
-///
-/// // Generate with_state for chaining: S -> (S, T)
-/// impl_stateful_builder!(MyStatefulBuilder; state; label);
-///
-/// // Manually implement action methods
-/// impl<S: Clone + 'static> MyStatefulBuilder<S> {
-///     pub fn action(self, f: impl FnMut(S)) -> MyAction {
-///         let state = self.state;
-///         MyAction::new(move || f(state.clone()))
-///     }
-/// }
-/// ```
-#[macro_export]
-macro_rules! impl_stateful_builder {
-    // No generic parameters before State
-    ($builder:ident; $state_field:ident; $($field:ident),* $(,)?) => {
-        impl<__S: Clone + 'static> $builder<__S> {
-            /// Adds another state value, accumulating as nested tuples.
-            #[must_use]
-            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<(__S, __T)> {
-                $builder {
-                    $($field: self.$field,)*
-                    $state_field: (self.$state_field, state.clone()),
-                }
-            }
-        }
-    };
-
-    // Single generic parameter before State
-    ($builder:ident < $g1:ident >; $state_field:ident; $($field:ident),* $(,)?) => {
-        impl<$g1, __S: Clone + 'static> $builder<$g1, __S> {
-            /// Adds another state value, accumulating as nested tuples.
-            #[must_use]
-            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<$g1, (__S, __T)> {
-                $builder {
-                    $($field: self.$field,)*
-                    $state_field: (self.$state_field, state.clone()),
-                }
-            }
-        }
-    };
-
-    // Two generic parameters before State
-    ($builder:ident < $g1:ident, $g2:ident >; $state_field:ident; $($field:ident),* $(,)?) => {
-        impl<$g1, $g2, __S: Clone + 'static> $builder<$g1, $g2, __S> {
-            /// Adds another state value, accumulating as nested tuples.
-            #[must_use]
-            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<$g1, $g2, (__S, __T)> {
-                $builder {
-                    $($field: self.$field,)*
-                    $state_field: (self.$state_field, state.clone()),
-                }
-            }
-        }
-    };
 }
 
 // ============================================================================

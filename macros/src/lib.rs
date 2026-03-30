@@ -141,7 +141,11 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
         impl crate::FormBuilder for #name {
             type View = ::waterui::component::stack::VStack<((#(<#field_types as crate::FormBuilder>::View),*),)>;
 
-            fn view(binding: &::waterui::Binding<Self>, _label: ::waterui::AnyView, _placeholder: ::waterui::Str) -> Self::View {
+            fn view<L: ::waterui::component::IntoLabel>(
+                binding: &::waterui::Binding<Self>,
+                _label: L,
+                _placeholder: ::waterui::Str,
+            ) -> Self::View {
                 #view_body
             }
         }

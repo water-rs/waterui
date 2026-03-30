@@ -547,7 +547,9 @@ pub unsafe extern "C" fn waterui_layout_place(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(layout: *mut WuiLayout) -> WuiLazyStackAxis {
+pub unsafe extern "C" fn waterui_layout_lazy_stack_axis(
+    layout: *mut WuiLayout,
+) -> WuiLazyStackAxis {
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     lazy_stack_descriptor(layout)
         .map(|descriptor| descriptor.axis)
@@ -625,7 +627,10 @@ mod tests {
                 spacing: 12.0,
             },
             |layout| unsafe {
-                assert_eq!(waterui_layout_lazy_stack_axis(layout), WuiLazyStackAxis::Vertical);
+                assert_eq!(
+                    waterui_layout_lazy_stack_axis(layout),
+                    WuiLazyStackAxis::Vertical
+                );
                 assert_eq!(waterui_layout_lazy_stack_spacing(layout), 12.0);
                 assert_eq!(
                     waterui_layout_lazy_stack_horizontal_alignment(layout),
@@ -643,7 +648,10 @@ mod tests {
                 spacing: 7.0,
             },
             |layout| unsafe {
-                assert_eq!(waterui_layout_lazy_stack_axis(layout), WuiLazyStackAxis::Horizontal);
+                assert_eq!(
+                    waterui_layout_lazy_stack_axis(layout),
+                    WuiLazyStackAxis::Horizontal
+                );
                 assert_eq!(waterui_layout_lazy_stack_spacing(layout), 7.0);
                 assert_eq!(
                     waterui_layout_lazy_stack_vertical_alignment(layout),

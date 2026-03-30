@@ -1,4 +1,8 @@
 use crate::engine::Brush;
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility_activation_point;
 use crate::renderer::navigation_state::{HydroNavigationController, NavigationTransitionDirection};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, NAVIGATION_BAR_BOTTOM_INSET,
@@ -6,17 +10,15 @@ use crate::renderer::{
     NAVIGATION_BAR_HORIZONTAL_INSET, NAVIGATION_BAR_ITEM_SPACING, NAVIGATION_SEARCH_HEIGHT,
     NAVIGATION_SEARCH_VERTICAL_INSET, NAVIGATION_TITLE_HEIGHT_INLINE,
     NAVIGATION_TITLE_HEIGHT_LARGE, RenderContext, WidgetRenderContext,
-    navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
-    measure_navigation_view_intrinsic, measure_view_intrinsic, normalize_layout_view,
-    resolved_color_to_peniko, split_compact_threshold, transformed_rect,
+    measure_navigation_view_intrinsic, measure_view_intrinsic, navigation_back_button_rect,
+    navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
+    split_compact_threshold, transformed_rect,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::accessibility_activation_point;
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
-#[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use crate::time::Instant;
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
 use std::rc::Rc;
 use waterui::navigation::{
@@ -30,11 +32,7 @@ use waterui_core::{AnyView, Environment, Native};
 use super::widget_theme;
 
 impl HydroNativeView for Native<NavigationView> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_navigation_view(ctx, view, env);
     }
 
@@ -46,7 +44,7 @@ impl HydroNativeView for Native<NavigationView> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
@@ -123,11 +121,7 @@ impl HydroNativeView for Native<NavigationView> {
 }
 
 impl HydroNativeView for Native<NavigationSplitLayout> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_navigation_split_layout(ctx, view, env);
     }
 
@@ -159,11 +153,7 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
 }
 
 impl HydroNativeView for Native<NavigationStack<(), ()>> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_navigation_stack(ctx, view, env);
     }
 
@@ -273,7 +263,9 @@ pub(crate) fn render_navigation_view(
             0.0
         };
         let trailing_width = if !trailing.is::<()>() {
-            f64::from(crate::renderer::measure_view_intrinsic(&trailing, ctx.state_mut(), env).width)
+            f64::from(
+                crate::renderer::measure_view_intrinsic(&trailing, ctx.state_mut(), env).width,
+            )
         } else {
             0.0
         };
@@ -481,13 +473,7 @@ pub(crate) fn render_navigation_stack(
     };
 
     if let Some((style, direction, progress, from_scene, to_scene)) = transition_frame {
-        ctx.draw_navigation_transition(
-            style,
-            direction,
-            progress,
-            &from_scene,
-            &to_scene,
-        );
+        ctx.draw_navigation_transition(style, direction, progress, &from_scene, &to_scene);
     } else {
         ctx.append_scene(&active_scene);
     }
