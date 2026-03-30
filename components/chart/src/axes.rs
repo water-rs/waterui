@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use nami::Signal;
 use waterui_core::dynamic::watch;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{Environment, View};
 use waterui_graphics::color::Color;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
@@ -195,14 +195,14 @@ impl View for GridLines {
         let y_positions: Vec<f32> = self.y_ticks.iter().map(|tick| tick.position()).collect();
         let x_positions: Vec<f32> = self.x_ticks.iter().map(|tick| tick.position()).collect();
 
-        let mut lines: Vec<AnyView> = Vec::with_capacity(y_positions.len() + x_positions.len());
+        let mut lines = Vec::with_capacity(y_positions.len() + x_positions.len());
 
         for _ in &y_positions {
-            lines.push(AnyView::new(Frame::new(grid_color())));
+            lines.push(Frame::new(grid_color()));
         }
 
         for _ in &x_positions {
-            lines.push(AnyView::new(Frame::new(grid_color())));
+            lines.push(Frame::new(grid_color()));
         }
 
         FixedContainer::new(
@@ -395,10 +395,10 @@ impl View for AxisLabels {
     fn body(self, _env: &Environment) -> impl View {
         let positions: Vec<f32> = self.ticks.iter().map(|tick| tick.position()).collect();
 
-        let labels: Vec<AnyView> = self
+        let labels: Vec<_> = self
             .ticks
             .into_iter()
-            .map(|tick| AnyView::new(text(tick.label().to_string()).size(11.0)))
+            .map(|tick| text(tick.label().to_string()).size(11.0))
             .collect();
 
         FixedContainer::new(
