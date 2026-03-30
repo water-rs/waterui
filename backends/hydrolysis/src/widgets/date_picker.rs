@@ -1,9 +1,9 @@
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_date_picker_intrinsic, measure_view_intrinsic, transformed_rect,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -20,11 +20,7 @@ use super::util::{inset_rect, widget_theme};
 const DATE_PICKER_LABEL_SPACING: f64 = 8.0;
 
 impl HydroNativeView for Native<DatePickerConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment,
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_date_picker(ctx, view, env);
     }
 
@@ -41,10 +37,11 @@ impl HydroNativeView for Native<DatePickerConfig> {
         #[cfg(feature = "accessibility")]
         {
             let date_picker = view.as_inner();
-            let value = date_picker.ty.format_value(renderer.read_signal(&date_picker.value).clamp(
-                *date_picker.range.start(),
-                *date_picker.range.end(),
-            ));
+            let value = date_picker.ty.format_value(
+                renderer
+                    .read_signal(&date_picker.value)
+                    .clamp(*date_picker.range.start(), *date_picker.range.end()),
+            );
             let default_label = Some(value.clone());
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
@@ -103,15 +100,17 @@ pub(crate) fn render_date_picker(
         ctx.dispatch_in_rect_without_accessibility(env, date_picker.label, label_bounds);
     }
 
-    let field_bounds = vello::kurbo::Rect::new(field_x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
+    let field_bounds =
+        vello::kurbo::Rect::new(field_x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
     if field_bounds.width() <= 0.0 || field_bounds.height() <= 0.0 {
         return;
     }
 
-    let value = date_picker.ty.format_value(ctx.renderer_mut().read_signal(&date_picker.value).clamp(
-        *date_picker.range.start(),
-        *date_picker.range.end(),
-    ));
+    let value = date_picker.ty.format_value(
+        ctx.renderer_mut()
+            .read_signal(&date_picker.value)
+            .clamp(*date_picker.range.start(), *date_picker.range.end()),
+    );
 
     {
         let mut draw = ctx.draw_context();
@@ -119,7 +118,11 @@ pub(crate) fn render_date_picker(
         theme.draw_picker_indicator(&mut draw, field_bounds);
     }
 
-    let text_bounds = inset_rect(field_bounds, metrics.horizontal_inset, metrics.vertical_inset);
+    let text_bounds = inset_rect(
+        field_bounds,
+        metrics.horizontal_inset,
+        metrics.vertical_inset,
+    );
     let text_bounds = vello::kurbo::Rect::new(
         text_bounds.x0,
         text_bounds.y0,

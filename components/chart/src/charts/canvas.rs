@@ -485,11 +485,11 @@ where
     };
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(TapGesture::new()).action_with_env({
+        GestureObserver::new(TapGesture::new()).action({
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
             let cartesian_selection = cartesian_selection.clone();
-            move |env| {
+            move |env: Environment| {
                 if !selection.is_active() && !cartesian_selection.is_active() {
                     return;
                 }
@@ -515,7 +515,7 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(DragGesture::new(0.0)).action_with_env({
+        GestureObserver::new(DragGesture::new(0.0)).action({
             let geometry = Rc::clone(&geometry);
             let base_bounds = Rc::clone(&base_bounds);
             let selection = selection.clone();
@@ -523,7 +523,7 @@ where
             let cartesian_viewport = cartesian_viewport.clone();
             let x_range_start = x_range_start.clone();
             let y_range_start = y_range_start.clone();
-            move |env| {
+            move |env: Environment| {
                 let handles_selection_drag = cartesian_selection.is_active()
                     || selection.has_external_bindings()
                     || (!cartesian_viewport.allows_horizontal_drag()
@@ -706,10 +706,10 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        OnEvent::new_with_env(Event::HoverMove, {
+        OnEvent::new(Event::HoverMove, {
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
-            move |env| {
+            move |env: Environment| {
                 if !selection.is_active() {
                     return;
                 }
@@ -800,10 +800,10 @@ where
     };
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(TapGesture::new()).action_with_env({
+        GestureObserver::new(TapGesture::new()).action({
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
-            move |env| {
+            move |env: Environment| {
                 if !selection.is_active() {
                     return;
                 }
@@ -821,10 +821,10 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(DragGesture::new(0.0)).action_with_env({
+        GestureObserver::new(DragGesture::new(0.0)).action({
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
-            move |env| {
+            move |env: Environment| {
                 if !selection.is_active() {
                     return;
                 }
@@ -852,10 +852,10 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        OnEvent::new_with_env(Event::HoverMove, {
+        OnEvent::new(Event::HoverMove, {
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
-            move |env| {
+            move |env: Environment| {
                 if !selection.is_active() {
                     return;
                 }

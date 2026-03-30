@@ -55,8 +55,7 @@
 use alloc::boxed::Box;
 
 use crate::{
-    Environment,
-    handler::{BoxedAction, boxed_action, boxed_action_with_env},
+    handler::{BoxedAction, Handler, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -433,7 +432,8 @@ impl MetadataKey for GestureObserver {}
 impl GestureObserver {
     /// Creates a gesture observer builder for the given gesture.
     ///
-    /// Use `.action()` to set the handler, or `.with_state()` to capture state first.
+    /// Use `.action()` to set the handler. Local state can be injected by
+    /// wrapping the owning view with `.state(...)`.
     ///
     /// # Examples
     ///
@@ -442,11 +442,10 @@ impl GestureObserver {
     /// GestureObserver::new(TapGesture::new()).action(|| println!("Tapped!"))
     /// ```
     ///
-    /// With state:
+    /// With injected state:
     /// ```rust,ignore
     /// GestureObserver::new(TapGesture::repeat(2))
-    ///     .with_state(&counter)
-    ///     .action(|counter| counter.set(counter.get() + 1))
+    ///     .action(|State(counter): State<Binding<i32>>| counter.set(counter.get() + 1))
     /// ```
     #[must_use]
     pub fn new(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
@@ -460,7 +459,7 @@ impl GestureObserver {
 // GestureObserver Builder
 // ============================================================================
 
-/// Builder for creating gesture observers with captured state.
+/// Builder for creating gesture observers with extracted actions.
 #[derive(Debug)]
 pub struct GestureObserverBuilder {
     gesture: Gesture,
@@ -469,79 +468,10 @@ pub struct GestureObserverBuilder {
 impl GestureObserverBuilder {
     /// Sets the action handler (no state).
     #[must_use]
-    pub fn action(self, action: impl FnMut() + 'static) -> GestureObserver {
+    pub fn action<Args>(self, action: impl Handler<Args, ()>) -> GestureObserver {
         GestureObserver {
             gesture: self.gesture,
             action: boxed_action(action),
-        }
-    }
-
-    /// Sets the action handler with access to the current environment.
-    #[must_use]
-    pub fn action_with_env(self, action: impl FnMut(&Environment) + 'static) -> GestureObserver {
-        GestureObserver {
-            gesture: self.gesture,
-            action: boxed_action_with_env(action),
-        }
-    }
-
-    /// Adds state to capture for the action.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> GestureObserverStatefulBuilder<T> {
-        GestureObserverStatefulBuilder {
-            gesture: self.gesture,
-            state: state.clone(),
-        }
-    }
-}
-
-/// Builder for gesture observers with captured state.
-pub struct GestureObserverStatefulBuilder<State> {
-    gesture: Gesture,
-    state: State,
-}
-
-impl<S> core::fmt::Debug for GestureObserverStatefulBuilder<S> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GestureObserverStatefulBuilder")
-            .field("gesture", &self.gesture)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S: Clone + 'static> GestureObserverStatefulBuilder<S> {
-    /// Adds another state value, accumulating as nested tuples.
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(
-        self,
-        state: &T,
-    ) -> GestureObserverStatefulBuilder<(S, T)> {
-        GestureObserverStatefulBuilder {
-            gesture: self.gesture,
-            state: (self.state, state.clone()),
-        }
-    }
-
-    /// Sets the action handler with captured state.
-    #[must_use]
-    pub fn action(self, mut action: impl FnMut(S) + 'static) -> GestureObserver {
-        let state = self.state;
-        GestureObserver {
-            gesture: self.gesture,
-            action: boxed_action(move || action(state.clone())),
-        }
-    }
-
-    /// Sets the action handler with captured state and access to the current environment.
-    #[must_use]
-    pub fn action_with_env(
-        self,
-        mut action: impl FnMut(S, &Environment) + 'static,
-    ) -> GestureObserver {
-        let state = self.state;
-        GestureObserver {
-            gesture: self.gesture,
-            action: boxed_action_with_env(move |env| action(state.clone(), env)),
         }
     }
 }

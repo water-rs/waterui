@@ -143,9 +143,7 @@ pub(super) fn popup_menu_window(
                 } => {
                     let button = Button::new(label)
                         .style(ButtonStyle::Borderless)
-                        .extract::<PopupMenuStateGroup>()
-                        .extract::<Environment>()
-                        .action(move |(group, env)| {
+                        .action(move |group: PopupMenuStateGroup, env: Environment| {
                             if disabled {
                                 return;
                             }
@@ -163,9 +161,7 @@ pub(super) fn popup_menu_window(
                     );
                     let button = Button::new(label)
                         .style(ButtonStyle::Borderless)
-                        .extract::<PopupMenuStateGroup>()
-                        .extract::<Environment>()
-                        .action(move |(group, env)| {
+                        .action(move |group: PopupMenuStateGroup, env: Environment| {
                             if items.is_empty() {
                                 return;
                             }

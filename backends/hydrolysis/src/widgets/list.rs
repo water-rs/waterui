@@ -10,9 +10,11 @@ use crate::renderer::{
     measure_list_item_row_height, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
-use waterui_core::layout::Size as LayoutSize;
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use waterui::component::list::{ListConfig, Move};
+use waterui_core::layout::Size as LayoutSize;
 use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -21,11 +23,7 @@ use super::{draw_scroll_indicators, inset_rect, widget_theme};
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
 
 impl HydroNativeView for Native<ListConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_list(ctx, view, env);
     }
 
@@ -37,7 +35,7 @@ impl HydroNativeView for Native<ListConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         let list = view.as_inner();
         let row_count_signal = list.contents.len();

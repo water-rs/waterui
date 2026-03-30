@@ -1,8 +1,8 @@
-use crate::platform::TextInputPurpose;
 use crate::engine::{Brush, DrawContext};
+use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, TEXT_SELECTION_FILL_COLOR,
-    TextInputModel, clamp_to_char_boundary, measure_secure_field_intrinsic,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TEXT_SELECTION_FILL_COLOR,
+    TextInputModel, WidgetRenderContext, clamp_to_char_boundary, measure_secure_field_intrinsic,
     measure_text_field_intrinsic, measure_view_intrinsic, normalize_view_for_render,
     transformed_rect,
 };
@@ -16,11 +16,11 @@ use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::StyledStr;
 
 #[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+#[cfg(feature = "accessibility")]
 use crate::renderer::{
     collapsed_accessibility_text_selection, register_accessibility_text_run_node,
 };
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -33,11 +33,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         true
     }
 
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_text_field(ctx, view, env);
     }
 
@@ -49,7 +45,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
@@ -75,7 +71,10 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
             if !prompt.is_empty() {
                 node.set_placeholder(prompt);
             }
-            let value = renderer.read_signal(&text_field.value).to_plain().to_string();
+            let value = renderer
+                .read_signal(&text_field.value)
+                .to_plain()
+                .to_string();
             if !value.is_empty() {
                 node.set_value(value.clone());
             }
@@ -110,11 +109,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         true
     }
 
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_secure_field(ctx, view, env);
     }
 
@@ -126,7 +121,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
@@ -208,7 +203,9 @@ pub(crate) fn render_text_field(
                 AccessibilityNodeRole::MultilineTextInput
             },
         ));
-        let label = ctx.renderer_mut().resolve_accessibility_label(env, default_label);
+        let label = ctx
+            .renderer_mut()
+            .resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
         }
@@ -272,8 +269,8 @@ pub(crate) fn render_text_field(
     let (text_input_index, prompt, value, preedit, caret_opacity, is_focused, selection_visible) = {
         let text_input_index = ctx.renderer_mut().next_text_input_index();
         let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-        let selection_visible =
-            is_focused || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
+        let selection_visible = is_focused
+            || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
         let preedit = if is_focused {
             ctx.renderer_mut().current_ime_preedit().unwrap_or_default()
         } else {
@@ -388,8 +385,10 @@ pub(crate) fn render_text_field(
     }
 
     let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut()
-        .register_cursor_target(transformed_rect(hit_transform, field_rect), CursorStyle::IBeam);
+    ctx.renderer_mut().register_cursor_target(
+        transformed_rect(hit_transform, field_rect),
+        CursorStyle::IBeam,
+    );
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "text_field",
@@ -492,9 +491,13 @@ pub(crate) fn render_secure_field(
     let (text_input_index, masked, caret_opacity, is_focused, selection_visible, plain_value) = {
         let text_input_index = ctx.renderer_mut().next_text_input_index();
         let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
-        let selection_visible =
-            is_focused || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
-        let plain_value = ctx.renderer_mut().read_signal(&value_binding).expose().to_owned();
+        let selection_visible = is_focused
+            || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
+        let plain_value = ctx
+            .renderer_mut()
+            .read_signal(&value_binding)
+            .expose()
+            .to_owned();
         let preedit_count = if is_focused {
             ctx.renderer_mut()
                 .current_ime_preedit()
@@ -602,8 +605,10 @@ pub(crate) fn render_secure_field(
     }
 
     let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut()
-        .register_cursor_target(transformed_rect(hit_transform, field_rect), CursorStyle::IBeam);
+    ctx.renderer_mut().register_cursor_target(
+        transformed_rect(hit_transform, field_rect),
+        CursorStyle::IBeam,
+    );
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "secure_field",

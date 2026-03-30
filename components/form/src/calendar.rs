@@ -14,7 +14,8 @@ use jiff::{
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::{IntoLabel, button};
 use waterui_core::dynamic::Dynamic;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::env::With;
+use waterui_core::{AnyView, Environment, State, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::spacer;
@@ -433,12 +434,14 @@ fn month_navigation_button(
     step: fn(VisibleMonth) -> VisibleMonth,
 ) -> impl View {
     if enabled {
-        AnyView::new(
+        AnyView::new(With::new(
             button(label)
                 .bordered()
-                .with_state(&visible_month)
-                .action(move |current| current.set(step(current.get()))),
-        )
+                .action(move |State(current): State<Binding<VisibleMonth>>| {
+                    current.set(step(current.get()));
+                }),
+            State(visible_month),
+        ))
     } else {
         AnyView::new(button(label).borderless())
     }
@@ -489,11 +492,12 @@ fn single_day_cell_content(
         };
 
         AnyView::new(
-            Frame::new(
-                button
-                    .with_state(&selection)
-                    .action(move |selected| selected.set(cell.date)),
-            )
+            Frame::new(With::new(
+                button.action(move |State(selected): State<Binding<Date>>| {
+                    selected.set(cell.date);
+                }),
+                State(selection),
+            ))
             .width(44.0)
             .height(40.0),
         )
@@ -531,13 +535,16 @@ fn multi_day_cell_content(
         };
 
         AnyView::new(
-            Frame::new(button.with_state(&selection).action(move |selected| {
-                let mut dates = selected.get();
-                if !dates.insert(cell.date) {
-                    dates.remove(&cell.date);
-                }
-                selected.set(dates);
-            }))
+            Frame::new(With::new(
+                button.action(move |State(selected): State<Binding<BTreeSet<Date>>>| {
+                    let mut dates = selected.get();
+                    if !dates.insert(cell.date) {
+                        dates.remove(&cell.date);
+                    }
+                    selected.set(dates);
+                }),
+                State(selection),
+            ))
             .width(44.0)
             .height(40.0),
         )

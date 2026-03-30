@@ -1,13 +1,15 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, measure_view_intrinsic,
-    popup_menu_nodes, transformed_rect,
-};
-#[cfg(feature = "accessibility")]
-use crate::renderer::accessibility_activation_point;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use crate::renderer::accessibility_activation_point;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_view_intrinsic, popup_menu_nodes, transformed_rect,
+};
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::menu::ResolvedMenu;
@@ -18,11 +20,7 @@ use waterui_core::{Environment, Native};
 use super::util::{inset_rect, widget_theme};
 
 impl HydroNativeView for Native<ButtonConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment,
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_button(ctx, view, env);
     }
 
@@ -72,11 +70,7 @@ impl HydroNativeView for Native<ButtonConfig> {
 }
 
 impl HydroNativeView for Native<ResolvedMenu> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment,
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_menu(ctx, view, env);
     }
 
@@ -148,17 +142,21 @@ pub(crate) fn render_button(
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
         HydrolysisRenderer::dispatch_any_without_accessibility(
-            renderer, render_ctx, env, button.label,
+            renderer,
+            render_ctx,
+            env,
+            button.label,
         );
     }
 
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let mut action = button.action;
     let action_env = env.clone();
-    ctx.renderer_mut().register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
-        action(&action_env);
-        true
-    });
+    ctx.renderer_mut()
+        .register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
+            action(&action_env);
+            true
+        });
 }
 
 pub(crate) fn render_menu(
@@ -187,16 +185,15 @@ pub(crate) fn render_menu(
     } else {
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
-        HydrolysisRenderer::dispatch_any_without_accessibility(
-            renderer, render_ctx, env, label,
-        );
+        HydrolysisRenderer::dispatch_any_without_accessibility(renderer, render_ctx, env, label);
     }
 
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let anchor = LayoutPoint::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
-    ctx.renderer_mut().register_pointer_target(hit_bounds, move |renderer, _point, env| {
-        renderer.show_popup_menu_nodes(popup_menu_nodes(&items.get()), anchor, env)
-    });
+    ctx.renderer_mut()
+        .register_pointer_target(hit_bounds, move |renderer, _point, env| {
+            renderer.show_popup_menu_nodes(popup_menu_nodes(&items.get()), anchor, env)
+        });
 }
 
 pub(crate) fn measure_button_intrinsic(
