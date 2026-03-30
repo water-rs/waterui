@@ -34,8 +34,8 @@ configurable!(RawText, TextConfig);
 #[derive(Clone)]
 enum TextKind {
     Raw(TextConfig),
-    Localized {
-        resolver: Rc<dyn Fn(&Environment, &Locale) -> TextConfig>,
+    Signal {
+        resolver: Rc<dyn Fn(&Environment) -> Computed<TextConfig>>,
     },
 }
 
@@ -98,6 +98,15 @@ impl IntoText for StyledStr {
     }
 }
 
+impl<T> IntoText for Computed<T>
+where
+    T: IntoText + Clone + 'static,
+{
+    fn into_text(self) -> Text {
+        Text::from_computed(self)
+    }
+}
+
 impl From<&'static str> for Text {
     fn from(value: &'static str) -> Self {
         value.into_text()
@@ -122,6 +131,15 @@ impl From<StyledStr> for Text {
     }
 }
 
+impl<T> From<Computed<T>> for Text
+where
+    T: IntoText + Clone + 'static,
+{
+    fn from(value: Computed<T>) -> Self {
+        value.into_text()
+    }
+}
+
 impl<T> Add<T> for Text
 where
     T: IntoText,
@@ -130,8 +148,15 @@ where
 
     fn add(self, rhs: T) -> Self::Output {
         let rhs = rhs.into_text();
-        let rhs_content = rhs.content();
-        Self::computed(self.content().zip(&rhs_content).map(|(a, b)| a + b))
+        Self::from_config_signal(move |env| {
+            self.resolve_signal(env)
+                .zip(&rhs.resolve_signal(env))
+                .map(|(lhs, rhs)| TextConfig {
+                    content: lhs.content.zip(&rhs.content).map(|(a, b)| a + b).computed(),
+                    paragraph_alignment: lhs.paragraph_alignment,
+                })
+                .computed()
+        })
     }
 }
 
@@ -140,9 +165,7 @@ where
     T: IntoText,
 {
     fn add_assign(&mut self, rhs: T) {
-        let rhs = rhs.into_text();
-        let rhs_content = rhs.content();
-        *self = Self::computed(self.content().zip(&rhs_content).map(|(a, b)| a + b));
+        *self = self.clone() + rhs;
     }
 }
 
@@ -174,14 +197,12 @@ impl Text {
     /// Creates localized text that resolves through the runtime translation catalog.
     #[must_use]
     pub fn localized(key: &'static str) -> Self {
-        Self(TextKind::Localized {
-            resolver: Rc::new(move |env, locale| {
-                let translated = env
-                    .get::<TranslationCatalog>()
-                    .and_then(|catalog| catalog.lookup_text(locale, key))
-                    .unwrap_or_else(|| Str::from_static(key));
-                Self::__config(StyledStr::plain(translated))
-            }),
+        Self::__localized_with(move |env, locale| {
+            let translated = env
+                .get::<TranslationCatalog>()
+                .and_then(|catalog| catalog.lookup_text(locale, key))
+                .unwrap_or_else(|| Str::from_static(key));
+            Self::__config(StyledStr::plain(translated))
         })
     }
 
@@ -191,23 +212,48 @@ impl Text {
     pub fn __localized_with(
         resolver: impl Fn(&Environment, &Locale) -> TextConfig + 'static,
     ) -> Self {
-        Self(TextKind::Localized {
+        let resolver = Rc::new(resolver);
+        Self::from_config_signal(move |env| {
+            let env = env.clone();
+            let resolver = resolver.clone();
+            locale_binding(&env)
+                .map(move |locale| resolver(&env, &locale))
+                .computed()
+        })
+    }
+
+    fn from_config_signal(
+        resolver: impl Fn(&Environment) -> Computed<TextConfig> + 'static,
+    ) -> Self {
+        Self(TextKind::Signal {
             resolver: Rc::new(resolver),
         })
     }
 
-    fn resolve_with_locale(&self, env: &Environment, locale: &Locale) -> TextConfig {
+    fn from_computed<T>(source: Computed<T>) -> Self
+    where
+        T: IntoText + Clone + 'static,
+    {
+        Self::from_config_signal(move |env| {
+            let env = env.clone();
+            source
+                .zip(&locale_binding(&env))
+                .map(move |(value, _locale)| value.into_text().resolve(&env))
+                .computed()
+        })
+    }
+
+    fn resolve_signal(&self, env: &Environment) -> Computed<TextConfig> {
         match &self.0 {
-            TextKind::Raw(config) => config.clone(),
-            TextKind::Localized { resolver } => resolver(env, locale),
+            TextKind::Raw(config) => Computed::constant(config.clone()),
+            TextKind::Signal { resolver } => resolver(env),
         }
     }
 
     /// Resolves semantic text into a raw config using the environment's effective locale.
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> TextConfig {
-        let locale = locale_binding(env).get();
-        self.resolve_with_locale(env, &locale)
+        self.resolve_signal(env).get()
     }
 
     /// Converts text into an FFI-ready raw config without an environment.
@@ -221,8 +267,8 @@ impl Text {
     pub fn __into_ffi_without_env(self) -> TextConfig {
         match self.0 {
             TextKind::Raw(config) => config,
-            TextKind::Localized { .. } => panic!(
-                "Localized Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config"
+            TextKind::Signal { .. } => panic!(
+                "Environment-dependent Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config"
             ),
         }
     }
@@ -262,9 +308,9 @@ impl Text {
     pub fn content(&self) -> Computed<StyledStr> {
         match &self.0 {
             TextKind::Raw(config) => config.content.clone(),
-            TextKind::Localized { .. } => {
+            TextKind::Signal { .. } => {
                 panic!(
-                    "Text::content() is only available for raw text; localized text depends on environment locale"
+                    "Text::content() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env)"
                 )
             }
         }
@@ -279,20 +325,20 @@ impl Text {
     pub fn paragraph_alignment(&self) -> Computed<HorizontalAlignment> {
         match &self.0 {
             TextKind::Raw(config) => config.paragraph_alignment.clone(),
-            TextKind::Localized { .. } => {
+            TextKind::Signal { .. } => {
                 panic!(
-                    "Text::paragraph_alignment() is only available for raw text; localized text depends on environment locale"
+                    "Text::paragraph_alignment() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env)"
                 )
             }
         }
     }
 
-    fn map_config(self, f: impl Fn(TextConfig) -> TextConfig + 'static) -> Self {
+    fn map_config(self, f: impl Fn(TextConfig) -> TextConfig + Clone + 'static) -> Self {
         match self.0 {
             TextKind::Raw(config) => Self(TextKind::Raw(f(config))),
-            TextKind::Localized { resolver } => Self(TextKind::Localized {
-                resolver: Rc::new(move |env, locale| f(resolver(env, locale))),
-            }),
+            TextKind::Signal { resolver } => {
+                Self::from_config_signal(move |env| resolver(env).map(f.clone()).computed())
+            }
         }
     }
 
@@ -446,13 +492,7 @@ impl View for Text {
     fn body(self, env: &Environment) -> impl View {
         match self.0 {
             TextKind::Raw(config) => AnyView::new(RawText(config)),
-            TextKind::Localized { resolver } => {
-                let locale = locale_binding(env);
-                let env = env.clone();
-                AnyView::new(watch(locale, move |locale| {
-                    RawText(resolver(&env, &locale))
-                }))
-            }
+            TextKind::Signal { resolver } => AnyView::new(watch(resolver(env), RawText)),
         }
     }
 }
@@ -460,6 +500,7 @@ impl View for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_locale::{TranslationCatalog, locales};
 
     #[test]
     fn text_align_updates_paragraph_alignment_signal() {
@@ -469,5 +510,45 @@ mod tests {
             text.paragraph_alignment().get(),
             HorizontalAlignment::Trailing
         );
+    }
+
+    #[test]
+    fn computed_static_str_resolves_through_i18n_catalog() {
+        let env = test_env();
+        let text: Text = Computed::constant("greeting").into();
+
+        assert_eq!(resolved_plain(&text, &env), "Hello");
+    }
+
+    #[test]
+    fn add_supports_computed_into_text_rhs() {
+        let env = test_env();
+        let text = Text::verbatim("Hi ") + Computed::constant("greeting");
+
+        assert_eq!(resolved_plain(&text, &env), "Hi Hello");
+    }
+
+    #[test]
+    fn add_assign_supports_localized_rhs() {
+        let env = test_env();
+        let mut text = Text::verbatim("Hi ");
+        text += "greeting";
+
+        assert_eq!(resolved_plain(&text, &env), "Hi Hello");
+    }
+
+    fn test_env() -> Environment {
+        let mut env = Environment::new();
+        env.insert(locales::EN);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml("en", "greeting = \"Hello\"")
+                .expect("test catalog must parse"),
+        );
+        env
+    }
+
+    fn resolved_plain(text: &Text, env: &Environment) -> String {
+        text.resolve(env).content.get().to_plain().to_string()
     }
 }

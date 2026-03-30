@@ -1554,14 +1554,16 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
 /// WuiNavigationSearch -> NavigationSearchStruct
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let prompt = self.prompt.to_java_struct(env);
         let class = env
             .find_class("dev/waterui/android/runtime/NavigationSearchStruct")
             .expect("NavigationSearchStruct class not found");
         env.new_object(
             &class,
-            "(JLdev/waterui/android/runtime/PlainStruct;)V",
-            &[JValue::Long(self.text as jlong), JValue::Object(&prompt)],
+            "(JJ)V",
+            &[
+                JValue::Long(self.text as jlong),
+                JValue::Long(self.prompt as jlong),
+            ],
         )
         .expect("Failed to create NavigationSearchStruct")
     }
