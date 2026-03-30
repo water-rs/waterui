@@ -483,8 +483,8 @@ pub trait ViewExt: View + Sized {
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments
-    /// * `title` - The title for the navigation view (any View)
-    fn title(self, title: impl View) -> NavigationView {
+    /// * `title` - The semantic title for the navigation view
+    fn title(self, title: impl crate::text::IntoText) -> NavigationView {
         NavigationView::new(title, self)
     }
 

@@ -4,6 +4,7 @@ use crate::array::WuiArray;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
+use waterui::AnyView;
 use waterui::Color;
 use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
@@ -31,7 +32,7 @@ pub struct WuiNavigationLink {
 #[repr(C)]
 pub struct WuiNavigationSearch {
     pub text: *mut WuiBinding<Str>,
-    pub prompt: crate::WuiStr,
+    pub prompt: *mut WuiAnyView,
 }
 
 impl IntoFFI for NavigationSearch {
@@ -40,7 +41,7 @@ impl IntoFFI for NavigationSearch {
     fn into_ffi(self) -> Self::FFI {
         Box::into_raw(Box::new(WuiNavigationSearch {
             text: self.text.into_ffi(),
-            prompt: self.prompt.into_ffi(),
+            prompt: AnyView::new(self.prompt).into_ffi(),
         }))
     }
 }

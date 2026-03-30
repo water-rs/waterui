@@ -5,6 +5,7 @@ use core::ops::RangeInclusive;
 
 pub use jiff::civil::{Date, DateTime, Time};
 use nami::Binding;
+use waterui_controls::IntoLabel;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -188,8 +189,8 @@ impl DatePicker {
 
     /// Sets the label for the date picker.
     #[must_use]
-    pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = AnyView::new(label);
+    pub fn label(mut self, label: impl IntoLabel) -> Self {
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 
