@@ -1,8 +1,6 @@
 //! Semantic labels shared by controls, menus, and chrome.
 
 use core::any::Any;
-use core::fmt::Display;
-
 use nami::Computed;
 use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
 use waterui_icon::SystemIcon;
@@ -127,9 +125,12 @@ impl IntoLabel for StyledStr {
     }
 }
 
-impl<T: Display + Clone + 'static> IntoLabel for Computed<T> {
+impl<T> IntoLabel for Computed<T>
+where
+    T: IntoText + Clone + 'static,
+{
     fn into_label(self) -> Label {
-        Label::new(Text::display(self))
+        Label::new(self)
     }
 }
 
@@ -298,15 +299,40 @@ mod tests {
     use alloc::string::String;
 
     use nami::{Computed, Signal};
+    use waterui_core::Environment;
+    use waterui_locale::{TranslationCatalog, locales};
 
     use super::IntoLabel;
 
     #[test]
-    fn computed_display_value_converts_into_label_text() {
+    fn computed_string_value_converts_into_label_text() {
+        let env = test_env();
         let label = Computed::constant(String::from("Ready")).into_label();
-        let content = label.__text().content().get();
+        let content = label.__text().resolve(&env).content.get();
 
         assert_eq!(content.to_plain(), "Ready");
+    }
+
+    #[test]
+    fn computed_static_str_resolves_through_i18n_catalog() {
+        let env = test_env();
+        let label = Computed::constant("greeting").into_label();
+
+        assert_eq!(
+            label.__text().resolve(&env).content.get().to_plain(),
+            "Hello"
+        );
+    }
+
+    fn test_env() -> Environment {
+        let mut env = Environment::new();
+        env.insert(locales::EN);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml("en", "greeting = \"Hello\"")
+                .expect("test catalog must parse"),
+        );
+        env
     }
 }
 

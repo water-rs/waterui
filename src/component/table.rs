@@ -22,7 +22,7 @@ use waterui_core::{
     view::{ConfigurableView, Hook, ViewConfiguration},
     views::{ForEach, SharedAnyViews},
 };
-use waterui_text::Text;
+use waterui_text::{IntoText, Text};
 
 use crate::{AnyView, Environment, View, views::Views};
 
@@ -120,9 +120,9 @@ impl TableColumn {
     /// # Arguments
     ///
     /// * `contents` - The text content to display in this column.
-    pub fn new(label: impl Into<Text>, contents: impl Views<View = Text> + 'static) -> Self {
+    pub fn new(label: impl IntoText, contents: impl Views<View = Text> + 'static) -> Self {
         Self {
-            label: label.into(),
+            label: label.into_text(),
             rows: SharedAnyViews::new(contents),
         }
     }
@@ -142,11 +142,14 @@ impl TableColumn {
 
 impl<T> FromIterator<T> for TableColumn
 where
-    T: Into<Text>,
+    T: IntoText,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let contents = iter.into_iter().map(Into::into).collect::<Vec<Text>>();
-        Self::new(type_name::<T>(), contents)
+        let contents = iter
+            .into_iter()
+            .map(IntoText::into_text)
+            .collect::<Vec<Text>>();
+        Self::new(Text::verbatim(type_name::<T>()), contents)
     }
 }
 
@@ -159,7 +162,7 @@ where
 }
 
 /// Convenience constructor for creating a single table column.
-pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> TableColumn {
+pub fn col(label: impl IntoText, rows: impl Views<View = Text> + 'static) -> TableColumn {
     TableColumn::new(label, rows)
 }
 

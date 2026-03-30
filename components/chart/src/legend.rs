@@ -4,20 +4,19 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use waterui_core::Str;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{Rectangle, ShapeExt};
-use waterui_text::text;
+use waterui_text::{IntoText, Text};
 
 /// A single item in the legend.
 #[derive(Debug, Clone)]
 pub struct LegendItem {
     /// Label text.
-    pub label: Str,
+    pub label: Text,
     /// Color marker.
     pub color: Srgb,
 }
@@ -25,9 +24,9 @@ pub struct LegendItem {
 impl LegendItem {
     /// Creates a new legend item.
     #[must_use]
-    pub fn new(label: impl Into<Str>, color: impl Into<Srgb>) -> Self {
+    pub fn new(label: impl IntoText, color: impl Into<Srgb>) -> Self {
         Self {
-            label: label.into(),
+            label: label.into_text(),
             color: color.into(),
         }
     }
@@ -141,7 +140,7 @@ impl View for Legend {
                 let marker = Frame::new(Rectangle.fill(Color::from(item.color)))
                     .width(marker_size)
                     .height(marker_size);
-                let label = text(item.label);
+                let label = item.label;
                 AnyView::new(HStack::new(VerticalAlignment::Center, 6.0, (marker, label)))
             })
             .collect();

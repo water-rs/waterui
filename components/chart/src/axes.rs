@@ -17,7 +17,7 @@ use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::{
     Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint, absolute,
 };
-use waterui_text::text;
+use waterui_text::{Text, text};
 
 use crate::axis::{AxisConfig, Tick};
 use crate::data::DataBounds;
@@ -150,14 +150,14 @@ impl<C: View + 'static> View for ChartAxes<C> {
             .unwrap_or_default();
 
         // Get axis title labels (clone before consuming self)
-        let y_label: Option<String> = self
+        let y_label = self
             .y_axis
             .as_ref()
-            .and_then(|a| a.axis_label().map(Into::into));
-        let x_label: Option<String> = self
+            .and_then(|axis| axis.axis_label().cloned());
+        let x_label = self
             .x_axis
             .as_ref()
-            .and_then(|a| a.axis_label().map(Into::into));
+            .and_then(|axis| axis.axis_label().cloned());
 
         let padding = self.padding;
 
@@ -360,10 +360,10 @@ fn axis_overlay(
     }
 }
 
-fn axis_titles(y_label: Option<String>, x_label: Option<String>) -> impl View {
+fn axis_titles(y_label: Option<Text>, x_label: Option<Text>) -> impl View {
     absolute((
         y_label.map(|label| {
-            text(label).size(12.0).bold().position_in_offset(
+            label.size(12.0).bold().position_in_offset(
                 UnitPoint::TOP_LEADING,
                 UnitPoint::TOP_LEADING,
                 2.0,
@@ -371,7 +371,7 @@ fn axis_titles(y_label: Option<String>, x_label: Option<String>) -> impl View {
             )
         }),
         x_label.map(|label| {
-            text(label).size(12.0).bold().position_in_offset(
+            label.size(12.0).bold().position_in_offset(
                 UnitPoint::BOTTOM,
                 UnitPoint::BOTTOM,
                 0.0,
@@ -595,8 +595,8 @@ where
         let y_axis = self.y_axis.clone();
 
         // Get axis title labels (clone before moving into closure)
-        let y_label: Option<String> = y_axis.as_ref().and_then(|a| a.axis_label().map(Into::into));
-        let x_label: Option<String> = x_axis.as_ref().and_then(|a| a.axis_label().map(Into::into));
+        let y_label = y_axis.as_ref().and_then(|axis| axis.axis_label().cloned());
+        let x_label = x_axis.as_ref().and_then(|axis| axis.axis_label().cloned());
 
         // Chart with padding to make room for axis labels
         let padded_chart = Padding::new(
