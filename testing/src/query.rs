@@ -29,6 +29,18 @@ impl<'a> Query<'a> {
     }
 
     #[must_use]
+    pub fn within(mut self, handle: &ElementRef) -> Self {
+        self.selector = self.selector.within(handle.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn children_of(mut self, handle: &ElementRef) -> Self {
+        self.selector = self.selector.children_of(handle.clone());
+        self
+    }
+
+    #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.selector = self.selector.enabled(enabled);
         self
@@ -59,6 +71,12 @@ impl<'a> Query<'a> {
     }
 
     #[must_use]
+    pub fn value_contains(mut self, value: impl Into<String>) -> Self {
+        self.selector = self.selector.value_contains(value);
+        self
+    }
+
+    #[must_use]
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.selector = self.selector.hidden(hidden);
         self
@@ -77,8 +95,10 @@ impl<'a> Query<'a> {
         }
         assert!(
             all.len() <= 1,
-            "waterui-testing selector resolved {} nodes, expected at most 1",
-            all.len()
+            "waterui-testing selector {} resolved {} nodes, expected at most 1; candidates: {}",
+            self.selector.describe(),
+            all.len(),
+            all.debug_summary(3)
         );
         Some(all[0].clone())
     }
