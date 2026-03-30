@@ -7,7 +7,7 @@ use accesskit::{
     TreeUpdate as AccessibilityTreeUpdate,
 };
 
-use crate::selector::Selector;
+use crate::selector::{ScopeRelation, Selector};
 
 /// Stable role wrapper exposed by the testing API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -278,10 +278,35 @@ impl TreeSnapshot {
     }
 
     pub(crate) fn matching(&self, selector: &Selector) -> Vec<NodeId> {
-        self.nodes
-            .iter()
-            .filter_map(|(id, node)| selector.matches(node).then_some(*id))
+        self.scoped_ids(selector)
+            .into_iter()
+            .filter_map(|id| selector.matches(&self[id]).then_some(id))
             .collect()
+    }
+
+    fn scoped_ids(&self, selector: &Selector) -> Vec<NodeId> {
+        let Some(scope) = selector.scope() else {
+            return self.nodes.keys().copied().collect();
+        };
+        match scope.relation() {
+            ScopeRelation::Descendants => self.descendants_of(scope.handle().id()),
+            ScopeRelation::Children => self[scope.handle().id()].children().to_vec(),
+        }
+    }
+
+    fn descendants_of(&self, parent: NodeId) -> Vec<NodeId> {
+        let mut descendants = Vec::new();
+        let mut stack = self[parent]
+            .children()
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>();
+        while let Some(node_id) = stack.pop() {
+            descendants.push(node_id);
+            stack.extend(self[node_id].children().iter().rev().copied());
+        }
+        descendants
     }
 }
 
