@@ -40,6 +40,13 @@ impl UiTest {
         }
     }
 
+    /// Overrides the environment used by the mounted app.
+    #[must_use]
+    pub fn environment(mut self, env: Environment) -> Self {
+        self.env = env;
+        self
+    }
+
     /// Overrides the logical viewport size used by the mounted app.
     #[must_use]
     pub const fn viewport(mut self, width: u32, height: u32) -> Self {
@@ -141,19 +148,25 @@ impl MountedApp {
 
     /// Convenience existence assertion.
     pub fn assert_exists(&mut self, selector: Selector) {
-        let count = self.matching_ids(&selector).len();
+        let results = self.resolve_elements(&selector);
+        let count = results.len();
         assert!(
             !(count == 0),
-            "waterui-testing assertion failed: selector expected to exist but matched 0 nodes"
+            "waterui-testing assertion failed: selector {} expected to exist but matched 0 nodes on revision {}",
+            selector.describe(),
+            self.tree.revision()
         );
     }
 
     /// Convenience non-existence assertion.
     pub fn assert_not_exists(&mut self, selector: Selector) {
-        let count = self.matching_ids(&selector).len();
+        let results = self.resolve_elements(&selector);
+        let count = results.len();
         assert!(
             !(count != 0),
-            "waterui-testing assertion failed: selector expected to be absent but matched {count} nodes"
+            "waterui-testing assertion failed: selector {} expected to be absent but matched {count} nodes; candidates: {}",
+            selector.describe(),
+            results.debug_summary(3)
         );
     }
 
@@ -381,6 +394,7 @@ impl MountedApp {
     }
 
     fn matching_ids(&mut self, selector: &Selector) -> Vec<NodeId> {
+        self.validate_selector_scope(selector);
         self.tree.matching(selector)
     }
 
@@ -391,17 +405,26 @@ impl MountedApp {
             .map(|id| ElementRef {
                 node_id: id,
                 node: self.tree[id].clone(),
+                revision: self.tree.revision(),
             })
             .collect();
-        ElementSet::new(elements)
+        ElementSet::new(elements, self.tree.revision())
     }
 
     pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
         let results = self.resolve_elements(selector);
         match results.len() {
             1 => results[0].clone(),
-            0 => panic!("waterui-testing selector resolved 0 nodes, expected exactly 1"),
-            n => panic!("waterui-testing selector resolved {n} nodes, expected exactly 1"),
+            0 => panic!(
+                "waterui-testing selector {} resolved 0 nodes, expected exactly 1 on revision {}",
+                selector.describe(),
+                self.tree.revision()
+            ),
+            n => panic!(
+                "waterui-testing selector {} resolved {n} nodes, expected exactly 1; candidates: {}",
+                selector.describe(),
+                results.debug_summary(3)
+            ),
         }
     }
 
@@ -527,6 +550,28 @@ impl MountedApp {
     fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
         let ids = self.matching_ids(selector);
         ids.len() == 1 && self.ui_focus == Some(ids[0])
+    }
+
+    pub(crate) fn assert_current_element(&self, element: &ElementRef, context: &str) {
+        assert!(
+            element.revision() == self.tree.revision(),
+            "waterui-testing stale element handle during {context}: handle revision {} does not match current tree revision {}; re-query the element before interacting. handle={}",
+            element.revision(),
+            self.tree.revision(),
+            element.debug_summary()
+        );
+        assert!(
+            self.tree.node(element.id()).is_some(),
+            "waterui-testing missing current node for handle during {context}: handle={} is not present in revision {}",
+            element.debug_summary(),
+            self.tree.revision()
+        );
+    }
+
+    fn validate_selector_scope(&self, selector: &Selector) {
+        if let Some(scope) = selector.scope() {
+            self.assert_current_element(scope.handle(), "scoped query");
+        }
     }
 }
 

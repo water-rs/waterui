@@ -113,6 +113,44 @@ fn tree(nodes: Vec<NodeSnapshot>) -> TreeSnapshot {
     }
 }
 
+fn scoped_tree() -> TreeSnapshot {
+    let mut root = node(1, Role::LIST, Some("root"), None, true);
+    root.children = vec![node_id(2), node_id(3)];
+
+    let mut alpha = node(2, Role::LIST_ITEM, Some("Alpha card"), None, true);
+    alpha.children = vec![node_id(4), node_id(5)];
+
+    let mut beta = node(3, Role::LIST_ITEM, Some("Beta card"), None, true);
+    beta.children = vec![node_id(6), node_id(7)];
+
+    let edit_alpha = node(4, Role::BUTTON, Some("Edit"), None, true);
+    let email_alpha = node(
+        5,
+        Role::TEXT_INPUT,
+        Some("Email"),
+        Some("alpha@example.com"),
+        true,
+    );
+    let edit_beta = node(6, Role::BUTTON, Some("Edit"), None, true);
+    let email_beta = node(
+        7,
+        Role::TEXT_INPUT,
+        Some("Email"),
+        Some("beta@example.com"),
+        true,
+    );
+
+    tree(vec![
+        root,
+        alpha,
+        beta,
+        edit_alpha,
+        email_alpha,
+        edit_beta,
+        email_beta,
+    ])
+}
+
 fn mounted(tree: TreeSnapshot) -> MountedApp {
     MountedApp {
         env: Environment::new(),
@@ -122,6 +160,16 @@ fn mounted(tree: TreeSnapshot) -> MountedApp {
         ui_focus: None,
         revision: 2,
     }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_owned();
+    }
+    String::from("<non-string panic>")
 }
 
 #[test]
@@ -158,6 +206,34 @@ fn smoke_theme_foreground_slot_snapshot_contains_visible_pixels() {
     assert!(
         white_pixels > 0,
         "expected theme foreground slot render to produce visible bright pixels (white_pixels={white_pixels})"
+    );
+}
+
+#[test]
+fn ui_test_environment_builder_preserves_custom_theme() {
+    let mut env = Environment::new();
+    theme::install_color_signal::<theme::color::Foreground>(
+        &mut env,
+        Computed::constant(ResolvedColor {
+            red: 1.0,
+            green: 1.0,
+            blue: 1.0,
+            opacity: 1.0,
+            headroom: 1.0,
+        }),
+    );
+    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
+        vstack((text("Mounted theme").body(), text("Mounted theme").body())).background(Srgb::BLACK)
+    });
+    let snapshot = app.snapshot();
+    let white_pixels = snapshot
+        .rgba8
+        .chunks_exact(4)
+        .filter(|px| px[3] > 0 && px[0] > 180 && px[1] > 180 && px[2] > 180)
+        .count();
+    assert!(
+        white_pixels > 0,
+        "expected UiTest environment builder to preserve theme foreground slot render (white_pixels={white_pixels})"
     );
 }
 
@@ -401,6 +477,58 @@ fn hidden_nodes_are_excluded_unless_requested() {
 }
 
 #[test]
+fn relative_queries_scope_by_semantic_handle() {
+    let mut app = mounted(scoped_tree());
+
+    let alpha = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("Alpha card")
+        .single();
+    let beta = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("Beta card")
+        .single();
+
+    let alpha_button = app
+        .query()
+        .within(&alpha)
+        .role(Role::BUTTON)
+        .label("Edit")
+        .single();
+    let alpha_input = app
+        .query()
+        .children_of(&alpha)
+        .role(Role::TEXT_INPUT)
+        .label("Email")
+        .single();
+    let beta_button = app
+        .query()
+        .within(&beta)
+        .role(Role::BUTTON)
+        .label("Edit")
+        .single();
+
+    assert_eq!(alpha_button.id().as_u64(), 4);
+    assert_eq!(alpha_input.id().as_u64(), 5);
+    assert_eq!(beta_button.id().as_u64(), 6);
+}
+
+#[test]
+fn value_contains_matches_semantic_values() {
+    let mut app = mounted(scoped_tree());
+
+    let alpha_email = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .value_contains("alpha@")
+        .single();
+
+    assert_eq!(alpha_email.id().as_u64(), 5);
+}
+
+#[test]
 fn wait_for_existence_and_nonexistence_complete_immediately() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),
@@ -480,6 +608,48 @@ fn element_set_index_by_node_id_panics_when_missing() {
         let _ = &set[node_id(99)];
     }));
     assert!(outcome.is_err());
+}
+
+#[test]
+fn stale_handle_panics_for_interaction_and_relative_query() {
+    let mut app = mounted(scoped_tree());
+
+    let alpha = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("Alpha card")
+        .single();
+    let edit = app
+        .query()
+        .within(&alpha)
+        .role(Role::BUTTON)
+        .label("Edit")
+        .single();
+    app.tree.revision = 99;
+
+    let interaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = edit.tap(&mut app);
+    }));
+    let interaction_message = panic_message(interaction.expect_err("stale handle should panic"));
+    assert!(
+        interaction_message.contains("stale element handle"),
+        "unexpected stale interaction panic: {interaction_message}"
+    );
+
+    let scoped_query = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = app
+            .query()
+            .within(&alpha)
+            .role(Role::BUTTON)
+            .label("Edit")
+            .single();
+    }));
+    let scoped_query_message =
+        panic_message(scoped_query.expect_err("stale scoped query should panic"));
+    assert!(
+        scoped_query_message.contains("stale element handle"),
+        "unexpected stale scoped query panic: {scoped_query_message}"
+    );
 }
 
 #[test]
