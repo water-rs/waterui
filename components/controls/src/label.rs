@@ -248,15 +248,17 @@ impl Label {
         }
     }
 
-    #[doc(hidden)]
+    /// Returns the semantic text carried by this label.
     #[must_use]
-    pub fn __text(&self) -> &Text {
+    pub fn semantic_text(&self) -> &Text {
         &self.text
     }
 
-    #[doc(hidden)]
+    /// Returns the semantic system icon carried by this label.
+    ///
+    /// Custom icon views are visual-only and therefore return `None` here.
     #[must_use]
-    pub fn __icon(&self) -> Option<SystemIcon> {
+    pub fn semantic_icon(&self) -> Option<SystemIcon> {
         self.icon.as_ref().and_then(|icon| icon.system_icon.clone())
     }
 }
@@ -308,7 +310,7 @@ mod tests {
     fn computed_string_value_converts_into_label_text() {
         let env = test_env();
         let label = Computed::constant(String::from("Ready")).into_label();
-        let content = label.__text().resolve(&env).content.get();
+        let content = label.semantic_text().resolve(&env).content.get();
 
         assert_eq!(content.to_plain(), "Ready");
     }
@@ -319,7 +321,7 @@ mod tests {
         let label = Computed::constant("greeting").into_label();
 
         assert_eq!(
-            label.__text().resolve(&env).content.get().to_plain(),
+            label.semantic_text().resolve(&env).content.get().to_plain(),
             "Hello"
         );
     }

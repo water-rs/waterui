@@ -1,7 +1,7 @@
 //! `LocalizedText` view for i18n support.
 
-use nami::{Binding, SignalExt};
-use waterui_core::{Environment, View, dynamic::watch};
+use nami::SignalExt;
+use waterui_core::{Environment, View};
 use waterui_text::{
     Text,
     font::{Body, Caption, Font, Footnote, Headline, Subheadline, Title},
@@ -9,7 +9,6 @@ use waterui_text::{
 };
 
 use crate::locale::Locale;
-use crate::system::runtime_locale_binding;
 
 /// A localized text view that renders based on the current locale.
 ///
@@ -150,36 +149,17 @@ where
     F: Fn(&Locale) -> Text + Clone + 'static,
     T: Fn(StyledStr) -> StyledStr + Clone + 'static,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let locale = resolve_locale_binding(env);
-
-        // Map locale to styled content reactively
+    fn body(self, _env: &Environment) -> impl View {
         let text_fn = self.text_fn;
         let transform = self.transform;
 
-        watch(locale, move |locale| {
-            let text = text_fn(&locale);
-            let styled = text.content();
+        Text::localized_with(move |env, locale| {
+            let mut config = text_fn(locale).resolve(env);
             let transform = transform.clone();
-            let styled = styled.map(move |styled| transform(styled));
-            Text::new(styled)
+            config.content = config.content.map(move |styled| transform(styled)).computed();
+            config
         })
     }
-}
-
-fn resolve_locale_binding(env: &Environment) -> Binding<Locale> {
-    // Respect explicit per-view RegionalContext in the environment first.
-    if let Some(context) = env.get::<crate::regional::RegionalContext>().cloned() {
-        return Binding::container(context.locale().clone());
-    }
-
-    // Respect explicit per-view Locale in the environment first.
-    if let Some(locale) = env.get::<Locale>().cloned() {
-        return Binding::container(locale);
-    }
-
-    // Otherwise, track the shared runtime locale.
-    runtime_locale_binding()
 }
 
 impl<F, T> core::fmt::Debug for LocalizedText<F, T>
@@ -196,7 +176,7 @@ where
 mod tests {
     use waterui_core::Environment;
 
-    use super::resolve_locale_binding;
+    use crate::locale_binding;
     use crate::locale::{Locale, locales};
 
     #[test]
@@ -204,7 +184,7 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::EN_GB);
 
-        let locale = resolve_locale_binding(&env).get();
+        let locale = locale_binding(&env).get();
         assert_eq!(locale.language.as_str(), "en");
         assert_eq!(locale.region.as_ref().map(|r| r.as_str()), Some("GB"));
     }
@@ -212,7 +192,7 @@ mod tests {
     #[test]
     fn resolve_locale_signal_defaults_to_en_us() {
         let env = Environment::new();
-        let locale: Locale = resolve_locale_binding(&env).get();
+        let locale: Locale = locale_binding(&env).get();
         assert!(!locale.language.as_str().is_empty());
     }
 }

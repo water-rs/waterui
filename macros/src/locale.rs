@@ -521,10 +521,10 @@ fn build_text_config_expr(
     all_idents: &[Ident],
 ) -> TokenStream2 {
     if all_idents.is_empty() {
-        quote! { #waterui::text::Text::__config(#format_lit) }
+        quote! { #waterui::text::TextConfig::new(#format_lit) }
     } else {
         let content = build_format_signal(waterui, format_lit, all_idents);
-        quote! { #waterui::text::Text::__config(#content) }
+        quote! { #waterui::text::TextConfig::new(#content) }
     }
 }
 
@@ -622,7 +622,7 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
             // Track translation file changes to invalidate macro expansion.
             #(let _ = include_bytes!(#tracked_file_lits);)*
 
-            #waterui::text::Text::__localized_with({
+            #waterui::text::Text::localized_with({
                 #(#captures)*
 
                 move |_env: &#waterui::Environment, locale: &#waterui::locale::Locale| {
@@ -771,7 +771,7 @@ fn generate_plural_translation_arm(
     quote! {
         #locale_code => {
             let #locale_ident = locale.clone();
-            Some(#waterui::text::Text::__config(#content))
+            Some(#waterui::text::TextConfig::new(#content))
         }
     }
 }
@@ -830,7 +830,7 @@ fn generate_dual_plural_translation_arm(
     quote! {
         #locale_code => {
             let #locale_ident = locale.clone();
-            Some(#waterui::text::Text::__config(#content))
+            Some(#waterui::text::TextConfig::new(#content))
         }
     }
 }

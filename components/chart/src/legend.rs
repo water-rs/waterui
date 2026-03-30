@@ -133,7 +133,7 @@ impl View for Legend {
         let spacing = self.spacing;
 
         // Convert items to entry views
-        let entries: Vec<AnyView> = self
+        let entries: Vec<_> = self
             .items
             .into_iter()
             .map(|item| {
@@ -141,7 +141,7 @@ impl View for Legend {
                     .width(marker_size)
                     .height(marker_size);
                 let label = item.label;
-                AnyView::new(HStack::new(VerticalAlignment::Center, 6.0, (marker, label)))
+                HStack::new(VerticalAlignment::Center, 6.0, (marker, label))
             })
             .collect();
 
@@ -180,8 +180,6 @@ impl View for Legend {
             LegendPosition::Bottom => (UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -inset),
         };
 
-        AnyView::new(absolute((
-            content.position_in_offset(anchor, position, offset_x, offset_y),
-        )))
+        absolute((content.position_in_offset(anchor, position, offset_x, offset_y),))
     }
 }

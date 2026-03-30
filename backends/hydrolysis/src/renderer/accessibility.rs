@@ -475,7 +475,7 @@ impl HydrolysisRenderer {
             return self.accessibility_label_from_view_with_budget(content, env, remaining - 1);
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.__text().resolve(env).content);
+            let styled = self.read_signal(&label.semantic_text().resolve(env).content);
             return Some(styled.to_plain().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
