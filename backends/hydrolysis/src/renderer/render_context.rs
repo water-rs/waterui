@@ -1,11 +1,11 @@
 use super::HydrolysisRenderer;
 use crate::engine::vello_backend::VelloDrawContext;
+use crate::renderer::HydroState;
 use crate::renderer::navigation_state::NavigationTransitionDirection;
 use crate::renderer::navigation_transition::draw_navigation_transition;
-use crate::renderer::HydroState;
 use waterui::navigation::NavigationTransition;
-use waterui_core::{AnyView, Environment};
 use waterui_core::layout::HorizontalAlignment;
+use waterui_core::{AnyView, Environment};
 use waterui_text::styled::StyledStr;
 
 /// Render context passed to handlers.
@@ -151,7 +151,9 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     pub(crate) fn append_scene(&mut self, scene: &vello::Scene) {
-        self.renderer.scene_mut().append(scene, Some(self.transform));
+        self.renderer
+            .scene_mut()
+            .append(scene, Some(self.transform));
     }
 
     pub(crate) fn draw_navigation_transition(

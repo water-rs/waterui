@@ -19,6 +19,18 @@ use waterui::prelude::*;
 use waterui::reactive::Binding;
 use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
 
+fn set_f32_button(label: &'static str, value: f32, binding: &Binding<f32>) -> impl View {
+    button(label)
+        .action(move |State(current): State<Binding<f32>>| current.set(value))
+        .state(binding)
+}
+
+fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View {
+    button(label)
+        .action(move |State(current): State<Binding<f64>>| current.set(value))
+        .state(binding)
+}
+
 /// Demo: Scale animation - visual transform on colored boxes
 fn scale_animation_section(scale: &Binding<f32>) -> impl View {
     let animated_scale = scale.with(Animation::spring(300.0, 15.0));
@@ -30,10 +42,10 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View {
             .scale(animated_scale.clone(), animated_scale.clone())
             .min_height(120.0),
         hstack((
-            button("0.5x").with_state(scale).action(|s| s.set(0.5)),
-            button("1x").with_state(scale).action(|s| s.set(1.0)),
-            button("1.5x").with_state(scale).action(|s| s.set(1.5)),
-            button("2x").with_state(scale).action(|s| s.set(2.0)),
+            set_f32_button("0.5x", 0.5, scale),
+            set_f32_button("1x", 1.0, scale),
+            set_f32_button("1.5x", 1.5, scale),
+            set_f32_button("2x", 2.0, scale),
         )),
     ))
     .padding()
@@ -51,19 +63,11 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
             .rotation(animated_rotation)
             .min_height(100.0),
         hstack((
-            button("-90°")
-                .with_state(rotation)
-                .action(|r| r.set(r.get() - 90.0)),
-            button("-45°")
-                .with_state(rotation)
-                .action(|r| r.set(r.get() - 45.0)),
-            button("Reset").with_state(rotation).action(|r| r.set(0.0)),
-            button("+45°")
-                .with_state(rotation)
-                .action(|r| r.set(r.get() + 45.0)),
-            button("+90°")
-                .with_state(rotation)
-                .action(|r| r.set(r.get() + 90.0)),
+            button("-90°").action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0)).state(rotation),
+            button("-45°").action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0)).state(rotation),
+            set_f32_button("Reset", 0.0, rotation),
+            button("+45°").action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0)).state(rotation),
+            button("+90°").action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0)).state(rotation),
         )),
     ))
     .padding()
@@ -82,17 +86,14 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
             .offset(animated_x, animated_y)
             .min_height(150.0),
         hstack((
-            button("Center")
-                .with_state(offset_x)
-                .with_state(offset_y)
-                .action(|(x, y)| {
-                    x.set(0.0);
-                    y.set(0.0);
-                }),
-            button("Left").with_state(offset_x).action(|x| x.set(-50.0)),
-            button("Right").with_state(offset_x).action(|x| x.set(50.0)),
-            button("Up").with_state(offset_y).action(|y| y.set(-30.0)),
-            button("Down").with_state(offset_y).action(|y| y.set(30.0)),
+            button("Center").action(|State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
+                x.set(0.0);
+                y.set(0.0);
+            }).state(offset_x).state(offset_y),
+            set_f32_button("Left", -50.0, offset_x),
+            set_f32_button("Right", 50.0, offset_x),
+            set_f32_button("Up", -30.0, offset_y),
+            set_f32_button("Down", 30.0, offset_y),
         )),
     ))
     .padding()
@@ -116,27 +117,21 @@ fn combined_transform_section(
             .rotation(animated_rotation)
             .min_height(150.0),
         hstack((
-            button("Reset")
-                .with_state(combined_scale)
-                .with_state(combined_rotation)
-                .action(|(s, r)| {
-                    s.set(1.0);
-                    r.set(0.0);
-                }),
-            button("Grow + Spin")
-                .with_state(combined_scale)
-                .with_state(combined_rotation)
-                .action(|(s, r)| {
-                    s.set(1.8);
-                    r.set(r.get() + 180.0);
-                }),
-            button("Pulse").with_state(combined_scale).action(|s| {
+            button("Reset").action(|State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
+                s.set(1.0);
+                r.set(0.0);
+            }).state(combined_scale).state(combined_rotation),
+            button("Grow + Spin").action(|State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
+                s.set(1.8);
+                r.set(r.get() + 180.0);
+            }).state(combined_scale).state(combined_rotation),
+            button("Pulse").action(|State(s): State<Binding<f32>>| {
                 if s.get() > 1.2 {
                     s.set(0.8);
                 } else {
                     s.set(1.5);
                 }
-            }),
+            }).state(combined_scale),
         )),
     ))
     .padding()
@@ -151,21 +146,11 @@ fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
         text("Watch the bar smoothly transition between values").body(),
         progress(animated_progress),
         hstack((
-            button("0%")
-                .with_state(progress_value)
-                .action(|pv| pv.set(0.0)),
-            button("25%")
-                .with_state(progress_value)
-                .action(|pv| pv.set(0.25)),
-            button("50%")
-                .with_state(progress_value)
-                .action(|pv| pv.set(0.5)),
-            button("75%")
-                .with_state(progress_value)
-                .action(|pv| pv.set(0.75)),
-            button("100%")
-                .with_state(progress_value)
-                .action(|pv| pv.set(1.0)),
+            set_f64_button("0%", 0.0, progress_value),
+            set_f64_button("25%", 0.25, progress_value),
+            set_f64_button("50%", 0.5, progress_value),
+            set_f64_button("75%", 0.75, progress_value),
+            set_f64_button("100%", 1.0, progress_value),
         )),
     ))
     .padding()
@@ -181,15 +166,15 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
         text("Notice the bouncy overshoot effect").body(),
         progress(animated_progress),
         hstack((
-            text(status).padding().background(Purple.with_opacity(0.3)),
+            text!("{status}").padding().background(Purple.with_opacity(0.3)),
             spacer(),
-            button("Toggle").with_state(spring_value).action(|sv| {
+            button("Toggle").action(|State(sv): State<Binding<f64>>| {
                 if sv.get() > 0.5 {
                     sv.set(0.1);
                 } else {
                     sv.set(0.9);
                 }
-            }),
+            }).state(spring_value),
         )),
     ))
     .padding()
@@ -239,15 +224,9 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
             )),
         )),
         hstack((
-            button("Small (0.3)")
-                .with_state(bar_scale)
-                .action(|w| w.set(0.3)),
-            button("Medium (0.7)")
-                .with_state(bar_scale)
-                .action(|w| w.set(0.7)),
-            button("Large (1.0)")
-                .with_state(bar_scale)
-                .action(|w| w.set(1.0)),
+            set_f32_button("Small (0.3)", 0.3, bar_scale),
+            set_f32_button("Medium (0.7)", 0.7, bar_scale),
+            set_f32_button("Large (1.0)", 1.0, bar_scale),
         )),
     ))
     .padding()
@@ -323,9 +302,7 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
                 .min_height(100.0)
                 .min_width(60.0),
         )),
-        button("Toggle Bars")
-            .with_state(expanded)
-            .action(|e| e.set(!e.get())),
+        button("Toggle Bars").action(|State(e): State<Binding<bool>>| e.set(!e.get())).state(expanded),
     ))
     .padding()
 }
@@ -373,13 +350,11 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
         )),
         Slider::new(0.0..=100.0, size_value),
         hstack((
-            button("0").with_state(size_value).action(|v| v.set(0.0)),
-            button("25").with_state(size_value).action(|v| v.set(25.0)),
-            button("50").with_state(size_value).action(|v| v.set(50.0)),
-            button("75").with_state(size_value).action(|v| v.set(75.0)),
-            button("100")
-                .with_state(size_value)
-                .action(|v| v.set(100.0)),
+            set_f64_button("0", 0.0, size_value),
+            set_f64_button("25", 25.0, size_value),
+            set_f64_button("50", 50.0, size_value),
+            set_f64_button("75", 75.0, size_value),
+            set_f64_button("100", 100.0, size_value),
         )),
     ))
     .padding()

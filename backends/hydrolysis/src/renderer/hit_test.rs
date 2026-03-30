@@ -482,7 +482,9 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
-        let gesture_changed = self.gesture_engine.handle_pointer_cancel(Instant::now(), env);
+        let gesture_changed = self
+            .gesture_engine
+            .handle_pointer_cancel(Instant::now(), env);
         rebuild_requested |= gesture_changed;
         for target in &mut self.hit_test.hover_targets {
             let hovering = self.hit_test.hover_controller.slots[target.slot.index].hovering;

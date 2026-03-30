@@ -1,24 +1,22 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    TABS_BUTTON_HORIZONTAL_INSET, tabs_bar_and_content_rect, tabs_button_rect,
-};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TABS_BUTTON_HORIZONTAL_INSET,
+    WidgetRenderContext, tabs_bar_and_content_rect, tabs_button_rect,
+};
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
-use waterui_core::layout::Size as LayoutSize;
 use waterui::navigation::tab::{TabPosition, Tabs};
+use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
 use super::{inset_rect, widget_theme};
 
 impl HydroNativeView for Native<Tabs> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_tabs(ctx, view, env);
     }
 
@@ -30,7 +28,7 @@ impl HydroNativeView for Native<Tabs> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
