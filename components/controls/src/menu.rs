@@ -102,12 +102,11 @@ impl Menu {
         }
     }
 
-    #[doc(hidden)]
     #[must_use]
-    pub fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
+    fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
         let label = self.label;
-        let resolved_label = label.__text().resolve(env);
-        let icon = label.__icon();
+        let resolved_label = label.semantic_text().resolve(env);
+        let icon = label.semantic_icon();
         ResolvedNestedMenu {
             label: resolved_label,
             semantic_label: label,
@@ -120,7 +119,7 @@ impl Menu {
 impl View for Menu {
     fn body(self, env: &Environment) -> impl View {
         let label = self.label;
-        let accessibility_label = label.__text().resolve(env).content;
+        let accessibility_label = label.semantic_text().resolve(env).content;
         AnyView::new(ResolvedMenu {
             label: AnyView::new(label),
             items: resolve_menu_items(self.items, env),
@@ -162,12 +161,11 @@ impl Command {
         }
     }
 
-    #[doc(hidden)]
     #[must_use]
-    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
+    fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
-        let resolved_label = label.__text().resolve(env);
-        let icon = label.__icon();
+        let resolved_label = label.semantic_text().resolve(env);
+        let icon = label.semantic_icon();
         let action = self.action;
         let captured_env = self.captured_env;
         ResolvedCommand {
@@ -264,9 +262,8 @@ pub enum MenuItem {
 impl_constant!(MenuItem);
 
 impl MenuItem {
-    #[doc(hidden)]
     #[must_use]
-    pub fn resolve(self, env: &Environment) -> ResolvedMenuItem {
+    fn resolve(self, env: &Environment) -> ResolvedMenuItem {
         match self {
             Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
             Self::Divider => ResolvedMenuItem::Divider,
@@ -639,7 +636,7 @@ mod tests {
         assert_eq!(
             command
                 .label
-                .__text()
+                .semantic_text()
                 .resolve(&Environment::default())
                 .content
                 .get()

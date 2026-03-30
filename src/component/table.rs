@@ -231,7 +231,7 @@ impl Signal for TableRowCountSignal {
 fn build_table_header(columns: &[TableColumn]) -> impl View {
     let header_cells = columns
         .iter()
-        .map(|column| AnyView::new(column.label().bold().max_width(f32::MAX)))
+        .map(|column| column.label().bold().max_width(f32::MAX))
         .collect::<Vec<_>>();
 
     hstack(header_cells)
@@ -245,8 +245,8 @@ fn build_table_rows(columns: Vec<TableColumn>, max_rows: usize) -> impl View {
             .iter()
             .map(|column| {
                 column.rows().get_view(row).map_or_else(
-                    || AnyView::new(Text::new("").max_width(f32::MAX)),
-                    |text| AnyView::new(text.max_width(f32::MAX)),
+                    || Text::new("").max_width(f32::MAX),
+                    |text| text.max_width(f32::MAX),
                 )
             })
             .collect::<Vec<_>>();
