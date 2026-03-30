@@ -2,15 +2,16 @@ use alloc::{
     rc::Rc,
     string::{String, ToString},
 };
+use core::cell::RefCell;
 use core::fmt::Display;
 use core::ops::{Add, AddAssign};
 
 use nami::signal::{IntoComputed, IntoSignal};
 use nami::{Computed, Signal, SignalExt};
+use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use waterui_core::configurable;
-use waterui_core::dynamic::watch;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{Environment, View};
 use waterui_graphics::color::Color;
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 use waterui_str::Str;
@@ -27,6 +28,17 @@ pub struct TextConfig {
     pub content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
     pub paragraph_alignment: Computed<HorizontalAlignment>,
+}
+
+impl TextConfig {
+    /// Creates a raw text config from styled content.
+    #[must_use]
+    pub fn new(content: impl IntoComputed<StyledStr>) -> Self {
+        Self {
+            content: content.into_signal().map(StyledStr::from).computed(),
+            paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
+        }
+    }
 }
 
 configurable!(RawText, TextConfig);
@@ -185,7 +197,7 @@ impl Text {
     /// Creates raw text from a computed styled string.
     #[must_use]
     pub fn computed(content: impl IntoComputed<StyledStr>) -> Self {
-        Self(TextKind::Raw(Self::__config(content)))
+        Self(TextKind::Raw(TextConfig::new(content)))
     }
 
     /// Creates verbatim text that never consults the translation catalog.
@@ -197,19 +209,18 @@ impl Text {
     /// Creates localized text that resolves through the runtime translation catalog.
     #[must_use]
     pub fn localized(key: &'static str) -> Self {
-        Self::__localized_with(move |env, locale| {
+        Self::localized_with(move |env, locale| {
             let translated = env
                 .get::<TranslationCatalog>()
                 .and_then(|catalog| catalog.lookup_text(locale, key))
                 .unwrap_or_else(|| Str::from_static(key));
-            Self::__config(StyledStr::plain(translated))
+            TextConfig::new(StyledStr::plain(translated))
         })
     }
 
-    /// Creates text from a locale-aware resolver used by the `text!` macro.
-    #[doc(hidden)]
+    /// Creates text from a locale-aware config resolver.
     #[must_use]
-    pub fn __localized_with(
+    pub fn localized_with(
         resolver: impl Fn(&Environment, &Locale) -> TextConfig + 'static,
     ) -> Self {
         let resolver = Rc::new(resolver);
@@ -262,24 +273,13 @@ impl Text {
     ///
     /// Panics when called on localized text because localization must be resolved
     /// from a concrete environment in the component `body(env)` path.
-    #[doc(hidden)]
     #[must_use]
-    pub fn __into_ffi_without_env(self) -> TextConfig {
+    pub fn into_config_without_env(self) -> TextConfig {
         match self.0 {
             TextKind::Raw(config) => config,
             TextKind::Signal { .. } => panic!(
                 "Environment-dependent Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config"
             ),
-        }
-    }
-
-    /// Builds a raw text config from styled content.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn __config(content: impl IntoComputed<StyledStr>) -> TextConfig {
-        TextConfig {
-            content: content.into_signal().map(StyledStr::from).computed(),
-            paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
         }
     }
 
@@ -461,6 +461,71 @@ impl Text {
     }
 }
 
+#[derive(Clone)]
+struct FlattenSignal<S> {
+    nested: S,
+}
+
+struct FlattenSignalWatchGuard<G>
+where
+    G: WatcherGuard,
+{
+    _outer: G,
+    _inner: Rc<RefCell<Option<BoxWatcherGuard>>>,
+}
+
+impl<G> WatcherGuard for FlattenSignalWatchGuard<G> where G: WatcherGuard {}
+
+impl<S, T> Signal for FlattenSignal<S>
+where
+    S: Signal<Output = Computed<T>> + Clone + 'static,
+    T: Clone + 'static,
+{
+    type Output = T;
+    type Guard = FlattenSignalWatchGuard<S::Guard>;
+
+    fn get(&self) -> Self::Output {
+        self.nested.get().get()
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let inner = Rc::new(RefCell::new(None));
+
+        let initial = self.nested.get();
+        *inner.borrow_mut() = Some(initial.watch({
+            let watcher = watcher.clone();
+            move |ctx| watcher(ctx)
+        }));
+
+        let outer = self.nested.watch({
+            let watcher = watcher.clone();
+            let inner = inner.clone();
+            move |ctx: Context<Computed<T>>| {
+                let next = ctx.value().clone();
+                *inner.borrow_mut() = Some(next.watch({
+                    let watcher = watcher.clone();
+                    move |ctx| watcher(ctx)
+                }));
+                watcher(Context::new(next.get(), ctx.metadata().clone()));
+            }
+        });
+
+        FlattenSignalWatchGuard {
+            _outer: outer,
+            _inner: inner,
+        }
+    }
+}
+
+fn flatten_signal<S, T>(nested: S) -> Computed<T>
+where
+    S: Signal<Output = Computed<T>> + Clone + 'static,
+    T: Clone + 'static,
+{
+    Computed::new(FlattenSignal { nested })
+}
+
 macro_rules! impl_text_font {
     ($(($name:ident, $value:expr)),+) => {
         $(
@@ -491,8 +556,16 @@ pub fn text(text: impl IntoText) -> Text {
 impl View for Text {
     fn body(self, env: &Environment) -> impl View {
         match self.0 {
-            TextKind::Raw(config) => AnyView::new(RawText(config)),
-            TextKind::Signal { resolver } => AnyView::new(watch(resolver(env), RawText)),
+            TextKind::Raw(config) => RawText(config),
+            TextKind::Signal { resolver } => {
+                let config = resolver(env);
+                RawText(TextConfig {
+                    content: flatten_signal(config.map(|config| config.content)),
+                    paragraph_alignment: flatten_signal(
+                        config.map(|config| config.paragraph_alignment),
+                    ),
+                })
+            }
         }
     }
 }
