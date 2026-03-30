@@ -669,13 +669,11 @@ fn snapshot_changed_pixels_reports_differences() {
 
 #[test]
 fn ui_test_hover_drag_and_magnify_change_snapshot() {
-    use waterui::accessibility::AccessibilityRole;
     use waterui::gesture::{
         DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
     };
+    use waterui::prelude::button;
     use waterui::{Binding, SignalExt as _, ViewExt as _};
-    use waterui_core::Metadata;
-
     let offset = Binding::f32(0.0);
     let scale = Binding::f32(1.0);
     let hovered = Binding::bool(false);
@@ -685,63 +683,43 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
         let scale = scale.clone();
         let hovered = hovered.clone();
         move || {
-            let canvas = Canvas::with_signal(
-                offset.zip(&scale).zip(&hovered),
-                |ctx: &mut waterui_canvas::DrawingContext<'_>, ((offset, scale), hovered)| {
-                    let background = if hovered {
-                        Srgb::new(0.15, 0.18, 0.22)
-                    } else {
-                        Srgb::new(0.04, 0.05, 0.06)
-                    };
-                    ctx.set_fill_style(background);
-                    ctx.fill_rect(Rect::new(
-                        Point::new(0.0, 0.0),
-                        Size::new(ctx.width, ctx.height),
-                    ));
-                    ctx.set_fill_style(Srgb::new(0.95, 0.32, 0.18));
-                    let marker_size = 28.0 * scale;
-                    ctx.fill_rect(Rect::new(
-                        Point::new(22.0 + offset, 48.0),
-                        Size::new(marker_size, marker_size),
-                    ));
-                },
-            )
-            .size(120.0, 120.0);
-            let canvas = Metadata::new(
-                canvas,
-                GestureObserver::new(DragGesture::new(0.0))
-                    .action(|offset: waterui::State<Binding<f32>>, env: Environment| {
+            let hovered_opacity = hovered.clone().map(|hovered| if hovered { 1.0 } else { 0.68 });
+            let drag_offset = offset.clone();
+            let magnify_scale = scale.clone();
+            let hovered_on_enter = hovered.clone();
+            let hovered_on_exit = hovered.clone();
+            let surface = button("interactive canvas")
+                .plain()
+                .size(120.0, 120.0)
+                .offset(offset.clone(), 0.0)
+                .scale(scale.clone(), scale.clone())
+                .opacity(hovered_opacity);
+            surface
+                .gesture_observer(GestureObserver::new(DragGesture::new(0.0)).action(
+                    move |env: Environment| {
                         let drag = env
                             .get::<DragEvent>()
                             .expect("test drag gesture missing DragEvent");
-                        offset.set(drag.translation.x);
-                    })
-                    .state(&offset),
-            );
-            let canvas = Metadata::new(
-                canvas,
-                GestureObserver::new(MagnificationGesture::new(1.0))
-                    .action(|scale: waterui::State<Binding<f32>>, env: Environment| {
+                        drag_offset.set(drag.translation.x);
+                    },
+                ))
+                .gesture_observer(GestureObserver::new(MagnificationGesture::new(1.0)).action(
+                    move |env: Environment| {
                         let magnification = env
                             .get::<MagnificationEvent>()
                             .expect("test magnification gesture missing MagnificationEvent");
-                        scale.set(magnification.scale);
-                    })
-                    .state(&scale),
-            );
-            canvas
-                .on_hover_enter(|hovered: waterui::State<Binding<bool>>| hovered.set(true))
-                .on_hover_exit(|hovered: waterui::State<Binding<bool>>| hovered.set(false))
-                .state(&hovered)
-                .a11y_label("interactive canvas")
-                .a11y_role(AccessibilityRole::Button)
+                        magnify_scale.set(magnification.scale);
+                    },
+                ))
+                .on_hover_enter(move || hovered_on_enter.set(true))
+                .on_hover_exit(move || hovered_on_exit.set(false))
         }
     });
 
+    let initial = app.snapshot();
     let bounds = app.query().label("interactive canvas").single().bounds();
     assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
 
-    let _ = app.snapshot();
     assert!(app.query().label("interactive canvas").hover());
     assert!(hovered.get(), "hover should update the tracked binding");
 
@@ -766,6 +744,12 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
     assert!(
         (scale.get() - 1.4).abs() < 0.001,
         "second magnify should update the tracked scale binding"
+    );
+
+    let updated = app.snapshot();
+    assert!(
+        updated.changed_pixels(&initial) > 0,
+        "hover/drag/magnify should change the rendered snapshot"
     );
 }
 
