@@ -108,8 +108,8 @@ fn mode_buttons(modes: &[ChartMode], mode: &Binding<ChartMode>) -> HStack<(Vec<A
         .iter()
         .map(|&target| {
             button(target.label())
-                .with_state(mode)
-                .action(move |m: Binding<ChartMode>| m.set(target))
+                .action(move |State(m): State<Binding<ChartMode>>| m.set(target))
+                .state(mode)
         })
         .collect()
 }

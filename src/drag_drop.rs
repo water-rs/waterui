@@ -27,8 +27,9 @@ use core::fmt;
 use nami::Computed;
 use nami::signal::IntoComputed;
 use waterui_core::{
-    Environment,
-    handler::{BoxedAction, boxed_action},
+    Environment, Error,
+    extract::Extractor,
+    handler::{BoxedAction, Handler, boxed_action},
     metadata::{Metadata, MetadataKey},
 };
 use waterui_str::Str;
@@ -92,14 +93,12 @@ nami::impl_constant!(DragData);
 // Drop Handler with DragData extraction
 // ============================================================================
 
-/// Creates a boxed handler that extracts `DragData` from the environment.
-fn boxed_drop_handler<F: FnMut(DragData) + 'static>(mut f: F) -> BoxedAction<()> {
-    Box::new(move |env: &Environment| {
-        // Extract DragData from the environment (inserted by FFI layer)
-        if let Some(data) = env.get::<DragData>() {
-            f(data.clone());
-        }
-    })
+impl Extractor for DragData {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        env.get::<Self>()
+            .cloned()
+            .ok_or_else(|| Error::msg("DragData not found in environment"))
+    }
 }
 
 /// Metadata that makes a view draggable.
@@ -173,9 +172,9 @@ impl DropDestination {
     ///     println!("Dropped: {:?}", data);
     /// })
     /// ```
-    pub fn new(on_drop: impl FnMut(DragData) + 'static) -> Self {
+    pub fn new<Args>(on_drop: impl Handler<Args, ()>) -> Self {
         Self {
-            on_drop: boxed_drop_handler(on_drop),
+            on_drop: boxed_action(on_drop),
             on_enter: None,
             on_exit: None,
         }

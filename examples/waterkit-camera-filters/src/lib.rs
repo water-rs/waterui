@@ -12,7 +12,7 @@ use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
-use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;
 
@@ -51,14 +51,11 @@ fn main() -> impl View {
         text!("{preview_status}")
             .caption()
             .foreground(MutedForeground),
-        hstack((button("Reconnect Camera Stream")
-            .with_state(&reconnect_ticket)
-            .with_state(&preview_status)
-            .action(|(ticket, status)| {
-                let next = ticket.get().saturating_add(1);
-                ticket.set(next);
-                status.set(Str::from("Reconnecting camera stream..."));
-            }),)),
+        hstack((button("Reconnect Camera Stream").action(|State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
+            let next = ticket.get().saturating_add(1);
+            ticket.set(next);
+            status.set(Str::from("Reconnecting camera stream..."));
+        }).state(&reconnect_ticket).state(&preview_status),)),
     ))
     .spacing(10.0);
 
@@ -86,13 +83,13 @@ fn main() -> impl View {
             .footnote()
             .foreground(MutedForeground),
         button("Sync with Waterkit Camera")
-            .with_state(&waterkit_status)
-            .with_state(&permission_status)
-            .with_state(&camera_inventory)
-            .action_async(|((status, permission), inventory)| async move {
+            .action_async(|State(status): State<Binding<Str>>, State(permission): State<Binding<Str>>, State(inventory): State<Binding<Str>>| async move {
                 sync_waterkit_camera(status, permission, inventory).await;
             })
-            .bordered_prominent(),
+            .bordered_prominent()
+            .state(&waterkit_status)
+            .state(&permission_status)
+            .state(&camera_inventory),
     ))
     .spacing(8.0);
 
@@ -126,8 +123,8 @@ fn filter_button(
     active_filter: &Binding<usize>,
 ) -> impl View {
     button(label)
-        .with_state(active_filter)
-        .action(move |selected| selected.set(filter_index))
+        .action(move |State(selected): State<Binding<usize>>| selected.set(filter_index))
+        .state(active_filter)
 }
 
 struct CameraFilterRenderer {
@@ -448,11 +445,11 @@ impl GpuView for CameraFilterRenderer {
 }
 
 impl SubView for CameraFilterRenderer {
-    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
-        Size::new(
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
             proposal.height.unwrap_or(0.0),
-        )
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

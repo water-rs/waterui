@@ -1331,7 +1331,7 @@ mod tests {
     fn gesture_engine_dispatches_pointer_input_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
         use waterui::gesture::{DragGesture, TapGesture};
-        use waterui_core::handler::boxed_action_with_env;
+        use waterui_core::handler::boxed_action;
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -1344,7 +1344,7 @@ mod tests {
             engine.register_target(
                 bounds,
                 Gesture::Tap(TapGesture::new()),
-                boxed_action_with_env(move |env| {
+                boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     tap_hits.set(tap_hits.get() + 1);
@@ -1359,7 +1359,7 @@ mod tests {
             engine.register_target(
                 bounds,
                 Gesture::Drag(DragGesture::new(8.0)),
-                boxed_action_with_env(move |env| {
+                boxed_action(move |env: Environment| {
                     env.get::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
                     drag_hits.set(drag_hits.get() + 1);
@@ -1384,7 +1384,7 @@ mod tests {
     fn gesture_engine_dispatches_magnification_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
         use waterui::gesture::{DragGesture, MagnificationGesture};
-        use waterui_core::handler::boxed_action_with_env;
+        use waterui_core::handler::boxed_action;
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -1397,7 +1397,7 @@ mod tests {
             engine.register_target(
                 bounds,
                 Gesture::Drag(DragGesture::new(0.0)),
-                boxed_action_with_env(move |env| {
+                boxed_action(move |env: Environment| {
                     env.get::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
                     drag_hits.set(drag_hits.get() + 1);
@@ -1412,7 +1412,7 @@ mod tests {
             engine.register_target(
                 bounds,
                 Gesture::Magnification(MagnificationGesture::new(1.0)),
-                boxed_action_with_env(move |env| {
+                boxed_action(move |env: Environment| {
                     env.get::<MagnificationEvent>()
                         .expect("magnification action missing MagnificationEvent in environment");
                     magnify_hits.set(magnify_hits.get() + 1);

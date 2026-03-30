@@ -346,26 +346,24 @@ fn main() -> impl View {
             )
             .caption(),
             hstack((
-                button("LLM CPS -").with_state(&stream_cps).action(|cps| {
+                button("LLM CPS -").action(|State(cps): State<Binding<i32>>| {
                     cps.set((cps.get() - 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                }),
-                button("LLM CPS +").with_state(&stream_cps).action(|cps| {
+                }).state(&stream_cps),
+                button("LLM CPS +").action(|State(cps): State<Binding<i32>>| {
                     cps.set((cps.get() + 4).clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-                }),
-                button("Preset").with_state(&animation_preset).action(|preset| {
+                }).state(&stream_cps),
+                button("Preset").action(|State(preset): State<Binding<i32>>| {
                     preset.set((preset.get() + 1).rem_euclid(3));
-                }),
-                button("CPS -").with_state(&animation_cps).action(|cps| {
+                }).state(&animation_preset),
+                button("CPS -").action(|State(cps): State<Binding<i32>>| {
                     cps.set((cps.get() - 8).clamp(8, 256));
-                }),
-                button("CPS +").with_state(&animation_cps).action(|cps| {
+                }).state(&animation_cps),
+                button("CPS +").action(|State(cps): State<Binding<i32>>| {
                     cps.set((cps.get() + 8).clamp(8, 256));
-                }),
-                button(text!("{token_fade_label}"))
-                    .with_state(&token_fade_enabled)
-                    .action(|enabled| {
-                        enabled.set(!enabled.get());
-                    }),
+                }).state(&animation_cps),
+                button(text!("{token_fade_label}")).action(|State(enabled): State<Binding<bool>>| {
+                    enabled.set(!enabled.get());
+                }).state(&token_fade_enabled),
             ))
             .spacing(10.0),
             Divider,

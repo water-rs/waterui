@@ -540,29 +540,29 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
             let canvas = Metadata::new(
                 canvas,
                 GestureObserver::new(DragGesture::new(0.0))
-                    .with_state(&offset)
-                    .action_with_env(|offset: Binding<f32>, env| {
+                    .action(|offset: waterui::State<Binding<f32>>, env: Environment| {
                         let drag = env
                             .get::<DragEvent>()
                             .expect("test drag gesture missing DragEvent");
                         offset.set(drag.translation.x);
-                    }),
+                    })
+                    .state(&offset),
             );
             let canvas = Metadata::new(
                 canvas,
                 GestureObserver::new(MagnificationGesture::new(1.0))
-                    .with_state(&scale)
-                    .action_with_env(|scale: Binding<f32>, env| {
+                    .action(|scale: waterui::State<Binding<f32>>, env: Environment| {
                         let magnification = env
                             .get::<MagnificationEvent>()
                             .expect("test magnification gesture missing MagnificationEvent");
                         scale.set(magnification.scale);
-                    }),
+                    })
+                    .state(&scale),
             );
             canvas
-                .with_state(&hovered)
-                .on_hover_enter(|hovered: Binding<bool>| hovered.set(true))
-                .on_hover_exit(|hovered: Binding<bool>| hovered.set(false))
+                .on_hover_enter(|hovered: waterui::State<Binding<bool>>| hovered.set(true))
+                .on_hover_exit(|hovered: waterui::State<Binding<bool>>| hovered.set(false))
+                .state(&hovered)
                 .a11y_label("interactive canvas")
                 .a11y_role(AccessibilityRole::Button)
         }
@@ -609,13 +609,13 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 
     let mut app = UiTest::new().mount(move || {
         waterui::text!("{status_for_view}")
-            .with_state(&status_for_view)
-            .on_appear(|status: Binding<String>| {
+            .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
                     status.set(String::from("ready"));
                 })
                 .detach();
             })
+            .state(&status_for_view)
     });
 
     let deadline = std::time::Instant::now() + Duration::from_millis(200);

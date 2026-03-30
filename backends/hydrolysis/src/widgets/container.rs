@@ -1,7 +1,8 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, estimate_layout_intrinsic,
-    measure_layout_dimensions, measure_view_intrinsic, normalize_layout_view,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    estimate_layout_intrinsic, measure_layout_dimensions, measure_view_intrinsic,
+    normalize_layout_view,
 };
 use nami::Signal;
 use waterui::views::Views;
@@ -10,11 +11,7 @@ use waterui_core::{Environment, Native};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 
 impl HydroNativeView for Native<FixedContainer> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_fixed_container(ctx.renderer_mut(), render_ctx, view, env);
     }
@@ -36,11 +33,7 @@ impl HydroNativeView for Native<FixedContainer> {
 }
 
 impl HydroNativeView for Native<LazyContainer> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         let render_ctx = ctx.render_context();
         HydrolysisRenderer::render_lazy_container(ctx.renderer_mut(), render_ctx, view, env);
     }

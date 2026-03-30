@@ -48,34 +48,25 @@ fn main() -> impl View {
             spacer_min(16.0),
             text("Theme"),
             hstack((
-                button("Cyber")
-                    .with_state(&theme)
-                    .with_state(&theme_index)
-                    .action(|(t, i)| {
-                        t.set(WaveformTheme::cyber());
-                        i.set(0);
-                    }),
-                button("Recorder")
-                    .with_state(&theme)
-                    .with_state(&theme_index)
-                    .action(|(t, i)| {
-                        t.set(WaveformTheme::recorder());
-                        i.set(1);
-                    }),
-                button("Oscilloscope")
-                    .with_state(&theme)
-                    .with_state(&theme_index)
-                    .action(|(t, i)| {
-                        t.set(WaveformTheme::oscilloscope());
-                        i.set(2);
-                    }),
+                button("Cyber").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
+                    t.set(WaveformTheme::cyber());
+                    i.set(0);
+                }).state(&theme).state(&theme_index),
+                button("Recorder").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
+                    t.set(WaveformTheme::recorder());
+                    i.set(1);
+                }).state(&theme).state(&theme_index),
+                button("Oscilloscope").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
+                    t.set(WaveformTheme::oscilloscope());
+                    i.set(2);
+                }).state(&theme).state(&theme_index),
             ))
             .spacing(12.0),
             spacer_min(16.0),
             text("Sensitivity"),
             Slider::new(0.5..=3.0, &sensitivity),
             spacer_min(8.0),
-            text(mode_text),
+            text!("{mode_text}"),
         ))
         .padding_with(EdgeInsets::all(24.0))
         .background(Srgb::BLACK.with_opacity(0.7)),

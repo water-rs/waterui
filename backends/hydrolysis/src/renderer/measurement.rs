@@ -918,10 +918,10 @@ pub(crate) fn measure_date_picker_intrinsic(
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let label_size = measure_view_intrinsic(&date_picker.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let current = date_picker.value.get().clamp(
-        *date_picker.range.start(),
-        *date_picker.range.end(),
-    );
+    let current = date_picker
+        .value
+        .get()
+        .clamp(*date_picker.range.start(), *date_picker.range.end());
     let candidates = [
         date_picker.ty.format_value(*date_picker.range.start()),
         date_picker.ty.format_value(current),
@@ -930,16 +930,17 @@ pub(crate) fn measure_date_picker_intrinsic(
     let mut field_text_width: f64 = 0.0;
     let mut field_text_height: f64 = 0.0;
     for candidate in candidates {
-        let size =
-            HydrolysisRenderer::measure_text_intrinsic_size(state, StyledStr::plain(candidate), env);
+        let size = HydrolysisRenderer::measure_text_intrinsic_size(
+            state,
+            StyledStr::plain(candidate),
+            env,
+        );
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width =
-        (field_text_width + metrics.horizontal_inset * 2.0 + metrics.indicator_space)
-            .max(metrics.min_width);
-    let field_height =
-        (field_text_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
+    let field_width = (field_text_width + metrics.horizontal_inset * 2.0 + metrics.indicator_space)
+        .max(metrics.min_width);
+    let field_height = (field_text_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
     let width = if has_label {
         f64::from(label_size.width) + 8.0 + field_width
     } else {
@@ -994,7 +995,7 @@ pub(crate) fn measure_picker_intrinsic(
             }
             let width = (metrics.horizontal_inset * 2.0
                 + metrics.radio_indicator_size
-                 + metrics.radio_label_spacing
+                + metrics.radio_label_spacing
                 + max_item_width)
                 .max(metrics.min_width);
             let height = (metrics.vertical_inset * 2.0 + total_height).max(metrics.min_height);

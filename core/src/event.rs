@@ -6,7 +6,7 @@
 
 use crate::{
     handler::{
-        BoxedAction, BoxedActionOnce, boxed_action, boxed_action_once, boxed_action_with_env,
+        BoxedAction, BoxedActionOnce, Handler, HandlerOnce, boxed_action, boxed_action_once,
     },
     layout::Point,
     metadata::MetadataKey,
@@ -41,7 +41,7 @@ impl LifeCycleHook {
     /// * `lifecycle` - The lifecycle event to listen for.
     /// * `handler` - The action to execute when the event occurs (called once).
     #[must_use]
-    pub fn new(lifecycle: LifeCycle, handler: impl FnOnce() + 'static) -> Self {
+    pub fn new<Args>(lifecycle: LifeCycle, handler: impl HandlerOnce<Args, ()>) -> Self {
         Self {
             lifecycle,
             handler: boxed_action_once(handler),
@@ -121,22 +121,12 @@ impl OnEvent {
     /// * `event` - The event to listen for.
     /// * `handler` - The action to execute when the event occurs (can be called multiple times).
     #[must_use]
-    pub fn new(event: Event, handler: impl FnMut() + 'static) -> Self {
+    pub fn new<Args>(event: Event, handler: impl Handler<Args, ()>) -> Self {
         Self {
             event,
             handler: boxed_action(handler),
         }
     }
-
-    /// Creates a new event handler that reads payload from the environment.
-    #[must_use]
-    pub fn new_with_env(event: Event, handler: impl FnMut(&crate::Environment) + 'static) -> Self {
-        Self {
-            event,
-            handler: boxed_action_with_env(handler),
-        }
-    }
-
     /// Returns the event associated with this handler.
     #[must_use]
     pub const fn event(&self) -> Event {

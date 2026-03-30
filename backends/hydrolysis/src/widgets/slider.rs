@@ -1,27 +1,26 @@
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext, measure_slider_intrinsic,
-    measure_view_intrinsic, normalize_view_for_render, slider_value_epsilon, transformed_rect,
-};
-#[cfg(feature = "accessibility")]
-use crate::renderer::slider_step_for_range;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
-use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole};
+use crate::renderer::slider_step_for_range;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_slider_intrinsic, measure_view_intrinsic, normalize_view_for_render,
+    slider_value_epsilon, transformed_rect,
+};
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
 use nami::Signal;
 use waterui_controls::slider::SliderConfig;
-use waterui_core::layout::Size as LayoutSize;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::layout::Size as LayoutSize;
 
 use super::util::widget_theme;
 
 impl HydroNativeView for Native<SliderConfig> {
-    fn render(
-        ctx: &mut WidgetRenderContext<'_>,
-        view: Self,
-        env: &Environment
-    ) {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
         render_slider(ctx, view, env);
     }
 
@@ -33,7 +32,7 @@ impl HydroNativeView for Native<SliderConfig> {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         view: &Self,
-        env: &Environment
+        env: &Environment,
     ) {
         #[cfg(feature = "accessibility")]
         {
@@ -190,15 +189,16 @@ pub(crate) fn render_slider(
     );
     let inverse_transform = ctx.hit_transform.inverse();
     let value_epsilon = slider_value_epsilon(span, usable_track);
-    ctx.renderer_mut().register_pointer_drag_target(hit_bounds, move |_renderer, point, _env| {
-        let local_point = inverse_transform * point;
-        let x = local_point.x.clamp(track_left, track_right);
-        let t = (x - track_left) / usable_track;
-        let next = range_start + span * t;
-        if (value_binding.get() - next).abs() <= value_epsilon {
-            return false;
-        }
-        value_binding.set(next);
-        true
-    });
+    ctx.renderer_mut()
+        .register_pointer_drag_target(hit_bounds, move |_renderer, point, _env| {
+            let local_point = inverse_transform * point;
+            let x = local_point.x.clamp(track_left, track_right);
+            let t = (x - track_left) / usable_track;
+            let next = range_start + span * t;
+            if (value_binding.get() - next).abs() <= value_epsilon {
+                return false;
+            }
+            value_binding.set(next);
+            true
+        });
 }
