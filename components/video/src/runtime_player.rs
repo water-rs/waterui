@@ -14,6 +14,7 @@ use std::{
 };
 
 use executor_core::spawn_local;
+use nami::Computed;
 use uuid::Uuid;
 use waterkit_audio::{
     AudioPlayer, MediaCommand, MediaMetadata, MediaSession, PlaybackState, QueueNavigationControls,
@@ -498,6 +499,12 @@ struct RuntimeSubtitleTrack {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeMediaItem {
+    source: Url,
+    subtitle_tracks: Vec<RuntimeSubtitleTrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RuntimeSubtitleSource {
     Sidecar(SubtitleTrack),
     Embedded(EmbeddedSubtitleSourceTrack),
@@ -653,8 +660,9 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         } = config;
 
         let on_event: OnEvent = Rc::from(on_event);
-        AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
-            let subtitle_tracks = runtime_sidecar_subtitle_tracks(&item.subtitle_tracks);
+        let source = runtime_media_item_signal(source);
+        AnyView::new(Dynamic::watch(source, move |item: RuntimeMediaItem| {
+            let subtitle_tracks = item.subtitle_tracks;
             let subtitle = SubtitleBindings {
                 text: binding(String::new()),
                 track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
@@ -696,8 +704,9 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
         } = config;
 
         let on_event: OnEvent = Rc::from(on_event);
-        AnyView::new(Dynamic::watch(source, move |item: MediaItem| {
-            let subtitle_tracks = runtime_sidecar_subtitle_tracks(&item.subtitle_tracks);
+        let source = runtime_media_item_signal(source);
+        AnyView::new(Dynamic::watch(source, move |item: RuntimeMediaItem| {
+            let subtitle_tracks = item.subtitle_tracks;
             let player = PlayerBindings {
                 is_playing: Binding::bool(true),
                 progress_display: Binding::f64(0.0),
@@ -820,6 +829,17 @@ fn runtime_embedded_subtitle_tracks(
 
 fn runtime_subtitle_track_labels(tracks: &[RuntimeSubtitleTrack]) -> Vec<String> {
     tracks.iter().map(|track| track.label.clone()).collect()
+}
+
+fn runtime_media_item(item: MediaItem) -> RuntimeMediaItem {
+    RuntimeMediaItem {
+        source: item.source,
+        subtitle_tracks: runtime_sidecar_subtitle_tracks(&item.subtitle_tracks),
+    }
+}
+
+fn runtime_media_item_signal(source: Computed<MediaItem>) -> Computed<RuntimeMediaItem> {
+    source.map(runtime_media_item).distinct().computed()
 }
 
 fn select_default_subtitle_track_index(tracks: &[RuntimeSubtitleTrack]) -> Option<usize> {
