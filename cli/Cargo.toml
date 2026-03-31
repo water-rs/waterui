@@ -15,6 +15,12 @@ categories.workspace = true
 waterui-version = "0.2.1"
 waterui-ffi-version = "0.2.1"
 hydrolysis-version = "0.1.0"
+waterui-gtk-version = "0.1.0"
+waterui-preview-version = "0.1.0"
+apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+apple-backend-commit = "4613a5f8425efb52835a90f31f5c2148df6ebd56"
+android-backend-url = "https://github.com/water-rs/android-backend.git"
+android-backend-commit = "88506447d3361f3b5f1e58be5cff5cff474fc8b6"
 
 [[bin]]
 name = "water"
