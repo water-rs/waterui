@@ -1,6 +1,7 @@
 //! GPU renderer for packed barcode matrices.
 
 use bytemuck::{Pod, Zeroable};
+use core::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::{BarcodeSource, view::BarcodeFill};
@@ -49,8 +50,8 @@ pub struct BarcodeRenderer {
     gradient_end_point: [f32; 2],
 }
 
-impl core::fmt::Debug for BarcodeRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for BarcodeRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeRenderer")
             .field("source", &self.source)
             .field("current_matrix_dim", &self.current_matrix_dim)

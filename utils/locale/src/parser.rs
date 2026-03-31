@@ -2,6 +2,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use core::fmt;
 
 use serde::Deserialize;
 
@@ -202,8 +203,8 @@ pub enum ValidationError {
     },
 }
 
-impl core::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPluralForm { key, form, locale } => {
                 write!(

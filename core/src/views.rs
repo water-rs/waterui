@@ -9,6 +9,7 @@ use crate::{AnyView, View};
 use alloc::fmt::Debug;
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
 use core::any::type_name;
+use core::fmt;
 use core::num::NonZeroI32;
 use core::ops::{Bound, RangeBounds};
 use core::{
@@ -65,7 +66,7 @@ pub trait Views {
 pub struct AnyViews<V>(Box<dyn AnyViewsImpl<View = V>>);
 
 impl<V> Debug for AnyViews<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(type_name::<Self>())
     }
 }
@@ -104,7 +105,7 @@ impl<V> From<AnyViews<V>> for SharedAnyViews<V> {
 }
 
 impl<V> Debug for SharedAnyViews<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(type_name::<Self>())
     }
 }

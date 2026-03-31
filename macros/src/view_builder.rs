@@ -5,9 +5,9 @@ use quote::quote;
 use syn::parse::{Nothing, Parse, ParseStream};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprGroup, ExprIf, ExprLet, ExprMacro, ExprMatch, ExprParen, ExprReturn,
-    ImplItemFn, Ident, ItemFn, ItemImpl, ReturnType, Signature, Stmt, StmtMacro, TraitItemFn,
-    Type, parse_quote,
+    Block, Expr, ExprGroup, ExprIf, ExprLet, ExprMacro, ExprMatch, ExprParen, ExprReturn, Ident,
+    ImplItemFn, ItemFn, ItemImpl, ReturnType, Signature, Stmt, StmtMacro, TraitItemFn, Type,
+    parse_quote,
 };
 
 pub fn expand_attribute(args: TokenStream, input: TokenStream) -> TokenStream {

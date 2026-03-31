@@ -21,8 +21,11 @@
 //! let device = &guard.device;
 //! ```
 
+use fmt::Write as _;
 use std::collections::HashMap;
-use std::fmt::Write as _;
+use std::collections::hash_map::DefaultHasher;
+use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -43,8 +46,8 @@ pub enum SharedContextError {
     AlreadyInitialized,
 }
 
-impl std::fmt::Display for SharedContextError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SharedContextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoAdapter => write!(f, "No suitable GPU adapter found"),
             Self::DeviceCreationFailed(e) => write!(f, "Failed to create GPU device: {e}"),
@@ -53,7 +56,7 @@ impl std::fmt::Display for SharedContextError {
     }
 }
 
-impl std::error::Error for SharedContextError {}
+impl Error for SharedContextError {}
 
 /// Global shared GPU context.
 ///
@@ -77,8 +80,8 @@ pub struct SharedGpuContext {
     shader_cache: parking_lot::Mutex<HashMap<u64, Vec<CachedShaderEntry>>>,
 }
 
-impl std::fmt::Debug for SharedGpuContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SharedGpuContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let cache_size = self
             .shader_cache
             .lock()
@@ -115,7 +118,7 @@ impl CachedShaderSource {
 }
 
 fn shader_source_hash(source: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     hasher.finish()
 }

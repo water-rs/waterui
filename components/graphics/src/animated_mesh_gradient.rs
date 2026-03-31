@@ -3,6 +3,8 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::fmt;
+use std::time::Instant;
 
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 
@@ -195,7 +197,7 @@ struct AnimatedMeshRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
-    start_time: std::time::Instant,
+    start_time: Instant,
 }
 
 impl AnimatedMeshRenderer {
@@ -212,7 +214,7 @@ impl AnimatedMeshRenderer {
             uniform_buffer: None,
             bind_group: None,
             pipeline_format: None,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
         }
     }
 }
@@ -306,7 +308,7 @@ impl GpuView for AnimatedMeshRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = std::time::Instant::now();
+        self.start_time = Instant::now();
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -388,8 +390,8 @@ pub struct AnimatedMeshGradient {
     inner: GpuSurface,
 }
 
-impl core::fmt::Debug for AnimatedMeshGradient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for AnimatedMeshGradient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AnimatedMeshGradient")
             .finish_non_exhaustive()
     }

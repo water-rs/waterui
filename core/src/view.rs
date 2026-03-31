@@ -14,6 +14,8 @@
 
 use crate::{AnyView, Environment, components::Metadata, layout::StretchAxis};
 use alloc::{boxed::Box, vec::Vec};
+use core::any::type_name;
+use core::fmt;
 
 /// View represents a part of the user interface.
 ///
@@ -173,9 +175,9 @@ type HookFn<C> = Box<dyn Fn(&Environment, C) -> AnyView>;
 /// Hooks are used to apply global transformations to views based on their configuration.
 pub struct Hook<C>(HookFn<C>);
 
-impl<C> core::fmt::Debug for Hook<C> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Modifier<{}>(..)", core::any::type_name::<C>())
+impl<C> fmt::Debug for Hook<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Modifier<{}>(..)", type_name::<C>())
     }
 }
 

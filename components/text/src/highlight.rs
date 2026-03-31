@@ -1,3 +1,4 @@
+use core::fmt;
 use core::{
     error::Error,
     fmt::{Debug, Display},
@@ -75,8 +76,8 @@ macro_rules! languages {
             }
         }
 
-        impl core::fmt::Display for Language {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        impl fmt::Display for Language {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match self {
                     $(Self::$ident => write!(f, stringify!($ident)),)*
                 }
@@ -156,7 +157,7 @@ impl_constant!(Language);
 pub struct ParseLanguageError;
 
 impl Display for ParseLanguageError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Failed to parse language")
     }
 }
@@ -170,7 +171,7 @@ pub struct DefaultHighlighter {
 }
 
 impl Debug for DefaultHighlighter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DefaultHighlighter").finish()
     }
 }

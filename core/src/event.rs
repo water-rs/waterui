@@ -11,6 +11,7 @@ use crate::{
     layout::Point,
     metadata::MetadataKey,
 };
+use core::fmt;
 
 /// Lifecycle events that occur once per view attachment/detachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,8 +68,8 @@ impl LifeCycleHook {
     }
 }
 
-impl core::fmt::Debug for LifeCycleHook {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for LifeCycleHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LifeCycleHook")
             .field("lifecycle", &self.lifecycle)
             .finish_non_exhaustive()
@@ -139,8 +140,8 @@ impl OnEvent {
     }
 }
 
-impl core::fmt::Debug for OnEvent {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for OnEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OnEvent")
             .field("event", &self.event)
             .finish_non_exhaustive()

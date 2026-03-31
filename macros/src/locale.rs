@@ -4,7 +4,9 @@
 //! The macro loads translation files from the `i18n/` folder at compile time.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use toml::value::Table;
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -117,7 +119,7 @@ impl TranslationBundle {
     }
 
     fn parse_plural_field(
-        table: &toml::value::Table,
+        table: &Table,
         key: &str,
         source: &Path,
         translation_key: &str,
@@ -440,7 +442,7 @@ fn collect_plural_names(placeholders: &[Placeholder]) -> Vec<&str> {
         .collect()
 }
 
-fn build_binding_map(bindings: &[(Ident, Expr)]) -> std::collections::HashMap<String, &Expr> {
+fn build_binding_map(bindings: &[(Ident, Expr)]) -> HashMap<String, &Expr> {
     bindings
         .iter()
         .map(|(name, expr)| (name.to_string(), expr))
@@ -450,7 +452,7 @@ fn build_binding_map(bindings: &[(Ident, Expr)]) -> std::collections::HashMap<St
 fn build_captures_and_idents(
     waterui: &TokenStream2,
     placeholders: &[Placeholder],
-    binding_map: &std::collections::HashMap<String, &Expr>,
+    binding_map: &HashMap<String, &Expr>,
 ) -> (Vec<TokenStream2>, Vec<Ident>) {
     let mut captures = Vec::new();
     let mut all_names = Vec::new();

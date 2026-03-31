@@ -3,6 +3,7 @@
 //! This module provides a path builder that uses WaterUI's native types
 //! (Point, Size, Rect) while wrapping kurbo's BezPath for rendering.
 
+use core::fmt;
 use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
@@ -264,8 +265,8 @@ impl Default for Path {
     }
 }
 
-impl core::fmt::Debug for Path {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Path")
             .field("elements", &self.inner.elements().len())
             .finish()

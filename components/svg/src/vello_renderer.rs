@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+use core::fmt;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
@@ -77,8 +78,8 @@ pub struct VelloSvgRenderer {
     current_height: u32,
 }
 
-impl core::fmt::Debug for VelloSvgRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for VelloSvgRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VelloSvgRenderer")
             .field("current_width", &self.current_width)
             .field("current_height", &self.current_height)

@@ -10,6 +10,7 @@
 
 use alloc::boxed::Box;
 use core::any::Any;
+use core::any::type_name;
 
 use crate::{AnyView, Environment, View};
 
@@ -49,7 +50,7 @@ impl<T: MetadataKey> Metadata<T> {
     fn panic_not_caught() {
         panic!(
             "The metadata `{}` is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
-            core::any::type_name::<Self>()
+            type_name::<Self>()
         );
     }
 }
