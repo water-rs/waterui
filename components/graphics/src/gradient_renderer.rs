@@ -44,6 +44,8 @@ pub enum GradientType {
     Mesh = 3,
 }
 
+nami::impl_constant!(GradientType);
+
 /// A resolved color stop for backend-native gradient rendering.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedGradientStop {

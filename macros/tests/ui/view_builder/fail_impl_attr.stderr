@@ -1,0 +1,5 @@
+error: #[view_builder] applies to a function or method, not an entire impl block
+ --> tests/ui/view_builder/fail_impl_attr.rs:4:1
+  |
+4 | impl waterui::View for Sample {
+  | ^^^^

@@ -29,10 +29,12 @@ fn hover_events_section(hover_count: &Binding<i32>, is_hovered: &Binding<bool>) 
             .width(200.0)
             .height(80.0)
             .background(bg.computed())
-            .on_hover_enter(|State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
-                *count.get_mut() += 1;
-                hovered.set(true);
-            })
+            .on_hover_enter(
+                |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
+                    *count.get_mut() += 1;
+                    hovered.set(true);
+                },
+            )
             .on_hover_exit(|_: Environment, State(hovered): State<Binding<bool>>| {
                 hovered.set(false);
             })

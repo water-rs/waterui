@@ -14,6 +14,7 @@ use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
+use waterui::{view, view_builder};
 
 /// Combined state for the media display area
 #[derive(Debug, Clone, PartialEq)]
@@ -138,39 +139,41 @@ fn picker_button(
 
 /// Displays the loaded media or a placeholder - single Dynamic::watch
 fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
-    Dynamic::watch(display_state, move |state| match state {
-        DisplayState::Empty => vstack((
-            text("No media selected")
-                .sub_headline()
-                .foreground(MutedForeground),
-            text("Tap a button above to select media")
-                .body()
-                .foreground(MutedForeground),
-        ))
-        .spacing(8.0)
-        .anyview(),
+    Dynamic::watch(display_state, move |state| {
+        view! {
+            match state {
+                DisplayState::Empty => vstack((
+                    text("No media selected")
+                        .sub_headline()
+                        .foreground(MutedForeground),
+                    text("Tap a button above to select media")
+                        .body()
+                        .foreground(MutedForeground),
+                ))
+                .spacing(8.0),
 
-        DisplayState::Loading => vstack((
-            loading(),
-            text("Loading media...").body().foreground(MutedForeground),
-        ))
-        .spacing(12.0)
-        .anyview(),
+                DisplayState::Loading => vstack((
+                    loading(),
+                    text("Loading media...").body().foreground(MutedForeground),
+                ))
+                .spacing(12.0),
 
-        DisplayState::Loaded(media) => media_view(media),
+                DisplayState::Loaded(media) => media_view(media),
 
-        DisplayState::Error(message) => vstack((
-            text("Error").sub_headline().bold().foreground(Accent),
-            text(message).body().foreground(MutedForeground),
-        ))
-        .spacing(8.0)
-        .padding_with(16.0)
-        .anyview(),
+                DisplayState::Error(message) => vstack((
+                    text("Error").sub_headline().bold().foreground(Accent),
+                    text(message).body().foreground(MutedForeground),
+                ))
+                .spacing(8.0)
+                .padding_with(16.0),
+            }
+        }
     })
 }
 
 /// Creates a view for the loaded media based on its type
-fn media_view(media: Media) -> AnyView {
+#[view_builder]
+fn media_view(media: Media) -> impl View {
     match media {
         Media::Image(url) => {
             tracing::debug!("Displaying image from: {}", url);
@@ -183,11 +186,10 @@ fn media_view(media: Media) -> AnyView {
                     .foreground(MutedForeground)
                     .padding_with(8.0),
             ))
-            .anyview()
         }
         Media::Video(url) => {
             tracing::debug!("Displaying video from: {}", url);
-            video_view(url).anyview()
+            video_view(url)
         }
         Media::LivePhoto(source) => {
             tracing::debug!("Displaying live photo");
@@ -198,7 +200,6 @@ fn media_view(media: Media) -> AnyView {
                     .foreground(MutedForeground)
                     .padding_with(8.0),
             ))
-            .anyview()
         }
     }
 }

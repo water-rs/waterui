@@ -697,7 +697,9 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
             let drag_offset_state = DragOffset(offset.clone());
             let zoom_scale_state = ZoomScale(scale.clone());
             let hover_state = HoverState(hovered.clone());
-            let hovered_opacity = hovered.clone().map(|hovered| if hovered { 1.0 } else { 0.68 });
+            let hovered_opacity = hovered
+                .clone()
+                .map(|hovered| if hovered { 1.0 } else { 0.68 });
             let surface = text("interactive canvas")
                 .padding()
                 .size(120.0, 120.0)

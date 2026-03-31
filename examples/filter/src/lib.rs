@@ -235,24 +235,50 @@ fn combined_section(
             .hue_rotation(animated_hue)
             .min_height(100.0),
         hstack((
-            button("Reset").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>, State(h): State<Binding<f64>>| {
-                b.set(0.0);
-                s.set(1.0);
-                h.set(0.0);
-            }).state(combined_blur).state(combined_saturation).state(combined_hue),
-            button("Dreamy").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                b.set(3.0);
-                s.set(0.7);
-            }).state(combined_blur).state(combined_saturation),
-            button("Vibrant").action(|State(h): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                h.set(180.0);
-                s.set(1.8);
-            }).state(combined_hue).state(combined_saturation),
-            button("Vintage").action(|State(b): State<Binding<f64>>, State(s): State<Binding<f64>>, State(h): State<Binding<f64>>| {
-                b.set(1.0);
-                s.set(0.5);
-                h.set(30.0);
-            }).state(combined_blur).state(combined_saturation).state(combined_hue),
+            button("Reset")
+                .action(
+                    |State(b): State<Binding<f64>>,
+                     State(s): State<Binding<f64>>,
+                     State(h): State<Binding<f64>>| {
+                        b.set(0.0);
+                        s.set(1.0);
+                        h.set(0.0);
+                    },
+                )
+                .state(combined_blur)
+                .state(combined_saturation)
+                .state(combined_hue),
+            button("Dreamy")
+                .action(
+                    |State(b): State<Binding<f64>>, State(s): State<Binding<f64>>| {
+                        b.set(3.0);
+                        s.set(0.7);
+                    },
+                )
+                .state(combined_blur)
+                .state(combined_saturation),
+            button("Vibrant")
+                .action(
+                    |State(h): State<Binding<f64>>, State(s): State<Binding<f64>>| {
+                        h.set(180.0);
+                        s.set(1.8);
+                    },
+                )
+                .state(combined_hue)
+                .state(combined_saturation),
+            button("Vintage")
+                .action(
+                    |State(b): State<Binding<f64>>,
+                     State(s): State<Binding<f64>>,
+                     State(h): State<Binding<f64>>| {
+                        b.set(1.0);
+                        s.set(0.5);
+                        h.set(30.0);
+                    },
+                )
+                .state(combined_blur)
+                .state(combined_saturation)
+                .state(combined_hue),
         )),
     ))
     .padding()

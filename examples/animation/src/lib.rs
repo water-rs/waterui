@@ -63,11 +63,19 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
             .rotation(animated_rotation)
             .min_height(100.0),
         hstack((
-            button("-90°").action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0)).state(rotation),
-            button("-45°").action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0)).state(rotation),
+            button("-90°")
+                .action(|State(r): State<Binding<f32>>| r.set(r.get() - 90.0))
+                .state(rotation),
+            button("-45°")
+                .action(|State(r): State<Binding<f32>>| r.set(r.get() - 45.0))
+                .state(rotation),
             set_f32_button("Reset", 0.0, rotation),
-            button("+45°").action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0)).state(rotation),
-            button("+90°").action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0)).state(rotation),
+            button("+45°")
+                .action(|State(r): State<Binding<f32>>| r.set(r.get() + 45.0))
+                .state(rotation),
+            button("+90°")
+                .action(|State(r): State<Binding<f32>>| r.set(r.get() + 90.0))
+                .state(rotation),
         )),
     ))
     .padding()
@@ -86,10 +94,15 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
             .offset(animated_x, animated_y)
             .min_height(150.0),
         hstack((
-            button("Center").action(|State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
-                x.set(0.0);
-                y.set(0.0);
-            }).state(offset_x).state(offset_y),
+            button("Center")
+                .action(
+                    |State(x): State<Binding<f32>>, State(y): State<Binding<f32>>| {
+                        x.set(0.0);
+                        y.set(0.0);
+                    },
+                )
+                .state(offset_x)
+                .state(offset_y),
             set_f32_button("Left", -50.0, offset_x),
             set_f32_button("Right", 50.0, offset_x),
             set_f32_button("Up", -30.0, offset_y),
@@ -117,21 +130,33 @@ fn combined_transform_section(
             .rotation(animated_rotation)
             .min_height(150.0),
         hstack((
-            button("Reset").action(|State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
-                s.set(1.0);
-                r.set(0.0);
-            }).state(combined_scale).state(combined_rotation),
-            button("Grow + Spin").action(|State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
-                s.set(1.8);
-                r.set(r.get() + 180.0);
-            }).state(combined_scale).state(combined_rotation),
-            button("Pulse").action(|State(s): State<Binding<f32>>| {
-                if s.get() > 1.2 {
-                    s.set(0.8);
-                } else {
-                    s.set(1.5);
-                }
-            }).state(combined_scale),
+            button("Reset")
+                .action(
+                    |State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
+                        s.set(1.0);
+                        r.set(0.0);
+                    },
+                )
+                .state(combined_scale)
+                .state(combined_rotation),
+            button("Grow + Spin")
+                .action(
+                    |State(s): State<Binding<f32>>, State(r): State<Binding<f32>>| {
+                        s.set(1.8);
+                        r.set(r.get() + 180.0);
+                    },
+                )
+                .state(combined_scale)
+                .state(combined_rotation),
+            button("Pulse")
+                .action(|State(s): State<Binding<f32>>| {
+                    if s.get() > 1.2 {
+                        s.set(0.8);
+                    } else {
+                        s.set(1.5);
+                    }
+                })
+                .state(combined_scale),
         )),
     ))
     .padding()
@@ -166,15 +191,19 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
         text("Notice the bouncy overshoot effect").body(),
         progress(animated_progress),
         hstack((
-            text!("{status}").padding().background(Purple.with_opacity(0.3)),
+            text!("{status}")
+                .padding()
+                .background(Purple.with_opacity(0.3)),
             spacer(),
-            button("Toggle").action(|State(sv): State<Binding<f64>>| {
-                if sv.get() > 0.5 {
-                    sv.set(0.1);
-                } else {
-                    sv.set(0.9);
-                }
-            }).state(spring_value),
+            button("Toggle")
+                .action(|State(sv): State<Binding<f64>>| {
+                    if sv.get() > 0.5 {
+                        sv.set(0.1);
+                    } else {
+                        sv.set(0.9);
+                    }
+                })
+                .state(spring_value),
         )),
     ))
     .padding()
@@ -302,7 +331,9 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
                 .min_height(100.0)
                 .min_width(60.0),
         )),
-        button("Toggle Bars").action(|State(e): State<Binding<bool>>| e.set(!e.get())).state(expanded),
+        button("Toggle Bars")
+            .action(|State(e): State<Binding<bool>>| e.set(!e.get()))
+            .state(expanded),
     ))
     .padding()
 }

@@ -15,6 +15,7 @@ default = []
 
 [dependencies]
 waterui-core.workspace = true
+waterui-macros.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
 filtrate-core.workspace = true

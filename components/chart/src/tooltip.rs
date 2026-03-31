@@ -12,6 +12,7 @@ use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
+use waterui_macros::{view, view_builder};
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::{IntoText, Text};
 
@@ -171,55 +172,52 @@ impl Tooltip {
 }
 
 impl View for Tooltip {
+    #[view_builder]
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         if self.content.is_empty() {
-            return AnyView::new(());
+            ()
+        } else {
+            let text_color = Color::from(self.text_color);
+            let mut views: Vec<AnyView> = Vec::new();
+
+            // Add title if present
+            if let Some(title) = &self.content.title {
+                views.push(AnyView::new(title.clone().color(text_color.clone())));
+            }
+
+            // Add values with optional color indicators
+            for val in &self.content.values {
+                let value_view = AnyView::new(view! {
+                    if let Some(color) = val.color {
+                        let indicator =
+                            Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
+                                .width(8.0)
+                                .height(8.0);
+                        let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                            .color(text_color.clone());
+                        HStack::new(VerticalAlignment::Center, 6.0, (indicator, line))
+                    } else {
+                        (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                            .color(text_color.clone())
+                    }
+                });
+                views.push(value_view);
+            }
+
+            // Background with rounded corners
+            let content = Padding::new(
+                EdgeInsets::all(self.padding),
+                Frame::new(VStack::new(HorizontalAlignment::Leading, 4.0, views)).min_width(80.0),
+            );
+            let background = RoundedRectangle::new(self.corner_radius / 100.0)
+                .fill(Color::from(self.background));
+
+            // Stack content over background
+            Frame::new(waterui_layout::stack::ZStack::new(
+                waterui_layout::stack::Alignment::default(),
+                (background, content),
+            ))
         }
-
-        let text_color = Color::from(self.text_color);
-        let mut views: Vec<AnyView> = Vec::new();
-
-        // Add title if present
-        if let Some(title) = &self.content.title {
-            views.push(AnyView::new(title.clone().color(text_color.clone())));
-        }
-
-        // Add values with optional color indicators
-        for val in &self.content.values {
-            let value_view = if let Some(color) = val.color {
-                // Color indicator + label: value
-                let indicator = Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
-                    .width(8.0)
-                    .height(8.0);
-                let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                    .color(text_color.clone());
-                AnyView::new(HStack::new(
-                    VerticalAlignment::Center,
-                    6.0,
-                    (indicator, line),
-                ))
-            } else {
-                AnyView::new(
-                    (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                        .color(text_color.clone()),
-                )
-            };
-            views.push(value_view);
-        }
-
-        // Background with rounded corners
-        let content = Padding::new(
-            EdgeInsets::all(self.padding),
-            Frame::new(VStack::new(HorizontalAlignment::Leading, 4.0, views)).min_width(80.0),
-        );
-        let background =
-            RoundedRectangle::new(self.corner_radius / 100.0).fill(Color::from(self.background));
-
-        // Stack content over background
-        AnyView::new(Frame::new(waterui_layout::stack::ZStack::new(
-            waterui_layout::stack::Alignment::default(),
-            (background, content),
-        )))
     }
 }
 
@@ -243,16 +241,13 @@ where
     T: Clone + PartialEq + 'static,
 {
     Dynamic::watch(hit.zip(&chart_frame), move |(hit, frame)| {
-        hit.map(|hit| {
-            let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
-            let tooltip =
-                Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
-            AnyView::new(absolute((tooltip.position_anchor(
-                UnitPoint::BOTTOM_LEADING,
-                x,
-                y,
-            ),)))
-        })
-        .unwrap_or_else(|| AnyView::new(()))
+        view! {
+            if let Some(hit) = hit {
+                let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
+                let tooltip =
+                    Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
+                absolute((tooltip.position_anchor(UnitPoint::BOTTOM_LEADING, x, y),))
+            }
+        }
     })
 }

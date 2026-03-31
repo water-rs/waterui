@@ -6,6 +6,7 @@ use core::ops::RangeInclusive;
 use jiff::civil::Date;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::IntoLabel;
+use waterui_core::dynamic::Dynamic;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View};
 
@@ -156,7 +157,7 @@ impl View for MultiDatePickerFallback {
 
         waterui_layout::stack::vstack((
             label,
-            waterui_core::dynamic::Dynamic::watch(visible_month.clone(), move |month| {
+            Dynamic::watch(visible_month.clone(), move |month| {
                 MultiCalendarMonthView::new(
                     locale.clone(),
                     month,

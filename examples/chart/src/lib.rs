@@ -4,7 +4,8 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{binding, Binding};
+use waterui::reactive::{Binding, binding};
+use waterui::view_builder;
 use waterui_chart::{
     AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle,
     CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint, DepthChart,
@@ -82,23 +83,24 @@ impl ChartMode {
         }
     }
 
-    fn render(self) -> AnyView {
+    #[view_builder]
+    fn render(self) -> impl View {
         match self {
-            Self::Bar => bar_chart_preview().anyview(),
-            Self::Line => line_chart_preview().anyview(),
-            Self::Pie => pie_chart_preview().anyview(),
-            Self::Scatter => scatter_chart_preview().anyview(),
-            Self::Candlestick => candlestick_chart_preview().anyview(),
-            Self::Depth => depth_chart_preview().anyview(),
-            Self::Heatmap => heatmap_chart_preview().anyview(),
-            Self::Contour => contour_chart_preview().anyview(),
-            Self::Radar => radar_chart_preview().anyview(),
-            Self::Bubble => bubble_chart_preview().anyview(),
-            Self::Area => area_chart_preview().anyview(),
-            Self::Gauge => gauge_chart_preview().anyview(),
-            Self::StressScatter10K => scatter_stress_preview().anyview(),
-            Self::StressLine1K => line_stress_preview().anyview(),
-            Self::StressHeatmap10K => heatmap_stress_preview().anyview(),
+            Self::Bar => bar_chart_preview(),
+            Self::Line => line_chart_preview(),
+            Self::Pie => pie_chart_preview(),
+            Self::Scatter => scatter_chart_preview(),
+            Self::Candlestick => candlestick_chart_preview(),
+            Self::Depth => depth_chart_preview(),
+            Self::Heatmap => heatmap_chart_preview(),
+            Self::Contour => contour_chart_preview(),
+            Self::Radar => radar_chart_preview(),
+            Self::Bubble => bubble_chart_preview(),
+            Self::Area => area_chart_preview(),
+            Self::Gauge => gauge_chart_preview(),
+            Self::StressScatter10K => scatter_stress_preview(),
+            Self::StressLine1K => line_stress_preview(),
+            Self::StressHeatmap10K => heatmap_stress_preview(),
         }
     }
 }

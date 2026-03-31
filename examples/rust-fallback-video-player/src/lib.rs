@@ -105,10 +105,18 @@ fn main() -> impl View {
         overlay(player, status_overlay).height(360.0),
         text!("Status: {status}").footnote(),
         hstack((
-            button("SDR: BBB").action(|State(selected): State<Binding<usize>>| selected.set(0)).state(&selected),
-            button("SDR: Sintel").action(|State(selected): State<Binding<usize>>| selected.set(1)).state(&selected),
-            button("HDR10: 1080p 3M").action(|State(selected): State<Binding<usize>>| selected.set(2)).state(&selected),
-            button("HDR10: 1080p 10M").action(|State(selected): State<Binding<usize>>| selected.set(3)).state(&selected),
+            button("SDR: BBB")
+                .action(|State(selected): State<Binding<usize>>| selected.set(0))
+                .state(&selected),
+            button("SDR: Sintel")
+                .action(|State(selected): State<Binding<usize>>| selected.set(1))
+                .state(&selected),
+            button("HDR10: 1080p 3M")
+                .action(|State(selected): State<Binding<usize>>| selected.set(2))
+                .state(&selected),
+            button("HDR10: 1080p 10M")
+                .action(|State(selected): State<Binding<usize>>| selected.set(3))
+                .state(&selected),
         ))
         .spacing(12.0),
     ))
