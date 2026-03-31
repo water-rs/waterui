@@ -51,11 +51,16 @@ fn main() -> impl View {
         text!("{preview_status}")
             .caption()
             .foreground(MutedForeground),
-        hstack((button("Reconnect Camera Stream").action(|State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
-            let next = ticket.get().saturating_add(1);
-            ticket.set(next);
-            status.set(Str::from("Reconnecting camera stream..."));
-        }).state(&reconnect_ticket).state(&preview_status),)),
+        hstack((button("Reconnect Camera Stream")
+            .action(
+                |State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
+                    let next = ticket.get().saturating_add(1);
+                    ticket.set(next);
+                    status.set(Str::from("Reconnecting camera stream..."));
+                },
+            )
+            .state(&reconnect_ticket)
+            .state(&preview_status),)),
     ))
     .spacing(10.0);
 
@@ -83,9 +88,13 @@ fn main() -> impl View {
             .footnote()
             .foreground(MutedForeground),
         button("Sync with Waterkit Camera")
-            .action_async(|State(status): State<Binding<Str>>, State(permission): State<Binding<Str>>, State(inventory): State<Binding<Str>>| async move {
-                sync_waterkit_camera(status, permission, inventory).await;
-            })
+            .action_async(
+                |State(status): State<Binding<Str>>,
+                 State(permission): State<Binding<Str>>,
+                 State(inventory): State<Binding<Str>>| async move {
+                    sync_waterkit_camera(status, permission, inventory).await;
+                },
+            )
             .bordered_prominent()
             .state(&waterkit_status)
             .state(&permission_status)

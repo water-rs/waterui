@@ -5,6 +5,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::RoundedRectangle;
+use waterui::view;
 use waterui_icon::SystemIcon;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -373,14 +374,14 @@ fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
                     ))
                     .spacing(2.0),
                     spacer(),
-                    if row.flagged {
-                        AnyView::new(
+                    view! {
+                        if row.flagged {
                             SystemIcon::from_static("flag.fill")
                                 .size(12.0, 12.0)
-                                .foreground(Srgb::from_hex("#F28A34")),
-                        )
-                    } else {
-                        AnyView::new(spacer().width(12.0))
+                                .foreground(Srgb::from_hex("#F28A34"))
+                        } else {
+                            spacer().width(12.0)
+                        }
                     },
                 ))
                 .padding_with(EdgeInsets::symmetric(10.0, 18.0)),

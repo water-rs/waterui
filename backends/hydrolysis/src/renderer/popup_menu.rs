@@ -141,15 +141,15 @@ pub(super) fn popup_menu_window(
                     disabled,
                     ..
                 } => {
-                    let button = Button::new(label)
-                        .style(ButtonStyle::Borderless)
-                        .action(move |group: PopupMenuStateGroup, env: Environment| {
+                    let button = Button::new(label).style(ButtonStyle::Borderless).action(
+                        move |group: PopupMenuStateGroup, env: Environment| {
                             if disabled {
                                 return;
                             }
                             group.close_all();
                             action.call(&env);
-                        });
+                        },
+                    );
                     rows.push(AnyView::new(button));
                 }
                 PopupMenuNode::Divider => rows.push(AnyView::new(Divider)),
@@ -159,9 +159,8 @@ pub(super) fn popup_menu_window(
                         popup_origin_x + width as f32,
                         popup_origin_y + TEXT_CONTEXT_MENU_ROW_HEIGHT * index as f32,
                     );
-                    let button = Button::new(label)
-                        .style(ButtonStyle::Borderless)
-                        .action(move |group: PopupMenuStateGroup, env: Environment| {
+                    let button = Button::new(label).style(ButtonStyle::Borderless).action(
+                        move |group: PopupMenuStateGroup, env: Environment| {
                             if items.is_empty() {
                                 return;
                             }
@@ -178,7 +177,8 @@ pub(super) fn popup_menu_window(
                                     "hydrolysis popup menus require WindowManager in environment",
                                 )
                                 .show(window);
-                        });
+                        },
+                    );
                     rows.push(AnyView::new(button));
                 }
             }

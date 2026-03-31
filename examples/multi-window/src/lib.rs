@@ -105,9 +105,13 @@ fn window_section(
         text(description).body(),
         spacer().height(8.0),
         hstack((
-            button("Open Window").action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal)).state(state),
+            button("Open Window")
+                .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                .state(state),
             spacer().width(12.0),
-            button("Close Window").action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Closed)).state(state),
+            button("Close Window")
+                .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Closed))
+                .state(state),
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))

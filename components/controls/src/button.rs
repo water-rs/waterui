@@ -284,7 +284,7 @@ where
     fn body(self, env: &Environment) -> impl View {
         let config = render_button_config(self, env);
         if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
-            hook.apply(env, config)
+            AnyView::new(hook.apply(env, config))
         } else {
             AnyView::new(Native::new(config))
         }

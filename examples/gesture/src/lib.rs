@@ -29,7 +29,9 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View {
         text("Tap Me!")
             .padding()
             .background(TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| {
+                *c.get_mut() += 1
+            })
             .state(tap_count),
     ))
     .padding()
@@ -47,7 +49,9 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
         text("Double Tap Me!")
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| {
+                *c.get_mut() += 1
+            })
             .state(double_tap_count),
     ))
     .padding()
@@ -85,7 +89,9 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View {
             .width(200.0)
             .height(100.0)
             .background(DRAG_COLOR.with_opacity(0.3))
-            .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| *c.get_mut() += 1)
+            .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| {
+                *c.get_mut() += 1
+            })
             .state(drag_count),
     ))
     .padding()
