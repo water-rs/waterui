@@ -8,10 +8,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::build_info::{HYDROLYSIS_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION};
+use crate::build_info::{
+    ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, HYDROLYSIS_VERSION, PREVIEW_VERSION,
+    WATERUI_FFI_VERSION, WATERUI_VERSION,
+};
 use askama::Template;
-
-const WATERUI_HYDROLYSIS_VERSION: &str = HYDROLYSIS_VERSION;
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
@@ -251,6 +252,11 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     }
 
     #[must_use]
+    pub fn android_remote_backend_dependency(&self) -> String {
+        jitpack_dependency_coordinate(ANDROID_BACKEND.repository_url, ANDROID_BACKEND.commit)
+    }
+
+    #[must_use]
     pub fn is_playground(&self) -> bool {
         self.package_type == crate::project::PackageType::Playground
     }
@@ -386,11 +392,12 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     fn swift_package_reference_entry(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
+        let repository_name = github_repository_name(APPLE_BACKEND.repository_url);
 
         self.compute_apple_backend_path().map_or_else(
             || {
                 format!(
-                    "{INDENT}{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */,"
+                    "{INDENT}{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"{repository_name}\" */,"
                 )
             },
             |backend_path| {
@@ -404,22 +411,23 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// Generate the `XCode` package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
-        const REPO_URL: &str = "https://github.com/water-rs/apple-backend.git";
-        const MIN_VERSION: &str = "0.2.0";
+        let repository_name = github_repository_name(APPLE_BACKEND.repository_url);
 
         self.compute_apple_backend_path().map_or_else(
             || {
                 format!(
                     "/* Begin XCRemoteSwiftPackageReference section */\n\
-                    \t\t{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */ = {{\n\
+                    \t\t{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"{repository_name}\" */ = {{\n\
                     \t\t\tisa = XCRemoteSwiftPackageReference;\n\
-                    \t\t\trepositoryURL = \"{REPO_URL}\";\n\
+                    \t\t\trepositoryURL = \"{}\";\n\
                     \t\t\trequirement = {{\n\
-                    \t\t\t\tkind = upToNextMajorVersion;\n\
-                    \t\t\t\tminimumVersion = {MIN_VERSION};\n\
+                    \t\t\t\tkind = revision;\n\
+                    \t\t\t\trevision = \"{}\";\n\
                     \t\t\t}};\n\
                     \t\t}};\n\
-                    /* End XCRemoteSwiftPackageReference section */"
+                    /* End XCRemoteSwiftPackageReference section */",
+                    APPLE_BACKEND.repository_url,
+                    APPLE_BACKEND.commit,
                 )
             },
             |backend_path| {
@@ -469,6 +477,40 @@ fn scaffold_template_dispatch_path(namespace: TemplateNamespace, relative_path: 
         return relative_path;
     }
     format!("{}/{relative_path}", namespace.scaffold_template_prefix())
+}
+
+fn github_repository_owner_and_name(repository_url: &str) -> (&str, &str) {
+    let path = repository_url
+        .strip_prefix("https://github.com/")
+        .or_else(|| repository_url.strip_prefix("git@github.com:"))
+        .unwrap_or_else(|| panic!("unsupported GitHub repository URL: {repository_url}"));
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut segments = path.split('/');
+    let owner = segments
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or_else(|| panic!("missing GitHub owner in repository URL: {repository_url}"));
+    let repo = segments
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or_else(|| {
+            panic!("missing GitHub repository name in repository URL: {repository_url}")
+        });
+    assert!(
+        segments.next().is_none(),
+        "unsupported GitHub repository URL path: {repository_url}"
+    );
+    (owner, repo)
+}
+
+fn github_repository_name(repository_url: &str) -> &str {
+    let (_, repo) = github_repository_owner_and_name(repository_url);
+    repo
+}
+
+fn jitpack_dependency_coordinate(repository_url: &str, commit: &str) -> String {
+    let (owner, repo) = github_repository_owner_and_name(repository_url);
+    format!("com.github.{owner}:{repo}:{commit}")
 }
 
 macro_rules! define_scaffold_templates {
@@ -549,11 +591,13 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        TemplateContext, TemplateNamespace, embedded, normalize_path_for_config,
+        ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, PREVIEW_VERSION, TemplateContext,
+        TemplateNamespace, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
         render_scaffold_template,
     };
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     fn ctx(
         waterui_path: Option<PathBuf>,
@@ -730,6 +774,9 @@ mod tests {
             rendered
                 .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
         );
+        assert!(rendered.contains(APPLE_BACKEND.repository_url));
+        assert!(rendered.contains(APPLE_BACKEND.commit));
+        assert!(rendered.contains("kind = revision;"));
     }
 
     #[test]
@@ -754,6 +801,59 @@ mod tests {
         ));
         assert!(rendered.contains("override fun onUserLeaveHint()"));
         assert!(rendered.contains("notifyVideoPictureInPictureUserLeaveHint(this)"));
+    }
+
+    #[test]
+    fn android_build_gradle_uses_embedded_remote_backend_commit() {
+        let ctx = app_ctx();
+        let template = embedded::ANDROID
+            .get_file("app/build.gradle.kts.tpl")
+            .expect("android build.gradle template must exist")
+            .contents_utf8()
+            .expect("android build.gradle template must be utf-8");
+
+        let rendered = render_scaffold_template(
+            TemplateNamespace::Android,
+            std::path::Path::new("app/build.gradle.kts.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("android build.gradle render");
+
+        assert!(rendered.contains(&jitpack_dependency_coordinate(
+            ANDROID_BACKEND.repository_url,
+            ANDROID_BACKEND.commit,
+        )));
+    }
+
+    #[test]
+    fn gtk4_scaffold_uses_embedded_workspace_version() {
+        let ctx = app_ctx();
+        let tempdir = tempdir().expect("temporary gtk scaffold dir");
+
+        smol::block_on(crate::templates::gtk4::scaffold(
+            tempdir.path(),
+            &ctx,
+            "waterui-test-gtk",
+        ))
+        .expect("gtk4 scaffold should succeed");
+
+        let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
+            .expect("gtk4 Cargo.toml should be written");
+        assert!(cargo_toml.contains(&format!("version = \"{GTK_BACKEND_VERSION}\"")));
+    }
+
+    #[test]
+    fn preview_scaffold_uses_embedded_workspace_version() {
+        let ctx = app_ctx();
+        let tempdir = tempdir().expect("temporary preview scaffold dir");
+
+        smol::block_on(crate::templates::preview::scaffold(tempdir.path(), &ctx))
+            .expect("preview scaffold should succeed");
+
+        let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
+            .expect("preview Cargo.toml should be written");
+        assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
     }
 
     #[test]
@@ -1317,11 +1417,10 @@ pub mod android {
 /// GTK4 backend templates.
 pub mod gtk4 {
     use super::{
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
+        GTK_BACKEND_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path,
+        TemplateContext, TemplateNamespace, embedded, io, scaffold_dir,
+        write_native_backend_bin_cargo_toml,
     };
-
-    const WATERUI_GTK_VERSION: &str = "0.1";
 
     /// Write all GTK4 templates to the given directory.
     ///
@@ -1348,7 +1447,7 @@ pub mod gtk4 {
     ) -> io::Result<()> {
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
-            WATERUI_GTK_VERSION,
+            GTK_BACKEND_VERSION,
             &[],
             Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
         )];
@@ -1360,10 +1459,9 @@ pub mod gtk4 {
 pub mod hydrolysis {
     use super::{
         GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedDependencyValue,
-        GeneratedTargetSection, GeneratedWorkspaceSection, NativeBackendDependencyPathKind,
-        NativeBackendDependencySpec, Path, TemplateContext, TemplateNamespace,
-        WATERUI_HYDROLYSIS_VERSION, WATERUI_VERSION, embedded, io, scaffold_dir,
-        write_generated_cargo_toml,
+        GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS_VERSION,
+        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -1463,7 +1561,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            WATERUI_HYDROLYSIS_VERSION,
+                            HYDROLYSIS_VERSION,
                             &["winit"],
                             Some(NativeBackendDependencyPathKind::BackendsSubdir(
                                 "hydrolysis",
@@ -1508,7 +1606,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            WATERUI_HYDROLYSIS_VERSION,
+                            HYDROLYSIS_VERSION,
                             &["web"],
                             Some(NativeBackendDependencyPathKind::BackendsSubdir(
                                 "hydrolysis",
@@ -1729,14 +1827,12 @@ pub mod root {
 
 /// Preview app templates.
 pub mod preview {
-    use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
+    use crate::templates::{PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION};
 
     use super::{
         Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
         io, scaffold_dir, write_support_cargo_toml,
     };
-
-    const WATERUI_PREVIEW_VERSION: &str = "0.1";
 
     /// Hash of embedded preview template files.
     #[must_use]
@@ -1803,7 +1899,7 @@ pub mod preview {
             );
             dependencies.insert(
                 "waterui-preview".to_string(),
-                dependency_version(WATERUI_PREVIEW_VERSION),
+                dependency_version(PREVIEW_VERSION),
             );
         }
         write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
