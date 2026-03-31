@@ -17,6 +17,8 @@ pub enum IconPosition {
     Trailing,
 }
 
+nami::impl_constant!(IconPosition);
+
 /// Controls how a semantic label should present its text and icon.
 ///
 /// `Label` keeps its semantic text even when the visual presentation switches
@@ -45,6 +47,8 @@ pub enum LabelDisplayMode {
     /// Show only the icon when an icon is available.
     IconOnly,
 }
+
+nami::impl_constant!(LabelDisplayMode);
 
 impl Plugin for LabelDisplayMode {}
 
@@ -266,31 +270,37 @@ impl Label {
 impl View for Label {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let mode = self.effective_display_mode(env);
+        if matches!(mode, LabelDisplayMode::Automatic) {
+            panic!("Label::effective_display_mode must resolve Automatic before rendering");
+        }
+
+        let Self {
+            text,
+            icon,
+            icon_position,
+            spacing,
+            ..
+        } = self;
+
         match mode {
-            LabelDisplayMode::TitleOnly => AnyView::new(self.text),
+            LabelDisplayMode::TitleOnly => AnyView::new(text),
             LabelDisplayMode::IconOnly => AnyView::new(
-                self.icon
-                    .expect("LabelDisplayMode::IconOnly requires an icon when rendered")
+                icon.expect("LabelDisplayMode::IconOnly requires an icon when rendered")
                     .view
                     .build(),
             ),
-            LabelDisplayMode::Automatic => unreachable!(
-                "Label::effective_display_mode must resolve Automatic before rendering"
-            ),
             LabelDisplayMode::TitleAndIcon => {
-                let icon = self
-                    .icon
+                let icon = icon
                     .expect("LabelDisplayMode::TitleAndIcon requires an icon when rendered")
                     .view
                     .build();
-                match self.icon_position {
-                    IconPosition::Leading => {
-                        AnyView::new(hstack((icon, self.text)).spacing(self.spacing))
-                    }
-                    IconPosition::Trailing => {
-                        AnyView::new(hstack((self.text, icon)).spacing(self.spacing))
-                    }
+                match icon_position {
+                    IconPosition::Leading => AnyView::new(hstack((icon, text)).spacing(spacing)),
+                    IconPosition::Trailing => AnyView::new(hstack((text, icon)).spacing(spacing)),
                 }
+            }
+            LabelDisplayMode::Automatic => {
+                panic!("Label::effective_display_mode must resolve Automatic before rendering");
             }
         }
     }

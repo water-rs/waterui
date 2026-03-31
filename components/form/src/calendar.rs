@@ -569,16 +569,16 @@ fn day_cell_accessibility_label(date: Date) -> String {
     date.day().to_string()
 }
 
-fn day_cell_placeholder(cell: DayCell, decorated: bool) -> AnyView {
+fn day_cell_placeholder(cell: DayCell, decorated: bool) -> impl View {
     if !cell.in_current_month {
-        return AnyView::new(Text::new(String::new()).caption());
-    }
-
-    let day = Text::new(cell.date.day().to_string()).caption();
-    if decorated {
-        AnyView::new(vstack((day, Text::new("•").caption())).spacing(0.0))
+        AnyView::new(Text::new(String::new()).caption())
     } else {
-        AnyView::new(day)
+        let day = Text::new(cell.date.day().to_string()).caption();
+        if decorated {
+            AnyView::new(vstack((day, Text::new("•").caption())).spacing(0.0))
+        } else {
+            AnyView::new(day)
+        }
     }
 }
 

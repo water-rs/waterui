@@ -124,8 +124,7 @@ fn custom_url_section() -> impl View {
                 .state(&url_input)
                 .state(&blur_value)
                 .state(&status_message)
-                .state(&handler)
-                ,
+                .state(&handler),
         )),
         text!("{status_message}").sub_headline(),
         photo_view,

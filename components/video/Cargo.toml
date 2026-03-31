@@ -17,6 +17,7 @@ waterui-controls.workspace = true
 waterui-graphics.workspace = true
 waterui-url.workspace = true
 waterui-text.workspace = true
+waterui-macros.workspace = true
 waterkit-video.workspace = true
 waterkit-codec.workspace = true
 waterkit-audio.workspace = true

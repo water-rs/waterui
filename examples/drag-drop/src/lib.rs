@@ -77,27 +77,29 @@ fn fruit_basket(
     .scale(combined_scale.clone(), combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination(
-        |State(collected): State<Binding<Vec<String>>>, State(bounce): State<Binding<f32>>, data: DragData| {
-        // Add to collection
-        let dropped_item = data.as_str().to_string();
-        let mut current_items = collected.get();
-        if !current_items.iter().any(|x| x == &dropped_item) {
-            current_items.push(dropped_item);
-            collected.set(current_items);
-        }
-        // Trigger bounce animation
-        let current = bounce.get();
-        let target = if (current - 1.2).abs() < 0.01 {
-            1.25
-        } else {
-            1.2
-        };
-        bounce.set(target);
-        spawn_local(async move {
-            sleep(Duration::from_millis(200)).await;
-            bounce.set(1.0);
-        });
-    },
+        |State(collected): State<Binding<Vec<String>>>,
+         State(bounce): State<Binding<f32>>,
+         data: DragData| {
+            // Add to collection
+            let dropped_item = data.as_str().to_string();
+            let mut current_items = collected.get();
+            if !current_items.iter().any(|x| x == &dropped_item) {
+                current_items.push(dropped_item);
+                collected.set(current_items);
+            }
+            // Trigger bounce animation
+            let current = bounce.get();
+            let target = if (current - 1.2).abs() < 0.01 {
+                1.25
+            } else {
+                1.2
+            };
+            bounce.set(target);
+            spawn_local(async move {
+                sleep(Duration::from_millis(200)).await;
+                bounce.set(1.0);
+            });
+        },
     )
     .drop_hover(&is_hovering)
     .state(&collected)
@@ -140,7 +142,9 @@ fn main() -> impl View {
             fruit_basket(is_hovering, collected.clone(), bounce),
             spacer().height(16.0),
             // Reset button
-            button("Clear Basket").action(|State(c): State<Binding<Vec<String>>>| c.set(Vec::new())).state(&collected),
+            button("Clear Basket")
+                .action(|State(c): State<Binding<Vec<String>>>| c.set(Vec::new()))
+                .state(&collected),
             spacer(),
         ))
         .padding(),
