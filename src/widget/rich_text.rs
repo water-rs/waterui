@@ -15,10 +15,7 @@ use waterui_text::{
     text,
 };
 
-use crate::{
-    ViewExt,
-    widget::{self, Divider},
-};
+use crate::{ViewExt, widget::Divider};
 
 /// Rich text widget for displaying formatted content.
 #[derive(Debug, Default, Clone)]
@@ -150,45 +147,43 @@ pub enum MarkdownTableAlignment {
 impl View for RichTextElement {
     fn body(self, _env: &Environment) -> impl View {
         match self {
-            Self::Text(s) => text(s).anyview(),
-            Self::Link { label, url } => crate::component::link::link(text(label), url).anyview(),
-            Self::Image { src, alt: _ } => render_image(&src),
+            Self::Text(s) => AnyView::new(text(s)),
+            Self::Link { label, url } => {
+                AnyView::new(crate::component::link::link(text(label), url))
+            }
+            Self::Image { src, alt: _ } => AnyView::new(render_image(&src)),
             Self::Table {
                 headers,
                 rows,
                 alignments,
-            } => render_table(&headers, &rows, &alignments).anyview(),
+            } => render_table(&headers, &rows, &alignments),
             Self::List {
                 items,
                 ordered,
                 start,
-            } => render_list(items.as_slice(), ordered, start).anyview(),
-            Self::Code { code, language } => widget::code(language, code).anyview(),
-            Self::Quote { content } => quote(content).anyview(),
+            } => AnyView::new(render_list(items.as_slice(), ordered, start)),
+            Self::Code { code, language } => AnyView::new(crate::widget::code(language, code)),
+            Self::Quote { content } => AnyView::new(quote(content)),
             Self::Group { elements, inline } => {
                 if inline {
                     // Inline content already contains explicit whitespace in the source text.
                     // Use zero stack spacing to avoid double-spacing between adjacent spans.
-                    elements
-                        .into_iter()
-                        .collect::<HStack<_>>()
-                        .spacing(0.0)
-                        .anyview()
+                    AnyView::new(elements.into_iter().collect::<HStack<_>>().spacing(0.0))
                 } else {
-                    VStack::from_iter(elements).anyview()
+                    AnyView::new(VStack::from_iter(elements))
                 }
             }
-            Self::Divider => Divider.anyview(),
+            Self::Divider => AnyView::new(Divider),
         }
     }
 }
 
-fn render_image(src: &Str) -> AnyView {
+fn render_image(src: &Str) -> impl View + use<> {
     #[cfg(feature = "media")]
     {
         let url = Url::parse(src)
             .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
-        media_photo(url).anyview()
+        media_photo(url)
     }
 
     #[cfg(not(feature = "media"))]
@@ -204,7 +199,7 @@ impl View for RichText {
     }
 }
 
-fn render_list(items: &[RichTextElement], ordered: bool, start: usize) -> impl View {
+fn render_list(items: &[RichTextElement], ordered: bool, start: usize) -> impl View + use<> {
     items
         .iter()
         .enumerate()
@@ -239,40 +234,15 @@ fn render_table(
         .max(rows.iter().map(Vec::len).max().unwrap_or_default());
     if col_count == 0 {
         return AnyView::new(());
-    }
-
-    let header_row: Vec<AnyView> = (0..col_count)
-        .map(|col_idx| {
-            let header = headers
-                .get(col_idx)
-                .map_or_else(|| Text::from(""), element_to_text)
-                .bold();
-            AnyView::new(table_cell(
-                header,
-                alignments
-                    .get(col_idx)
-                    .copied()
-                    .unwrap_or(MarkdownTableAlignment::None),
-            ))
-        })
-        .collect();
-
-    let mut row_views = Vec::with_capacity(rows.len() + 2);
-    row_views.push(AnyView::new(
-        HStack::from_iter(header_row)
-            .spacing(12.0)
-            .alignment(waterui_layout::stack::VerticalAlignment::Top),
-    ));
-    row_views.push(AnyView::new(Divider));
-
-    for row in rows {
-        let cells: Vec<AnyView> = (0..col_count)
+    } else {
+        let header_row: Vec<AnyView> = (0..col_count)
             .map(|col_idx| {
-                let cell = row
+                let header = headers
                     .get(col_idx)
-                    .map_or_else(|| Text::from(""), element_to_text);
+                    .map_or_else(|| Text::from(""), element_to_text)
+                    .bold();
                 AnyView::new(table_cell(
-                    cell,
+                    header,
                     alignments
                         .get(col_idx)
                         .copied()
@@ -280,18 +250,43 @@ fn render_table(
                 ))
             })
             .collect();
+
+        let mut row_views = Vec::with_capacity(rows.len() + 2);
         row_views.push(AnyView::new(
-            HStack::from_iter(cells)
+            HStack::from_iter(header_row)
                 .spacing(12.0)
                 .alignment(waterui_layout::stack::VerticalAlignment::Top),
         ));
-    }
+        row_views.push(AnyView::new(Divider));
 
-    AnyView::new(
-        VStack::from_iter(row_views)
-            .spacing(6.0)
-            .alignment(HorizontalAlignment::Leading),
-    )
+        for row in rows {
+            let cells: Vec<AnyView> = (0..col_count)
+                .map(|col_idx| {
+                    let cell = row
+                        .get(col_idx)
+                        .map_or_else(|| Text::from(""), element_to_text);
+                    AnyView::new(table_cell(
+                        cell,
+                        alignments
+                            .get(col_idx)
+                            .copied()
+                            .unwrap_or(MarkdownTableAlignment::None),
+                    ))
+                })
+                .collect();
+            row_views.push(AnyView::new(
+                HStack::from_iter(cells)
+                    .spacing(12.0)
+                    .alignment(waterui_layout::stack::VerticalAlignment::Top),
+            ));
+        }
+
+        AnyView::new(
+            VStack::from_iter(row_views)
+                .spacing(6.0)
+                .alignment(HorizontalAlignment::Leading),
+        )
+    }
 }
 
 fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> impl View {

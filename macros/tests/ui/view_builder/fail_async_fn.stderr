@@ -1,0 +1,5 @@
+error: #[view_builder] does not support async functions
+ --> tests/ui/view_builder/fail_async_fn.rs:2:1
+  |
+2 | async fn bad(flag: bool) -> impl waterui::View {
+  | ^^^^^

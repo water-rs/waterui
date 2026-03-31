@@ -730,48 +730,65 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
                 Some(subtitle.clone()),
             );
 
-            let surface = VideoSurface::new(
-                item.source,
-                subtitle_tracks.clone(),
-                subtitle_selection.clone(),
-                has_next.clone(),
-                has_previous.clone(),
-                volume.clone(),
-                playback_rate.clone(),
-                preserve_pitch.clone(),
-                aspect_ratio,
-                true,
-                playback_policy,
-                ui_updates,
-                Some(player.clone()),
-            );
+            let source = item.source;
+            let show_controls = show_controls.clone();
+            let subtitle_selection = subtitle_selection.clone();
+            let has_previous = has_previous.clone();
+            let has_next = has_next.clone();
+            let volume = volume.clone();
+            let playback_rate = playback_rate.clone();
+            let preserve_pitch = preserve_pitch.clone();
+            let on_event = on_event.clone();
+            let player = player.clone();
+            let subtitle = subtitle.clone();
+            let subtitle_tracks = subtitle_tracks.clone();
+            let ui_updates = ui_updates.clone();
 
-            if show_controls {
-                let progress = player.progress_control_binding();
-                let controls = player_controls(
-                    subtitle.track_labels.clone(),
+            Dynamic::watch(show_controls, move |show_controls| {
+                let surface = VideoSurface::new(
+                    source.clone(),
+                    subtitle_tracks.clone(),
                     subtitle_selection.clone(),
-                    has_previous.clone(),
                     has_next.clone(),
-                    player.is_playing.clone(),
-                    progress,
-                    player.picture_in_picture_request.clone(),
-                    player.duration_seconds.clone(),
-                    player.position_seconds.clone(),
-                    player.is_buffering.clone(),
-                    player.playback_rate.clone(),
-                    player.preserve_pitch.clone(),
+                    has_previous.clone(),
                     volume.clone(),
-                    on_event.clone(),
+                    playback_rate.clone(),
+                    preserve_pitch.clone(),
+                    aspect_ratio,
+                    true,
+                    playback_policy,
+                    ui_updates.clone(),
+                    Some(player.clone()),
                 );
-                let bottom_cluster =
-                    vstack((subtitle_banner(subtitle.text.clone()), controls)).spacing(12.0);
-                AnyView::new(overlay(surface, bottom_cluster).alignment(Alignment::Bottom))
-            } else {
-                AnyView::new(
-                    overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom),
-                )
-            }
+
+                if show_controls {
+                    let progress = player.progress_control_binding();
+                    let controls = player_controls(
+                        subtitle.track_labels.clone(),
+                        subtitle_selection.clone(),
+                        has_previous.clone(),
+                        has_next.clone(),
+                        player.is_playing.clone(),
+                        progress,
+                        player.picture_in_picture_request.clone(),
+                        player.duration_seconds.clone(),
+                        player.position_seconds.clone(),
+                        player.is_buffering.clone(),
+                        player.playback_rate.clone(),
+                        player.preserve_pitch.clone(),
+                        volume.clone(),
+                        on_event.clone(),
+                    );
+                    let bottom_cluster =
+                        vstack((subtitle_banner(subtitle.text.clone()), controls)).spacing(12.0);
+                    AnyView::new(overlay(surface, bottom_cluster).alignment(Alignment::Bottom))
+                } else {
+                    AnyView::new(
+                        overlay(surface, subtitle_banner(subtitle.text.clone()))
+                            .alignment(Alignment::Bottom),
+                    )
+                }
+            })
         }))
     });
 }
@@ -933,18 +950,18 @@ fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
 fn picture_in_picture_button(request: Binding<u64>) -> impl View {
     #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
     {
-        return AnyView::new(With::new(
+        With::new(
             button("PiP").action(|State(request): State<Binding<u64>>| {
                 request.set(request.get().wrapping_add(1));
             }),
             State(request),
-        ));
+        )
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
     {
         let _ = request;
-        AnyView::new(())
+        ()
     }
 }
 

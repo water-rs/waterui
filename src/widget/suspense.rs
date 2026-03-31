@@ -39,7 +39,7 @@ use waterui_core::{
     handler::{AnyViewBuilder, ViewBuilder},
 };
 
-use crate::{ViewExt, component::Dynamic};
+use crate::component::Dynamic;
 
 /// A component that manages asynchronous content loading with loading states.
 ///
@@ -215,8 +215,11 @@ pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
     fn body(self, env: &Environment) -> impl View {
-        env.get::<DefaultLoadingView>()
-            .map_or_else(|| AnyView::new(()), |builder| builder.0.build().anyview())
+        if let Some(builder) = env.get::<DefaultLoadingView>() {
+            AnyView::new(builder.0.build())
+        } else {
+            AnyView::new(())
+        }
     }
 }
 

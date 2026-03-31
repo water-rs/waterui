@@ -211,10 +211,7 @@ fn main() -> impl View {
 
 fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
     let selection_text = selection.clone().map(|fruit| format!("{fruit:?}"));
-    hstack((
-        "Selected: ",
-        text!("{selection_text}"),
-    ))
+    hstack(("Selected: ", text!("{selection_text}")))
 }
 
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {

@@ -1,0 +1,7 @@
+error: #[view_builder] can only be applied to a function or method
+ --> tests/ui/view_builder/fail_non_function.rs:1:1
+  |
+1 | #[waterui::view_builder]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::view_builder` (in Nightly builds, run with -Z macro-backtrace for more info)

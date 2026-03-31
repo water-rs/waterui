@@ -22,6 +22,7 @@
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
+use waterui_core::dynamic::watch;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
@@ -360,7 +361,7 @@ where
 
     let shown = Rc::new(Cell::new(false));
 
-    waterui_core::dynamic::watch(state.clone(), move |s| {
+    watch(state.clone(), move |s| {
         if s == WindowState::Closed {
             shown.set(false);
             AnyView::new(())
