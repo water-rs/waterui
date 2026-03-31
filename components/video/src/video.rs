@@ -33,6 +33,7 @@
 //! muted.set(false); // Unmute - restores original volume
 //! ```
 
+use core::fmt;
 use waterui_core::{
     Binding, Computed, binding, configurable, layout::StretchAxis, reactive::signal::IntoComputed,
 };
@@ -197,8 +198,8 @@ pub struct VideoConfig {
     pub on_event: OnEvent,
 }
 
-impl core::fmt::Debug for VideoConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for VideoConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoConfig")
             .field("aspect_ratio", &self.aspect_ratio)
             .field("loops", &self.loops)
@@ -371,8 +372,8 @@ pub struct VideoPlayerConfig {
     pub on_event: OnEvent,
 }
 
-impl core::fmt::Debug for VideoPlayerConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for VideoPlayerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoPlayerConfig")
             .field("aspect_ratio", &self.aspect_ratio)
             .field("show_controls", &self.show_controls)

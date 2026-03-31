@@ -53,6 +53,7 @@
 //! [`overlay`]: crate::prelude::overlay
 
 use alloc::boxed::Box;
+use core::fmt;
 
 use crate::{
     handler::{BoxedAction, Handler, boxed_action},
@@ -419,8 +420,8 @@ pub struct GestureObserver {
     pub action: BoxedAction<()>,
 }
 
-impl core::fmt::Debug for GestureObserver {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for GestureObserver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GestureObserver")
             .field("gesture", &self.gesture)
             .finish_non_exhaustive()

@@ -9,8 +9,10 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use core::any::type_name;
 use core::any::{Any, TypeId};
 use core::cell::{Cell, RefCell};
+use core::fmt;
 
 use crate::Binding;
 
@@ -29,8 +31,8 @@ pub struct LocalStateScope {
     slot_cursor: Rc<Cell<usize>>,
 }
 
-impl core::fmt::Debug for LocalStateScope {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for LocalStateScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalStateScope")
             .field("path", &self.path)
             .finish_non_exhaustive()
@@ -82,8 +84,8 @@ pub struct LocalStateStore {
     bind_slot: Rc<SlotFactory>,
 }
 
-impl core::fmt::Debug for LocalStateStore {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for LocalStateStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalStateStore").finish_non_exhaustive()
     }
 }
@@ -142,7 +144,7 @@ impl LocalStateStore {
         value.downcast::<T>().unwrap_or_else(|_| {
             panic!(
                 "LocalStateStore slot type mismatch for {}",
-                core::any::type_name::<T>()
+                type_name::<T>()
             )
         })
     }

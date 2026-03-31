@@ -39,9 +39,13 @@ extern crate alloc;
 
 use alloc::borrow::Cow;
 use alloc::string::String;
+use core::fmt;
+use core::num::NonZeroU64;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 
@@ -54,8 +58,8 @@ pub struct ShaderSurface {
     inner: GpuSurface,
 }
 
-impl core::fmt::Debug for ShaderSurface {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for ShaderSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShaderSurface").finish_non_exhaustive()
     }
 }
@@ -160,7 +164,7 @@ struct ShaderRenderer {
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
-    start_time: std::time::Instant,
+    start_time: Instant,
     /// The format the pipeline was created for
     pipeline_format: Option<wgpu::TextureFormat>,
 }
@@ -174,7 +178,7 @@ impl ShaderRenderer {
             pipeline: None,
             uniform_buffer: None,
             bind_group: None,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
             pipeline_format: None,
         }
     }
@@ -187,7 +191,7 @@ impl ShaderRenderer {
             pipeline: None,
             uniform_buffer: None,
             bind_group: None,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
             pipeline_format: None,
         }
     }
@@ -200,7 +204,7 @@ impl ShaderRenderer {
             pipeline: None,
             uniform_buffer: None,
             bind_group: None,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
             pipeline_format: None,
         }
     }
@@ -239,7 +243,7 @@ static SHADER_PIPELINE_CACHE: OnceLock<
 > = OnceLock::new();
 
 fn shader_source_hash(source: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     hasher.finish()
 }
@@ -296,7 +300,7 @@ impl GpuView for ShaderRenderer {
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Uniform,
                                 has_dynamic_offset: false,
-                                min_binding_size: core::num::NonZeroU64::new(24),
+                                min_binding_size: NonZeroU64::new(24),
                             },
                             count: None,
                         }],
@@ -387,7 +391,7 @@ impl GpuView for ShaderRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = std::time::Instant::now();
+        self.start_time = Instant::now();
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

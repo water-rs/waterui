@@ -12,6 +12,7 @@ use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::color::ResolvedColor;
@@ -820,8 +821,8 @@ pub struct MeshGradient<C> {
     smooths_colors: bool,
 }
 
-impl<C> core::fmt::Debug for MeshGradient<C> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<C> fmt::Debug for MeshGradient<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MeshGradient")
             .field("width", &self.width)
             .field("height", &self.height)

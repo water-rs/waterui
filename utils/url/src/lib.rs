@@ -32,7 +32,11 @@ extern crate alloc;
 mod error;
 mod parser;
 
+use core::str::FromStr;
 pub use error::ParseError;
+
+#[cfg(feature = "std")]
+use core::error::Error;
 
 use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
@@ -627,7 +631,7 @@ impl AsRef<str> for Url {
     }
 }
 
-impl core::str::FromStr for Url {
+impl FromStr for Url {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -847,7 +851,7 @@ impl fmt::Display for RemoteDownloadError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for RemoteDownloadError {}
+impl Error for RemoteDownloadError {}
 
 #[cfg(feature = "std")]
 struct DownloadedRemoteBytes {
@@ -917,7 +921,7 @@ impl fmt::Display for FetchError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for FetchError {}
+impl Error for FetchError {}
 
 #[cfg(feature = "std")]
 fn fetch_cache_root() -> Option<PathBuf> {

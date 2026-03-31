@@ -23,7 +23,9 @@
 //! ```
 
 mod controller;
+
 pub use controller::*;
+use std::fmt;
 mod handler;
 pub use handler::*;
 
@@ -122,8 +124,8 @@ impl Clone for WebView {
     }
 }
 
-impl std::fmt::Debug for WebView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for WebView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebView")
             .field("event", &self.event)
             .field("handle", &self.handle)

@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use core::any::TypeId;
+use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 
@@ -34,8 +35,8 @@ pub struct EffectContext<'a> {
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
 }
 
-impl core::fmt::Debug for EffectContext<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for EffectContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EffectContext")
             .field("input_format", &self.input_format)
             .field("output_format", &self.output_format)
@@ -83,8 +84,8 @@ pub struct EffectInput<'a> {
     pub height: u32,
 }
 
-impl core::fmt::Debug for EffectInput<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for EffectInput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EffectInput")
             .field("format", &self.format)
             .field("width", &self.width)
@@ -124,8 +125,8 @@ pub struct EffectOutput<'a> {
     pub height: u32,
 }
 
-impl core::fmt::Debug for EffectOutput<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for EffectOutput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EffectOutput")
             .field("format", &self.format)
             .field("width", &self.width)
@@ -317,8 +318,8 @@ pub struct ViewEffect<V: View, E: EffectRenderer> {
     pub(crate) output_size: OutputSize,
 }
 
-impl<V: View, E: EffectRenderer> core::fmt::Debug for ViewEffect<V, E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<V: View, E: EffectRenderer> fmt::Debug for ViewEffect<V, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ViewEffect")
             .field("output_size", &self.output_size)
             .finish_non_exhaustive()
@@ -383,8 +384,8 @@ pub struct ViewEffectErased {
     pub(crate) output_size: OutputSize,
 }
 
-impl core::fmt::Debug for ViewEffectErased {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for ViewEffectErased {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ViewEffectErased")
             .field("output_size", &self.output_size)
             .finish_non_exhaustive()
