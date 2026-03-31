@@ -3,6 +3,7 @@
 //! This module provides utilities for handling sensitive form data such as
 //! passwords and other secrets with automatic memory zeroing for security.
 
+use core::fmt;
 use core::{fmt::Debug, str::FromStr};
 
 use alloc::string::{String, ToString};
@@ -16,7 +17,7 @@ use zeroize::Zeroize;
 pub struct Secure(String);
 
 impl Debug for Secure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Secure(****)")
     }
 }

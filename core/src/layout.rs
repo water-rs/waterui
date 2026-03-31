@@ -27,7 +27,8 @@
 //! ```
 
 use core::any::Any;
-use core::fmt::Debug;
+use core::fmt;
+use fmt::Debug;
 
 use alloc::vec::Vec;
 
@@ -194,7 +195,7 @@ impl PartialEq for HorizontalAlignment {
 impl Eq for HorizontalAlignment {}
 
 impl Debug for HorizontalAlignment {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HorizontalAlignment")
             .field("stable_id", &self.stable_id)
             .finish_non_exhaustive()
@@ -271,7 +272,7 @@ impl PartialEq for VerticalAlignment {
 impl Eq for VerticalAlignment {}
 
 impl Debug for VerticalAlignment {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VerticalAlignment")
             .field("stable_id", &self.stable_id)
             .finish_non_exhaustive()
@@ -451,7 +452,7 @@ pub struct PlacedSubview<'a> {
 }
 
 impl Debug for PlacedSubview<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlacedSubview")
             .field("frame", &self.frame)
             .finish_non_exhaustive()

@@ -7,6 +7,7 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
 use quote::quote;
+use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod locale;
 mod view_builder;
@@ -890,7 +891,7 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
         .collect();
 
     // Build a map of parameter defaults from the macro arguments
-    let defaults: std::collections::HashMap<String, Expr> = args
+    let defaults: HashMap<String, Expr> = args
         .iter()
         .map(|arg| (arg.name.to_string(), arg.value.clone()))
         .collect();
@@ -984,7 +985,7 @@ fn is_unit_output(output: &syn::ReturnType) -> bool {
     }
 }
 
-fn parse_test_view_arg(args: TokenStream) -> std::result::Result<syn::Path, TokenStream> {
+fn parse_test_view_arg(args: TokenStream) -> Result<syn::Path, TokenStream> {
     let view_args = match syn::parse::Parser::parse2(
         Punctuated::<syn::Path, Token![,]>::parse_terminated,
         proc_macro2::TokenStream::from(args),
@@ -1003,7 +1004,7 @@ fn parse_test_view_arg(args: TokenStream) -> std::result::Result<syn::Path, Toke
     Ok(view_args.first().expect("checked length above").clone())
 }
 
-fn validate_test_parameter(input_fn: &ItemFn) -> std::result::Result<&syn::PatType, TokenStream> {
+fn validate_test_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
     if input_fn.sig.inputs.len() != 1 {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
@@ -1053,7 +1054,7 @@ fn validate_test_parameter(input_fn: &ItemFn) -> std::result::Result<&syn::PatTy
     Ok(typed_arg)
 }
 
-fn validate_test_fn(input_fn: &ItemFn) -> std::result::Result<&syn::PatType, TokenStream> {
+fn validate_test_fn(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
     if input_fn.sig.constness.is_some() {
         return Err(syn::Error::new_spanned(
             input_fn.sig.constness,

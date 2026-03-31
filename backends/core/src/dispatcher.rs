@@ -5,6 +5,8 @@
 //! provides a zero-allocation generic path where views stay on the stack
 //! and are passed via `&mut dyn Any` downcast.
 
+use core::any::type_name;
+use core::fmt;
 use core::{
     any::{Any, TypeId},
     fmt::Debug,
@@ -133,13 +135,13 @@ impl<T: Default, C, R> ViewDispatcher<T, C, R> {
 }
 
 impl<T, C, R> Debug for ViewDispatcher<T, C, R> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "ViewDispatcher<{}, {}, {}>(handlers: {})",
-            core::any::type_name::<T>(),
-            core::any::type_name::<C>(),
-            core::any::type_name::<R>(),
+            type_name::<T>(),
+            type_name::<C>(),
+            type_name::<R>(),
             self.handlers.len()
         )
     }
@@ -203,7 +205,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
         let tid = TypeId::of::<V>();
 
         let debug_enabled = std::env::var_os("WATERUI_DISPATCH_DEBUG").is_some();
-        let _trace_guard = DispatchTraceGuard::enter(debug_enabled, core::any::type_name::<V>());
+        let _trace_guard = DispatchTraceGuard::enter(debug_enabled, type_name::<V>());
 
         // AnyView is already heap-allocated — unwrap it and dispatch by inner TypeId.
         if tid == TypeId::of::<AnyView>() {

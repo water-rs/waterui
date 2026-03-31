@@ -4,6 +4,8 @@
 //! The main type provided by this module is [`AnyView`], which wraps
 //! any type implementing the [`View`] trait and erases its concrete type
 //! while preserving its behavior.
+
+use core::fmt;
 use core::{
     any::{Any, TypeId, type_name},
     fmt::Debug,
@@ -41,7 +43,7 @@ impl<T: View> AnyViewImpl for T {
 pub struct AnyView(Box<dyn AnyViewImpl>);
 
 impl Debug for AnyView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("AnyView({})", self.name()))
     }
 }

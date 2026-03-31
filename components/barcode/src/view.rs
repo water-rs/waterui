@@ -1,4 +1,5 @@
 use crate::{BarcodeMaskEffect, BarcodeRenderer, BarcodeSource, BarcodeSymbology};
+use core::fmt;
 use waterui_core::{Environment, Str, View};
 use waterui_graphics::{GpuSurface, GpuView, ViewEffect, color::Srgb};
 
@@ -49,8 +50,8 @@ pub struct BarcodeGpuFill<V: GpuView> {
     light_color: Srgb,
 }
 
-impl<V: GpuView> core::fmt::Debug for BarcodeGpuFill<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<V: GpuView> fmt::Debug for BarcodeGpuFill<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeGpuFill").finish_non_exhaustive()
     }
 }

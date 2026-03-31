@@ -3,12 +3,13 @@ use alloc::{
     string::{String, ToString},
 };
 use core::cell::RefCell;
-use core::fmt::Display;
+use core::fmt;
 use core::ops::{Add, AddAssign};
+use fmt::Display;
 
 use nami::signal::{IntoComputed, IntoSignal};
-use nami::{Computed, Signal, SignalExt};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
+use nami::{Computed, Signal, SignalExt};
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, View};
@@ -56,8 +57,8 @@ enum TextKind {
 #[derive(Clone)]
 pub struct Text(TextKind);
 
-impl core::fmt::Debug for Text {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Text").finish_non_exhaustive()
     }
 }

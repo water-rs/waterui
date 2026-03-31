@@ -1,3 +1,5 @@
+use core::fmt;
+use std::collections::hash_map::DefaultHasher;
 use std::{
     collections::VecDeque,
     fs::{self, File},
@@ -1253,8 +1255,8 @@ impl VideoSurface {
     }
 }
 
-impl core::fmt::Debug for VideoSurface {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for VideoSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoSurface").finish_non_exhaustive()
     }
 }
@@ -1500,8 +1502,8 @@ struct PendingAudioOpen {
     receiver: Receiver<(u64, Result<AudioPlayer, String>)>,
 }
 
-impl core::fmt::Debug for VideoRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for VideoRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoRenderer")
             .field("source", &self.source)
             .field("subtitle_track_count", &self.subtitle_tracks.len())
@@ -3985,7 +3987,7 @@ fn local_source_path(url: &Url) -> PathBuf {
 }
 
 fn cached_remote_asset_path(url: &Url, default_extension: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     url.as_str().hash(&mut hasher);
     let hash = hasher.finish();
 
