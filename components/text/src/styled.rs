@@ -1,3 +1,4 @@
+use core::fmt;
 use core::{fmt::Display, mem::take, ops::Add};
 
 use crate::{
@@ -623,7 +624,7 @@ impl From<String> for StyledStr {
 }
 
 impl Display for StyledStr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_plain())
     }
 }

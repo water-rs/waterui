@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt;
 use core::future::Future;
 
 use crate::filter_view::{FilterContext, FilterInput, FilterOutput, GpuFilter};
@@ -230,8 +231,8 @@ pub struct MultiInputFilter<O: MultiInputOperation> {
     runtime: MultiInputRuntime,
 }
 
-impl<O: MultiInputOperation> core::fmt::Debug for MultiInputFilter<O> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<O: MultiInputOperation> fmt::Debug for MultiInputFilter<O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MultiInputFilter").finish_non_exhaustive()
     }
 }

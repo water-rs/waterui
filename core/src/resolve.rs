@@ -114,7 +114,8 @@
 //! - `.computed()` - Converts any `impl Signal` into a `Computed` for storage/cloning
 
 use alloc::boxed::Box;
-use core::fmt::Debug;
+use core::fmt;
+use fmt::Debug;
 
 use nami::{Computed, Signal, SignalExt};
 
@@ -267,7 +268,7 @@ pub struct Map<R, F> {
 }
 
 impl<R: Debug, F> Debug for Map<R, F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("With")
             .field("resolvable", &self.resolvable)
             .field("func", &"Fn(...)")

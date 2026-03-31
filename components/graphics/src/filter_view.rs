@@ -22,6 +22,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::TypeId;
+use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -59,8 +60,8 @@ pub struct FilterContext<'a> {
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
 }
 
-impl core::fmt::Debug for FilterContext<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for FilterContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilterContext")
             .field("input_format", &self.input_format)
             .field("output_format", &self.output_format)
@@ -86,8 +87,8 @@ pub struct FilterInput<'a> {
     pub height: u32,
 }
 
-impl core::fmt::Debug for FilterInput<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for FilterInput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilterInput")
             .field("format", &self.format)
             .field("width", &self.width)
@@ -114,8 +115,8 @@ pub struct FilterOutput<'a> {
     pub height: u32,
 }
 
-impl core::fmt::Debug for FilterOutput<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for FilterOutput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilterOutput")
             .field("format", &self.format)
             .field("width", &self.width)
@@ -224,8 +225,8 @@ pub struct AppliedFilter {
     filter: Box<dyn GpuFilterImpl>,
 }
 
-impl core::fmt::Debug for AppliedFilter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for AppliedFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppliedFilter").finish_non_exhaustive()
     }
 }
@@ -286,8 +287,8 @@ pub struct Filtered<V: View, F: GpuFilter> {
     filter: F,
 }
 
-impl<V: View, F: GpuFilter> core::fmt::Debug for Filtered<V, F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<V: View, F: GpuFilter> fmt::Debug for Filtered<V, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Filtered").finish_non_exhaustive()
     }
 }
@@ -369,8 +370,8 @@ pub struct FilteredView<F: GpuFilter> {
     filter: F,
 }
 
-impl<F: GpuFilter> core::fmt::Debug for FilteredView<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<F: GpuFilter> fmt::Debug for FilteredView<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredView").finish_non_exhaustive()
     }
 }
@@ -1378,8 +1379,8 @@ pub struct FilterAdapter<F: Filter> {
     last_render_used_direct_output: bool,
 }
 
-impl<F: Filter> core::fmt::Debug for FilterAdapter<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<F: Filter> fmt::Debug for FilterAdapter<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilterAdapter").finish_non_exhaustive()
     }
 }

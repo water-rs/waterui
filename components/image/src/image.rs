@@ -15,6 +15,7 @@
 use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt;
 
 use crate::codec::{self, DecodedRgba};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
@@ -242,8 +243,8 @@ struct ImageRenderer {
     sampler: Option<wgpu::Sampler>,
 }
 
-impl core::fmt::Debug for ImageRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for ImageRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImageRenderer")
             .field("width", &self.width)
             .field("height", &self.height)
