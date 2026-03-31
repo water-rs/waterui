@@ -8,11 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::build_info::{HYDROLYSIS_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION};
 use askama::Template;
 
-const WATERUI_VERSION: &str = "0.2";
-const WATERUI_FFI_VERSION: &str = "0.2";
-const WATERUI_HYDROLYSIS_VERSION: &str = "0.1";
+const WATERUI_HYDROLYSIS_VERSION: &str = HYDROLYSIS_VERSION;
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
