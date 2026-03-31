@@ -67,11 +67,7 @@ impl View for LivePhoto {
             if is_playing_now {
                 AnyView::new(live_photo_video(source, &is_playing))
             } else {
-                AnyView::new(live_photo_still(
-                    source,
-                    &is_playing,
-                    activation_duration_ms,
-                ))
+                AnyView::new(live_photo_still(source, &is_playing, activation_duration_ms))
             }
         })
     }

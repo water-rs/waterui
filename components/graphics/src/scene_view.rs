@@ -79,10 +79,10 @@ impl NativeView for SceneView {
 impl View for SceneView {
     fn body(self, env: &Environment) -> impl View {
         if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(Native::new(self));
+            AnyView::new(Native::new(self))
+        } else {
+            AnyView::new(GpuSurface::new(SceneSurfaceRenderer::new(self.content)))
         }
-
-        AnyView::new(GpuSurface::new(SceneSurfaceRenderer::new(self.content)))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

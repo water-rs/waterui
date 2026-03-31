@@ -177,14 +177,14 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
     }
 }
 
-fn render_list_config(config: ListConfig, env: &Environment) -> AnyView {
+fn render_list_config(config: ListConfig, env: &Environment) -> impl View {
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
-        return AnyView::new(hook.apply(env, config));
+        AnyView::new(hook.apply(env, config))
+    } else {
+        let fallback =
+            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
+        AnyView::new(Native::new(config).with_fallback(fallback))
     }
-
-    let fallback =
-        crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
-    AnyView::new(Native::new(config).with_fallback(fallback))
 }
 
 impl<V> View for List<V>

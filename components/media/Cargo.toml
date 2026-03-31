@@ -13,6 +13,7 @@ categories = ["gui", "multimedia"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-macros.workspace = true
 waterui-url.workspace = true
 waterui-image.workspace = true
 waterui-controls.workspace = true

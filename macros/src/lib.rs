@@ -9,6 +9,7 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod locale;
+mod view_builder;
 
 #[proc_macro]
 /// Expands `text!(...)` into a localized `Text` view with compile-time catalog loading.
@@ -20,6 +21,20 @@ pub fn text(input: TokenStream) -> TokenStream {
 /// Expands `catalog!()` into a compile-time `TranslationCatalog` built from `i18n/`.
 pub fn catalog(input: TokenStream) -> TokenStream {
     locale::catalog(&input)
+}
+
+#[proc_macro]
+/// Expands a builder block that unifies `if`/`match` branch view types while
+/// preserving normal Rust block and semicolon semantics.
+pub fn view(input: TokenStream) -> TokenStream {
+    view_builder::expand_macro(input)
+}
+
+#[proc_macro_attribute]
+/// Rewrites a function or method body so tail-position `if`/`match` branches
+/// can return different concrete `View` types under a shared `impl View`.
+pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
+    view_builder::expand_attribute(args, input)
 }
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.

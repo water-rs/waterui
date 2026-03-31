@@ -99,11 +99,15 @@ fn counter_section(counter: &Binding<i32>) -> impl View {
         vstack((
             text("Shared Counter").sub_headline(),
             hstack((
-                button("-").action(|State(value): State<Binding<i32>>| value.set(value.get() - 1)).state(counter),
+                button("-")
+                    .action(|State(value): State<Binding<i32>>| value.set(value.get() - 1))
+                    .state(counter),
                 spacer_min(16.0),
                 text!("Count: {counter_display}").body(),
                 spacer_min(16.0),
-                button("+").action(|State(value): State<Binding<i32>>| value.set(value.get() + 1)).state(counter),
+                button("+")
+                    .action(|State(value): State<Binding<i32>>| value.set(value.get() + 1))
+                    .state(counter),
             )),
             text("This value stays live across the whole path.")
                 .caption()
@@ -128,10 +132,7 @@ fn topics_section(items: Vec<Topic>) -> impl View {
 fn topic_row(topic: Topic) -> impl View {
     let route = Route::Topic(topic.clone());
     vstack((
-        NavigationLink::value(
-            label(topic.title).icon(text(">")).trailing(),
-            route,
-        ),
+        NavigationLink::value(label(topic.title).icon(text(">")).trailing(), route),
         text(topic.description)
             .caption()
             .foreground(MutedForeground),
@@ -244,10 +245,7 @@ fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>
 
 fn settings_links() -> impl View {
     vstack((
-        NavigationLink::value(
-            label("About").icon(text(">")).trailing(),
-            Route::About,
-        ),
+        NavigationLink::value(label("About").icon(text(">")).trailing(), Route::About),
         Divider,
         NavigationLink::value(
             label("Privacy Policy").icon(text(">")).trailing(),
