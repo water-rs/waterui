@@ -115,7 +115,7 @@ where
     T: IntoText + Clone + 'static,
 {
     fn into_text(self) -> Text {
-        Text::from_computed(self)
+        Text::from_signal(self)
     }
 }
 
@@ -241,13 +241,15 @@ impl Text {
         })
     }
 
-    fn from_computed<T>(source: Computed<T>) -> Self
+    fn from_signal<S, T>(source: S) -> Self
     where
+        S: Signal<Output = T> + Clone + 'static,
         T: IntoText + Clone + 'static,
     {
         Self::from_config_signal(move |env| {
             let env = env.clone();
             source
+                .clone()
                 .zip(&locale_binding(&env))
                 .map(move |(value, _locale)| value.into_text().resolve(&env))
                 .computed()
