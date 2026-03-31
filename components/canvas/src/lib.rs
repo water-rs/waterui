@@ -48,6 +48,7 @@ pub mod image;
 /// Text rendering support for Canvas.
 pub mod text;
 
+use core::fmt;
 pub use path::Path;
 
 pub use state::{LineCap, LineJoin};
@@ -87,8 +88,8 @@ pub struct Canvas {
     draw_fn: Box<dyn FnMut(&mut DrawingContext)>,
 }
 
-impl core::fmt::Debug for Canvas {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Canvas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Canvas").finish_non_exhaustive()
     }
 }
@@ -221,8 +222,8 @@ pub struct DrawingContext<'a> {
     requested_next_frame: bool,
 }
 
-impl core::fmt::Debug for DrawingContext<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for DrawingContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DrawingContext")
             .field("width", &self.width)
             .field("height", &self.height)

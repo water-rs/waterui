@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::any::TypeId;
+use core::fmt;
 
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
@@ -37,8 +38,8 @@ pub struct SceneView {
     content: Box<dyn SceneContent>,
 }
 
-impl core::fmt::Debug for SceneView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for SceneView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SceneView").finish_non_exhaustive()
     }
 }

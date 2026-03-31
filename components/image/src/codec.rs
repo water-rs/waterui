@@ -1,5 +1,6 @@
 use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
+use core::fmt;
 use std::io::{Cursor, Seek, SeekFrom};
 
 use mp4_atom::{Atom, Encode, FourCC, Ftyp, Header, Iinf, Meta, Pitm, ReadAtom, ReadFrom};
@@ -344,7 +345,7 @@ pub(crate) fn patch_heif_brand_to_avif(data: &[u8]) -> Result<Option<Vec<u8>>, S
     Ok(Some(patched))
 }
 
-fn software_decode_error_message(data: &[u8], primary_err: &impl core::fmt::Display) -> String {
+fn software_decode_error_message(data: &[u8], primary_err: &impl fmt::Display) -> String {
     match parse_heif_container(data) {
         Ok(Some(info)) => match heif_primary_codec(info.primary_item_type) {
             HeifPrimaryCodec::Av1 => {

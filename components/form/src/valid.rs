@@ -1,5 +1,6 @@
 //! Validation utilities for form components.
 
+use core::fmt;
 use core::{
     error::Error,
     fmt::{Debug, Display},
@@ -19,8 +20,8 @@ macro_rules! impl_error {
         #[doc = $message]
         pub struct $ident;
 
-        impl core::fmt::Display for $ident {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        impl fmt::Display for $ident {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, $message)
             }
         }
@@ -127,7 +128,7 @@ where
 pub struct OutOfRange<T>(pub Range<T>);
 
 impl<T: Display> Display for OutOfRange<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "Value is out of range: {} - {}.",
@@ -188,7 +189,7 @@ where
     A: Display,
     B: Display,
 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::A(a) => write!(f, "{a}"),
             Self::B(b) => write!(f, "{b}"),
@@ -231,7 +232,7 @@ where
     A: Display,
     B: Display,
 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "At least one of the following errors occurred:\n1. {}\n2. {}",

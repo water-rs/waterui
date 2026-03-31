@@ -1,7 +1,8 @@
 //! View wrapper that lets arbitrary [`Layout`] implementations
 //! participate in the `WaterUI` view tree.
 
-use core::fmt::Debug;
+use core::fmt;
+use fmt::Debug;
 
 use alloc::{boxed::Box, vec::Vec};
 use waterui_core::{
@@ -20,7 +21,7 @@ pub struct FixedContainer {
 }
 
 impl Debug for FixedContainer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Container")
             .field("layout", &"Box<dyn Layout>")
             .field("contents", &self.contents)

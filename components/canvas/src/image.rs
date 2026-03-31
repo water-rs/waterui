@@ -3,6 +3,8 @@
 //! This module provides image loading from various sources (raw pixels, PNG, JPEG)
 //! for use with the Canvas drawing API.
 
+use core::fmt;
+use std::error::Error;
 use waterui_core::layout::Size;
 use waterui_graphics::image_decode::load_dynamic_image;
 
@@ -127,8 +129,8 @@ impl CanvasImage {
     }
 }
 
-impl core::fmt::Debug for CanvasImage {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for CanvasImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CanvasImage")
             .field("width", &self.width)
             .field("height", &self.height)
@@ -150,8 +152,8 @@ pub enum ImageError {
     DecodeError(image::ImageError),
 }
 
-impl core::fmt::Display for ImageError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ImageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPixelData { expected, got } => {
                 write!(
@@ -164,8 +166,8 @@ impl core::fmt::Display for ImageError {
     }
 }
 
-impl std::error::Error for ImageError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for ImageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidPixelData { .. } => None,
             Self::DecodeError(err) => Some(err),
