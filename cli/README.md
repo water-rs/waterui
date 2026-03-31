@@ -187,10 +187,15 @@ water run --platform ios --device "iPhone 15 Pro"
 ### Create Project with Local WaterUI Development
 
 ```bash
-water create my-app --dev --platform ios,android
+water create my-app --waterui-path /path/to/waterui --backends apple,android
 ```
 
-This creates a project that uses the local WaterUI repository (useful for framework development).
+This creates a project that uses the local WaterUI repository.
+
+When the `water` CLI itself was built from a local, non-release WaterUI checkout and you run
+`water create` from somewhere inside the WaterUI repository, it automatically detects the repo
+root and uses it as the local `waterui_path`. Use `--waterui-path` explicitly when running that
+development CLI outside the repository.
 
 ### Build Without Running
 

@@ -11,6 +11,11 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[package.metadata.waterui-scaffold]
+waterui-version = "0.2.1"
+waterui-ffi-version = "0.2.1"
+hydrolysis-version = "0.1.0"
+
 [[bin]]
 name = "water"
 path = "src/terminal/main.rs"
@@ -76,6 +81,9 @@ core-foundation = "0.10"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
+
+[build-dependencies]
+toml = "0.9.12"
 
 [lints]
 workspace = true
