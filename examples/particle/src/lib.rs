@@ -6,7 +6,8 @@ use core::f32::consts::PI;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
-use waterui::reactive::{binding, Binding};
+use waterui::reactive::{Binding, binding};
+use waterui::view;
 use waterui_particle::{ParticleShape, ParticleSystem};
 
 // --- Demos ---
@@ -294,16 +295,20 @@ fn main() -> impl View {
             })
             .computed(),
         // Particle System
-        watch(mode.clone(), |m| match m {
-            0 => AnyView::new(rain()),
-            1 => AnyView::new(snow()),
-            2 => AnyView::new(fog()),
-            3 => AnyView::new(flame()),
-            4 => AnyView::new(firework()),
-            5 => AnyView::new(confetti_view()), // Use the manually unrolled one to ensure stability
-            6 => AnyView::new(explosion()),
-            7 => AnyView::new(bounce_box()),
-            _ => AnyView::new(rain()),
+        watch(mode.clone(), |m| {
+            view! {
+                match m {
+                    0 => rain(),
+                    1 => snow(),
+                    2 => fog(),
+                    3 => flame(),
+                    4 => firework(),
+                    5 => confetti_view(), // Use the manually unrolled one to ensure stability
+                    6 => explosion(),
+                    7 => bounce_box(),
+                    _ => rain(),
+                }
+            }
         }),
         // UI Overlay
         vstack((

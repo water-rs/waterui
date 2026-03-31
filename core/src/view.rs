@@ -62,7 +62,11 @@ impl<V: View, E: View> View for Result<V, E> {
 
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
-        self.map_or_else(|| AnyView::new(()), |view| AnyView::new(view))
+        if let Some(view) = self {
+            AnyView::new(view)
+        } else {
+            AnyView::new(())
+        }
     }
 }
 

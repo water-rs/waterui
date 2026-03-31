@@ -21,6 +21,7 @@ waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-url.workspace = true
 waterui-graphics.workspace = true
+waterui-macros.workspace = true
 waterkit-dialog = { workspace = true, optional = true }
 tracing.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
