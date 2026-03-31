@@ -42,7 +42,7 @@ use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::extract::State;
 use waterui_core::handler::{Handler, SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnimationExt, AnyView, View};
+use waterui_core::{AnimationExt, View};
 use waterui_icon::SystemIcon;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
@@ -51,6 +51,7 @@ use waterui_layout::stack::{Alignment, hstack};
 use waterui_str::Str;
 use waterui_text::text::text;
 
+use crate::AnyView;
 use crate::ViewExt;
 use crate::background::Material;
 use crate::component::Label;

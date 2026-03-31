@@ -48,18 +48,36 @@ fn main() -> impl View {
             spacer_min(16.0),
             text("Theme"),
             hstack((
-                button("Cyber").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
-                    t.set(WaveformTheme::cyber());
-                    i.set(0);
-                }).state(&theme).state(&theme_index),
-                button("Recorder").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
-                    t.set(WaveformTheme::recorder());
-                    i.set(1);
-                }).state(&theme).state(&theme_index),
-                button("Oscilloscope").action(|State(t): State<Binding<WaveformTheme>>, State(i): State<Binding<usize>>| {
-                    t.set(WaveformTheme::oscilloscope());
-                    i.set(2);
-                }).state(&theme).state(&theme_index),
+                button("Cyber")
+                    .action(
+                        |State(t): State<Binding<WaveformTheme>>,
+                         State(i): State<Binding<usize>>| {
+                            t.set(WaveformTheme::cyber());
+                            i.set(0);
+                        },
+                    )
+                    .state(&theme)
+                    .state(&theme_index),
+                button("Recorder")
+                    .action(
+                        |State(t): State<Binding<WaveformTheme>>,
+                         State(i): State<Binding<usize>>| {
+                            t.set(WaveformTheme::recorder());
+                            i.set(1);
+                        },
+                    )
+                    .state(&theme)
+                    .state(&theme_index),
+                button("Oscilloscope")
+                    .action(
+                        |State(t): State<Binding<WaveformTheme>>,
+                         State(i): State<Binding<usize>>| {
+                            t.set(WaveformTheme::oscilloscope());
+                            i.set(2);
+                        },
+                    )
+                    .state(&theme)
+                    .state(&theme_index),
             ))
             .spacing(12.0),
             spacer_min(16.0),

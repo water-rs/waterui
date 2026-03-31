@@ -76,13 +76,13 @@ impl ViewConfiguration for TableConfig {
     }
 }
 
-fn render_table_config(config: TableConfig, env: &Environment) -> AnyView {
+fn render_table_config(config: TableConfig, env: &Environment) -> impl View {
     if let Some(hook) = env.get::<Hook<TableConfig>>() {
-        return AnyView::new(hook.apply(env, config));
+        AnyView::new(hook.apply(env, config))
+    } else {
+        let fallback = DefaultTableView::new(config.columns.clone());
+        AnyView::new(Native::new(config).with_fallback(fallback))
     }
-
-    let fallback = DefaultTableView::new(config.columns.clone());
-    AnyView::new(Native::new(config).with_fallback(fallback))
 }
 
 impl<Col> View for Table<Col>
