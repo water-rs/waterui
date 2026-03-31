@@ -1,6 +1,9 @@
 //! Shared TCP protocol between `water` CLI and the preview support app.
 
+use serde::de::{Error as DeError, Visitor as DeVisitor};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 
 /// Build commit hash for protocol compatibility checks.
 pub const PREVIEW_PROTOCOL_COMMIT: &str = env!("WATERUI_PREVIEW_PROTOCOL_COMMIT");
@@ -256,19 +259,19 @@ impl DylibId {
     }
 }
 
-impl std::fmt::Debug for DylibId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for DylibId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DylibId({})", self)
     }
 }
 
-impl std::fmt::Display for DylibId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for DylibId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", hex::encode(self.0))
     }
 }
 
-impl std::str::FromStr for DylibId {
+impl FromStr for DylibId {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -294,16 +297,16 @@ impl<'de> Deserialize<'de> for DylibId {
     {
         struct Visitor;
 
-        impl serde::de::Visitor<'_> for Visitor {
+        impl DeVisitor<'_> for Visitor {
             type Value = DylibId;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "a 64-char hex string")
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: DeError,
             {
                 let bytes = hex::decode(v).map_err(|_| E::custom("invalid hex"))?;
                 let bytes: [u8; 32] = bytes

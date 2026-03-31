@@ -1,6 +1,7 @@
 //! GPU-animated flowing gradient using ShaderSurface.
 
 use crate::shader_surface::ShaderSurface;
+use core::fmt;
 use waterui_core::View;
 
 /// A GPU-animated, smooth flowing gradient.
@@ -8,8 +9,8 @@ pub struct FlowingGradient {
     inner: ShaderSurface,
 }
 
-impl core::fmt::Debug for FlowingGradient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for FlowingGradient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FlowingGradient").finish_non_exhaustive()
     }
 }

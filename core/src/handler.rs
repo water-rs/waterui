@@ -9,6 +9,7 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::any::type_name;
 use core::cell::RefCell;
+use core::fmt;
 
 use crate::Environment;
 
@@ -140,8 +141,8 @@ impl<T: 'static> SharedAction<T> {
     }
 }
 
-impl<T> core::fmt::Debug for SharedAction<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<T> fmt::Debug for SharedAction<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SharedAction")
     }
 }
@@ -209,8 +210,8 @@ impl<V: View> AnyViewBuilder<V> {
     }
 }
 
-impl<V> core::fmt::Debug for AnyViewBuilder<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<V> fmt::Debug for AnyViewBuilder<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AnyViewBuilder")
     }
 }
