@@ -9,6 +9,7 @@ use heck::{ToKebabCase, ToSnakeCase};
 
 use crate::shell;
 use crate::{header, line, success};
+use waterui_cli::build_info::{self, BuildKind};
 use waterui_cli::project::{CreateOptions, PackageType, Project};
 use waterui_cli::project_types::BundleIdentifier;
 
@@ -27,12 +28,8 @@ pub struct Args {
     backends: Option<Vec<String>>,
 
     /// Path to local `WaterUI` repository (for development).
-    #[arg(long, conflicts_with = "dev")]
+    #[arg(long)]
     waterui_path: Option<PathBuf>,
-
-    /// Use current directory as `WaterUI` repository path (shorthand for --waterui-path .).
-    #[arg(long, conflicts_with = "waterui_path")]
-    dev: bool,
 
     /// Project mode (`app` or `playground`).
     #[arg(long, value_enum, default_value_t = ProjectMode::App)]
@@ -111,16 +108,15 @@ fn resolve_create_plan(args: &Args) -> Result<CreatePlan> {
     let interactive = shell::is_interactive();
     let package_type = args.mode.package_type();
     let name = resolve_project_name(args, interactive)?;
-    let waterui_path = resolve_waterui_path(args, interactive)?;
+    let folder_name = name.to_kebab_case();
+    let project_path = std::env::current_dir()?.join(&folder_name);
+    let waterui_path = resolve_waterui_path(args, &project_path)?;
     let bundle_id = resolve_bundle_id(args, interactive, &name)?;
     let backends = resolve_backends(args, interactive, package_type)?;
 
     if package_type == PackageType::App {
         validate_backends_on_host(&backends)?;
     }
-
-    let folder_name = name.to_kebab_case();
-    let project_path = std::env::current_dir()?.join(&folder_name);
 
     Ok(CreatePlan {
         name,
@@ -141,24 +137,56 @@ fn resolve_project_name(args: &Args, interactive: bool) -> Result<String> {
     }
 }
 
-fn resolve_waterui_path(args: &Args, interactive: bool) -> Result<Option<PathBuf>> {
-    if !args.dev {
-        return Ok(args.waterui_path.clone());
+fn resolve_waterui_path(args: &Args, project_path: &std::path::Path) -> Result<Option<PathBuf>> {
+    if let Some(path) = args.waterui_path.clone() {
+        return Ok(Some(path));
     }
 
-    let user_input = if interactive {
-        prompt_waterui_path()?
-    } else {
-        ".".to_string()
-    };
-    let input_path = std::path::Path::new(&user_input);
-    let relative_to_new_project = if input_path.is_relative() {
-        PathBuf::from("..").join(input_path)
-    } else {
-        input_path.to_path_buf()
-    };
+    let current_dir = std::env::current_dir()?;
+    resolve_default_waterui_path(build_info::build_kind(), &current_dir, project_path)
+}
 
-    Ok(Some(relative_to_new_project))
+fn resolve_default_waterui_path(
+    build_kind: BuildKind,
+    current_dir: &std::path::Path,
+    project_path: &std::path::Path,
+) -> Result<Option<PathBuf>> {
+    if build_kind == BuildKind::Release {
+        return Ok(None);
+    }
+
+    let waterui_root = find_waterui_repo_root(current_dir).ok_or_else(|| {
+        eyre!(
+            "This water CLI was built from a local WaterUI checkout, but {} is not inside a WaterUI repository. Pass --waterui-path explicitly.",
+            current_dir.display()
+        )
+    })?;
+    let relative_path = pathdiff::diff_paths(&waterui_root, project_path).ok_or_else(|| {
+        eyre!(
+            "failed to compute WaterUI repo path from {} to {}",
+            project_path.display(),
+            waterui_root.display()
+        )
+    })?;
+
+    Ok(Some(relative_path))
+}
+
+fn find_waterui_repo_root(current_dir: &std::path::Path) -> Option<PathBuf> {
+    current_dir
+        .ancestors()
+        .find(|candidate| is_waterui_repo_root(candidate))
+        .map(std::path::Path::to_path_buf)
+}
+
+fn is_waterui_repo_root(candidate: &std::path::Path) -> bool {
+    candidate.join("Cargo.toml").is_file()
+        && candidate.join("ffi").join("Cargo.toml").is_file()
+        && candidate
+            .join("backends")
+            .join("hydrolysis")
+            .join("Cargo.toml")
+            .is_file()
 }
 
 fn resolve_bundle_id(args: &Args, interactive: bool, name: &str) -> Result<String> {
@@ -275,13 +303,6 @@ fn print_create_summary(plan: &CreatePlan) {
 fn prompt_name() -> Result<String> {
     Ok(Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Project name")
-        .interact_text()?)
-}
-
-fn prompt_waterui_path() -> Result<String> {
-    Ok(Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Local WaterUI path")
-        .default(".".to_string())
         .interact_text()?)
 }
 
@@ -406,9 +427,14 @@ fn validate_backends_on_host(backends: &[Backend]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::{
-        Backend, PackageType, next_run_command, parse_backends, validate_backends_on_host,
+        Backend, PackageType, find_waterui_repo_root, next_run_command, parse_backends,
+        resolve_default_waterui_path, validate_backends_on_host,
     };
+    use tempfile::tempdir;
+    use waterui_cli::build_info::BuildKind;
 
     #[test]
     fn parse_backends_rejects_unknown_values() {
@@ -446,6 +472,97 @@ mod tests {
             next_run_command(PackageType::App, &[Backend::Android, Backend::Gtk4]),
             Some("water run --platform android")
         );
+    }
+
+    #[test]
+    fn release_build_does_not_force_dev_branch_behavior() {
+        let project_path = Path::new("/tmp").join("my-app");
+        assert_eq!(
+            resolve_default_waterui_path(BuildKind::Release, Path::new("/tmp"), &project_path)
+                .expect("release build should not fail"),
+            None
+        );
+    }
+
+    #[test]
+    fn finds_waterui_repo_root_from_nested_directory() {
+        let tempdir = tempdir().expect("temporary workspace root");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname='waterui'\nversion='0.0.0'\n",
+        )
+        .expect("root Cargo.toml");
+        std::fs::create_dir(tempdir.path().join("ffi")).expect("ffi dir");
+        std::fs::write(
+            tempdir.path().join("ffi").join("Cargo.toml"),
+            "[package]\nname='waterui-ffi'\nversion='0.0.0'\n",
+        )
+        .expect("ffi Cargo.toml");
+        std::fs::create_dir_all(tempdir.path().join("backends").join("hydrolysis"))
+            .expect("hydrolysis dir");
+        std::fs::write(
+            tempdir
+                .path()
+                .join("backends")
+                .join("hydrolysis")
+                .join("Cargo.toml"),
+            "[package]\nname='hydrolysis'\nversion='0.0.0'\n",
+        )
+        .expect("hydrolysis Cargo.toml");
+        std::fs::create_dir_all(tempdir.path().join("examples").join("nested"))
+            .expect("nested dir");
+
+        assert_eq!(
+            find_waterui_repo_root(&tempdir.path().join("examples").join("nested")).as_deref(),
+            Some(tempdir.path())
+        );
+    }
+
+    #[test]
+    fn dev_branch_build_uses_detected_repo_root() {
+        let tempdir = tempdir().expect("temporary workspace root");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname='waterui'\nversion='0.0.0'\n",
+        )
+        .expect("root Cargo.toml");
+        std::fs::create_dir(tempdir.path().join("ffi")).expect("ffi dir");
+        std::fs::write(
+            tempdir.path().join("ffi").join("Cargo.toml"),
+            "[package]\nname='waterui-ffi'\nversion='0.0.0'\n",
+        )
+        .expect("ffi Cargo.toml");
+        std::fs::create_dir_all(tempdir.path().join("backends").join("hydrolysis"))
+            .expect("hydrolysis dir");
+        std::fs::write(
+            tempdir
+                .path()
+                .join("backends")
+                .join("hydrolysis")
+                .join("Cargo.toml"),
+            "[package]\nname='hydrolysis'\nversion='0.0.0'\n",
+        )
+        .expect("hydrolysis Cargo.toml");
+        std::fs::create_dir_all(tempdir.path().join("examples").join("nested"))
+            .expect("nested dir");
+
+        let current_dir = tempdir.path().join("examples").join("nested");
+        let project_path = current_dir.join("my-app");
+        assert_eq!(
+            resolve_default_waterui_path(BuildKind::DevBranch, &current_dir, &project_path)
+                .expect("dev branch build should resolve"),
+            Some(PathBuf::from("..").join("..").join(".."))
+        );
+    }
+
+    #[test]
+    fn dev_branch_build_requires_explicit_path_outside_repo() {
+        let tempdir = tempdir().expect("temporary workspace root");
+        let project_path = tempdir.path().join("my-app");
+        let error =
+            resolve_default_waterui_path(BuildKind::DevBranch, tempdir.path(), &project_path)
+                .expect_err("outside repo should fail");
+        assert!(error.to_string().contains("Pass --waterui-path explicitly"));
     }
 
     #[cfg(target_os = "linux")]

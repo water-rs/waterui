@@ -5,6 +5,7 @@ pub(crate) mod assets;
 pub mod backend;
 pub mod brew;
 pub mod build;
+pub mod build_info;
 pub mod capture;
 pub mod debug;
 pub mod device;
