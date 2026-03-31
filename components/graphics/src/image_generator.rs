@@ -2,6 +2,7 @@ use crate::color::Srgb;
 use crate::gpu_surface::{OffscreenRenderConfig, OffscreenSize};
 use crate::multi_input_filter::FilterImage;
 use crate::shader_surface::ShaderSurface;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
@@ -47,7 +48,7 @@ impl GeneratedImage {
     pub fn to_filter_image(&self) -> FilterImage {
         FilterImage::from_rgba8(self.width, self.height, self.rgba8.clone())
     }
-    pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> image::ImageResult<()> {
+    pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
         let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
             .expect("GeneratedImage::save_png: rgba buffer shape must match dimensions");
         image.save(path)

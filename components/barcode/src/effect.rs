@@ -1,6 +1,7 @@
 //! GPU mask effect for filling QR dark modules with arbitrary GPU content.
 
 use bytemuck::{Pod, Zeroable};
+use core::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::BarcodeSource;
@@ -31,8 +32,8 @@ pub struct BarcodeMaskEffect {
     light_color: [f32; 4],
 }
 
-impl core::fmt::Debug for BarcodeMaskEffect {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for BarcodeMaskEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeMaskEffect")
             .field("current_matrix_dim", &self.current_matrix_dim)
             .finish()

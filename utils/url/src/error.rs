@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+#[cfg(feature = "std")]
+use core::error::Error;
+
 /// Error type returned when URL parsing fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
@@ -32,7 +35,7 @@ impl fmt::Display for ParseError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for ParseError {}
+impl Error for ParseError {}
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,7 @@
 //! Barcode matrix generation for GPU rendering.
 
 use barcoders::sym::code128::Code128;
+use core::fmt;
 use waterui_core::Str;
 use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
 
@@ -39,8 +40,8 @@ pub struct BarcodeMatrix {
     pub packed_data: Vec<u32>,
 }
 
-impl core::fmt::Debug for BarcodeSource {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for BarcodeSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeSource")
             .field("symbology", &self.symbology)
             .field("content", &self.content)

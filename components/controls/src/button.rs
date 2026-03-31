@@ -125,8 +125,9 @@
 //!     .action(|| { /* ... */ });
 //! ```
 
-use core::fmt::Debug;
+use core::fmt;
 use core::future::Future;
+use fmt::Debug;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
@@ -347,7 +348,7 @@ pub struct Button<Label, Action> {
 }
 
 impl<Label: Debug, Action> Debug for Button<Label, Action> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Button")
             .field("label", &self.label)
             .field("style", &self.style)
