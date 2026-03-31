@@ -1,7 +1,9 @@
+use core::fmt;
 use core::{
+    cmp::Ordering,
     convert::Infallible,
     fmt::Display,
-    hash::Hash,
+    hash::{Hash, Hasher},
     mem::take,
     ops::{Add, AddAssign, Deref, Index},
     slice::SliceIndex,
@@ -13,7 +15,7 @@ use alloc::string::{String, ToString};
 use crate::Str;
 
 impl Hash for Str {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.deref().hash(state);
     }
 }
@@ -84,19 +86,19 @@ impl<S: AsRef<str>> FromIterator<S> for Str {
 impl Eq for Str {}
 
 impl PartialOrd for Str {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Str {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.deref().cmp(&**other)
     }
 }
 
 impl Display for Str {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.deref().fmt(f)
     }
 }
@@ -181,7 +183,7 @@ mod serde {
     impl Visitor<'_> for StrVisitor {
         type Value = Str;
 
-        fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("a string")
         }
 

@@ -24,7 +24,9 @@
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
+use core::fmt;
 use core::time::Duration;
+use std::time::Instant;
 
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
@@ -870,15 +872,15 @@ struct MorphShapeRenderer {
     fill_color: waterui_graphics::ResolvedColor,
     animation: MorphAnimation,
     progress: Option<Computed<f32>>,
-    start_time: std::time::Instant,
+    start_time: Instant,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
 }
 
-impl core::fmt::Debug for MorphShapeRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for MorphShapeRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MorphShapeRenderer")
             .field("from", &self.from)
             .field("to", &self.to)
@@ -900,7 +902,7 @@ impl MorphShapeRenderer {
             fill_color,
             animation,
             progress,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
             pipeline: None,
             uniform_buffer: None,
             bind_group: None,
@@ -998,7 +1000,7 @@ impl GpuView for MorphShapeRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = std::time::Instant::now();
+        self.start_time = Instant::now();
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

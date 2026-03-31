@@ -1,6 +1,7 @@
 //! Shared locale runtime for WaterUI backed by waterkit-regional.
 
 use core::str::FromStr;
+use std::error::Error;
 use std::fmt;
 
 use waterkit_regional::SystemSettingsContext;
@@ -82,7 +83,7 @@ impl fmt::Display for InvalidLocaleTag {
     }
 }
 
-impl std::error::Error for InvalidLocaleTag {}
+impl Error for InvalidLocaleTag {}
 
 /// Returns the current shared runtime locale settings.
 #[must_use]

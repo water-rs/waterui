@@ -7,9 +7,14 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt;
 use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
+use std::error::Error;
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -145,8 +150,8 @@ pub struct GpuContext<'a> {
     pub redraw_handle: RedrawHandle,
 }
 
-impl core::fmt::Debug for GpuContext<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for GpuContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuContext")
             .field("surface_format", &self.surface_format)
             .field("msaa_samples", &self.msaa_samples)
@@ -249,7 +254,7 @@ impl GestureState {
 /// Obtain from [`GpuContext::redraw_handle`] during [`GpuView::setup`].
 #[derive(Clone, Debug)]
 pub struct RedrawHandle {
-    dirty: alloc::sync::Arc<core::sync::atomic::AtomicBool>,
+    dirty: alloc::sync::Arc<AtomicBool>,
 }
 
 impl RedrawHandle {
@@ -257,19 +262,18 @@ impl RedrawHandle {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            dirty: alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false)),
+            dirty: alloc::sync::Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Mark the surface as needing a redraw.
     pub fn request_redraw(&self) {
-        self.dirty
-            .store(true, core::sync::atomic::Ordering::Release);
+        self.dirty.store(true, Ordering::Release);
     }
 
     /// Check and clear the dirty flag. Returns `true` if a redraw was requested.
     pub fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, core::sync::atomic::Ordering::AcqRel)
+        self.dirty.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -317,8 +321,8 @@ pub struct GpuFrame<'a> {
     redraw_requested: bool,
 }
 
-impl core::fmt::Debug for GpuFrame<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for GpuFrame<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuFrame")
             .field("format", &self.format)
             .field("width", &self.width)
@@ -642,7 +646,7 @@ impl OffscreenRenderOutput {
     }
 
     /// Saves the rendered image as a PNG file.
-    pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
+    pub fn save_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
     }
@@ -729,16 +733,13 @@ impl OffscreenRenderOutputHdr {
     }
 
     /// Saves the rendered image as PNG with automatic dynamic-range handling.
-    pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
+    pub fn save_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
     }
 
     /// Saves the rendered image as SDR PNG using automatic tone mapping.
-    pub fn save_sdr_png<P: AsRef<std::path::Path>>(
-        &self,
-        path: P,
-    ) -> Result<(), OffscreenRenderError> {
+    pub fn save_sdr_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_sdr_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
     }
@@ -775,8 +776,8 @@ pub enum OffscreenRenderError {
     PngWriteFailed(String),
 }
 
-impl core::fmt::Display for OffscreenRenderError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for OffscreenRenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSize { width, height } => {
                 write!(f, "offscreen size must be non-zero, got {width}x{height}")
@@ -801,7 +802,7 @@ impl core::fmt::Display for OffscreenRenderError {
     }
 }
 
-impl std::error::Error for OffscreenRenderError {}
+impl Error for OffscreenRenderError {}
 
 /// Private object-safe trait for type-erased GPU views.
 trait GpuViewImpl: 'static {
@@ -895,8 +896,8 @@ pub struct GpuSurface {
     picture_in_picture_host_id: Option<u64>,
 }
 
-impl core::fmt::Debug for GpuSurface {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for GpuSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuSurface").finish_non_exhaustive()
     }
 }

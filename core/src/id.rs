@@ -13,6 +13,7 @@
 //! - `UseId` and `SelfId`: Wrappers that implement different ID strategies
 
 use core::num::NonZeroI32;
+use core::num::TryFromIntError;
 use core::{hash::Hash, ops::Deref};
 
 use crate::{AnyView, View};
@@ -34,7 +35,7 @@ impl From<NonZeroI32> for Id {
 }
 
 impl TryFrom<i32> for Id {
-    type Error = core::num::TryFromIntError;
+    type Error = TryFromIntError;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         NonZeroI32::try_from(value).map(Id)
