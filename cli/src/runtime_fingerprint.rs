@@ -17,17 +17,22 @@ struct RuntimeFingerprintFile {
 }
 
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn compute_runtime_fingerprint(
-    waterui_root: &Path,
-    waterui_core_id: &str,
-) -> Result<String> {
-    let waterui_root = waterui_root.to_path_buf();
-    let waterui_core_id = waterui_core_id.to_string();
-    smol::unblock(move || compute_runtime_fingerprint_sync(&waterui_root, &waterui_core_id)).await
+pub(crate) fn runtime_package_identity(package: &cargo_metadata::Package) -> String {
+    format!("{}@{}", package.name, package.version)
 }
 
-fn compute_runtime_fingerprint_sync(waterui_root: &Path, waterui_core_id: &str) -> Result<String> {
-    if let Some(git_fingerprint) = compute_git_clean_fingerprint(waterui_root, waterui_core_id)? {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn compute_runtime_fingerprint(
+    waterui_root: &Path,
+    runtime_identity: &str,
+) -> Result<String> {
+    let waterui_root = waterui_root.to_path_buf();
+    let runtime_identity = runtime_identity.to_string();
+    smol::unblock(move || compute_runtime_fingerprint_sync(&waterui_root, &runtime_identity)).await
+}
+
+fn compute_runtime_fingerprint_sync(waterui_root: &Path, runtime_identity: &str) -> Result<String> {
+    if let Some(git_fingerprint) = compute_git_clean_fingerprint(waterui_root, runtime_identity)? {
         return Ok(git_fingerprint);
     }
 
@@ -38,7 +43,7 @@ fn compute_runtime_fingerprint_sync(waterui_root: &Path, waterui_core_id: &str) 
     files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
     let mut hasher = sha2::Sha256::new();
-    hasher.update(waterui_core_id.as_bytes());
+    hasher.update(runtime_identity.as_bytes());
     hasher.update([0]);
 
     for file in files {
@@ -47,10 +52,10 @@ fn compute_runtime_fingerprint_sync(waterui_root: &Path, waterui_core_id: &str) 
         hash_file_contents(&mut hasher, &file.absolute_path)?;
     }
 
-    Ok(format!("{waterui_core_id}:{:x}", hasher.finalize()))
+    Ok(format!("{runtime_identity}:{:x}", hasher.finalize()))
 }
 
-fn compute_git_clean_fingerprint(root: &Path, waterui_core_id: &str) -> Result<Option<String>> {
+fn compute_git_clean_fingerprint(root: &Path, runtime_identity: &str) -> Result<Option<String>> {
     if !is_git_work_tree(root) {
         return Ok(None);
     }
@@ -90,7 +95,7 @@ fn compute_git_clean_fingerprint(root: &Path, waterui_core_id: &str) -> Result<O
         return Ok(None);
     }
 
-    Ok(Some(format!("{waterui_core_id}:git:{commit}")))
+    Ok(Some(format!("{runtime_identity}:git:{commit}")))
 }
 
 fn is_git_work_tree(root: &Path) -> bool {
@@ -279,6 +284,35 @@ mod tests {
         let fingerprint = compute_runtime_fingerprint_sync(dir.path(), "waterui-core 0.0.1")
             .expect("fingerprint");
         assert!(!fingerprint.contains(":git:"));
+    }
+
+    #[test]
+    fn clean_git_fingerprint_is_stable_across_clone_paths() {
+        let dir = tempdir().expect("temp dir");
+        init_git_repo(dir.path());
+        fs::create_dir_all(dir.path().join("src")).expect("create src");
+        fs::write(dir.path().join("src/lib.rs"), "pub fn a() {}").expect("write source");
+        commit_all(dir.path(), "init");
+
+        let clone_dir = tempdir().expect("clone dir");
+        let cloned_repo = clone_dir.path().join("repo");
+        let status = Command::new("git")
+            .arg("clone")
+            .arg(dir.path())
+            .arg(&cloned_repo)
+            .status()
+            .expect("git clone should run");
+        assert!(
+            status.success(),
+            "git clone failed into {}",
+            cloned_repo.display()
+        );
+
+        let original = compute_runtime_fingerprint_sync(dir.path(), "waterui-core@0.0.1")
+            .expect("original fingerprint");
+        let cloned = compute_runtime_fingerprint_sync(&cloned_repo, "waterui-core@0.0.1")
+            .expect("cloned fingerprint");
+        assert_eq!(original, cloned);
     }
 
     fn init_git_repo(root: &Path) {
