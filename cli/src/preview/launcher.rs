@@ -23,7 +23,7 @@ use crate::device::{Device, DeviceEvent, Local, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
-use crate::runtime_fingerprint::compute_runtime_fingerprint;
+use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
@@ -648,9 +648,9 @@ Current project resolves `waterui` from a non-path source."
         .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
 
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
-    let waterui_core_id = waterui_core.id.to_string();
+    let runtime_identity = runtime_package_identity(waterui_core);
     let runtime_fingerprint_base =
-        compute_runtime_fingerprint(&waterui_root, &waterui_core_id).await?;
+        compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
     let runtime_fingerprint = format!(
         "{runtime_fingerprint_base}|profile={}",
         runtime_profile_tag()
