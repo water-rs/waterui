@@ -7,9 +7,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use nami::Signal;
+use nami::{Signal, SignalExt};
 use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole};
-use waterui_core::dynamic::watch;
 use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_graphics::color::Color;
 use waterui_layout::container::FixedContainer;
@@ -632,26 +631,29 @@ where
             self.chart,
         );
 
-        let reactive_axes = watch(self.bounds, move |bounds: DataBounds| {
-            let y_show_grid = y_axis.as_ref().is_some_and(|axis| axis.has_grid());
-            let x_show_grid = x_axis.as_ref().is_some_and(|axis| axis.has_grid());
-            let y_ticks = y_axis
-                .as_ref()
-                .map(|axis| axis.compute_ticks(bounds.min_y, bounds.max_y))
-                .unwrap_or_default();
-            let x_ticks = x_axis
-                .as_ref()
-                .map(|axis| axis.compute_ticks(bounds.min_x, bounds.max_x))
-                .unwrap_or_default();
+        let reactive_axes = self
+            .bounds
+            .map(move |bounds: DataBounds| {
+                let y_show_grid = y_axis.as_ref().is_some_and(|axis| axis.has_grid());
+                let x_show_grid = x_axis.as_ref().is_some_and(|axis| axis.has_grid());
+                let y_ticks = y_axis
+                    .as_ref()
+                    .map(|axis| axis.compute_ticks(bounds.min_y, bounds.max_y))
+                    .unwrap_or_default();
+                let x_ticks = x_axis
+                    .as_ref()
+                    .map(|axis| axis.compute_ticks(bounds.min_x, bounds.max_x))
+                    .unwrap_or_default();
 
-            AxisAccessibilityBoundary::new(axis_overlay(
-                y_show_grid,
-                x_show_grid,
-                y_ticks,
-                x_ticks,
-                &padding,
-            ))
-        });
+                AxisAccessibilityBoundary::new(axis_overlay(
+                    y_show_grid,
+                    x_show_grid,
+                    y_ticks,
+                    x_ticks,
+                    &padding,
+                ))
+            })
+            .computed();
 
         // Use absolute layout - it stretches to fill parent
         absolute((
