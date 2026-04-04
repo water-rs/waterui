@@ -233,19 +233,19 @@ impl Size {
     }
 }
 
-/// Stable identifier for a dylib payload (SHA-256).
+/// Stable identifier for a preview dylib payload.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DylibId([u8; 32]);
 
 impl DylibId {
     #[must_use]
-    /// Create a dylib id from raw bytes (SHA-256).
+    /// Create a dylib id from raw identifier bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
     #[must_use]
-    /// Borrow the raw SHA-256 bytes.
+    /// Borrow the raw identifier bytes.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

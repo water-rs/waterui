@@ -3,6 +3,7 @@
 //! This module provides utility functions for building and packaging Apple apps.
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::fmt::Write;
@@ -24,6 +25,12 @@ use crate::{
     templates::FontRegistrationTemplateEntry,
     utils::{copy_file, run_command_os},
 };
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AppleNativeLinkInputs {
+    archives: Vec<PathBuf>,
+    linker_flags: Vec<String>,
+}
 
 // ============================================================================
 // Build Utilities
@@ -136,8 +143,10 @@ async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
     bail!("{message}");
 }
 
-async fn ensure_apple_framework_linking(xcodeproj: &Path) -> eyre::Result<()> {
-    const REQUIRED_FLAGS: [&str; 1] = ["-framework VideoToolbox"];
+async fn ensure_apple_linker_flags(
+    xcodeproj: &Path,
+    required_flags: &[String],
+) -> eyre::Result<()> {
     let pbxproj_path = xcodeproj.join("project.pbxproj");
     if !pbxproj_path.exists() {
         return Ok(());
@@ -146,13 +155,13 @@ async fn ensure_apple_framework_linking(xcodeproj: &Path) -> eyre::Result<()> {
     let content = fs::read_to_string(&pbxproj_path)
         .await
         .wrap_err_with(|| format!("Failed to read {}", pbxproj_path.display()))?;
-    let (updated, changed) = inject_other_ldflags(&content, &REQUIRED_FLAGS);
+    let (updated, changed) = inject_other_ldflags(&content, required_flags);
     if changed {
         fs::write(&pbxproj_path, updated)
             .await
             .wrap_err_with(|| format!("Failed to write {}", pbxproj_path.display()))?;
         info!(
-            "Updated {} to link required Apple media frameworks",
+            "Updated {} with required Apple linker flags",
             pbxproj_path.display()
         );
     }
@@ -160,19 +169,17 @@ async fn ensure_apple_framework_linking(xcodeproj: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn inject_other_ldflags(content: &str, required_flags: &[&str]) -> (String, bool) {
+fn inject_other_ldflags(content: &str, required_flags: &[String]) -> (String, bool) {
     let mut changed = false;
     let mut lines = Vec::new();
     for line in content.lines() {
         if line.contains("OTHER_LDFLAGS = \"")
-            && line.contains("-lwaterui_app")
             && let Some((prefix, rest)) = line.split_once("OTHER_LDFLAGS = \"")
             && let Some((flags, suffix)) = rest.split_once("\";")
         {
-            let mut merged = flags.to_string();
-            let mut line_changed = false;
+            let (mut merged, mut line_changed) = sanitize_other_ldflags(flags);
             for required in required_flags {
-                if !flags.contains(required) {
+                if !merged.contains(required) {
                     if !merged.is_empty() {
                         merged.push(' ');
                     }
@@ -194,6 +201,113 @@ fn inject_other_ldflags(content: &str, required_flags: &[&str]) -> (String, bool
         updated.push('\n');
     }
     (updated, changed)
+}
+
+fn sanitize_other_ldflags(flags: &str) -> (String, bool) {
+    let normalized = flags
+        .split_whitespace()
+        .filter(|flag| *flag != "-lwaterui_app")
+        .collect::<Vec<_>>()
+        .join(" ");
+    let changed = normalized != flags;
+    (normalized, changed)
+}
+
+async fn collect_apple_native_link_inputs(lib_dir: &Path) -> eyre::Result<AppleNativeLinkInputs> {
+    let lib_dir = lib_dir.to_path_buf();
+    smol::unblock(move || collect_apple_native_link_inputs_sync(&lib_dir)).await
+}
+
+fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNativeLinkInputs> {
+    let build_root = lib_dir.join("build");
+    if !build_root.exists() {
+        return Ok(AppleNativeLinkInputs::default());
+    }
+
+    let mut archive_paths = BTreeSet::new();
+    let mut linker_flags = Vec::new();
+
+    for entry in std::fs::read_dir(&build_root)? {
+        let entry = entry?;
+        let crate_build_dir = entry.path();
+        if !crate_build_dir.is_dir() {
+            continue;
+        }
+
+        let out_dir = crate_build_dir.join("out");
+        if !out_dir.is_dir() {
+            continue;
+        }
+
+        let mut has_combined_swift = false;
+        let mut archives_in_dir = Vec::new();
+        for out_entry in std::fs::read_dir(&out_dir)? {
+            let out_entry = out_entry?;
+            let path = out_entry.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if path.extension().is_some_and(|ext| ext == "swift")
+                && file_name.starts_with("Combined")
+            {
+                has_combined_swift = true;
+            }
+            if path.extension().is_some_and(|ext| ext == "a") && file_name.starts_with("lib") {
+                archives_in_dir.push(path);
+            }
+        }
+
+        if !has_combined_swift || archives_in_dir.is_empty() {
+            continue;
+        }
+
+        for archive in &archives_in_dir {
+            archive_paths.insert(archive.clone());
+            if let Some(flag) = static_archive_link_flag(archive) {
+                push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+
+        let output_path = crate_build_dir.join("output");
+        if output_path.exists() {
+            let output = std::fs::read_to_string(&output_path)?;
+            for flag in apple_linker_flags_from_build_output(&output) {
+                push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+    }
+
+    Ok(AppleNativeLinkInputs {
+        archives: archive_paths.into_iter().collect(),
+        linker_flags,
+    })
+}
+
+fn static_archive_link_flag(archive_path: &Path) -> Option<String> {
+    let file_name = archive_path.file_name()?.to_str()?;
+    let library_name = file_name
+        .strip_prefix("lib")?
+        .strip_suffix(".a")
+        .unwrap_or(file_name);
+    Some(format!("-l{library_name}"))
+}
+
+fn apple_linker_flags_from_build_output(output: &str) -> Vec<String> {
+    let mut flags = Vec::new();
+    for line in output.lines() {
+        if let Some(framework) = line.strip_prefix("cargo:rustc-link-lib=framework=") {
+            push_unique_flag(&mut flags, format!("-framework {framework}"));
+        } else if let Some(arg) = line.strip_prefix("cargo:rustc-link-arg=") {
+            push_unique_flag(&mut flags, arg.to_string());
+        }
+    }
+    flags
+}
+
+fn push_unique_flag(flags: &mut Vec<String>, flag: String) {
+    if !flags.iter().any(|existing| existing == &flag) {
+        flags.push(flag);
+    }
 }
 
 // ============================================================================
@@ -260,7 +374,6 @@ pub async fn package_apple(
         );
     }
 
-    ensure_apple_framework_linking(&xcodeproj).await?;
     validate_local_apple_backend(project).await?;
 
     // Copy project assets and fonts
@@ -305,6 +418,23 @@ pub async fn package_apple(
     fs::create_dir_all(&products_dir).await?;
     let dest_lib = products_dir.join("libwaterui_app.a");
     copy_file(&source_lib, &dest_lib).await?;
+
+    let native_link_inputs = collect_apple_native_link_inputs(&lib_dir).await?;
+    for archive in &native_link_inputs.archives {
+        let file_name = archive.file_name().ok_or_else(|| {
+            eyre::eyre!(
+                "Bridge archive path had no file name: {}",
+                archive.display()
+            )
+        })?;
+        copy_file(archive, &products_dir.join(file_name)).await?;
+    }
+
+    let mut required_link_flags = vec!["-framework VideoToolbox".to_string()];
+    for flag in native_link_inputs.linker_flags {
+        push_unique_flag(&mut required_link_flags, flag);
+    }
+    ensure_apple_linker_flags(&xcodeproj, &required_link_flags).await?;
 
     // Build with xcodebuild
     // Determine the Xcode arch name from the platform architecture
@@ -452,22 +582,92 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::inject_other_ldflags;
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use super::{
+        apple_linker_flags_from_build_output, collect_apple_native_link_inputs_sync,
+        inject_other_ldflags,
+    };
 
     #[test]
     fn injects_required_apple_frameworks_into_other_ldflags() {
         let input =
             "OTHER_LDFLAGS = \"-lwaterui_app -lc++\";\nOTHER_LDFLAGS = \"-lwaterui_app -lc++\";\n";
-        let (output, changed) = inject_other_ldflags(input, &["-framework VideoToolbox"]);
+        let required_flags = vec!["-framework VideoToolbox".to_string()];
+        let (output, changed) = inject_other_ldflags(input, &required_flags);
         assert!(changed);
         assert_eq!(output.matches("-framework VideoToolbox").count(), 2);
+        assert!(!output.contains("-lwaterui_app"));
     }
 
     #[test]
     fn linker_flag_injection_is_idempotent() {
-        let input = "OTHER_LDFLAGS = \"-lwaterui_app -lc++ -framework VideoToolbox\";\n";
-        let (output, changed) = inject_other_ldflags(input, &["-framework VideoToolbox"]);
+        let input = "OTHER_LDFLAGS = \"-lc++ -framework VideoToolbox\";\n";
+        let required_flags = vec!["-framework VideoToolbox".to_string()];
+        let (output, changed) = inject_other_ldflags(input, &required_flags);
         assert!(!changed);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn removes_redundant_waterui_app_link_flag() {
+        let input = "OTHER_LDFLAGS = \"-lwaterui_app -lc++ -framework VideoToolbox\";\n";
+        let required_flags = vec!["-framework VideoToolbox".to_string()];
+        let (output, changed) = inject_other_ldflags(input, &required_flags);
+        assert!(changed);
+        assert_eq!(
+            output,
+            "OTHER_LDFLAGS = \"-lc++ -framework VideoToolbox\";\n"
+        );
+    }
+
+    #[test]
+    fn parses_frameworks_and_link_args_from_build_output() {
+        let output = "cargo:rustc-link-lib=framework=AppKit\ncargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=/usr/lib/swift\ncargo:rustc-link-lib=framework=Foundation\n";
+        let flags = apple_linker_flags_from_build_output(output);
+        assert_eq!(
+            flags,
+            vec![
+                "-framework AppKit".to_string(),
+                "-rpath".to_string(),
+                "/usr/lib/swift".to_string(),
+                "-framework Foundation".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn collects_swift_bridge_archives_and_flags_from_target_build_dir() {
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/debug");
+        let build_dir = lib_dir.join("build/waterkit-haptic-1234");
+        let out_dir = build_dir.join("out");
+        std::fs::create_dir_all(&out_dir).expect("create out dir");
+        std::fs::write(out_dir.join("CombinedHelper.swift"), "// bridge").expect("write swift");
+        std::fs::write(out_dir.join("libHelper.a"), "").expect("write archive");
+        std::fs::write(
+            build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=AppKit\ncargo:rustc-link-arg=-rpath\ncargo:rustc-link-arg=/usr/lib/swift\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert_eq!(
+            link_inputs.archives,
+            vec![PathBuf::from(out_dir.join("libHelper.a"))]
+        );
+        assert_eq!(
+            link_inputs.linker_flags,
+            vec![
+                "-lHelper".to_string(),
+                "-framework AppKit".to_string(),
+                "-rpath".to_string(),
+                "/usr/lib/swift".to_string()
+            ]
+        );
     }
 }
