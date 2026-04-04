@@ -96,17 +96,48 @@ pub(crate) fn measure_view_dimensions_with_proposal(
     state: &mut HydroState,
     env: &Environment,
 ) -> ViewDimensions {
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return measure_view_dimensions_with_proposal(
-            &metadata.content,
-            proposal,
-            state,
-            &metadata.value,
-        );
+    let identity = view.stable_ptr() as usize;
+    let env_identity = env.identity();
+    if let Some((_, _, _, dimensions)) = state.measurement_cache.iter().find(
+        |(cached_identity, cached_env_identity, cached_proposal, _)| {
+            *cached_identity == identity
+                && *cached_env_identity == env_identity
+                && *cached_proposal == proposal
+        },
+    ) {
+        return dimensions.clone();
     }
 
+    let dimensions =
+        measure_view_dimensions_with_proposal_with_budget(view, proposal, state, env, 256);
+    state
+        .measurement_cache
+        .push((identity, env_identity, proposal, dimensions.clone()));
+    dimensions
+}
+
+fn measure_view_dimensions_with_proposal_with_budget(
+    view: &AnyView,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+    remaining: usize,
+) -> ViewDimensions {
+    assert!(
+        !(remaining == 0),
+        "hydrolysis view measurement exceeded recursion budget for {}",
+        view.name()
+    );
+    let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
+
     if let Some(content) = passthrough_content(view) {
-        return measure_view_dimensions_with_proposal(content, proposal, state, env);
+        return measure_view_dimensions_with_proposal_with_budget(
+            content,
+            proposal,
+            state,
+            &scoped_env,
+            remaining - 1,
+        );
     }
 
     if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Canvas>().is_some() {
@@ -118,40 +149,65 @@ pub(crate) fn measure_view_dimensions_with_proposal(
             state,
             StyledStr::plain(text.clone()),
             HorizontalAlignment::Leading,
-            env,
+            &scoped_env,
             proposal.width,
             None,
         );
     }
     if let Some(text) = view.downcast_ref::<&'static str>() {
-        let body = AnyView::new((*text).body(env));
-        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+        let body = AnyView::new((*text).body(&scoped_env));
+        return measure_view_dimensions_with_proposal_with_budget(
+            &body,
+            proposal,
+            state,
+            &scoped_env,
+            remaining - 1,
+        );
     }
     if let Some(text) = view.downcast_ref::<String>() {
-        let body = AnyView::new(text.clone().body(env));
-        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+        let body = AnyView::new(text.clone().body(&scoped_env));
+        return measure_view_dimensions_with_proposal_with_budget(
+            &body,
+            proposal,
+            state,
+            &scoped_env,
+            remaining - 1,
+        );
     }
     if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
-        let body = AnyView::new(text.clone().body(env));
-        return measure_view_dimensions_with_proposal(&body, proposal, state, env);
+        let body = AnyView::new(text.clone().body(&scoped_env));
+        return measure_view_dimensions_with_proposal_with_budget(
+            &body,
+            proposal,
+            state,
+            &scoped_env,
+            remaining - 1,
+        );
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         return HydrolysisRenderer::measure_text_dimensions(
             state,
-            text.resolve(env).content.get(),
-            text.resolve(env).paragraph_alignment.get(),
-            env,
+            text.resolve(&scoped_env).content.get(),
+            text.resolve(&scoped_env).paragraph_alignment.get(),
+            &scoped_env,
             proposal.width,
             None,
         );
     }
     if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-        let body_env = env.clone();
-        let body = AnyView::new(label.clone().body(&body_env));
-        return measure_view_dimensions_with_proposal(&body, proposal, state, &body_env);
+        let body_env = scoped_env.clone();
+        let body = normalize_layout_view(AnyView::new(label.clone().body(&body_env)), &body_env);
+        return measure_view_dimensions_with_proposal_with_budget(
+            &body,
+            proposal,
+            state,
+            &body_env,
+            remaining - 1,
+        );
     }
 
-    if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, env) {
+    if let Some(dimensions) = dimensions_for_known_native_views(view, proposal, state, &scoped_env)
+    {
         return dimensions;
     }
 
@@ -173,9 +229,15 @@ pub(crate) fn measure_layout_dimensions<'a>(
     env: &Environment,
 ) -> ViewDimensions {
     let state = RefCell::new(state);
+    let children: Vec<&AnyView> = children.into_iter().collect();
+    let child_envs: Vec<Environment> = children
+        .iter()
+        .enumerate()
+        .map(|(index, _)| local_state_child_env(env, index))
+        .collect();
     let mut subviews = Vec::new();
-    for child in children {
-        subviews.push(HydroSubview::from_view(child, &state, env));
+    for (child, child_env) in children.into_iter().zip(&child_envs) {
+        subviews.push(HydroSubview::from_view(child, &state, child_env));
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     let size = layout.size_that_fits(proposal, &refs);

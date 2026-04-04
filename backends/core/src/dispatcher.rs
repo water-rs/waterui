@@ -118,7 +118,9 @@ fn with_local_bindings<R>(env: &Environment, f: impl FnOnce() -> R) -> R {
         })
         .clone();
     with_local_binding_factory(
-        Rc::new(move |type_id, init| store.get_or_init_dynamic(&scope, type_id, init)),
+        Rc::new(move |type_id, type_name, init| {
+            store.get_or_init_dynamic(&scope, type_id, type_name, init)
+        }),
         f,
     )
 }
@@ -230,10 +232,13 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
         let body_env = env
             .get::<LocalStateScope>()
             .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+        let body_content_env = env
+            .get::<LocalStateScope>()
+            .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)));
         let body_eval_env = body_env.clone();
         self.dispatch_boxed(
             with_local_bindings(&body_env, move || AnyView::new(view.body(&body_eval_env))),
-            &body_env,
+            &body_content_env,
             context,
         )
     }
@@ -253,10 +258,13 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             let body_env = env
                 .get::<LocalStateScope>()
                 .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+            let body_content_env = env
+                .get::<LocalStateScope>()
+                .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)));
             let body_eval_env = body_env.clone();
             self.dispatch_boxed(
                 with_local_bindings(&body_env, move || AnyView::new(view.body(&body_eval_env))),
-                &body_env,
+                &body_content_env,
                 context,
             )
         }

@@ -5,10 +5,6 @@ use waterui_testing::{MountedApp, UiTest};
 pub const VIEWPORT_WIDTH: u32 = 320;
 pub const VIEWPORT_HEIGHT: u32 = 240;
 
-pub fn snapshot_suite(name: &str) -> String {
-    format!("controls/{name}")
-}
-
 pub fn mount_view<V, F>(build: F) -> MountedApp
 where
     V: View + 'static,
