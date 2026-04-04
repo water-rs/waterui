@@ -5,7 +5,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::WrapErr as _;
 use color_eyre::eyre::{Result, bail};
@@ -144,27 +144,55 @@ impl PreviewAppClient {
         width: f32,
         height: f32,
     ) -> Result<Vec<u8>, AppError> {
+        let total_start = Instant::now();
         if self.present_dylibs.contains(&dylib_id) {
-            return self
+            let png = self
                 .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
-                .await;
+                .await?;
+            tracing::info!(
+                dylib_id = %dylib_id,
+                elapsed_ms = total_start.elapsed().as_millis(),
+                "Preview rendered with in-connection cached dylib"
+            );
+            return Ok(png);
         }
 
+        let has_dylib_start = Instant::now();
         let present = self
             .has_dylib(dylib_id)
             .await
             .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
+        tracing::info!(
+            dylib_id = %dylib_id,
+            present,
+            elapsed_ms = has_dylib_start.elapsed().as_millis(),
+            "Preview queried support-app dylib cache"
+        );
         if present {
             self.present_dylibs.insert(dylib_id);
-            return self
+            let png = self
                 .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
-                .await;
+                .await?;
+            tracing::info!(
+                dylib_id = %dylib_id,
+                elapsed_ms = total_start.elapsed().as_millis(),
+                "Preview rendered with support-app cached dylib"
+            );
+            return Ok(png);
         }
 
+        let read_start = Instant::now();
         let dylib_bytes = smol::fs::read(dylib_path)
             .await
             .map_err(|e| AppError::RenderFailed(format!("failed to read dylib: {e}")))?;
+        tracing::info!(
+            dylib_id = %dylib_id,
+            bytes = dylib_bytes.len(),
+            elapsed_ms = read_start.elapsed().as_millis(),
+            "Preview loaded dylib bytes from disk"
+        );
 
+        let render_start = Instant::now();
         let result = self
             .render_with_source(
                 DylibSource::Bytes {
@@ -176,6 +204,12 @@ impl PreviewAppClient {
                 height,
             )
             .await;
+        tracing::info!(
+            dylib_id = %dylib_id,
+            elapsed_ms = render_start.elapsed().as_millis(),
+            total_elapsed_ms = total_start.elapsed().as_millis(),
+            "Preview rendered after transferring dylib bytes"
+        );
 
         if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
             self.present_dylibs.insert(dylib_id);
@@ -284,6 +318,7 @@ impl PreviewAppClient {
         timeout: Duration,
     ) -> Result<AppResponse> {
         let kind = request_kind(&request);
+        let start = Instant::now();
         write_frame(&mut self.stream, &request)
             .await
             .wrap_err("Failed to send request")?;
@@ -306,7 +341,16 @@ impl PreviewAppClient {
         pin_mut!(timeout_fut);
 
         select! {
-            result = recv => result,
+            result = recv => {
+                if result.is_ok() {
+                    tracing::info!(
+                        request = kind,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Preview app request completed"
+                    );
+                }
+                result
+            },
             _ = timeout_fut => {
                 bail!("Preview app request timed out after {timeout:?} ({kind})");
             }

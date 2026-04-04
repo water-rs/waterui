@@ -13,6 +13,7 @@ use std::sync::{
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use futures::future::{self, Either};
+use tracing_subscriber::EnvFilter;
 
 use commands::{
     backend, build, clean, create, device, devices, doctor, inspector, package, preview, run,
@@ -71,6 +72,8 @@ fn main() -> Result<()> {
         .display_location_section(false)
         .display_env_section(false)
         .install()?;
+
+    init_cli_tracing();
 
     let cli = Cli::parse();
 
@@ -146,4 +149,16 @@ fn main() -> Result<()> {
             result
         }
     })
+}
+
+fn init_cli_tracing() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
