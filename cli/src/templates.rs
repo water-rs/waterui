@@ -1827,7 +1827,7 @@ pub mod root {
 
 /// Preview app templates.
 pub mod preview {
-    use crate::templates::{PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION};
+    use crate::templates::{PREVIEW_VERSION, WATERUI_VERSION};
 
     use super::{
         Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
@@ -1893,10 +1893,6 @@ pub mod preview {
         } else {
             // Registry dependencies
             dependencies.insert("waterui".to_string(), dependency_version(WATERUI_VERSION));
-            dependencies.insert(
-                "waterui-ffi".to_string(),
-                dependency_version(WATERUI_FFI_VERSION),
-            );
             dependencies.insert(
                 "waterui-preview".to_string(),
                 dependency_version(PREVIEW_VERSION),
