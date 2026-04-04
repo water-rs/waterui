@@ -42,6 +42,8 @@ default = []
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+waterui.workspace = true
+waterui-testing.workspace = true
 
 [lints]
 workspace = true

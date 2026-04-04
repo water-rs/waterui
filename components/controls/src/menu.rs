@@ -659,4 +659,43 @@ mod tests {
         assert!(matches!(items[1], MenuItem::Divider));
         assert!(matches!(items[2], MenuItem::Menu(_)));
     }
+
+    #[test]
+    fn resolve_menu_items_preserves_nested_labels_and_selected_state() {
+        let env = Environment::default();
+        let items = vec![
+            Command::new("Refresh").action(|| {}).into(),
+            Command::new("Pinned")
+                .action(|| {})
+                .selected(Computed::constant(true))
+                .into(),
+            Menu::new("Advanced", (button("Archive").action(|| {}),)).into(),
+        ];
+
+        let resolved = resolve_menu_items_now(items, &env);
+        assert_eq!(resolved.len(), 3);
+
+        let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
+            panic!("first resolved item should be a command");
+        };
+        assert_eq!(refresh.label.content.get().to_plain(), "Refresh");
+        assert!(!refresh.selected.get());
+
+        let ResolvedMenuItem::Command(pinned) = &resolved[1] else {
+            panic!("second resolved item should be a command");
+        };
+        assert_eq!(pinned.label.content.get().to_plain(), "Pinned");
+        assert!(pinned.selected.get());
+
+        let ResolvedMenuItem::Menu(advanced) = &resolved[2] else {
+            panic!("third resolved item should be a nested menu");
+        };
+        assert_eq!(advanced.label.content.get().to_plain(), "Advanced");
+        assert_eq!(advanced.items.get().len(), 1);
+
+        let ResolvedMenuItem::Command(archive) = &advanced.items.get()[0] else {
+            panic!("nested menu should resolve its child command");
+        };
+        assert_eq!(archive.label.content.get().to_plain(), "Archive");
+    }
 }

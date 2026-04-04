@@ -17,5 +17,9 @@ waterui-str.workspace = true
 thiserror.workspace = true
 cookie = "0.18.1"
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true

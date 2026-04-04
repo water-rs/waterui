@@ -29,5 +29,9 @@ zenwave = { workspace = true, features = ["rustls"] }
 [target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dev-dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true
