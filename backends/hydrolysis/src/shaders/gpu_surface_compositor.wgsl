@@ -3,6 +3,7 @@ struct QuadUniform {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    metadata: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -34,7 +35,22 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(quad_texture, quad_sampler, in.uv);
+    var color = textureSample(quad_texture, quad_sampler, in.uv);
     let mask = textureSample(quad_mask_texture, quad_sampler, in.mask_uv);
+    if quad.metadata.x > 0.5 {
+        color = vec4<f32>(
+            srgb_to_linear(color.r),
+            srgb_to_linear(color.g),
+            srgb_to_linear(color.b),
+            color.a,
+        );
+    }
     return vec4<f32>(color.rgb, color.a * mask.a);
+}
+
+fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
+        return value / 12.92;
+    }
+    return pow((value + 0.055) / 1.055, 2.4);
 }

@@ -23,7 +23,7 @@ pub mod view;
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
-pub mod accessibility;
+pub use waterui_core::accessibility;
 
 pub mod theme;
 pub mod prelude {

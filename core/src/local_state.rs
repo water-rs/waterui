@@ -16,7 +16,8 @@ use core::fmt;
 
 use crate::Binding;
 
-type SlotFactory = dyn Fn(u64, usize, TypeId, Box<dyn Fn() -> Rc<dyn Any>>) -> Rc<dyn Any>;
+type SlotFactory =
+    dyn Fn(u64, usize, TypeId, &'static str, Box<dyn Fn() -> Rc<dyn Any>>) -> Rc<dyn Any>;
 
 #[inline]
 const fn mix_scope(parent: u64, child: usize) -> u64 {
@@ -94,7 +95,14 @@ impl LocalStateStore {
     /// Creates a local state store from a renderer-owned slot allocator.
     #[must_use]
     pub fn new(
-        bind_slot: impl Fn(u64, usize, TypeId, Box<dyn Fn() -> Rc<dyn Any>>) -> Rc<dyn Any> + 'static,
+        bind_slot: impl Fn(
+            u64,
+            usize,
+            TypeId,
+            &'static str,
+            Box<dyn Fn() -> Rc<dyn Any>>,
+        ) -> Rc<dyn Any>
+        + 'static,
     ) -> Self {
         Self {
             bind_slot: Rc::new(bind_slot),
@@ -111,6 +119,7 @@ impl LocalStateStore {
         &self,
         scope: &LocalStateScope,
         type_id: TypeId,
+        type_name: &'static str,
         init: impl FnOnce() -> Rc<dyn Any> + 'static,
     ) -> Rc<dyn Any> {
         let init = RefCell::new(Some(init));
@@ -118,6 +127,7 @@ impl LocalStateStore {
             scope.path,
             scope.next_slot_index(),
             type_id,
+            type_name,
             Box::new(move || {
                 let init = init.borrow_mut().take().unwrap_or_else(|| {
                     panic!("LocalStateStore initializer was invoked more than once")
@@ -138,9 +148,10 @@ impl LocalStateStore {
         scope: &LocalStateScope,
         init: impl FnOnce() -> T + 'static,
     ) -> Rc<T> {
-        let value = self.get_or_init_dynamic(scope, TypeId::of::<T>(), move || {
-            Rc::new(init()) as Rc<dyn Any>
-        });
+        let value =
+            self.get_or_init_dynamic(scope, TypeId::of::<T>(), type_name::<T>(), move || {
+                Rc::new(init()) as Rc<dyn Any>
+            });
         value.downcast::<T>().unwrap_or_else(|_| {
             panic!(
                 "LocalStateStore slot type mismatch for {}",

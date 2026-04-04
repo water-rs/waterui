@@ -18,27 +18,6 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Counts pixels whose RGBA values differ from another snapshot.
-    #[must_use]
-    pub fn changed_pixels(&self, other: &Self) -> usize {
-        assert!(
-            self.width == other.width && self.height == other.height,
-            "waterui-testing snapshot diff requires matching dimensions"
-        );
-        self.rgba8
-            .chunks_exact(4)
-            .zip(other.rgba8.chunks_exact(4))
-            .filter(|(left, right)| left != right)
-            .count()
-    }
-
-    /// Returns changed-pixel ratio against another snapshot.
-    #[must_use]
-    pub fn changed_ratio(&self, other: &Self) -> f32 {
-        let changed = self.changed_pixels(other);
-        changed as f32 / (self.width * self.height).max(1) as f32
-    }
-
     /// Saves the snapshot to a PNG file.
     pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
         let path = path.as_ref();
