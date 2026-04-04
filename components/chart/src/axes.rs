@@ -8,8 +8,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use nami::Signal;
+use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole};
 use waterui_core::dynamic::watch;
-use waterui_core::{Environment, View};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_graphics::color::Color;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
@@ -21,6 +22,27 @@ use waterui_text::{Text, text};
 
 use crate::axis::{AxisConfig, Tick};
 use crate::data::DataBounds;
+
+struct AxisAccessibilityBoundary {
+    content: AnyView,
+}
+
+impl AxisAccessibilityBoundary {
+    fn new(content: impl View + 'static) -> Self {
+        Self {
+            content: AnyView::new(content),
+        }
+    }
+}
+
+impl View for AxisAccessibilityBoundary {
+    fn body(self, env: &Environment) -> impl View {
+        let mut content_env = env.clone();
+        content_env.remove::<AccessibilityLabel>();
+        content_env.remove::<AccessibilityRole>();
+        Metadata::new(self.content, content_env)
+    }
+}
 
 /// Axis padding configuration (in points).
 #[derive(Clone)]
@@ -169,8 +191,14 @@ impl<C: View + 'static> View for ChartAxes<C> {
 
         absolute((
             padded_chart,
-            axis_overlay(y_show_grid, x_show_grid, y_ticks, x_ticks, &padding),
-            axis_titles(y_label, x_label),
+            AxisAccessibilityBoundary::new(axis_overlay(
+                y_show_grid,
+                x_show_grid,
+                y_ticks,
+                x_ticks,
+                &padding,
+            )),
+            AxisAccessibilityBoundary::new(axis_titles(y_label, x_label)),
         ))
     }
 
@@ -604,27 +632,33 @@ where
             self.chart,
         );
 
-        // Create reactive axis overlay that updates when bounds change
-        let bounds = self.bounds;
-        let reactive_axes = watch(bounds, move |b: DataBounds| {
-            let y_show_grid = y_axis.as_ref().is_some_and(|a| a.has_grid());
-            let x_show_grid = x_axis.as_ref().is_some_and(|a| a.has_grid());
-
-            let y_ticks: Vec<Tick> = y_axis
+        let reactive_axes = watch(self.bounds, move |bounds: DataBounds| {
+            let y_show_grid = y_axis.as_ref().is_some_and(|axis| axis.has_grid());
+            let x_show_grid = x_axis.as_ref().is_some_and(|axis| axis.has_grid());
+            let y_ticks = y_axis
                 .as_ref()
-                .map(|a| a.compute_ticks(b.min_y, b.max_y))
+                .map(|axis| axis.compute_ticks(bounds.min_y, bounds.max_y))
+                .unwrap_or_default();
+            let x_ticks = x_axis
+                .as_ref()
+                .map(|axis| axis.compute_ticks(bounds.min_x, bounds.max_x))
                 .unwrap_or_default();
 
-            let x_ticks: Vec<Tick> = x_axis
-                .as_ref()
-                .map(|a| a.compute_ticks(b.min_x, b.max_x))
-                .unwrap_or_default();
-
-            axis_overlay(y_show_grid, x_show_grid, y_ticks, x_ticks, &padding)
+            AxisAccessibilityBoundary::new(axis_overlay(
+                y_show_grid,
+                x_show_grid,
+                y_ticks,
+                x_ticks,
+                &padding,
+            ))
         });
 
         // Use absolute layout - it stretches to fill parent
-        absolute((padded_chart, reactive_axes, axis_titles(y_label, x_label)))
+        absolute((
+            padded_chart,
+            reactive_axes,
+            AxisAccessibilityBoundary::new(axis_titles(y_label, x_label)),
+        ))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

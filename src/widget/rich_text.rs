@@ -178,12 +178,12 @@ impl View for RichTextElement {
     }
 }
 
-fn render_image(src: &Str) -> impl View + use<> {
+fn render_image(src: &Str) -> AnyView {
     #[cfg(feature = "media")]
     {
         let url = Url::parse(src)
             .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
-        media_photo(url)
+        return AnyView::new(media_photo(url));
     }
 
     #[cfg(not(feature = "media"))]

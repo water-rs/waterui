@@ -2,18 +2,31 @@
 
 mod support;
 
+use std::collections::BTreeSet;
+use std::time::Duration;
+
 use waterui::{Binding, View};
 use waterui_chart::{
-    AreaChart, AreaDatum, BarChart, BubbleChart, BubblePoint, Candle, CandlestickChart, DataPoint,
-    DepthChart, DepthDatum, DepthSide, HitResult, LineChart, PieChart, ScatterChart, SliceDatum,
+    AreaChart, AreaDatum, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle, CandlestickChart,
+    ChartExt, DataBounds, DataPoint, DepthChart, DepthDatum, DepthSide, HitResult, LineChart,
+    PieChart, ScatterChart, SliceDatum,
 };
+use waterui_testing::{Role, Selector, WaitOptions, WaitResult};
 
 use support::{
-    SNAPSHOT_SUITE, area_data, area_hit_location, assert_chart_accessibility_ready,
-    bar_hit_location, bubble_hit_location, bubble_series, candle_series, candlestick_hit_location,
-    depth_data, depth_hit_location, mount_view, pie_data, pie_hit_location, pie_slice_datum,
-    point_hit_location, point_series, readout_view, semantic_chart_shell, snapshot_suite,
+    area_data, area_hit_location, assert_chart_accessibility_ready, bar_hit_location,
+    bubble_hit_location, bubble_series, candle_series, candlestick_hit_location, depth_data,
+    depth_hit_location, mount_view, pie_data, pie_hit_location, pie_slice_datum,
+    point_hit_location, point_series, readout_view, semantic_chart_shell,
 };
+
+fn axis_tick_labels(bounds: DataBounds) -> BTreeSet<String> {
+    AxisConfig::default()
+        .compute_ticks(bounds.min_x, bounds.max_x)
+        .into_iter()
+        .map(|tick| tick.label().to_owned())
+        .collect()
+}
 
 fn assert_chart_semantic_flow<T, V, F>(
     name: &'static str,
@@ -41,10 +54,6 @@ fn assert_chart_semantic_flow<T, V, F>(
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, name);
-    let suite = snapshot_suite(SNAPSHOT_SUITE);
-
-    let initial = app.capture_snapshot(&suite, name, "00_initial");
-    assert!(initial.path().is_file(), "{name}: initial snapshot missing");
     app.query()
         .role(waterui_testing::Role::LABEL)
         .label("focused:none")
@@ -84,12 +93,6 @@ fn assert_chart_semantic_flow<T, V, F>(
         .role(waterui_testing::Role::LABEL)
         .label_contains("focused:")
         .assert_exists();
-    let focused_snapshot = app.capture_snapshot(&suite, name, "01_focused");
-    assert!(
-        focused_snapshot.path().is_file(),
-        "{name}: focused snapshot missing"
-    );
-
     assert!(
         app.query()
             .role(waterui_testing::Role::IMAGE)
@@ -120,11 +123,6 @@ fn assert_chart_semantic_flow<T, V, F>(
         .role(waterui_testing::Role::LABEL)
         .label_contains("selected:")
         .assert_exists();
-    let selected_snapshot = app.capture_snapshot(&suite, name, "02_selected");
-    assert!(
-        selected_snapshot.path().is_file(),
-        "{name}: selected snapshot missing"
-    );
 }
 
 #[test]
@@ -149,6 +147,76 @@ fn line_chart_xctest_like_focus_and_selection_flow() {
                 .selected(&selected)
         },
     );
+}
+
+#[test]
+fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
+    let initial_data = vec![
+        DataPoint::new(0.0, 0.0),
+        DataPoint::new(1.0, 1.0),
+        DataPoint::new(2.0, 2.0),
+        DataPoint::new(3.0, 3.0),
+        DataPoint::new(4.0, 4.0),
+    ];
+    let updated_data = vec![
+        DataPoint::new(100.0, 100.0),
+        DataPoint::new(101.0, 101.0),
+        DataPoint::new(102.0, 102.0),
+        DataPoint::new(103.0, 103.0),
+        DataPoint::new(104.0, 104.0),
+    ];
+    let initial_labels = axis_tick_labels(DataBounds::from_points(&initial_data));
+    let updated_labels = axis_tick_labels(DataBounds::from_points(&updated_data));
+    let removed_label = initial_labels
+        .difference(&updated_labels)
+        .next()
+        .cloned()
+        .expect("reactive axes test requires an initial-only tick label");
+    let added_label = updated_labels
+        .difference(&initial_labels)
+        .next()
+        .cloned()
+        .expect("reactive axes test requires an updated-only tick label");
+    let chart_data = Binding::container(initial_data.clone());
+    let chart_data_for_view = chart_data.clone();
+    let bounds = Binding::container(DataBounds::from_points(&initial_data));
+    let bounds_for_view = bounds.clone();
+
+    let mut app = mount_view(move || {
+        semantic_chart_shell(
+            "line-axes-reactive",
+            LineChart::new(chart_data_for_view.clone()).axes_reactive(bounds_for_view.clone()),
+            (),
+            (),
+        )
+    });
+
+    assert_chart_accessibility_ready(&mut app, "line-axes-reactive");
+    app.query()
+        .role(Role::LABEL)
+        .label(removed_label.clone())
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label(added_label.clone())
+        .assert_not_exists();
+
+    bounds.set(DataBounds::from_points(&updated_data));
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(
+                Selector::default()
+                    .role(Role::LABEL)
+                    .label(added_label.clone()),
+            )],
+            WaitOptions::new(Duration::from_millis(400)),
+        ) == WaitResult::Completed,
+        "line-axes-reactive: expected updated axis label {added_label:?} to appear after bounds change"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label(removed_label)
+        .assert_not_exists();
 }
 
 #[test]

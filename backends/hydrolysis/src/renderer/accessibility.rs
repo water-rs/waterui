@@ -464,34 +464,44 @@ impl HydrolysisRenderer {
             "hydrolysis accessibility label extraction exceeded recursion budget for {}",
             view.name()
         );
-        if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
+        if let Some(content) = passthrough_content(view) {
             return self.accessibility_label_from_view_with_budget(
-                &metadata.content,
-                &metadata.value,
+                content,
+                &scoped_env,
                 remaining - 1,
             );
         }
-        if let Some(content) = passthrough_content(view) {
-            return self.accessibility_label_from_view_with_budget(content, env, remaining - 1);
-        }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.semantic_text().resolve(env).content);
+            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content);
             return Some(styled.to_plain().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
             return Some(label.as_str().to_owned());
         }
         if let Some(label) = view.downcast_ref::<&'static str>() {
-            let body = AnyView::new((*label).body(env));
-            return self.accessibility_label_from_view_with_budget(&body, env, remaining - 1);
+            let body = AnyView::new((*label).body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
         }
         if let Some(label) = view.downcast_ref::<String>() {
-            let body = AnyView::new(label.clone().body(env));
-            return self.accessibility_label_from_view_with_budget(&body, env, remaining - 1);
+            let body = AnyView::new(label.clone().body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
         }
         if let Some(label) = view.downcast_ref::<Cow<'static, str>>() {
-            let body = AnyView::new(label.clone().body(env));
-            return self.accessibility_label_from_view_with_budget(&body, env, remaining - 1);
+            let body = AnyView::new(label.clone().body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
         }
         if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
             let styled = self.read_signal(&text.as_inner().content);

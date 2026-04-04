@@ -23,3 +23,7 @@ encase.workspace = true
 glam = "0.29"
 pollster.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true

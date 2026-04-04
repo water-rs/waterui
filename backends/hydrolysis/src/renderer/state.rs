@@ -5,6 +5,10 @@ pub struct HydroState {
     pub font_cx: parley::FontContext,
     pub layout_cx: parley::LayoutContext,
     pub(crate) dynamic_intrinsic_cache: BTreeMap<usize, ViewDimensions>,
+    pub(crate) dynamic_dimensions_cache:
+        BTreeMap<(usize, Option<u32>, Option<u32>), ViewDimensions>,
+    pub(crate) dynamic_measurement_stack: Vec<(usize, ProposalSize)>,
+    pub(crate) measurement_cache: Vec<(usize, usize, ProposalSize, ViewDimensions)>,
     pub(super) frame_device: Option<wgpu::Device>,
     pub(super) frame_queue: Option<wgpu::Queue>,
 }
@@ -15,6 +19,9 @@ impl Default for HydroState {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
             dynamic_intrinsic_cache: BTreeMap::new(),
+            dynamic_dimensions_cache: BTreeMap::new(),
+            dynamic_measurement_stack: Vec::new(),
+            measurement_cache: Vec::new(),
             frame_device: None,
             frame_queue: None,
         }

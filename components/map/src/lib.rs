@@ -27,7 +27,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use nami::signal::IntoComputed;
+use nami::{impl_constant, signal::IntoComputed};
 use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
 use waterui_str::Str;
 
@@ -124,6 +124,8 @@ impl From<Coordinate> for Region {
         Self::from_coordinate(coordinate)
     }
 }
+
+impl_constant!(Coordinate, Region, Annotation, MapStyle);
 
 /// A map annotation (pin marker).
 #[derive(Debug, Clone, PartialEq)]

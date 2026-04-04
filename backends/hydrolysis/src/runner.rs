@@ -462,6 +462,10 @@ fn render_window_with_capture<P: PlatformWindow>(
             rebuild_iterations = rebuild_iterations
                 .checked_add(1)
                 .expect("hydrolysis runner: rebuild iteration counter overflow");
+            assert!(
+                rebuild_iterations <= 64,
+                "hydrolysis runner: rebuild loop exceeded 64 iterations in a single pump"
+            );
             runtime.renderer.reset_scene();
             runtime.renderer.begin_rebuild_frame();
             runtime.renderer.set_window_bounds(bounds);

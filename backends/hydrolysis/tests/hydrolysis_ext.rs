@@ -105,9 +105,14 @@ fn hydrolysis_ext_renders_offscreen() {
     assert_eq!(output.width, 400);
     assert_eq!(output.height, 300);
     assert_eq!(output.rgba8.len(), 400 * 300 * 4);
-
-    let opaque_pixels = output.rgba8.chunks_exact(4).filter(|px| px[3] > 0).count();
-    assert!(opaque_pixels > 4096, "rendered surface appears empty");
+    let center =
+        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
+    let pixel = &output.rgba8[center..center + 4];
+    assert_eq!(
+        pixel,
+        [37, 99, 235, 255],
+        "expected the solid center pixel to match #2563EB"
+    );
 }
 
 #[test]

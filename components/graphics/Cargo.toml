@@ -40,5 +40,9 @@ mp4parse = "0.17"
 [build-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true

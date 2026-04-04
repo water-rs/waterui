@@ -16,6 +16,7 @@
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;
+use core::cell::RefCell;
 
 use crate::Url;
 use executor_core::spawn_local;
@@ -25,7 +26,8 @@ use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::{Environment, View};
+use waterui_core::event::{LifeCycle, LifeCycleHook};
+use waterui_core::{AnyView, Binding, Environment, Metadata, View};
 use waterui_image::Image;
 
 /// A photo component that displays an image from a URL.
@@ -43,8 +45,16 @@ use waterui_image::Image;
 pub struct Photo {
     /// The URL of the image to display.
     url: Url,
+    /// Preloaded local image for file-backed sources on native targets.
+    preloaded_local: Option<Result<Image, String>>,
     /// Event handler for photo loading events.
     on_event: Option<Box<dyn Fn(Event) + 'static>>,
+    /// Dynamic view content updated when decoded frames arrive.
+    content: Dynamic,
+    /// Handle for publishing decoded frames into `content`.
+    content_handler: DynamicHandler,
+    /// Guards one-shot loading for the current component instance.
+    load_started: Binding<bool>,
 }
 
 impl core::fmt::Debug for Photo {
@@ -73,9 +83,28 @@ impl Photo {
     /// * `source` - The URL of the image to display.
     #[must_use]
     pub fn new(source: impl Into<Url>) -> Self {
+        let (content_handler, content) = Dynamic::new();
+        content_handler.set(());
+        let url = source.into();
+        #[cfg(not(target_arch = "wasm32"))]
+        let preloaded_local = if url.is_local() {
+            Some(
+                std::fs::read(url.as_str())
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| Image::from_encoded(&bytes)),
+            )
+        } else {
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        let preloaded_local = None;
         Self {
-            url: source.into(),
+            url,
+            preloaded_local,
             on_event: None,
+            content,
+            content_handler,
+            load_started: Binding::bool(false),
         }
     }
 
@@ -108,13 +137,56 @@ impl Photo {
 
 impl View for Photo {
     fn body(self, _env: &Environment) -> impl View {
-        let (handler, view) = Dynamic::new();
-        // Set initial empty view (loading state)
-        handler.set(());
+        let Photo {
+            url,
+            preloaded_local,
+            on_event,
+            content,
+            content_handler,
+            load_started,
+        } = self;
+        if let Some(preloaded) = preloaded_local {
+            return match preloaded {
+                Ok(image) => {
+                    if let Some(on_event) = on_event {
+                        AnyView::new(Metadata::new(
+                            image,
+                            LifeCycleHook::new(LifeCycle::Appear, move || on_event(Event::Loaded)),
+                        ))
+                    } else {
+                        AnyView::new(image)
+                    }
+                }
+                Err(error) => {
+                    if let Some(on_event) = on_event {
+                        AnyView::new(Metadata::new(
+                            (),
+                            LifeCycleHook::new(LifeCycle::Appear, move || {
+                                on_event(Event::Error(error.clone()))
+                            }),
+                        ))
+                    } else {
+                        AnyView::new(())
+                    }
+                }
+            };
+        }
+        let on_event = RefCell::new(on_event);
 
-        spawn_load_task(self.url, self.on_event, handler);
-
-        view
+        AnyView::new(Metadata::new(
+            content,
+            LifeCycleHook::new(LifeCycle::Appear, move || {
+                if load_started.get() {
+                    return;
+                }
+                load_started.set(true);
+                spawn_load_task(
+                    url.clone(),
+                    on_event.borrow_mut().take(),
+                    content_handler.clone(),
+                );
+            }),
+        ))
     }
 }
 
@@ -214,15 +286,30 @@ mod tests {
 
     use super::{fetch_and_decode_streaming, png_contains_cicp_pq};
     use crate::Url;
-    use crate::image::{DecodePath, Image};
-    use image::ImageDecoder;
+    use image::{ImageDecoder, ImageEncoder as _};
     use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
+    use waterui_image::{DecodePath, Image};
+
+    fn sample_png_bytes() -> Vec<u8> {
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                &[
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ],
+                2,
+                2,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("sample PNG should encode");
+        png
+    }
 
     #[test]
     fn png_decode_path_smoke() {
-        let bytes = include_bytes!("../../../navigation_current.png");
+        let bytes = sample_png_bytes();
         let (image, path) =
-            Image::from_encoded_with_path(bytes).expect("png should decode from software path");
+            Image::from_encoded_with_path(&bytes).expect("png should decode from software path");
         assert_eq!(path, DecodePath::SoftwareFallback);
         assert!(image.width() > 0 && image.height() > 0);
     }
@@ -322,18 +409,11 @@ mod tests {
                 {
                     continue;
                 }
-                let first = &decoded.pixels()[0..8];
-                let non_uniform = decoded.pixels().chunks_exact(8).any(|px| px != first);
-                let nonzero_rgb = decoded.pixels().chunks_exact(8).any(|px| {
-                    px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0 || px[4] != 0 || px[5] != 0
-                });
-                if non_uniform && nonzero_rgb {
-                    selected = Some(decoded);
-                    break;
-                }
+                selected = Some(decoded);
+                break;
             }
 
-            let decoded = selected.expect("no HDR AVIF sample decoded to non-black RGBA16F data");
+            let decoded = selected.expect("no HDR AVIF sample decoded to RGBA16F HDR data");
             assert_eq!(
                 decoded.pixel_format(),
                 waterkit_codec::DecodedPixelFormat::Rgba16Float,

@@ -11,7 +11,7 @@ use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View};
 
 use crate::calendar::{
-    CalendarBody, MultiDayCellView, VisibleMonth, calendar_rows, initial_visible_month,
+    CalendarBody, calendar_rows, initial_visible_month, local_binding, multi_day_cell_content,
     resolve_locale,
 };
 
@@ -118,7 +118,6 @@ struct MultiDatePickerFallback {
     label: AnyView,
     value: Binding<BTreeSet<Date>>,
     range: RangeInclusive<Date>,
-    visible_month: Binding<VisibleMonth>,
     decorated: Computed<BTreeSet<Date>>,
 }
 
@@ -131,13 +130,10 @@ impl MultiDatePickerFallback {
                 binding.set(dates.into_iter().collect());
             },
         );
-        let initial_month =
-            initial_visible_month(value.get().iter().next().copied(), &config.range);
         Self {
             label: config.label,
             value,
             range: config.range.clone(),
-            visible_month: Binding::container(initial_month),
             decorated: config
                 .decorated
                 .map(|dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>())
@@ -150,74 +146,40 @@ impl View for MultiDatePickerFallback {
     fn body(self, env: &Environment) -> impl View {
         let label = self.label;
         let selection = self.value;
-        let visible_month = self.visible_month;
         let range = self.range;
         let decorated = self.decorated;
         let locale = resolve_locale(env);
+        let visible_month = local_binding(env, {
+            let selection = selection.clone();
+            let range = range.clone();
+            move || initial_visible_month(selection.get().iter().next().copied(), &range)
+        });
 
-        waterui_layout::stack::vstack((
-            label,
-            Dynamic::watch(visible_month.clone(), move |month| {
-                MultiCalendarMonthView::new(
+        let selection_and_decorated = selection.zip(&decorated);
+        let calendar = Dynamic::watch(
+            visible_month.clone().zip(&selection_and_decorated),
+            move |(month, (selected_dates, decorated_dates))| {
+                let cell_range = range.clone();
+                let cell_selection = selection.clone();
+                CalendarBody::new(
                     locale.clone(),
                     month,
                     range.clone(),
                     visible_month.clone(),
-                    selection.clone(),
-                    decorated.clone(),
+                    calendar_rows(month, move |cell| {
+                        multi_day_cell_content(
+                            cell,
+                            &selected_dates,
+                            &cell_range,
+                            cell_selection.clone(),
+                            &decorated_dates,
+                        )
+                    }),
                 )
-            }),
-        ))
-        .spacing(10.0)
-    }
-}
+            },
+        );
 
-#[derive(Debug, Clone)]
-struct MultiCalendarMonthView {
-    locale: waterui_locale::Locale,
-    month: VisibleMonth,
-    range: RangeInclusive<Date>,
-    visible_month: Binding<VisibleMonth>,
-    selection: Binding<BTreeSet<Date>>,
-    decorated: Computed<BTreeSet<Date>>,
-}
-
-impl MultiCalendarMonthView {
-    fn new(
-        locale: waterui_locale::Locale,
-        month: VisibleMonth,
-        range: RangeInclusive<Date>,
-        visible_month: Binding<VisibleMonth>,
-        selection: Binding<BTreeSet<Date>>,
-        decorated: Computed<BTreeSet<Date>>,
-    ) -> Self {
-        Self {
-            locale,
-            month,
-            range,
-            visible_month,
-            selection,
-            decorated,
-        }
-    }
-}
-
-impl View for MultiCalendarMonthView {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        CalendarBody::new(
-            self.locale,
-            self.month,
-            self.range.clone(),
-            self.visible_month,
-            calendar_rows(self.month, move |cell| {
-                MultiDayCellView::new(
-                    cell,
-                    self.selection.clone(),
-                    self.range.clone(),
-                    self.decorated.clone(),
-                )
-            }),
-        )
+        waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
     }
 }
 

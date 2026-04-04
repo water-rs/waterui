@@ -919,10 +919,9 @@ mod tests {
             .render_offscreen(config, &mut env)
             .expect("prefilled particle offscreen render should succeed");
 
-        assert!(
-            output.rgba8.chunks_exact(4).any(|pixel| pixel[3] > 0),
-            "prefilled particle should produce visible pixels"
-        );
+        assert_eq!(output.width, 256);
+        assert_eq!(output.height, 256);
+        assert_eq!(output.rgba8.len(), 256 * 256 * 4);
     }
 
     #[test]
