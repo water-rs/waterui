@@ -174,7 +174,6 @@ use crate::ViewExt;
 use crate::component::list::{List as UiList, ListItem};
 use nami::collection::List as ReactiveList;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
-use waterui_core::dynamic::watch;
 use waterui_graphics::color::Grey;
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
 
@@ -270,9 +269,9 @@ impl TableRowsView {
 impl View for TableRowsView {
     fn body(self, _env: &Environment) -> impl View {
         let columns = self.columns;
-        watch(TableRowCountSignal::new(columns.clone()), move |max_rows| {
-            build_table_rows(columns.clone(), max_rows)
-        })
+        TableRowCountSignal::new(columns.clone())
+            .map(move |max_rows| build_table_rows(columns.clone(), max_rows))
+            .computed()
     }
 }
 
@@ -322,11 +321,7 @@ impl DefaultTableView {
 
 impl View for DefaultTableView {
     fn body(self, _env: &Environment) -> impl View {
-        let columns = self.columns;
-
-        watch(columns, move |cols: Vec<TableColumn>| {
-            TableColumnsView::new(cols)
-        })
+        self.columns.map(TableColumnsView::new).computed()
     }
 }
 
