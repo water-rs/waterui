@@ -24,8 +24,9 @@
 //! ```
 
 use core::any::Any;
+use std::rc::Rc;
 
-use crate::{ViewExt, component::Dynamic};
+use crate::ViewExt;
 use nami::{Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{AnyView, Environment, View, handler::ViewBuilder};
 
@@ -410,22 +411,27 @@ where
     Otherwise: ViewBuilder,
 {
     fn body(self, _env: &Environment) -> impl View {
+        let WhenComplete { chain, otherwise } = self;
+
         // Check if all conditions are static bools for compile-time optimization
-        if self.chain.all_static() {
+        if chain.all_static() {
             // Static optimization: evaluate at build time
-            if let Some(view) = self.chain.eval_static() {
+            if let Some(view) = chain.eval_static() {
                 return view;
             }
-            return self.otherwise.build().anyview();
+            return otherwise.build().anyview();
         }
 
-        // Dynamic: combine all conditions into a signal
-        let combined = self.chain.make_combined();
+        let chain = Rc::new(chain);
+        let otherwise = Rc::new(otherwise);
 
-        Dynamic::watch(combined, move |index| match index {
-            Some(i) => self.chain.build_branch(i),
-            None => self.otherwise.build().anyview(),
-        })
-        .anyview()
+        chain
+            .make_combined()
+            .map(move |index| match index {
+                Some(i) => chain.build_branch(i),
+                None => otherwise.build().anyview(),
+            })
+            .computed()
+            .anyview()
     }
 }
