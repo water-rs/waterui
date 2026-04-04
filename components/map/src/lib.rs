@@ -201,10 +201,10 @@ impl Map {
     /// # Arguments
     ///
     /// * `region` - The map region to display (can be reactive).
-    pub fn new(region: impl Into<Computed<Region>>) -> Self {
+    pub fn new(region: impl IntoComputed<Region>) -> Self {
         let empty_annotations: Vec<Annotation> = Vec::new();
         Self(MapConfig {
-            region: region.into(),
+            region: region.into_computed(),
             annotations: empty_annotations.into_computed(),
             style: MapStyle::default(),
             shows_user_location: false,
@@ -215,25 +215,25 @@ impl Map {
     }
 
     /// Creates a new Map centered on the specified coordinate with default zoom.
-    pub fn centered_on(coordinate: impl Into<Computed<Coordinate>>) -> Self {
-        let coord_signal = coordinate.into();
-        let region_signal = coord_signal.map(Region::from_coordinate).into_computed();
+    pub fn centered_on(coordinate: impl IntoComputed<Coordinate>) -> Self {
+        let coord_signal = coordinate.into_computed();
+        let region_signal: Computed<Region> = coord_signal.map(Region::from_coordinate).computed();
         Self::new(region_signal)
     }
 
     /// Creates a new Map centered on reactive `Location` values.
-    pub fn centered_on_location(location: impl Into<Computed<Location>>) -> Self {
-        let location_signal = location.into();
-        let region_signal = location_signal
+    pub fn centered_on_location(location: impl IntoComputed<Location>) -> Self {
+        let location_signal = location.into_computed();
+        let region_signal: Computed<Region> = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
-            .into_computed();
+            .computed();
         Self::new(region_signal)
     }
 
     /// Sets the annotations (pins) to display on the map.
     #[must_use]
-    pub fn annotations(mut self, annotations: impl Into<Computed<Vec<Annotation>>>) -> Self {
-        self.0.annotations = annotations.into();
+    pub fn annotations(mut self, annotations: impl IntoComputed<Vec<Annotation>>) -> Self {
+        self.0.annotations = annotations.into_computed();
         self
     }
 
@@ -253,8 +253,8 @@ impl Map {
 
     /// Binds the map center to reactive `Location` updates and enables user-location display.
     #[must_use]
-    pub fn follows_location(mut self, location: impl Into<Computed<Location>>) -> Self {
-        let location_signal = location.into();
+    pub fn follows_location(mut self, location: impl IntoComputed<Location>) -> Self {
+        let location_signal = location.into_computed();
         self.0.region = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
             .into_computed();
@@ -285,6 +285,6 @@ impl Map {
 }
 
 /// Convenience function to create a Map view.
-pub fn map(region: impl Into<Computed<Region>>) -> Map {
+pub fn map(region: impl IntoComputed<Region>) -> Map {
     Map::new(region)
 }
