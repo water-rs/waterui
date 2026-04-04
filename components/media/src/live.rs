@@ -1,5 +1,4 @@
 use executor_core::spawn;
-use waterui_core::dynamic::Dynamic;
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Metadata, SignalExt, View,
@@ -62,14 +61,22 @@ impl View for LivePhoto {
         let is_playing = Binding::bool(false);
         let source = self.source;
         let activation_duration_ms = self.activation_duration_ms;
+        let playback_state = is_playing.clone();
 
-        Dynamic::watch(source.zip(&is_playing), move |(source, is_playing_now)| {
-            if is_playing_now {
-                AnyView::new(live_photo_video(source, &is_playing))
-            } else {
-                AnyView::new(live_photo_still(source, &is_playing, activation_duration_ms))
-            }
-        })
+        source
+            .zip(&is_playing)
+            .map(move |(source, is_playing_now)| {
+                if is_playing_now {
+                    AnyView::new(live_photo_video(source, &playback_state))
+                } else {
+                    AnyView::new(live_photo_still(
+                        source,
+                        &playback_state,
+                        activation_duration_ms,
+                    ))
+                }
+            })
+            .computed()
     }
 }
 
