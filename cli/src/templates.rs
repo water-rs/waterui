@@ -774,6 +774,8 @@ mod tests {
             rendered
                 .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
         );
+        assert!(rendered.contains("libwaterui_app.a in Frameworks"));
+        assert!(!rendered.contains("-lwaterui_app"));
         assert!(rendered.contains(APPLE_BACKEND.repository_url));
         assert!(rendered.contains(APPLE_BACKEND.commit));
         assert!(rendered.contains("kind = revision;"));
@@ -854,6 +856,10 @@ mod tests {
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("preview Cargo.toml should be written");
         assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
+
+        let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
+            .expect("preview lib.rs should be written");
+        assert!(!lib_rs.contains("waterui_ffi::export!()"));
     }
 
     #[test]
@@ -901,6 +907,8 @@ mod tests {
             rendered
                 .contains("\"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]\" = audio;")
         );
+        assert!(rendered.contains("libwaterui_app.a in Frameworks"));
+        assert!(!rendered.contains("-lwaterui_app"));
     }
 
     #[test]
