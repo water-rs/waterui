@@ -13,7 +13,6 @@ use jiff::{
 };
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::{IntoLabel, button};
-use waterui_core::dynamic::Dynamic;
 use waterui_core::{AnyView, Environment, LocalStateScope, LocalStateStore, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
@@ -86,9 +85,10 @@ impl View for Calendar {
         });
 
         let selection_and_decorated = selection.zip(&decorated);
-        let calendar = Dynamic::watch(
-            visible_month.clone().zip(&selection_and_decorated),
-            move |(month, (selected_date, decorated_dates))| {
+        let calendar = visible_month
+            .clone()
+            .zip(&selection_and_decorated)
+            .map(move |(month, (selected_date, decorated_dates))| {
                 let cell_range = range.clone();
                 let cell_selection = selection.clone();
                 CalendarBody::new(
@@ -106,8 +106,8 @@ impl View for Calendar {
                         )
                     }),
                 )
-            },
-        );
+            })
+            .computed();
 
         vstack((label, calendar)).spacing(10.0)
     }
