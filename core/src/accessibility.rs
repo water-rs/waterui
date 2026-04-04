@@ -8,7 +8,7 @@
 //! defaults whenever possible and use these helpers as the final step to ensure
 //! assistive technologies convey the intended experience.
 
-use nami::{Computed, signal::IntoComputed};
+use nami::{Computed, impl_constant, signal::IntoComputed};
 use waterui_str::Str;
 
 use crate::metadata::MetadataKey;
@@ -130,6 +130,7 @@ pub struct AccessibilityState {
 }
 
 impl MetadataKey for AccessibilityState {}
+impl_constant!(AccessibilityState);
 
 impl AccessibilityState {
     /// Creates a default accessibility state.
