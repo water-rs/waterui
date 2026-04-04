@@ -34,8 +34,11 @@ pub use cookie;
 pub use waterui_url::Url;
 
 use waterui_core::{
-    Binding, Computed, Signal, View, binding, env::use_env, layout::StretchAxis, raw_view,
-    reactive::watcher::BoxWatcherGuard,
+    Binding, Computed, Signal, View, binding,
+    env::use_env,
+    layout::StretchAxis,
+    raw_view,
+    reactive::{signal::IntoComputed, watcher::BoxWatcherGuard},
 };
 use waterui_str::Str;
 
@@ -185,8 +188,8 @@ impl WebView {
     /// let webview = controller.open().redirects_enabled(allow_redirects.clone());
     /// ```
     #[must_use]
-    pub fn redirects_enabled(mut self, enabled: impl Into<Computed<bool>>) -> Self {
-        let enabled = enabled.into();
+    pub fn redirects_enabled(mut self, enabled: impl IntoComputed<bool>) -> Self {
+        let enabled = enabled.into_computed();
 
         // Initial sync
         self.handle.set_redirects_enabled(enabled.get());
