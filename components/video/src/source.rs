@@ -2,6 +2,8 @@
 
 use std::borrow::Cow;
 
+use nami::impl_constant;
+
 use crate::Url;
 use waterkit_audio::MediaMetadata;
 
@@ -71,6 +73,8 @@ pub struct MediaItem {
     /// User-provided metadata used for system media sessions and now playing UI.
     pub metadata: MediaMetadata,
 }
+
+impl_constant!(MediaItem);
 
 impl MediaItem {
     /// Creates a new progressive media item.
