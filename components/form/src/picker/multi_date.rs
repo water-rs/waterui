@@ -6,7 +6,6 @@ use core::ops::RangeInclusive;
 use jiff::civil::Date;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::IntoLabel;
-use waterui_core::dynamic::Dynamic;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View};
 
@@ -156,9 +155,10 @@ impl View for MultiDatePickerFallback {
         });
 
         let selection_and_decorated = selection.zip(&decorated);
-        let calendar = Dynamic::watch(
-            visible_month.clone().zip(&selection_and_decorated),
-            move |(month, (selected_dates, decorated_dates))| {
+        let calendar = visible_month
+            .clone()
+            .zip(&selection_and_decorated)
+            .map(move |(month, (selected_dates, decorated_dates))| {
                 let cell_range = range.clone();
                 let cell_selection = selection.clone();
                 CalendarBody::new(
@@ -176,8 +176,8 @@ impl View for MultiDatePickerFallback {
                         )
                     }),
                 )
-            },
-        );
+            })
+            .computed();
 
         waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
     }
