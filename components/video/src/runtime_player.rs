@@ -31,7 +31,6 @@ use waterkit_video::{
 use waterui_controls::{button, slider::slider};
 use waterui_core::{
     AnyView, Binding, Environment, SignalExt as _, State, View, binding,
-    dynamic::Dynamic,
     env::With,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
@@ -663,31 +662,40 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
         let on_event: OnEvent = Rc::from(on_event);
         let source = runtime_media_item_signal(source);
-        AnyView::new(Dynamic::watch(source, move |item: RuntimeMediaItem| {
-            let subtitle_tracks = item.subtitle_tracks;
-            let subtitle = SubtitleBindings {
-                text: binding(String::new()),
-                track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
-            };
-            let (ui_updates, ui_receiver) = mpsc::channel();
-            start_ui_update_pump(ui_receiver, on_event.clone(), None, Some(subtitle.clone()));
-            let surface = VideoSurface::new(
-                item.source,
-                subtitle_tracks,
-                subtitle_selection.clone(),
-                has_next.clone(),
-                has_previous.clone(),
-                volume.clone(),
-                playback_rate.clone(),
-                preserve_pitch.clone(),
-                aspect_ratio,
-                loops,
-                playback_policy,
-                ui_updates,
-                None,
-            );
-            overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom)
-        }))
+        AnyView::new(
+            source
+                .map(move |item: RuntimeMediaItem| {
+                    let subtitle_tracks = item.subtitle_tracks;
+                    let subtitle = SubtitleBindings {
+                        text: binding(String::new()),
+                        track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
+                    };
+                    let (ui_updates, ui_receiver) = mpsc::channel();
+                    start_ui_update_pump(
+                        ui_receiver,
+                        on_event.clone(),
+                        None,
+                        Some(subtitle.clone()),
+                    );
+                    let surface = VideoSurface::new(
+                        item.source,
+                        subtitle_tracks,
+                        subtitle_selection.clone(),
+                        has_next.clone(),
+                        has_previous.clone(),
+                        volume.clone(),
+                        playback_rate.clone(),
+                        preserve_pitch.clone(),
+                        aspect_ratio,
+                        loops,
+                        playback_policy,
+                        ui_updates,
+                        None,
+                    );
+                    overlay(surface, subtitle_banner(subtitle.text)).alignment(Alignment::Bottom)
+                })
+                .computed(),
+        )
     });
 
     env.insert_hook::<VideoPlayerConfig, AnyView>(|_env, config| {
@@ -707,91 +715,100 @@ pub(crate) fn install_platform_hooks(env: &mut Environment) {
 
         let on_event: OnEvent = Rc::from(on_event);
         let source = runtime_media_item_signal(source);
-        AnyView::new(Dynamic::watch(source, move |item: RuntimeMediaItem| {
-            let subtitle_tracks = item.subtitle_tracks;
-            let player = PlayerBindings {
-                is_playing: Binding::bool(true),
-                progress_display: Binding::f64(0.0),
-                seek_request: Binding::f64(0.0),
-                picture_in_picture_request: binding(0_u64),
-                duration_seconds: Binding::f64(0.0),
-                position_seconds: Binding::f64(0.0),
-                is_buffering: Binding::bool(false),
-                playback_rate: playback_rate.clone(),
-                preserve_pitch: preserve_pitch.clone(),
-            };
-            let subtitle = SubtitleBindings {
-                text: binding(String::new()),
-                track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
-            };
-            let (ui_updates, ui_receiver) = mpsc::channel();
-            start_ui_update_pump(
-                ui_receiver,
-                on_event.clone(),
-                Some(player.clone()),
-                Some(subtitle.clone()),
-            );
-
-            let source = item.source;
-            let show_controls = show_controls.clone();
-            let subtitle_selection = subtitle_selection.clone();
-            let has_previous = has_previous.clone();
-            let has_next = has_next.clone();
-            let volume = volume.clone();
-            let playback_rate = playback_rate.clone();
-            let preserve_pitch = preserve_pitch.clone();
-            let on_event = on_event.clone();
-            let player = player.clone();
-            let subtitle = subtitle.clone();
-            let subtitle_tracks = subtitle_tracks.clone();
-            let ui_updates = ui_updates.clone();
-
-            Dynamic::watch(show_controls, move |show_controls| {
-                let surface = VideoSurface::new(
-                    source.clone(),
-                    subtitle_tracks.clone(),
-                    subtitle_selection.clone(),
-                    has_next.clone(),
-                    has_previous.clone(),
-                    volume.clone(),
-                    playback_rate.clone(),
-                    preserve_pitch.clone(),
-                    aspect_ratio,
-                    true,
-                    playback_policy,
-                    ui_updates.clone(),
-                    Some(player.clone()),
-                );
-
-                if show_controls {
-                    let progress = player.progress_control_binding();
-                    let controls = player_controls(
-                        subtitle.track_labels.clone(),
-                        subtitle_selection.clone(),
-                        has_previous.clone(),
-                        has_next.clone(),
-                        player.is_playing.clone(),
-                        progress,
-                        player.picture_in_picture_request.clone(),
-                        player.duration_seconds.clone(),
-                        player.position_seconds.clone(),
-                        player.is_buffering.clone(),
-                        player.playback_rate.clone(),
-                        player.preserve_pitch.clone(),
-                        volume.clone(),
+        AnyView::new(
+            source
+                .map(move |item: RuntimeMediaItem| {
+                    let subtitle_tracks = item.subtitle_tracks;
+                    let player = PlayerBindings {
+                        is_playing: Binding::bool(true),
+                        progress_display: Binding::f64(0.0),
+                        seek_request: Binding::f64(0.0),
+                        picture_in_picture_request: binding(0_u64),
+                        duration_seconds: Binding::f64(0.0),
+                        position_seconds: Binding::f64(0.0),
+                        is_buffering: Binding::bool(false),
+                        playback_rate: playback_rate.clone(),
+                        preserve_pitch: preserve_pitch.clone(),
+                    };
+                    let subtitle = SubtitleBindings {
+                        text: binding(String::new()),
+                        track_labels: binding(runtime_subtitle_track_labels(&subtitle_tracks)),
+                    };
+                    let (ui_updates, ui_receiver) = mpsc::channel();
+                    start_ui_update_pump(
+                        ui_receiver,
                         on_event.clone(),
+                        Some(player.clone()),
+                        Some(subtitle.clone()),
                     );
-                    let bottom_cluster =
-                        vstack((subtitle_banner(subtitle.text.clone()), controls)).spacing(12.0);
-                    AnyView::new(overlay(surface, bottom_cluster).alignment(Alignment::Bottom))
-                } else {
-                    AnyView::new(
-                        overlay(surface, subtitle_banner(subtitle.text.clone()))
-                            .alignment(Alignment::Bottom),
-                    )
-                }
-            })
-        }))
+
+                    let source = item.source;
+                    let subtitle_selection = subtitle_selection.clone();
+                    let has_previous = has_previous.clone();
+                    let has_next = has_next.clone();
+                    let volume = volume.clone();
+                    let playback_rate = playback_rate.clone();
+                    let preserve_pitch = preserve_pitch.clone();
+                    let on_event = on_event.clone();
+                    let player = player.clone();
+                    let subtitle = subtitle.clone();
+                    let subtitle_tracks = subtitle_tracks.clone();
+                    let ui_updates = ui_updates.clone();
+
+                    show_controls
+                        .clone()
+                        .map(move |show_controls| {
+                            let surface = VideoSurface::new(
+                                source.clone(),
+                                subtitle_tracks.clone(),
+                                subtitle_selection.clone(),
+                                has_next.clone(),
+                                has_previous.clone(),
+                                volume.clone(),
+                                playback_rate.clone(),
+                                preserve_pitch.clone(),
+                                aspect_ratio,
+                                true,
+                                playback_policy,
+                                ui_updates.clone(),
+                                Some(player.clone()),
+                            );
+
+                            if show_controls {
+                                let progress = player.progress_control_binding();
+                                let controls = player_controls(
+                                    subtitle.track_labels.clone(),
+                                    subtitle_selection.clone(),
+                                    has_previous.clone(),
+                                    has_next.clone(),
+                                    player.is_playing.clone(),
+                                    progress,
+                                    player.picture_in_picture_request.clone(),
+                                    player.duration_seconds.clone(),
+                                    player.position_seconds.clone(),
+                                    player.is_buffering.clone(),
+                                    player.playback_rate.clone(),
+                                    player.preserve_pitch.clone(),
+                                    volume.clone(),
+                                    on_event.clone(),
+                                );
+                                let bottom_cluster =
+                                    vstack((subtitle_banner(subtitle.text.clone()), controls))
+                                        .spacing(12.0);
+                                AnyView::new(
+                                    overlay(surface, bottom_cluster).alignment(Alignment::Bottom),
+                                )
+                            } else {
+                                AnyView::new(
+                                    overlay(surface, subtitle_banner(subtitle.text.clone()))
+                                        .alignment(Alignment::Bottom),
+                                )
+                            }
+                        })
+                        .computed()
+                })
+                .computed(),
+        )
     });
 }
 
@@ -935,18 +952,16 @@ fn next_subtitle_selection(
 }
 
 fn subtitle_banner(subtitle_text: Binding<String>) -> impl View {
-    Dynamic::watch(subtitle_text, |current| {
-        if current.trim().is_empty() {
-            AnyView::new(())
-        } else {
-            AnyView::new(
+    subtitle_text
+        .map(|current| {
+            (!current.trim().is_empty()).then(|| {
                 text(current)
                     .footnote()
                     .color(Color::srgb(255, 255, 255))
-                    .background_color(Color::srgb(0, 0, 0)),
-            )
-        }
-    })
+                    .background_color(Color::srgb(0, 0, 0))
+            })
+        })
+        .computed()
 }
 
 fn picture_in_picture_button(request: Binding<u64>) -> impl View {
