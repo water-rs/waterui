@@ -8,6 +8,7 @@ type LocalStateKey = (u64, usize);
 #[derive(Clone)]
 pub(super) struct LocalStateSlot {
     pub(super) type_id: TypeId,
+    pub(super) type_name: &'static str,
     pub(super) value: Rc<dyn Any>,
 }
 
@@ -36,6 +37,7 @@ pub(super) struct DeferredLifeCycleHook {
 pub(super) struct DynamicNode {
     pub(super) pending_view: Rc<RefCell<Option<AnyView>>>,
     pub(super) cached_subtree: Option<DynamicSubtree>,
+    pub(super) render_generation: Rc<Cell<u64>>,
 }
 
 pub(super) struct DynamicSubtree {
@@ -87,6 +89,7 @@ impl LocalStateRegistry {
         path: u64,
         index: usize,
         type_id: TypeId,
+        current_type_name: &'static str,
         init: &dyn Fn() -> Rc<dyn Any>,
     ) -> Rc<dyn Any> {
         let key = (path, index);
@@ -94,9 +97,11 @@ impl LocalStateRegistry {
         if let Some(slot) = self.slots.get(&key) {
             assert!(
                 slot.type_id == type_id,
-                "hydrolysis local state slot type mismatch at path {} slot {}",
+                "hydrolysis local state slot type mismatch at path {} slot {}: existing={}, requested={}",
                 path,
-                index
+                index,
+                slot.type_name,
+                current_type_name
             );
             return Rc::clone(&slot.value);
         }
@@ -105,6 +110,7 @@ impl LocalStateRegistry {
             key,
             LocalStateSlot {
                 type_id,
+                type_name: current_type_name,
                 value: Rc::clone(&value),
             },
         );
@@ -141,17 +147,26 @@ impl LifecycleState {
         state
             .dynamic_intrinsic_cache
             .retain(|identity, _| active_dynamic_identities.contains(identity));
+        state
+            .dynamic_dimensions_cache
+            .retain(|(identity, _, _), _| active_dynamic_identities.contains(identity));
     }
 
     pub(super) fn install_local_state_env(&self, env: &Environment) -> Environment {
         let mut local_env = env.clone();
         let local_state_registry = Rc::clone(&self.local_state_registry);
-        local_env.insert(LocalStateScope::root());
-        local_env.insert(LocalStateStore::new(move |path, index, type_id, init| {
-            local_state_registry
-                .borrow_mut()
-                .bind_slot(path, index, type_id, &*init)
-        }));
+        local_env.insert(
+            env.get::<LocalStateScope>()
+                .cloned()
+                .unwrap_or_else(LocalStateScope::root),
+        );
+        local_env.insert(LocalStateStore::new(
+            move |path, index, type_id, type_name, init| {
+                local_state_registry
+                    .borrow_mut()
+                    .bind_slot(path, index, type_id, type_name, &*init)
+            },
+        ));
         local_env
     }
 
@@ -170,7 +185,9 @@ impl LifecycleState {
             .unwrap_or_else(|| panic!("hydrolysis local state environment missing LocalStateStore"))
             .clone();
         with_local_binding_factory(
-            Rc::new(move |type_id, init| store.get_or_init_dynamic(&scope, type_id, init)),
+            Rc::new(move |type_id, type_name, init| {
+                store.get_or_init_dynamic(&scope, type_id, type_name, init)
+            }),
             || f(&local_env),
         )
     }
@@ -200,6 +217,50 @@ pub(super) fn local_state_body_env(env: &Environment) -> Environment {
         .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_local_state_env_preserves_existing_scope() {
+        let lifecycle = LifecycleState::default();
+        let root_env = lifecycle.install_local_state_env(&Environment::new());
+        let root_scope = root_env
+            .get::<LocalStateScope>()
+            .expect("root local state scope should exist")
+            .clone();
+        let root_store = root_env
+            .get::<LocalStateStore>()
+            .expect("root local state store should exist")
+            .clone();
+        let root_binding = root_store.binding(&root_scope, || 1_i32);
+        assert_eq!(root_binding.get(), 1);
+
+        let child_input_env = local_state_child_env(&root_env, 7);
+        let child_env = lifecycle.install_local_state_env(&child_input_env);
+        let child_scope = child_env
+            .get::<LocalStateScope>()
+            .expect("child local state scope should exist")
+            .clone();
+        let child_store = child_env
+            .get::<LocalStateStore>()
+            .expect("child local state store should exist")
+            .clone();
+        let child_binding = child_store.binding(&child_scope, || 2_i32);
+
+        assert_eq!(
+            child_binding.get(),
+            2,
+            "install_local_state_env must preserve child scopes instead of rebasing them to root"
+        );
+    }
+}
+
+pub(super) fn local_state_body_content_env(env: &Environment) -> Environment {
+    env.get::<LocalStateScope>()
+        .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)))
+}
+
 pub(super) fn local_state_child_env(env: &Environment, index: usize) -> Environment {
     env.get::<LocalStateScope>()
         .map_or_else(|| env.clone(), |scope| env.extending(scope.child(index)))
@@ -211,7 +272,7 @@ pub(super) fn local_state_overlay_env(base: &Environment, current: &Environment)
         .map_or_else(|| base.clone(), |scope| base.extending(scope.clone()))
 }
 
-pub(super) fn local_shared<T: 'static>(
+pub(crate) fn local_shared<T: 'static>(
     env: &Environment,
     init: impl FnOnce() -> T + 'static,
 ) -> Rc<T> {

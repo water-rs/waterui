@@ -7,6 +7,18 @@ description: Build cross-platform apps with WaterUI. Use when writing views, han
 
 Build views with reactive state. When unsure, use Explore agent to search `examples/*/src/lib.rs`.
 
+## CRITICAL: Runtime And Testing Semantics
+
+- WaterUI is fine-grained reactive with reconstruction semantics. If parent-driven control flow rebuilds a component instance, that instance's local state resetting is expected and correct.
+- Do not "fix" rebuild-driven resets by caching hidden state across rebuilds. If state must survive, lift it into explicit reactive ownership at the right level.
+- `waterui-testing` uses the Hydrolysis accessibility tree, not native platform accessibility. Use it to validate both interaction logic and accessibility correctness.
+- Every UI component is expected to expose a meaningful accessibility tree. If Hydrolysis coverage is missing, fix the component or renderer rather than falling back to weak tests.
+- "Visual test" means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden: no pixel counters, threshold diffs, non-uniform checks, dominant-color checks, bbox approximations, or similar proxy code.
+- `GpuSurface::new(renderer)` owns a single `GpuView` instance for that surface lifetime. `GpuView::setup()` is the place for persistent GPU resources tied to that renderer instance. Do not move renderer state into shared caches to survive teardown or parent rebuild.
+- Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)` setup. Keep explicit `UiTest` construction only when the test genuinely requires a custom viewport or environment.
+- When testing layout containers with `waterui-testing`, prefer inherently semantic child views such as `text()`, buttons, or other labeled controls, then assert bounds relationships from the Hydrolysis tree. Do not pad test counts with decorative color blocks plus synthetic metadata if a semantic child expresses the behavior more directly.
+- For static components with simple conditional branches, avoid wrapping the whole body in `#[view_builder]` if that would introduce an unnecessary `Dynamic`. `waterui_chart::Tooltip` is a concrete example: explicit `AnyView` branching avoids a Hydrolysis mount-time recursion path that appeared with the generated dynamic wrapper.
+
 ## CRITICAL: Reactive-First Pattern
 
 **WaterUI is a reactive framework. ALWAYS pass Bindings directly to APIs instead of using `.get()` or `watch`.**
@@ -161,7 +173,7 @@ view.on_change(&signal, |new_val| handle(new_val))
 
 ## Text
 
-**IMPORTANT: Always use `text!` macro for reactive text - never use `watch`!**
+**IMPORTANT: Use `text()` for static text and `text!` for reactive text. Never use `watch()` just to build text. Also never write `waterui::text!`; import the macro and use `text!` directly.**
 
 ```rust
 // Static text - use text() function
@@ -171,6 +183,7 @@ text("Hello").title()       // semantic sizes: title, headline, body, caption, f
 text!("Count: {count}")              // single binding
 text!("{a} + {b} = {sum}")           // multiple bindings
 text!("Value: {value:.2}")           // with formatting
+text!("{FOCUSED_READOUT}")           // const &str capture is fine if text! behavior is desired
 
 // text! returns LocalizedText with font methods
 text!("Status: {status}").sub_headline()
@@ -402,13 +415,16 @@ Photo::new(url).blur(blur.clone())
 view.opacity(opacity.clone())
 ```
 
-**No `watch()` for text** - use `text!` macro:
+**No `watch()` for text**:
 ```rust
 // WRONG
 watch(status.clone(), |msg| text(msg))
 
-// CORRECT
+// CORRECT: reactive
 text!("{status}")
+
+// CORRECT: static
+text("Ready")
 ```
 
 **No `watch()` when reactive API exists** - pass binding directly:

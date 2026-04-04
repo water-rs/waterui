@@ -154,16 +154,27 @@ impl waterui_core::View for Canvas {
 }
 
 struct TextEngine {
-    font_cx: parley::FontContext,
-    layout_cx: parley::LayoutContext,
+    font_cx: Option<parley::FontContext>,
+    layout_cx: Option<parley::LayoutContext>,
 }
 
 impl Default for TextEngine {
     fn default() -> Self {
         Self {
-            font_cx: parley::FontContext::new(),
-            layout_cx: parley::LayoutContext::new(),
+            font_cx: None,
+            layout_cx: None,
         }
+    }
+}
+
+impl TextEngine {
+    fn font_cx(&mut self) -> &mut parley::FontContext {
+        self.font_cx.get_or_insert_with(parley::FontContext::new)
+    }
+
+    fn layout_cx(&mut self) -> &mut parley::LayoutContext {
+        self.layout_cx
+            .get_or_insert_with(parley::LayoutContext::new)
     }
 }
 
@@ -1179,11 +1190,11 @@ fn build_text_layout_with_engine(
     max_width: Option<f32>,
 ) -> parley::Layout<[u8; 4]> {
     let family = font.family.trim().to_owned();
-
-    let mut builder =
-        text_engine
-            .layout_cx
-            .ranged_builder(&mut text_engine.font_cx, text, 1.0, true);
+    let mut layout_cx = text_engine
+        .layout_cx
+        .take()
+        .unwrap_or_else(parley::LayoutContext::new);
+    let mut builder = layout_cx.ranged_builder(text_engine.font_cx(), text, 1.0, true);
     builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
     builder.push_default(parley::StyleProperty::FontSize(font.size));
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
@@ -1199,6 +1210,7 @@ fn build_text_layout_with_engine(
     }
 
     let mut layout = builder.build(text);
+    text_engine.layout_cx = Some(layout_cx);
     layout.break_all_lines(max_width);
     layout.align(
         max_width,

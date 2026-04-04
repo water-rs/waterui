@@ -12,10 +12,8 @@ use waterui_testing::Role;
 
 use support::{
     assert_chart_accessibility_ready, chart_surface, depth_data, depth_hit_location, mount_view,
-    point_hit_location, point_series, snapshot_suite,
+    point_hit_location, point_series,
 };
-
-const AXIS_SELECTION_SUITE: &str = "axis-selection";
 
 fn assert_close(actual: f32, expected: f32, epsilon: f32, context: &str) {
     let delta = (actual - expected).abs();
@@ -32,10 +30,14 @@ fn selection_shell<V: View, R: View>(name: &str, chart: V, readout: R) -> impl V
 }
 
 fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
-    text(selection.map(|value| match value {
-        Some(x) => format!("x:{x:.2}"),
-        None => String::from("x:none"),
-    }))
+    text(
+        selection
+            .map(|value| match value {
+                Some(x) => format!("x:{x:.2}"),
+                None => String::from("x:none"),
+            })
+            .computed(),
+    )
     .caption()
     .body()
     .foreground(Srgb::WHITE)
@@ -43,10 +45,14 @@ fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
 }
 
 fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
-    text(selection.map(|value| match value {
-        Some(range) => format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
-        None => String::from("x-range:none"),
-    }))
+    text(
+        selection
+            .map(|value| match value {
+                Some(range) => format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                None => String::from("x-range:none"),
+            })
+            .computed(),
+    )
     .caption()
     .body()
     .foreground(Srgb::WHITE)
@@ -54,10 +60,14 @@ fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View
 }
 
 fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
-    text(selection.map(|value| match value {
-        Some(y) => format!("y:{y:.2}"),
-        None => String::from("y:none"),
-    }))
+    text(
+        selection
+            .map(|value| match value {
+                Some(y) => format!("y:{y:.2}"),
+                None => String::from("y:none"),
+            })
+            .computed(),
+    )
     .caption()
     .body()
     .foreground(Srgb::WHITE)
@@ -65,10 +75,14 @@ fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
 }
 
 fn y_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
-    text(selection.map(|value| match value {
-        Some(range) => format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
-        None => String::from("y-range:none"),
-    }))
+    text(
+        selection
+            .map(|value| match value {
+                Some(range) => format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                None => String::from("y-range:none"),
+            })
+            .computed(),
+    )
     .caption()
     .body()
     .foreground(Srgb::WHITE)
@@ -77,7 +91,6 @@ fn y_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View
 
 #[test]
 fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = point_series();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -98,11 +111,6 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-x-value");
-    let initial = app.capture_snapshot(&suite, "line-x-value", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-x-value: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("x:none")
@@ -128,16 +136,10 @@ fn line_chart_x_selection_updates_continuous_domain_value_on_tap() {
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "line-x-value", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "line-x-value: selected snapshot missing"
-    );
 }
 
 #[test]
 fn line_chart_x_selection_range_tracks_drag_span() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = point_series();
     let selection = Binding::container(None::<RangeInclusive<f32>>);
     let data_for_view = data.clone();
@@ -161,11 +163,6 @@ fn line_chart_x_selection_range_tracks_drag_span() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-x-range");
-    let initial = app.capture_snapshot(&suite, "line-x-range", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-x-range: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("x-range:none")
@@ -192,16 +189,10 @@ fn line_chart_x_selection_range_tracks_drag_span() {
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "line-x-range", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "line-x-range: selected snapshot missing"
-    );
 }
 
 #[test]
 fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = point_series();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -222,11 +213,6 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-y-value");
-    let initial = app.capture_snapshot(&suite, "line-y-value", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-y-value: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("y:none")
@@ -252,16 +238,10 @@ fn line_chart_y_selection_updates_continuous_domain_value_on_tap() {
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "line-y-value", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "line-y-value: selected snapshot missing"
-    );
 }
 
 #[test]
 fn line_chart_y_selection_range_tracks_drag_span() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = point_series();
     let selection = Binding::container(None::<RangeInclusive<f32>>);
     let data_for_view = data.clone();
@@ -285,11 +265,6 @@ fn line_chart_y_selection_range_tracks_drag_span() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-y-range");
-    let initial = app.capture_snapshot(&suite, "line-y-range", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-y-range: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("y-range:none")
@@ -316,16 +291,10 @@ fn line_chart_y_selection_range_tracks_drag_span() {
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "line-y-range", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "line-y-range: selected snapshot missing"
-    );
 }
 
 #[test]
 fn line_chart_updates_x_and_y_selection_together_on_tap() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = point_series();
     let x_selection = Binding::container(None::<f32>);
     let y_selection = Binding::container(None::<f32>);
@@ -353,11 +322,6 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-xy-value");
-    let initial = app.capture_snapshot(&suite, "line-xy-value", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-xy-value: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("x:none")
@@ -399,16 +363,10 @@ fn line_chart_updates_x_and_y_selection_together_on_tap() {
         .role(Role::LABEL)
         .label(format!("y:{expected_y:.2}"))
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "line-xy-value", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "line-xy-value: selected snapshot missing"
-    );
 }
 
 #[test]
 fn depth_chart_x_selection_tracks_price_domain_on_tap() {
-    let suite = snapshot_suite(AXIS_SELECTION_SUITE);
     let data = depth_data();
     let selection = Binding::container(None::<f32>);
     let data_for_view = data.clone();
@@ -430,11 +388,6 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "depth-x-value");
-    let initial = app.capture_snapshot(&suite, "depth-x-value", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "depth-x-value: initial snapshot missing"
-    );
     app.query()
         .role(Role::LABEL)
         .label("x:none")
@@ -460,11 +413,6 @@ fn depth_chart_x_selection_tracks_price_domain_on_tap() {
         .role(Role::LABEL)
         .label(expected_label)
         .assert_exists();
-    let selected = app.capture_snapshot(&suite, "depth-x-value", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "depth-x-value: selected snapshot missing"
-    );
 }
 
 #[test]

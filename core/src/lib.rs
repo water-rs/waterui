@@ -107,6 +107,7 @@ pub mod plugin;
 pub use anyhow::Error;
 pub use extract::State;
 pub mod animation;
+pub mod accessibility;
 pub use animation::{Animatable, AnimationExt, AnimationTrack};
 /// Unified easing system for animations.
 pub mod easing;
