@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use async_io::Async;
@@ -392,16 +392,47 @@ async fn handle_render(
     symbol: &str,
     frame: Size,
 ) -> Result<PreviewOutput, PreviewError> {
+    let total_start = Instant::now();
+    let cache_start = Instant::now();
     let id = ensure_dylib_cached(cache, dylib).await?;
+    tracing::info!(
+        dylib_id = %id,
+        elapsed_ms = cache_start.elapsed().as_millis(),
+        "Preview support app ensured dylib is cached and loaded"
+    );
+
+    let load_view_start = Instant::now();
     let view = load_preview_view(cache, id, symbol)?;
+    tracing::info!(
+        dylib_id = %id,
+        symbol,
+        elapsed_ms = load_view_start.elapsed().as_millis(),
+        "Preview support app resolved preview symbol"
+    );
 
     let renderer = env
         .get::<ViewRenderer>()
         .expect("ViewRenderer missing in Environment");
     let render_size = RenderSize::new(frame.width, frame.height);
 
+    let render_start = Instant::now();
     let result = renderer.render(view, render_size).await;
+    tracing::info!(
+        dylib_id = %id,
+        symbol,
+        elapsed_ms = render_start.elapsed().as_millis(),
+        "Preview support app rendered view"
+    );
+    let png_start = Instant::now();
     let png_data = result.into_png().map_err(PreviewError::RenderFailed)?;
+    tracing::info!(
+        dylib_id = %id,
+        symbol,
+        png_bytes = png_data.len(),
+        elapsed_ms = png_start.elapsed().as_millis(),
+        total_elapsed_ms = total_start.elapsed().as_millis(),
+        "Preview support app encoded PNG"
+    );
 
     Ok(PreviewOutput { png_data })
 }

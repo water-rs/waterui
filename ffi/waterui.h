@@ -139,6 +139,12 @@ typedef enum WuiVerticalAlignment {
   WuiVerticalAlignment_LastBaseline = 4,
 } WuiVerticalAlignment;
 
+typedef enum WuiLazyStackAxis {
+  WuiLazyStackAxis_Unsupported = 0,
+  WuiLazyStackAxis_Vertical = 1,
+  WuiLazyStackAxis_Horizontal = 2,
+} WuiLazyStackAxis;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -2554,7 +2560,7 @@ typedef struct Binding_Str WuiBinding_Str;
 
 typedef struct WuiNavigationSearch {
   WuiBinding_Str *text;
-  struct WuiStr prompt;
+  struct WuiAnyView *prompt;
 } WuiNavigationSearch;
 
 typedef struct WuiBar {
@@ -4673,6 +4679,14 @@ struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
 struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
                                              struct WuiRect bounds,
                                              struct WuiArray_WuiSubView children);
+
+enum WuiLazyStackAxis waterui_layout_lazy_stack_axis(struct WuiLayout *layout);
+
+float waterui_layout_lazy_stack_spacing(struct WuiLayout *layout);
+
+enum WuiHorizontalAlignment waterui_layout_lazy_stack_horizontal_alignment(struct WuiLayout *layout);
+
+enum WuiVerticalAlignment waterui_layout_lazy_stack_vertical_alignment(struct WuiLayout *layout);
 
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 

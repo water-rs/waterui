@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use color_eyre::eyre::{Context, Result, bail};
 use sha2::Digest as _;
@@ -60,7 +60,7 @@ pub struct PreviewSession {
 #[derive(Debug, Clone)]
 /// A built dylib payload (stable id + on-disk path).
 pub struct BuiltDylib {
-    /// SHA-256 id of dylib content.
+    /// Stable preview cache id for the dylib payload.
     pub id: DylibId,
     /// Path to dylib on disk.
     pub path: PathBuf,
@@ -134,8 +134,23 @@ async fn build_preview_dylib(
     runtime_fingerprint: &str,
     dylib_path: &mut Option<PathBuf>,
 ) -> Result<BuiltDylib> {
+    let total_start = Instant::now();
+    let stamp_start = Instant::now();
     let stamp = watcher.stamp(project_path).await?;
+    info!(
+        project_path = %project_path.display(),
+        changed = stamp.changed,
+        elapsed_ms = stamp_start.elapsed().as_millis(),
+        "Preview watcher scanned project inputs"
+    );
+
+    let project_open_start = Instant::now();
     let project = Project::open(project_path).await?;
+    info!(
+        project_path = %project_path.display(),
+        elapsed_ms = project_open_start.elapsed().as_millis(),
+        "Preview opened project"
+    );
     let target = match platform {
         PreviewPlatform::Macos => TargetPlatform::MacOS,
         PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
@@ -147,7 +162,13 @@ async fn build_preview_dylib(
     if let Some(sccache) = sccache_path {
         rust_build = rust_build.with_sccache(sccache.clone());
     }
+    let dylib_path_start = Instant::now();
     let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
+    info!(
+        path = %expected_path.display(),
+        elapsed_ms = dylib_path_start.elapsed().as_millis(),
+        "Preview resolved dylib path"
+    );
     let candidate_path = dylib_path.clone().unwrap_or_else(|| expected_path.clone());
 
     let target_triple = target.triple().to_string();
@@ -157,18 +178,30 @@ async fn build_preview_dylib(
         candidate_path
     } else {
         info!("Building dylib...");
+        let build_start = Instant::now();
         let built_path = rust_build
             .build_dylib(project.crate_name(), false)
             .await
             .wrap_err("Failed to build dylib")?;
         write_dylib_signature(&built_path, &dylib_signature).await?;
-        info!("Dylib built: {}", built_path.display());
+        info!(
+            path = %built_path.display(),
+            elapsed_ms = build_start.elapsed().as_millis(),
+            "Preview built dylib"
+        );
         built_path
     };
 
     *dylib_path = Some(built_path.clone());
 
-    let id = compute_dylib_id(&built_path).await?;
+    let dylib_id_start = Instant::now();
+    let id = compute_dylib_id(&built_path, &dylib_signature).await?;
+    info!(
+        path = %built_path.display(),
+        elapsed_ms = dylib_id_start.elapsed().as_millis(),
+        total_elapsed_ms = total_start.elapsed().as_millis(),
+        "Preview prepared dylib payload"
+    );
     Ok(BuiltDylib {
         id,
         path: built_path,
@@ -193,6 +226,12 @@ fn preview_run_options() -> RunOptions {
     let mut run_options = RunOptions::new();
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
+    }
+    if let Some(rust_log) = std::env::var_os("RUST_LOG") {
+        run_options.insert_env_var(
+            "RUST_LOG".to_string(),
+            rust_log.to_string_lossy().into_owned(),
+        );
     }
     run_options
 }
@@ -229,20 +268,30 @@ async fn dylib_is_up_to_date(
     Ok(stored_signature.trim() == expected_signature)
 }
 
-async fn compute_dylib_id(path: &Path) -> Result<DylibId> {
+async fn compute_dylib_id(path: &Path, build_signature: &str) -> Result<DylibId> {
     let path = path.to_path_buf();
+    let build_signature = build_signature.to_string();
     smol::unblock(move || {
-        use std::io::Read as _;
-
-        let mut file = std::fs::File::open(&path)?;
+        let metadata = std::fs::metadata(&path)?;
+        let modified = metadata.modified()?;
         let mut hasher = sha2::Sha256::new();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
+        hasher.update(build_signature.as_bytes());
+        hasher.update([0]);
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(metadata.len().to_le_bytes());
+
+        match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => {
+                hasher.update([0]);
+                hasher.update(duration.as_secs().to_le_bytes());
+                hasher.update(duration.subsec_nanos().to_le_bytes());
             }
-            hasher.update(&buf[..n]);
+            Err(err) => {
+                hasher.update([1]);
+                hasher.update(err.duration().as_secs().to_le_bytes());
+                hasher.update(err.duration().subsec_nanos().to_le_bytes());
+            }
         }
 
         let hash: [u8; 32] = hasher.finalize().into();
@@ -269,12 +318,19 @@ pub async fn launch_preview_session(
     platform: PreviewPlatform,
     sccache_path: Option<PathBuf>,
 ) -> Result<PreviewSession> {
+    let requirements_start = Instant::now();
     let requirements = resolve_preview_requirements(project_path).await?;
+    info!(
+        project_path = %project_path.display(),
+        elapsed_ms = requirements_start.elapsed().as_millis(),
+        "Preview resolved runtime requirements"
+    );
     let expected_fingerprint = requirements.runtime_fingerprint.clone();
     let tcp_config = PreviewTcpConfig::from_env()
         .map_err(|e| color_eyre::eyre::eyre!(e))
         .wrap_err("Invalid preview TCP config")?;
 
+    let connect_start = Instant::now();
     if let Some(session) = try_connect_existing_preview_app(
         tcp_config,
         &expected_fingerprint,
@@ -283,6 +339,10 @@ pub async fn launch_preview_session(
     )
     .await?
     {
+        info!(
+            elapsed_ms = connect_start.elapsed().as_millis(),
+            "Preview reused existing support app"
+        );
         return Ok(session);
     }
 
@@ -324,10 +384,23 @@ async fn try_connect_existing_preview_app(
 async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
     info!("No preview app running, launching...");
     let preview_app_path = preview_support_path()?;
+    let ensure_start = Instant::now();
     ensure_preview_support_app(&preview_app_path, requirements).await?;
-    Project::open(&preview_app_path)
+    info!(
+        path = %preview_app_path.display(),
+        elapsed_ms = ensure_start.elapsed().as_millis(),
+        "Preview support app scaffold is up to date"
+    );
+    let open_start = Instant::now();
+    let project = Project::open(&preview_app_path)
         .await
-        .wrap_err("Failed to open preview app project")
+        .wrap_err("Failed to open preview app project")?;
+    info!(
+        path = %preview_app_path.display(),
+        elapsed_ms = open_start.elapsed().as_millis(),
+        "Preview support project opened"
+    );
+    Ok(project)
 }
 
 async fn launch_preview_app_for_platform(
@@ -624,7 +697,12 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
 }
 
 async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequirements> {
+    if let Some(requirements) = resolve_preview_requirements_from_manifest(project_path).await? {
+        return Ok(requirements);
+    }
+
     let current_dir = project_path.to_path_buf();
+    let metadata_start = Instant::now();
     let metadata = smol::unblock(move || {
         cargo_metadata::MetadataCommand::new()
             .current_dir(current_dir)
@@ -632,6 +710,11 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
     })
     .await
     .wrap_err("Failed to resolve user project Cargo metadata for preview compatibility")?;
+    info!(
+        project_path = %project_path.display(),
+        elapsed_ms = metadata_start.elapsed().as_millis(),
+        "Preview resolved user project cargo metadata"
+    );
 
     let waterui = select_unique_package(&metadata, "waterui")?;
     if waterui.source.is_some() {
@@ -649,8 +732,14 @@ Current project resolves `waterui` from a non-path source."
 
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let runtime_identity = runtime_package_identity(waterui_core);
+    let runtime_fingerprint_start = Instant::now();
     let runtime_fingerprint_base =
         compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+    info!(
+        waterui_root = %waterui_root.display(),
+        elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
+        "Preview computed runtime fingerprint"
+    );
     let runtime_fingerprint = format!(
         "{runtime_fingerprint_base}|profile={}",
         runtime_profile_tag()
@@ -659,6 +748,106 @@ Current project resolves `waterui` from a non-path source."
         waterui_root,
         runtime_fingerprint,
     })
+}
+
+async fn resolve_preview_requirements_from_manifest(
+    project_path: &Path,
+) -> Result<Option<PreviewRequirements>> {
+    let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
+        .await
+        .map_err(|error| {
+            color_eyre::eyre::eyre!(
+                "Failed to read Water.toml for preview requirements at {}: {error}",
+                project_path.display()
+            )
+        })?;
+    let Some(waterui_path) = manifest.waterui_path else {
+        return Ok(None);
+    };
+
+    let waterui_root = resolve_waterui_root_from_manifest(project_path, &waterui_path).await?;
+    let runtime_identity = runtime_identity_from_waterui_root(&waterui_root).await?;
+    let runtime_fingerprint_start = Instant::now();
+    let runtime_fingerprint = format!(
+        "{}|profile={}",
+        compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
+        runtime_profile_tag()
+    );
+    info!(
+        project_path = %project_path.display(),
+        waterui_root = %waterui_root.display(),
+        elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
+        "Preview resolved runtime requirements from Water.toml"
+    );
+
+    Ok(Some(PreviewRequirements {
+        waterui_root,
+        runtime_fingerprint,
+    }))
+}
+
+async fn resolve_waterui_root_from_manifest(
+    project_path: &Path,
+    waterui_path: &str,
+) -> Result<PathBuf> {
+    let candidate = PathBuf::from(waterui_path);
+    let resolved = if candidate.is_absolute() {
+        candidate
+    } else {
+        project_path.join(candidate)
+    };
+    smol::fs::canonicalize(&resolved).await.wrap_err_with(|| {
+        format!(
+            "Failed to resolve `waterui_path = {waterui_path}` from {}",
+            project_path.display()
+        )
+    })
+}
+
+async fn runtime_identity_from_waterui_root(waterui_root: &Path) -> Result<String> {
+    let core_manifest_path = waterui_root.join("core").join("Cargo.toml");
+    let manifest_text = smol::fs::read_to_string(&core_manifest_path)
+        .await
+        .wrap_err("Failed to read waterui-core Cargo.toml for preview requirements")?;
+    let manifest: toml::Table = manifest_text
+        .parse()
+        .wrap_err("Failed to parse waterui-core Cargo.toml for preview requirements")?;
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Invalid waterui-core manifest at {}: missing package section",
+                core_manifest_path.display()
+            )
+        })?;
+    let package_name = package
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Invalid waterui-core manifest at {}: missing package.name",
+                core_manifest_path.display()
+            )
+        })?;
+    if package_name != "waterui-core" {
+        bail!(
+            "Invalid preview runtime root {}: expected core/Cargo.toml package `waterui-core`, found `{}`",
+            waterui_root.display(),
+            package_name
+        );
+    }
+    let package_version = package
+        .get("version")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Invalid waterui-core manifest at {}: missing package.version",
+                core_manifest_path.display()
+            )
+        })?;
+
+    Ok(format!("{package_name}@{package_version}"))
 }
 
 fn select_unique_package<'a>(
