@@ -1033,22 +1033,28 @@ fn player_controls(
         State(subtitle_track_labels),
     );
 
-    let previous_button = Dynamic::watch(has_previous.clone(), {
-        let on_event = on_event.clone();
-        move |enabled| {
+    let previous_button = has_previous
+        .clone()
+        .map({
+            let on_event = on_event.clone();
+            move |enabled| {
+                enabled.then({
+                    let on_event = on_event.clone();
+                    move || button("Previous").action(move || (on_event)(Event::PreviousRequested))
+                })
+            }
+        })
+        .computed();
+
+    let next_button = has_next
+        .clone()
+        .map(move |enabled| {
             enabled.then({
                 let on_event = on_event.clone();
-                move || button("Previous").action(move || (on_event)(Event::PreviousRequested))
+                move || button("Next").action(move || (on_event)(Event::NextRequested))
             })
-        }
-    });
-
-    let next_button = Dynamic::watch(has_next.clone(), move |enabled| {
-        enabled.then({
-            let on_event = on_event.clone();
-            move || button("Next").action(move || (on_event)(Event::NextRequested))
         })
-    });
+        .computed();
 
     let transport = hstack((
         previous_button,
