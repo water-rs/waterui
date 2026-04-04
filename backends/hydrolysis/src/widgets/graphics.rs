@@ -5,11 +5,47 @@ use crate::renderer::{
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use waterui_core::layout::Size as LayoutSize;
+use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::ResolvedColor;
 use waterui_graphics::view_effect::ViewEffectErased;
 use waterui_graphics::{GpuSurface, ResolvedGradient, SceneView};
 use waterui_shape::ResolvedShape;
+
+#[cfg(feature = "accessibility")]
+fn register_graphics_image_accessibility(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    env: &Environment,
+) {
+    let mut node = AccessibilityNode::new(
+        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
+    );
+    if let Some(label) = renderer.resolve_accessibility_label(env, None) {
+        node.set_label(label);
+    }
+    let _ = renderer.register_accessibility_node(
+        node,
+        transformed_rect(ctx.hit_transform, ctx.bounds),
+        env,
+        None,
+    );
+}
+
+fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensions {
+    ViewDimensions::new(LayoutSize::new(
+        proposal
+            .width
+            .filter(|width| width.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0),
+        proposal
+            .height
+            .filter(|height| height.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0),
+    ))
+}
 
 impl HydroNativeView for Native<GpuSurface> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -21,6 +57,15 @@ impl HydroNativeView for Native<GpuSurface> {
         LayoutSize::zero()
     }
 
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
     fn accessibility(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -29,18 +74,7 @@ impl HydroNativeView for Native<GpuSurface> {
     ) {
         #[cfg(feature = "accessibility")]
         {
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
-            );
-            if let Some(label) = renderer.resolve_accessibility_label(env, None) {
-                node.set_label(label);
-            }
-            let _ = renderer.register_accessibility_node(
-                node,
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                env,
-                None,
-            );
+            register_graphics_image_accessibility(renderer, ctx, env);
         }
     }
 }
@@ -55,6 +89,15 @@ impl HydroNativeView for Native<SceneView> {
         LayoutSize::zero()
     }
 
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
     fn accessibility(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -63,18 +106,7 @@ impl HydroNativeView for Native<SceneView> {
     ) {
         #[cfg(feature = "accessibility")]
         {
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
-            );
-            if let Some(label) = renderer.resolve_accessibility_label(env, None) {
-                node.set_label(label);
-            }
-            let _ = renderer.register_accessibility_node(
-                node,
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                env,
-                None,
-            );
+            register_graphics_image_accessibility(renderer, ctx, env);
         }
     }
 }
@@ -99,6 +131,15 @@ impl HydroNativeView for Native<ResolvedColor> {
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
     }
+
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
 }
 
 impl HydroNativeView for Native<ResolvedGradient> {
@@ -110,6 +151,27 @@ impl HydroNativeView for Native<ResolvedGradient> {
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
     }
+
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
+    fn accessibility(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        _view: &Self,
+        env: &Environment,
+    ) {
+        #[cfg(feature = "accessibility")]
+        {
+            register_graphics_image_accessibility(renderer, ctx, env);
+        }
+    }
 }
 
 impl HydroNativeView for Native<ResolvedShape> {
@@ -120,5 +182,26 @@ impl HydroNativeView for Native<ResolvedShape> {
 
     fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
         LayoutSize::zero()
+    }
+
+    fn dimensions(
+        _state: &mut HydroState,
+        _view: &Self,
+        _env: &Environment,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
+    fn accessibility(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        _view: &Self,
+        env: &Environment,
+    ) {
+        #[cfg(feature = "accessibility")]
+        {
+            register_graphics_image_accessibility(renderer, ctx, env);
+        }
     }
 }

@@ -59,8 +59,6 @@
 
 extern crate alloc;
 
-use waterui_macros::view_builder;
-
 /// Live Photo components and types.
 ///
 /// This module provides the [`LivePhoto`] component for displaying Apple Live Photos,
@@ -99,7 +97,7 @@ pub(crate) mod image_codec {
     pub use waterui_image::codec::*;
 }
 
-use waterui_core::{Environment, View, reactive::impl_constant};
+use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
 
 use crate::live::LivePhotoSource;
 
@@ -138,12 +136,11 @@ pub enum Media {
 impl_constant!(LivePhotoSource, Media);
 
 impl View for Media {
-    #[view_builder]
     fn body(self, _env: &Environment) -> impl View {
         match self {
-            Self::Image(url) => Photo::new(url),
-            Self::LivePhoto(live) => LivePhoto::new(live),
-            Self::Video(url) => VideoPlayer::new(url),
+            Self::Image(url) => AnyView::new(Photo::new(url)),
+            Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
+            Self::Video(url) => AnyView::new(VideoPlayer::new(url)),
         }
     }
 }

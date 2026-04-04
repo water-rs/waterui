@@ -6,6 +6,7 @@ pub(crate) mod dynamic;
 pub(crate) mod graphics;
 pub(crate) mod icon;
 pub(crate) mod list;
+pub(crate) mod map;
 pub(crate) mod navigation;
 pub(crate) mod picker;
 pub(crate) mod progress;
@@ -19,6 +20,8 @@ pub(crate) mod text;
 pub(crate) mod text_field;
 pub(crate) mod toggle;
 pub(crate) mod util;
+pub(crate) mod video;
+pub(crate) mod webview;
 
 pub(crate) use button::{render_button, render_menu};
 pub(crate) use divider::render_divider;

@@ -1,6 +1,7 @@
 use core::convert::TryFrom;
 use std::time::Duration;
 
+use waterui::ViewExt as _;
 use waterui::id::{Id, TaggedView};
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
