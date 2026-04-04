@@ -4,15 +4,13 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use nami::{Computed, Signal, SignalExt as _};
-use waterui_core::dynamic::Dynamic;
-use waterui_core::{AnyView, Environment, Metadata, Retain, View};
+use nami::{Computed, SignalExt as _};
+use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
-use waterui_layout::{absolute, PositionExt, UnitPoint};
-use waterui_macros::view;
+use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::{IntoText, Text};
 
@@ -237,7 +235,7 @@ fn tooltip_anchor_position(anchor_x: f32, anchor_y: f32, frame: ChartViewport) -
 pub(crate) fn chart_tooltip_overlay<T>(
     hit: Computed<Option<HitResult<T>>>,
     chart_frame: Computed<ChartViewport>,
-    build: impl Fn(HitResult<T>) -> AnyView + 'static,
+    build: impl Fn(HitResult<T>) -> AnyView + Clone + 'static,
 ) -> impl View
 where
     T: Clone + PartialEq + 'static,
@@ -258,35 +256,21 @@ struct TooltipOverlay<T, F> {
 impl<T, F> View for TooltipOverlay<T, F>
 where
     T: Clone + PartialEq + 'static,
-    F: Fn(HitResult<T>) -> AnyView + 'static,
+    F: Fn(HitResult<T>) -> AnyView + Clone + 'static,
 {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         let TooltipOverlay {
             hit,
             chart_frame,
             build,
         } = self;
-        let current_hit = crate::local_state::local_binding(env, {
-            let hit = hit.clone();
-            move || hit.get()
-        });
-        let guard = hit.watch({
-            let current_hit = current_hit.clone();
-            move |value| current_hit.set(value.into_value())
-        });
-        Metadata::new(
-            absolute((Dynamic::watch(current_hit.clone(), move |hit| {
+
+        absolute((hit
+            .zip(&chart_frame)
+            .map(move |(hit, frame)| {
                 if let Some(hit) = hit {
-                    let anchor = hit.anchor;
-                    let max_width = (chart_frame.get().width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0);
-                    let x = chart_frame
-                        .clone()
-                        .map(move |frame| tooltip_anchor_position(anchor.x, anchor.y, frame).0)
-                        .computed();
-                    let y = chart_frame
-                        .clone()
-                        .map(move |frame| tooltip_anchor_position(anchor.x, anchor.y, frame).1)
-                        .computed();
+                    let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
+                    let max_width = (frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0);
                     AnyView::new(Frame::new(build(hit)).max_width(max_width).position_anchor(
                         UnitPoint::BOTTOM_LEADING,
                         x,
@@ -295,8 +279,7 @@ where
                 } else {
                     AnyView::new(())
                 }
-            }),)),
-            Retain::new(guard),
-        )
+            })
+            .computed(),))
     }
 }

@@ -110,9 +110,11 @@ fn counter() -> impl View {
 
     vstack((
         text!("Count: {count}"),
-        button("Increment").with_state(&count).action(|count| {
-            count.set(count.get() + 1);
-        }),
+        button("Increment")
+            .action(|State(count): State<Binding<i32>>| {
+                count.set(count.get() + 1);
+            })
+            .state(&count),
     ))
 }
 ```
@@ -194,12 +196,12 @@ fn gestures() -> impl View {
     vstack((
         text!("Taps: {tap_count}"),
         text("Tap Me")
+            .state(&tap_count)
             .padding()
             .background(Color::srgb_hex("#2196F3").with_opacity(0.3))
             .gesture_observer(
                 GestureObserver::new(TapGesture::new())
-                    .with_state(&tap_count)
-                    .action(|count| count.set(count.get() + 1)),
+                    .action(|State(count): State<Binding<i32>>| count.set(count.get() + 1)),
             ),
         text("Long Press")
             .padding()
