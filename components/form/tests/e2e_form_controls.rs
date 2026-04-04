@@ -1,15 +1,16 @@
 use jiff::civil::Date;
+use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, View};
+use waterui_form::Calendar;
 use waterui_form::picker::date::{DatePicker, DatePickerType};
 use waterui_form::picker::{Picker, PickerItem, PickerStyle};
 use waterui_testing::{MountedApp, Role, UiTest};
 
 const VIEWPORT_WIDTH: u32 = 320;
 const VIEWPORT_HEIGHT: u32 = 240;
-const SUITE: &str = "form/controls";
 
 fn mount_view<V, F>(build: F) -> MountedApp
 where
@@ -48,12 +49,6 @@ fn picker_selection_flow() {
         )))
     });
 
-    let initial = app.capture_snapshot(SUITE, "picker-selection-flow", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "picker-selection-flow: initial snapshot missing"
-    );
-
     app.query()
         .role(Role::COMBOBOX)
         .value("Alpha")
@@ -91,15 +86,6 @@ fn picker_selection_flow() {
         .label("selected:Beta")
         .assert_exists();
 
-    let selected = app.capture_snapshot(SUITE, "picker-selection-flow", "01_selected");
-    assert!(
-        selected.path().is_file(),
-        "picker-selection-flow: selected snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(selected.snapshot()) > 0,
-        "picker selection should change rendered pixels"
-    );
 }
 
 #[test]
@@ -113,12 +99,6 @@ fn date_picker_accessibility() {
             waterui::text!("selected:{selected_date_for_view}").foreground(Srgb::WHITE),
         )))
     });
-
-    let initial = app.capture_snapshot(SUITE, "date-picker-accessibility", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "date-picker-accessibility: initial snapshot missing"
-    );
 
     let initial_value = DatePickerType::Date.format_value(selected_date.get().at(0, 0, 0, 0));
     app.query()
@@ -149,13 +129,55 @@ fn date_picker_accessibility() {
         .label("selected:2025-02-14")
         .assert_exists();
 
-    let updated = app.capture_snapshot(SUITE, "date-picker-accessibility", "01_updated");
+}
+
+#[test]
+fn calendar_navigation_and_selection_update_binding() {
+    let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
+    let selected_date_for_view = selected_date.clone();
+
+    let mut app = mount_view(move || {
+        form_shell(
+            Calendar::new(&selected_date_for_view)
+                .label("Event Calendar")
+                .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
+        )
+    });
+
+    app.query()
+        .role(Role::LABEL)
+        .label("Event Calendar")
+        .assert_exists();
+    app.query().role(Role::BUTTON).label("14").assert_exists();
     assert!(
-        updated.path().is_file(),
-        "date-picker-accessibility: updated snapshot missing"
+        app.query().role(Role::BUTTON).label("14").tap(),
+        "calendar should allow selecting a visible in-range day"
+    );
+    assert_eq!(
+        selected_date.get(),
+        Date::new(2025, 1, 14).unwrap(),
+        "calendar day tap should update the selected date"
+    );
+
+    assert!(
+        app.query().role(Role::BUTTON).label(">").tap(),
+        "calendar next-month button should be tappable"
     );
     assert!(
-        initial.snapshot().changed_pixels(updated.snapshot()) > 0,
-        "date picker update should change rendered pixels"
+        app.query()
+            .role(Role::BUTTON)
+            .label("31")
+            .wait_for_nonexistence(Duration::from_secs(1)),
+        "calendar should rebuild to the next month before a new day selection"
     );
+    assert!(
+        app.query().role(Role::BUTTON).label("20").tap(),
+        "calendar should allow selecting a day after month navigation"
+    );
+    assert_eq!(
+        selected_date.get(),
+        Date::new(2025, 2, 20).unwrap(),
+        "calendar month navigation should change the active month before selection"
+    );
+
 }

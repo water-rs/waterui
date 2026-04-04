@@ -14,8 +14,7 @@ use jiff::{
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_controls::{IntoLabel, button};
 use waterui_core::dynamic::Dynamic;
-use waterui_core::env::With;
-use waterui_core::{AnyView, Environment, State, View};
+use waterui_core::{AnyView, Environment, LocalStateScope, LocalStateStore, View};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::spacer;
@@ -35,7 +34,6 @@ pub struct Calendar {
     label: AnyView,
     value: Binding<Date>,
     range: RangeInclusive<Date>,
-    visible_month: Binding<VisibleMonth>,
     decorated: Computed<BTreeSet<Date>>,
 }
 
@@ -44,12 +42,10 @@ impl Calendar {
     #[must_use]
     pub fn new(date: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
-        let visible_month = Binding::container(initial_visible_month(Some(date.get()), &range));
         Self {
             label: AnyView::default(),
             value: date.clone(),
             range,
-            visible_month,
             decorated: Computed::constant(BTreeSet::new()),
         }
     }
@@ -64,8 +60,6 @@ impl Calendar {
     /// Sets the valid date range.
     #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        let visible_month = initial_visible_month(Some(self.value.get()), &range);
-        self.visible_month.set(visible_month);
         self.range = range;
         self
     }
@@ -82,74 +76,40 @@ impl View for Calendar {
     fn body(self, env: &Environment) -> impl View {
         let label = self.label;
         let selection = self.value;
-        let visible_month = self.visible_month;
         let range = self.range;
         let decorated = self.decorated;
         let locale = resolve_locale(env);
+        let visible_month = local_binding(env, {
+            let selection = selection.clone();
+            let range = range.clone();
+            move || initial_visible_month(Some(selection.get()), &range)
+        });
 
-        vstack((
-            label,
-            Dynamic::watch(visible_month.clone(), move |month| {
-                SingleCalendarMonthView::new(
+        let selection_and_decorated = selection.zip(&decorated);
+        let calendar = Dynamic::watch(
+            visible_month.clone().zip(&selection_and_decorated),
+            move |(month, (selected_date, decorated_dates))| {
+                let cell_range = range.clone();
+                let cell_selection = selection.clone();
+                CalendarBody::new(
                     locale.clone(),
                     month,
                     range.clone(),
                     visible_month.clone(),
-                    selection.clone(),
-                    decorated.clone(),
+                    calendar_rows(month, move |cell| {
+                        single_day_cell_content(
+                            cell,
+                            selected_date,
+                            &cell_range,
+                            cell_selection.clone(),
+                            &decorated_dates,
+                        )
+                    }),
                 )
-            }),
-        ))
-        .spacing(10.0)
-    }
-}
+            },
+        );
 
-#[derive(Debug, Clone)]
-struct SingleCalendarMonthView {
-    locale: Locale,
-    month: VisibleMonth,
-    range: RangeInclusive<Date>,
-    visible_month: Binding<VisibleMonth>,
-    selection: Binding<Date>,
-    decorated: Computed<BTreeSet<Date>>,
-}
-
-impl SingleCalendarMonthView {
-    fn new(
-        locale: Locale,
-        month: VisibleMonth,
-        range: RangeInclusive<Date>,
-        visible_month: Binding<VisibleMonth>,
-        selection: Binding<Date>,
-        decorated: Computed<BTreeSet<Date>>,
-    ) -> Self {
-        Self {
-            locale,
-            month,
-            range,
-            visible_month,
-            selection,
-            decorated,
-        }
-    }
-}
-
-impl View for SingleCalendarMonthView {
-    fn body(self, _env: &Environment) -> impl View {
-        CalendarBody::new(
-            self.locale,
-            self.month,
-            self.range.clone(),
-            self.visible_month,
-            calendar_rows(self.month, move |cell| {
-                SingleDayCellView::new(
-                    cell,
-                    self.selection.clone(),
-                    self.range.clone(),
-                    self.decorated.clone(),
-                )
-            }),
-        )
+        vstack((label, calendar)).spacing(10.0)
     }
 }
 
@@ -280,96 +240,6 @@ pub(crate) fn calendar_rows<V: View>(
     rows.into_iter().collect::<VStack<_>>().spacing(6.0)
 }
 
-#[derive(Debug, Clone)]
-struct SingleDayCellView {
-    cell: DayCell,
-    selection: Binding<Date>,
-    range: RangeInclusive<Date>,
-    decorated: Computed<BTreeSet<Date>>,
-}
-
-impl SingleDayCellView {
-    fn new(
-        cell: DayCell,
-        selection: Binding<Date>,
-        range: RangeInclusive<Date>,
-        decorated: Computed<BTreeSet<Date>>,
-    ) -> Self {
-        Self {
-            cell,
-            selection,
-            range,
-            decorated,
-        }
-    }
-}
-
-impl View for SingleDayCellView {
-    fn body(self, _env: &Environment) -> impl View {
-        let cell = self.cell;
-        let selection = self.selection;
-        let range = self.range;
-        let decorated = self.decorated;
-        Dynamic::watch(
-            selection.zip(&decorated),
-            move |(selected_date, decorated_dates)| {
-                single_day_cell_content(
-                    cell,
-                    selected_date,
-                    &range,
-                    selection.clone(),
-                    &decorated_dates,
-                )
-            },
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MultiDayCellView {
-    cell: DayCell,
-    selection: Binding<BTreeSet<Date>>,
-    range: RangeInclusive<Date>,
-    decorated: Computed<BTreeSet<Date>>,
-}
-
-impl MultiDayCellView {
-    pub(crate) fn new(
-        cell: DayCell,
-        selection: Binding<BTreeSet<Date>>,
-        range: RangeInclusive<Date>,
-        decorated: Computed<BTreeSet<Date>>,
-    ) -> Self {
-        Self {
-            cell,
-            selection,
-            range,
-            decorated,
-        }
-    }
-}
-
-impl View for MultiDayCellView {
-    fn body(self, _env: &Environment) -> impl View {
-        let cell = self.cell;
-        let selection = self.selection;
-        let range = self.range;
-        let decorated = self.decorated;
-        Dynamic::watch(
-            selection.zip(&decorated),
-            move |(selected_dates, decorated_dates)| {
-                multi_day_cell_content(
-                    cell,
-                    &selected_dates,
-                    &range,
-                    selection.clone(),
-                    &decorated_dates,
-                )
-            },
-        )
-    }
-}
-
 pub(crate) fn initial_visible_month(
     selected: Option<Date>,
     range: &RangeInclusive<Date>,
@@ -394,6 +264,19 @@ pub(crate) fn initial_visible_month(
 
 pub(crate) fn resolve_locale(env: &Environment) -> Locale {
     locale_binding(env).get()
+}
+
+pub(crate) fn local_binding<T: Clone + 'static>(
+    env: &Environment,
+    init: impl FnOnce() -> T + 'static,
+) -> Binding<T> {
+    let scope = env
+        .get::<LocalStateScope>()
+        .unwrap_or_else(|| panic!("waterui-form requires renderer LocalStateScope support"))
+        .clone();
+    env.get::<LocalStateStore>()
+        .unwrap_or_else(|| panic!("waterui-form requires renderer LocalStateStore support"))
+        .binding(&scope, init)
 }
 
 fn build_month_header(
@@ -434,14 +317,9 @@ fn month_navigation_button(
     step: fn(VisibleMonth) -> VisibleMonth,
 ) -> impl View {
     if enabled {
-        AnyView::new(With::new(
-            button(label)
-                .bordered()
-                .action(move |State(current): State<Binding<VisibleMonth>>| {
-                    current.set(step(current.get()));
-                }),
-            State(visible_month),
-        ))
+        AnyView::new(button(label).bordered().action(move || {
+            visible_month.set(step(visible_month.get()));
+        }))
     } else {
         AnyView::new(button(label).borderless())
     }
@@ -492,12 +370,9 @@ fn single_day_cell_content(
         };
 
         AnyView::new(
-            Frame::new(With::new(
-                button.action(move |State(selected): State<Binding<Date>>| {
-                    selected.set(cell.date);
-                }),
-                State(selection),
-            ))
+            Frame::new(button.action(move || {
+                selection.set(cell.date);
+            }))
             .width(44.0)
             .height(40.0),
         )
@@ -510,7 +385,7 @@ fn single_day_cell_content(
     }
 }
 
-fn multi_day_cell_content(
+pub(crate) fn multi_day_cell_content(
     cell: DayCell,
     selected_dates: &BTreeSet<Date>,
     range: &RangeInclusive<Date>,
@@ -535,16 +410,13 @@ fn multi_day_cell_content(
         };
 
         AnyView::new(
-            Frame::new(With::new(
-                button.action(move |State(selected): State<Binding<BTreeSet<Date>>>| {
-                    let mut dates = selected.get();
-                    if !dates.insert(cell.date) {
-                        dates.remove(&cell.date);
-                    }
-                    selected.set(dates);
-                }),
-                State(selection),
-            ))
+            Frame::new(button.action(move || {
+                let mut dates = selection.get();
+                if !dates.insert(cell.date) {
+                    dates.remove(&cell.date);
+                }
+                selection.set(dates);
+            }))
             .width(44.0)
             .height(40.0),
         )

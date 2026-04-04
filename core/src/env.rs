@@ -120,6 +120,11 @@ impl<K, V> Store<K, V> {
 }
 
 impl Environment {
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        Rc::as_ptr(&self.state) as usize
+    }
+
     fn insert_any(&mut self, key: TypeId, value: Rc<dyn Any>) {
         match Rc::get_mut(&mut self.state) {
             Some(EnvironmentState::Map(map)) => {

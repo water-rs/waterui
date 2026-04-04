@@ -23,6 +23,7 @@ use core::num::NonZeroUsize;
 use core::time::Duration;
 use hit_test::*;
 use lazy::*;
+pub(crate) use lifecycle::local_shared;
 use lifecycle::*;
 pub(crate) use measurement::*;
 use navigation_state::*;
@@ -108,7 +109,7 @@ use waterui_core::{
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::color::{Color, ResolvedColor, Srgb};
 use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
@@ -123,10 +124,13 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_layout::stack::{Axis as StackAxis, HStackLayout, VStackLayout};
+use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
 use waterui_text::styled::{Style as TextStyle, StyledStr};
 use waterui_text::{Text, TextConfig};
+use waterui_video::{VideoConfig, VideoPlayerConfig};
+use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
 use crate::engine::vello_backend::VelloDrawContext;
@@ -252,15 +256,14 @@ impl HydroDispatcher {
             return;
         }
 
-        let body_env = env
-            .get::<LocalStateScope>()
-            .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+        let body_env = local_state_body_env(env);
+        let body_content_env = local_state_body_content_env(env);
         let body = renderer
             .lifecycle
             .with_local_state_env(&body_env, move |render_env| {
                 AnyView::new(view.body(render_env))
             });
-        self.dispatch_boxed(renderer, body, &body_env, ctx);
+        self.dispatch_boxed(renderer, body, &body_content_env, ctx);
     }
 
     fn dispatch_boxed(
@@ -276,15 +279,14 @@ impl HydroDispatcher {
             return;
         }
 
-        let body_env = env
-            .get::<LocalStateScope>()
-            .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()));
+        let body_env = local_state_body_env(env);
+        let body_content_env = local_state_body_content_env(env);
         let body = renderer
             .lifecycle
             .with_local_state_env(&body_env, move |render_env| {
                 AnyView::new(view.body(render_env))
             });
-        self.dispatch_boxed(renderer, body, &body_env, ctx);
+        self.dispatch_boxed(renderer, body, &body_content_env, ctx);
     }
 }
 
@@ -305,6 +307,8 @@ pub struct HydrolysisRenderer {
     window_bounds: vello::kurbo::Rect,
     redraw_requested: Rc<Cell<bool>>,
     pub(crate) rebuild_requested: Rc<Cell<bool>>,
+    rebuild_generation: Rc<Cell<u64>>,
+    rebuild_in_progress: Rc<Cell<bool>>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     scroll_controller: ScrollController,
@@ -312,6 +316,7 @@ pub struct HydrolysisRenderer {
     pub(crate) navigation: NavigationState,
     accessibility: AccessibilityBuilder,
 }
+
 
 struct AppliedFilterRuntime {
     filter: AppliedFilter,
@@ -575,6 +580,10 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedColor>);
         $macro!(Native<ResolvedGradient>);
         $macro!(Native<ResolvedShape>);
+        $macro!(Native<VideoConfig>);
+        $macro!(Native<VideoPlayerConfig>);
+        $macro!(Native<MapConfig>);
+        $macro!(WebView);
     };
 }
 
@@ -644,6 +653,8 @@ impl HydrolysisRenderer {
             window_bounds: vello::kurbo::Rect::ZERO,
             redraw_requested: Rc::new(Cell::new(false)),
             rebuild_requested: Rc::new(Cell::new(false)),
+            rebuild_generation: Rc::new(Cell::new(0)),
+            rebuild_in_progress: Rc::new(Cell::new(false)),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             scroll_controller: ScrollController::default(),
@@ -795,6 +806,11 @@ impl HydrolysisRenderer {
         env: &Environment,
         ctx: RenderContext,
     ) {
+        assert!(
+            self.render_depth < 256,
+            "hydrolysis render dispatch exceeded recursion budget for {}",
+            core::any::type_name::<V>()
+        );
         self.push_render_depth();
         let dispatcher = self.dispatcher.clone();
         dispatcher.dispatch(self, view, env, ctx);
@@ -1032,14 +1048,17 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let mut resolved_children = Vec::with_capacity(children.len());
-        for child in children {
-            resolved_children.push(normalize_layout_view(child, env));
+        let mut child_envs = Vec::with_capacity(children.len());
+        for (index, child) in children.into_iter().enumerate() {
+            let child_env = local_state_child_env(env, index);
+            resolved_children.push(normalize_layout_view(child, &child_env));
+            child_envs.push(child_env);
         }
 
         let state = RefCell::new(&mut renderer.state);
         let mut subviews = Vec::with_capacity(resolved_children.len());
-        for child in &resolved_children {
-            subviews.push(HydroSubview::from_view(child, &state, env));
+        for (child, child_env) in resolved_children.iter().zip(&child_envs) {
+            subviews.push(HydroSubview::from_view(child, &state, child_env));
         }
         let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
 
@@ -1054,7 +1073,7 @@ impl HydrolysisRenderer {
         ));
         let child_rects = layout.place(bounds, &refs);
 
-        for (child, rect) in resolved_children.into_iter().zip(child_rects) {
+        for ((index, child), rect) in resolved_children.into_iter().enumerate().zip(child_rects) {
             let child_transform =
                 vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
             let child_bounds = vello::kurbo::Rect::new(
@@ -1066,7 +1085,7 @@ impl HydrolysisRenderer {
             Self::dispatch_any(
                 renderer,
                 ctx.child(child_transform, child_bounds),
-                env,
+                &child_envs[index],
                 child,
             );
         }
@@ -1124,9 +1143,10 @@ impl HydrolysisRenderer {
                 let child = children.get_view(index).unwrap_or_else(|| {
                     panic!("LazyContainer failed to materialize child at index {index}")
                 });
-                let child = normalize_layout_view(child, env);
+                let child_env = local_state_child_env(env, index);
+                let child = normalize_layout_view(child, &child_env);
                 let state = RefCell::new(&mut renderer.state);
-                let subview = HydroSubview::from_view(&child, &state, env);
+                let subview = HydroSubview::from_view(&child, &state, &child_env);
                 let proposal = match axis_config {
                     LazyStackAxisConfig::Vertical { .. } => {
                         ProposalSize::new(Some(ctx.bounds.width() as f32), None)
@@ -1156,9 +1176,10 @@ impl HydrolysisRenderer {
             let child = children.get_view(index).unwrap_or_else(|| {
                 panic!("LazyContainer failed to materialize child at index {index}")
             });
-            let child = normalize_layout_view(child, env);
+            let child_env = local_state_child_env(env, index);
+            let child = normalize_layout_view(child, &child_env);
             let state = RefCell::new(&mut renderer.state);
-            let subview = HydroSubview::from_view(&child, &state, env);
+            let subview = HydroSubview::from_view(&child, &state, &child_env);
             let proposal = match axis_config {
                 LazyStackAxisConfig::Vertical { .. } => {
                     ProposalSize::new(Some(ctx.bounds.width() as f32), None)
@@ -1238,7 +1259,7 @@ impl HydrolysisRenderer {
                     vello::kurbo::Affine::translate((child_rect.x0, child_rect.y0)),
                     vello::kurbo::Rect::new(0.0, 0.0, child_rect.width(), child_rect.height()),
                 ),
-                env,
+                &child_env,
                 child,
             );
             cursor += extent;
@@ -1303,15 +1324,22 @@ impl HydrolysisRenderer {
                 Rc::clone(&node.pending_view)
             } else {
                 let pending_view = Rc::new(RefCell::new(None::<AnyView>));
-                let is_initial = Rc::new(Cell::new(true));
                 let rebuild_requested = Rc::clone(&renderer.rebuild_requested);
-                dynamic.connect({
+                let rebuild_generation = Rc::clone(&renderer.rebuild_generation);
+                let rebuild_in_progress = Rc::clone(&renderer.rebuild_in_progress);
+                let render_generation = Rc::new(Cell::new(0));
+                dynamic.connect_with_pending_view(Rc::clone(&pending_view), {
                     let pending_view = Rc::clone(&pending_view);
-                    let is_initial = Rc::clone(&is_initial);
                     let rebuild_requested = Rc::clone(&rebuild_requested);
+                    let rebuild_generation = Rc::clone(&rebuild_generation);
+                    let rebuild_in_progress = Rc::clone(&rebuild_in_progress);
+                    let render_generation = Rc::clone(&render_generation);
                     move |update| {
                         *pending_view.borrow_mut() = Some(update.into_value());
-                        if !is_initial.replace(false) {
+                        if (!rebuild_in_progress.get()
+                            || render_generation.get() == rebuild_generation.get())
+                            && !rebuild_requested.get()
+                        {
                             rebuild_requested.set(true);
                         }
                     }
@@ -1321,27 +1349,61 @@ impl HydrolysisRenderer {
                     DynamicNode {
                         pending_view: Rc::clone(&pending_view),
                         cached_subtree: None,
+                        render_generation,
                     },
                 );
                 pending_view
             }
         };
+        let current_generation = renderer.rebuild_generation.get();
+        renderer
+            .lifecycle
+            .dynamic_nodes
+            .get(&identity)
+            .expect("hydrolysis dynamic node missing before render")
+            .render_generation
+            .set(current_generation);
 
         let update = pending_view.borrow_mut().take();
         if let Some(content) = update {
             let content = normalize_layout_view(content, env);
             let dimensions = measure_view_dimensions(&content, &mut renderer.state, env);
+            let previous_dimensions = renderer
+                .state
+                .dynamic_intrinsic_cache
+                .get(&identity)
+                .cloned();
             renderer
                 .state
                 .dynamic_intrinsic_cache
-                .insert(identity, dimensions);
+                .insert(identity, dimensions.clone());
+            if previous_dimensions.as_ref() != Some(&dimensions) {
+                *pending_view.borrow_mut() = Some(content);
+                renderer.request_rebuild();
+            } else {
+                let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+                let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
+                renderer
+                    .lifecycle
+                    .dynamic_nodes
+                    .get_mut(&identity)
+                    .expect("hydrolysis dynamic node missing after connect")
+                    .cached_subtree = Some(subtree);
+            }
+        }
+        if renderer
+            .lifecycle
+            .dynamic_nodes
+            .get(&identity)
+            .is_some_and(|node| node.cached_subtree.is_none())
+        {
             let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-            let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
+            let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, AnyView::new(()));
             renderer
                 .lifecycle
                 .dynamic_nodes
                 .get_mut(&identity)
-                .expect("hydrolysis dynamic node missing after connect")
+                .expect("hydrolysis dynamic node missing after empty subtree initialization")
                 .cached_subtree = Some(subtree);
         }
 
@@ -1623,9 +1685,10 @@ impl HydrolysisRenderer {
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         metadata: Metadata<Environment>,
-        _env: &Environment,
+        env: &Environment,
     ) {
-        renderer.dispatch_with_render_depth(metadata.content, &metadata.value, ctx);
+        let (content, scoped_env) = flatten_environment_metadata_owned(AnyView::new(metadata), env);
+        renderer.dispatch_with_render_depth(content, &scoped_env, ctx);
     }
 
     fn render_retain_metadata(
@@ -2241,6 +2304,9 @@ impl HydrolysisRenderer {
     ) {
         let IgnorableMetadata { content, value } = metadata;
         let mut local_env = env.clone();
+        if value.is_hidden() {
+            local_env.insert(AccessibilityHidden::new(true));
+        }
         local_env.insert(value);
         Self::dispatch_any(renderer, ctx, &local_env, content);
     }
@@ -2252,8 +2318,12 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let IgnorableMetadata { content, value } = metadata;
+        let state = value.state().get();
         let mut local_env = env.clone();
-        local_env.insert(value.state().get());
+        if state.is_hidden() {
+            local_env.insert(AccessibilityHidden::new(true));
+        }
+        local_env.insert(state);
         Self::dispatch_any(renderer, ctx, &local_env, content);
     }
 
@@ -2381,6 +2451,14 @@ impl HydrolysisRenderer {
     }
 
     pub fn begin_rebuild_frame(&mut self) {
+        self.rebuild_in_progress.set(true);
+        self.state.measurement_cache.clear();
+        self.rebuild_generation.set(
+            self.rebuild_generation
+                .get()
+                .checked_add(1)
+                .expect("hydrolysis renderer rebuild generation overflow"),
+        );
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -2432,6 +2510,7 @@ impl HydrolysisRenderer {
         self.text_editing
             .text_selection_slots
             .truncate(self.text_editing.text_selection_cursor);
+        self.rebuild_in_progress.set(false);
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
@@ -2856,10 +2935,16 @@ impl HydrolysisRenderer {
 }
 
 fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
+    let linear = ResolvedColor::from_srgb(Srgb::new(
+        color.components[0],
+        color.components[1],
+        color.components[2],
+    ))
+    .linear_with_headroom();
     wgpu::Color {
-        r: f64::from(color.components[0]),
-        g: f64::from(color.components[1]),
-        b: f64::from(color.components[2]),
+        r: f64::from(linear[0]),
+        g: f64::from(linear[1]),
+        b: f64::from(linear[2]),
         a: f64::from(color.components[3]),
     }
 }

@@ -4,12 +4,12 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use waterui_macros::view;
 use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
+use waterui_macros::view;
 use waterui_shape::{Rectangle, ShapeExt};
 use waterui_text::{IntoText, Text};
 
@@ -147,12 +147,10 @@ impl View for Legend {
             .collect();
 
         // Render based on orientation
-        let content = view! {
-            if self.orientation == LegendOrientation::Horizontal {
-                HStack::new(VerticalAlignment::Center, spacing, entries)
-            } else {
-                VStack::new(HorizontalAlignment::Leading, spacing, entries)
-            }
+        let content = if self.orientation == LegendOrientation::Horizontal {
+            AnyView::new(HStack::new(VerticalAlignment::Center, spacing, entries))
+        } else {
+            AnyView::new(VStack::new(HorizontalAlignment::Leading, spacing, entries))
         };
 
         // Position legend within the available bounds
