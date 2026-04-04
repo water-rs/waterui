@@ -325,7 +325,7 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-lwaterui_app -lc++ -framework VideoToolbox";
+				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -386,7 +386,7 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-lwaterui_app -lc++ -framework VideoToolbox";
+				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
