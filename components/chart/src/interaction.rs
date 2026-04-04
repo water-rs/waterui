@@ -871,7 +871,7 @@ mod tests {
         let slots = Rc::new(RefCell::new(BTreeMap::<(u64, usize), Slot>::new()));
         let store = LocalStateStore::new({
             let slots = Rc::clone(&slots);
-            move |path, index, type_id, init| {
+            move |path, index, type_id, _type_name, init| {
                 let key = (path, index);
                 let mut slots = slots.borrow_mut();
                 if let Some(slot) = slots.get(&key) {

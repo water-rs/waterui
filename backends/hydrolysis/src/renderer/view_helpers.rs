@@ -4,6 +4,33 @@ pub(crate) fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
 }
 
+pub(crate) fn flatten_environment_metadata_ref<'a>(
+    mut view: &'a AnyView,
+    env: &Environment,
+) -> (&'a AnyView, Environment) {
+    let mut scoped_env = env.clone();
+    while let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
+        scoped_env = local_state_overlay_env(&metadata.value, &scoped_env);
+        view = &metadata.content;
+    }
+    (view, scoped_env)
+}
+
+pub(crate) fn flatten_environment_metadata_owned(
+    mut view: AnyView,
+    env: &Environment,
+) -> (AnyView, Environment) {
+    let mut scoped_env = env.clone();
+    while view.is::<Metadata<Environment>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<Environment>>()
+            .expect("environment metadata flattening downcast must succeed");
+        scoped_env = local_state_overlay_env(&value, &scoped_env);
+        view = content;
+    }
+    (view, scoped_env)
+}
+
 fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
     assert!(
         !(remaining == 0),
@@ -238,8 +265,9 @@ fn normalize_layout_view_with_budget(
     }
 
     let body_env = local_state_body_env(env);
+    let body_content_env = local_state_body_content_env(env);
     view = AnyView::new(view.body(&body_env));
-    normalize_layout_view_with_budget(view, &body_env, next_remaining)
+    normalize_layout_view_with_budget(view, &body_content_env, next_remaining)
 }
 
 pub(crate) fn estimate_layout_intrinsic<'a>(
@@ -249,9 +277,15 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
     env: &Environment,
 ) -> LayoutSize {
     let state = RefCell::new(state);
+    let children: Vec<&AnyView> = children.into_iter().collect();
+    let child_envs: Vec<Environment> = children
+        .iter()
+        .enumerate()
+        .map(|(index, _)| local_state_child_env(env, index))
+        .collect();
     let mut subviews = Vec::new();
-    for child in children {
-        subviews.push(HydroSubview::from_view(child, &state, env));
+    for (child, child_env) in children.into_iter().zip(&child_envs) {
+        subviews.push(HydroSubview::from_view(child, &state, child_env));
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)

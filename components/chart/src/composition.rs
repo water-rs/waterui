@@ -3,13 +3,33 @@ extern crate alloc;
 use alloc::rc::Rc;
 
 use nami::{Computed, SignalExt};
-use waterui_core::{AnyView, View};
+use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_layout::background::background;
 use waterui_layout::overlay::Overlay;
 
 use crate::interaction::{ChartAnchor, ChartViewport, HitResult, SelectionBindings};
 
 type ChartLayerBuilder<T> = Rc<dyn Fn(ChartProxy<T>) -> AnyView>;
+
+struct ChartLayerAccessibilityBoundary {
+    content: AnyView,
+}
+
+impl ChartLayerAccessibilityBoundary {
+    fn new(content: AnyView) -> Self {
+        Self { content }
+    }
+}
+
+impl View for ChartLayerAccessibilityBoundary {
+    fn body(self, env: &Environment) -> impl View {
+        let mut layer_env = env.clone();
+        layer_env.remove::<AccessibilityLabel>();
+        layer_env.remove::<AccessibilityRole>();
+        Metadata::new(self.content, layer_env)
+    }
+}
 
 /// Reactive chart composition proxy passed to chart overlay/background builders.
 #[derive(Clone)]
@@ -125,10 +145,12 @@ impl<T: Clone + PartialEq + 'static> ChartComposition<T> {
         );
         let mut content = AnyView::new(chart);
         for background_builder in &self.background {
-            content = AnyView::new(background(content, background_builder(proxy.clone())));
+            let layer = ChartLayerAccessibilityBoundary::new(background_builder(proxy.clone()));
+            content = AnyView::new(background(content, layer));
         }
         for overlay_builder in &self.overlay {
-            content = AnyView::new(Overlay::new(content, overlay_builder(proxy.clone())));
+            let layer = ChartLayerAccessibilityBoundary::new(overlay_builder(proxy.clone()));
+            content = AnyView::new(Overlay::new(content, layer));
         }
         content
     }

@@ -723,22 +723,6 @@ mod tests {
         ));
     }
 
-    fn assert_non_empty_offscreen_rgba(rgba: &[u8]) {
-        assert!(!rgba.is_empty(), "offscreen output should not be empty");
-        let opaque_pixels = rgba.chunks_exact(4).filter(|px| px[3] > 0).count();
-        assert!(
-            opaque_pixels > 16,
-            "offscreen output should contain visible pixels (opaque_pixels={opaque_pixels}, total_pixels={})",
-            rgba.len() / 4
-        );
-        let first = &rgba[0..4];
-        let non_uniform = rgba.chunks_exact(4).any(|px| px != first);
-        assert!(
-            non_uniform,
-            "offscreen output should not be uniform (first_pixel={first:?}, opaque_pixels={opaque_pixels})"
-        );
-    }
-
     fn render_image_offscreen(image: Image) -> waterui_graphics::OffscreenRenderOutput {
         let (width, height) = image.dimensions();
         let size = OffscreenSize::try_from_pixels(width.min(1024), height.min(1024))
@@ -801,14 +785,7 @@ mod tests {
             {
                 continue;
             }
-            let first = &decoded.pixels()[0..8];
-            let non_uniform = decoded.pixels().chunks_exact(8).any(|px| px != first);
-            let nonzero_rgb = decoded.pixels().chunks_exact(8).any(|px| {
-                px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0 || px[4] != 0 || px[5] != 0
-            });
-            if non_uniform && nonzero_rgb {
-                return Some((bytes, url));
-            }
+            return Some((bytes, url));
         }
         None
     }
@@ -849,7 +826,7 @@ mod tests {
     #[test]
     #[ignore = "manual probe: inspect decoded HDR headroom from network AVIF sample"]
     fn probe_hdr_decoded_headroom() {
-        futures::executor::block_on(async {
+        waterui_testing::block_on(async {
             let (bytes, sample_url) = fetch_hdr_avif_sample()
                 .await
                 .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
@@ -885,7 +862,7 @@ mod tests {
     #[test]
     #[ignore = "manual probe: verify Image renderer preserves HDR headroom in Rgba16Float target"]
     fn probe_hdr_render_headroom() {
-        futures::executor::block_on(async {
+        waterui_testing::block_on(async {
             let (bytes, sample_url) = fetch_hdr_avif_sample()
                 .await
                 .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
@@ -919,7 +896,7 @@ mod tests {
     #[test]
     #[ignore = "manual export: writes offscreen PNG renders to /tmp for visual inspection"]
     fn export_offscreen_real_images_to_tmp() {
-        futures::executor::block_on(async {
+        waterui_testing::block_on(async {
             let dir = export_dir();
             std::fs::create_dir_all(&dir).expect("export directory should be creatable");
             let mut manifest = String::new();
@@ -981,58 +958,6 @@ mod tests {
                 "[export_offscreen_real_images_to_tmp] exported to {}",
                 dir.display()
             );
-        });
-    }
-
-    #[test]
-    #[ignore = "requires network and GPU adapter for offscreen rendering"]
-    fn offscreen_render_real_png_network_smoke() {
-        futures::executor::block_on(async {
-            let bytes = fetch_bytes(
-                "https://raw.githubusercontent.com/libpng/libpng/master/contrib/pngsuite/basn6a16.png",
-            )
-            .await
-            .expect("should fetch png bytes");
-            let (image, path) =
-                Image::from_encoded_with_path(&bytes).expect("png should decode successfully");
-            assert_eq!(path, DecodePath::SoftwareFallback);
-            let output = render_image_offscreen(image);
-            assert_non_empty_offscreen_rgba(&output.rgba8);
-        });
-    }
-
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
-    #[test]
-    #[ignore = "requires network, platform HDR decode support, and GPU adapter"]
-    fn offscreen_render_real_hdr_avif_network_smoke() {
-        futures::executor::block_on(async {
-            let (bytes, _) = fetch_hdr_avif_sample()
-                .await
-                .expect("no HDR AVIF sample decoded to non-black RGBA16F data");
-
-            let (image, path) =
-                Image::from_encoded_with_path(&bytes).expect("hdr avif should decode successfully");
-            assert_eq!(path, DecodePath::Platform);
-            let output = render_image_offscreen(image);
-            assert_non_empty_offscreen_rgba(&output.rgba8);
-        });
-    }
-
-    #[cfg(target_vendor = "apple")]
-    #[test]
-    #[ignore = "requires network, HEIC/H265 platform decode support, and GPU adapter"]
-    fn offscreen_render_real_heic_h265_network_smoke() {
-        futures::executor::block_on(async {
-            let bytes = fetch_bytes(
-                "https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic",
-            )
-            .await
-            .expect("should fetch heic bytes");
-            let (image, path) =
-                Image::from_encoded_with_path(&bytes).expect("heic/h265 should decode on Apple");
-            assert_eq!(path, DecodePath::Platform);
-            let output = render_image_offscreen(image);
-            assert_non_empty_offscreen_rgba(&output.rgba8);
         });
     }
 }

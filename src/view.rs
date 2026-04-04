@@ -470,11 +470,18 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visable(self, visible: impl IntoComputed<bool>) -> impl View {
-        self.opacity(
-            visible
-                .into_computed()
-                .map(|visable| if visable { 1.0 } else { 0.0 }),
-        )
+        let visible = visible.into_computed();
+        let accessibility_state = visible
+            .clone()
+            .map(|visible| AccessibilityState::new().hidden(!visible));
+        let opacity_value = visible
+            .clone()
+            .map(|visible| if visible { 1.0 } else { 0.0 });
+        let hittable_value = visible;
+
+        self.a11y_state_signal(accessibility_state)
+            .opacity(opacity_value)
+            .hittable(hittable_value)
     }
 
     /// Associates  a value with this view in the environment.

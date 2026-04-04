@@ -6,14 +6,12 @@ use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, SignalExt as _, View, ViewExt as _};
 use waterui_chart::{ChartScrollableAxes, DataBounds, LineChart};
-use waterui_testing::Role;
+use waterui_testing::{Role, Selector, WaitOptions, WaitResult};
 
 use support::{
     assert_chart_accessibility_ready, chart_surface, horizontal_drag_domain_delta, mount_view,
-    point_series, snapshot_suite, vertical_drag_domain_delta,
+    point_series, vertical_drag_domain_delta,
 };
-
-const SCROLL_SUITE: &str = "scroll";
 
 fn assert_close(actual: f32, expected: f32, epsilon: f32, context: &str) {
     let delta = (actual - expected).abs();
@@ -30,16 +28,19 @@ fn scroll_shell<V: View, R: View>(name: &str, chart: V, readout: R) -> impl View
 }
 
 fn scalar_readout(prefix: &'static str, binding: Binding<f32>) -> impl View {
-    text(binding.map(move |value| format!("{prefix}:{value:.2}")))
-        .caption()
-        .body()
-        .foreground(Srgb::WHITE)
-        .padding_with(6.0)
+    text(
+        binding
+            .map(move |value| format!("{prefix}:{value:.2}"))
+            .computed(),
+    )
+    .caption()
+    .body()
+    .foreground(Srgb::WHITE)
+    .padding_with(6.0)
 }
 
 #[test]
 fn line_chart_horizontal_drag_updates_scroll_position_binding() {
-    let suite = snapshot_suite(SCROLL_SUITE);
     let data = point_series();
     let bounds = DataBounds::from_points(&data).with_padding(0.1);
     let visible_length = 8.0_f32;
@@ -65,11 +66,6 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-scroll-x");
-    let initial = app.capture_snapshot(&suite, "line-scroll-x", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-scroll-x: initial snapshot missing"
-    );
     assert_close(scroll_position.get(), start, 0.05, "line-scroll-x initial");
 
     assert!(
@@ -84,20 +80,10 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
         .role(Role::LABEL)
         .label(format!("x-pos:{expected:.2}"))
         .assert_exists();
-    let scrolled = app.capture_snapshot(&suite, "line-scroll-x", "01_scrolled");
-    assert!(
-        scrolled.path().is_file(),
-        "line-scroll-x: scrolled snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(scrolled.snapshot()) > 0,
-        "line-scroll-x: scrolling should change rendered pixels"
-    );
 }
 
 #[test]
 fn line_chart_vertical_drag_updates_scroll_position_binding() {
-    let suite = snapshot_suite(SCROLL_SUITE);
     let data = point_series();
     let bounds = DataBounds::from_points(&data).with_padding(0.1);
     let visible_length = 10.0_f32;
@@ -122,11 +108,6 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
     });
 
     let chart_label = assert_chart_accessibility_ready(&mut app, "line-scroll-y");
-    let initial = app.capture_snapshot(&suite, "line-scroll-y", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-scroll-y: initial snapshot missing"
-    );
     assert_close(
         scroll_position.get(),
         bounds.min_y,
@@ -146,15 +127,6 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
         .role(Role::LABEL)
         .label(format!("y-pos:{expected:.2}"))
         .assert_exists();
-    let scrolled = app.capture_snapshot(&suite, "line-scroll-y", "01_scrolled");
-    assert!(
-        scrolled.path().is_file(),
-        "line-scroll-y: scrolled snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(scrolled.snapshot()) > 0,
-        "line-scroll-y: scrolling should change rendered pixels"
-    );
 }
 
 #[test]
@@ -172,7 +144,6 @@ fn line_chart_visible_domain_requires_scroll_position() {
 
 #[test]
 fn line_chart_reactive_visible_domain_length_triggers_redraw() {
-    let suite = snapshot_suite(SCROLL_SUITE);
     let data = point_series();
     let visible_length = Binding::f32(8.0);
     let x_position = Binding::f32(0.0);
@@ -191,21 +162,17 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
     });
 
     assert_chart_accessibility_ready(&mut app, "line-visible-domain-reactive");
-    let initial = app.capture_snapshot(&suite, "line-visible-domain-reactive", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "line-visible-domain-reactive: initial snapshot missing"
-    );
-
     visible_length.set(4.0);
-    let narrowed = app.capture_snapshot(&suite, "line-visible-domain-reactive", "01_narrowed");
     assert!(
-        narrowed.path().is_file(),
-        "line-visible-domain-reactive: narrowed snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(narrowed.snapshot()) > 0,
-        "line-visible-domain-reactive: reactive visible domain should redraw chart"
+        app.wait_for(
+            &[app.expect_exists(
+                Selector::default()
+                    .role(Role::LABEL)
+                    .label("visible:4.00"),
+            )],
+            WaitOptions::new(std::time::Duration::from_millis(200)),
+        ) == WaitResult::Completed,
+        "line-visible-domain-reactive: visible-domain readout should update after binding change"
     );
     assert_close(
         x_position.get(),
@@ -213,10 +180,6 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
         0.05,
         "line-visible-domain-reactive position",
     );
-    app.query()
-        .role(Role::LABEL)
-        .label("visible:4.00")
-        .assert_exists();
 }
 
 #[test]

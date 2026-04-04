@@ -16,5 +16,9 @@ waterui-str.workspace = true
 waterkit-location.workspace = true
 nami.workspace = true
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true

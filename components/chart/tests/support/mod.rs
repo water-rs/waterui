@@ -161,9 +161,13 @@ where
     S: Signal<Output = Option<HitResult<T>>> + 'static,
     S::Guard: 'static,
 {
-    text(signal.map(move |hit| readout_text(prefix, hit, formatter)))
-        .caption()
-        .body()
+    text(
+        signal
+            .map(move |hit| readout_text(prefix, hit, formatter))
+            .computed(),
+    )
+    .caption()
+    .body()
 }
 
 pub fn image_selector(name: &str) -> Selector {

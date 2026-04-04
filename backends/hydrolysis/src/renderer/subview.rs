@@ -1,12 +1,13 @@
 use super::*;
 use std::cell::RefCell;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct HydroSubview<'a> {
     view: &'a AnyView,
     state: &'a RefCell<&'a mut HydroState>,
-    env: &'a Environment,
+    env: Environment,
     stretch_axis: StretchAxis,
+    measure_cache: RefCell<Vec<(ProposalSize, ViewDimensions)>>,
 }
 
 impl<'a> HydroSubview<'a> {
@@ -18,17 +19,27 @@ impl<'a> HydroSubview<'a> {
         Self {
             view,
             state,
-            env,
+            env: env.clone(),
             stretch_axis: effective_stretch_axis(view),
+            measure_cache: RefCell::new(Vec::new()),
         }
     }
 }
 
 impl SubView for HydroSubview<'_> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        if let Some((_, dimensions)) = self
+            .measure_cache
+            .borrow()
+            .iter()
+            .find(|(cached_proposal, _)| *cached_proposal == proposal)
+        {
+            return dimensions.clone();
+        }
+
         let mut state = self.state.borrow_mut();
         let mut dimensions =
-            measure_view_dimensions_with_proposal(self.view, proposal, &mut state, self.env);
+            measure_view_dimensions_with_proposal(self.view, proposal, &mut state, &self.env);
 
         if self.stretch_axis.stretches_horizontal() {
             if let Some(width) = proposal.width {
@@ -46,6 +57,9 @@ impl SubView for HydroSubview<'_> {
             dimensions.size.height = dimensions.size.height.min(height);
         }
 
+        self.measure_cache
+            .borrow_mut()
+            .push((proposal, dimensions.clone()));
         dimensions
     }
 

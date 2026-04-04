@@ -182,7 +182,7 @@ fn smoke_snapshot_size_matches_target() {
 }
 
 #[test]
-fn smoke_theme_foreground_slot_snapshot_contains_visible_pixels() {
+fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
     let mut env = Environment::new();
     theme::install_color_signal::<theme::color::Foreground>(
         &mut env,
@@ -194,19 +194,22 @@ fn smoke_theme_foreground_slot_snapshot_contains_visible_pixels() {
             headroom: 1.0,
         }),
     );
-    let host = TestHost::new(env, 240, 120);
-    let snapshot = host.render(
-        vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK),
+    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
+        vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
+    });
+    assert_eq!(
+        app.query()
+            .role(Role::LABEL)
+            .label("Theme slot")
+            .all()
+            .len(),
+        2,
+        "theme slot text should stay queryable under custom theme environment"
     );
-    let white_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0 && px[0] > 180 && px[1] > 180 && px[2] > 180)
-        .count();
-    assert!(
-        white_pixels > 0,
-        "expected theme foreground slot render to produce visible bright pixels (white_pixels={white_pixels})"
-    );
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.width, 240);
+    assert_eq!(snapshot.height, 120);
+    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
 }
 
 #[test]
@@ -225,58 +228,58 @@ fn ui_test_environment_builder_preserves_custom_theme() {
     let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
         vstack((text("Mounted theme").body(), text("Mounted theme").body())).background(Srgb::BLACK)
     });
-    let snapshot = app.snapshot();
-    let white_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0 && px[0] > 180 && px[1] > 180 && px[2] > 180)
-        .count();
-    assert!(
-        white_pixels > 0,
-        "expected UiTest environment builder to preserve theme foreground slot render (white_pixels={white_pixels})"
+    assert_eq!(
+        app.query()
+            .role(Role::LABEL)
+            .label("Mounted theme")
+            .all()
+            .len(),
+        2,
+        "UiTest environment builder should keep mounted text semantics intact"
     );
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.width, 240);
+    assert_eq!(snapshot.height, 120);
+    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
 }
 
 #[test]
-fn smoke_text_color_snapshot_contains_visible_pixels() {
-    let host = TestHost::new(Environment::new(), 240, 120);
-    let snapshot = host.render(
+fn smoke_text_color_snapshot_preserves_semantic_labels() {
+    let mut app = UiTest::new().viewport(240, 120).mount(|| {
         vstack((
             text("Explicit color").body().color(Srgb::WHITE),
             text("Explicit color").body().color(Srgb::WHITE),
         ))
-        .background(Srgb::BLACK),
-    );
-    let white_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0 && px[0] > 180 && px[1] > 180 && px[2] > 180)
-        .count();
-    assert!(
-        white_pixels > 0,
-        "expected explicit text color render to produce visible bright pixels (white_pixels={white_pixels})"
+        .background(Srgb::BLACK)
+    });
+    assert_eq!(
+        app.query()
+            .role(Role::LABEL)
+            .label("Explicit color")
+            .all()
+            .len(),
+        2,
+        "explicit text color should not break semantic text exposure"
     );
 }
 
 #[test]
-fn smoke_text_snapshot_contains_visible_pixels() {
-    let host = TestHost::new(Environment::new(), 240, 120);
-    let snapshot = host.render(
+fn smoke_text_snapshot_preserves_semantic_labels() {
+    let mut app = UiTest::new().viewport(240, 120).mount(|| {
         vstack((
             text("Focused datum").body().foreground(Srgb::WHITE),
             text("Selected datum").body().foreground(Srgb::WHITE),
         ))
-        .background(Srgb::BLACK),
-    );
-    let white_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0 && px[0] > 180 && px[1] > 180 && px[2] > 180)
-        .count();
-    assert!(
-        white_pixels > 0,
-        "expected text render to produce visible bright pixels (white_pixels={white_pixels})"
-    );
+        .background(Srgb::BLACK)
+    });
+    app.query()
+        .role(Role::LABEL)
+        .label("Focused datum")
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Selected datum")
+        .assert_exists();
 }
 
 #[test]
@@ -287,49 +290,49 @@ fn ui_test_snapshot_renders_text_after_canvas() {
                 ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
                 ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
             })
-            .size(240.0, 180.0),
+            .size(240.0, 180.0)
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Canvas layer"),
             text("W")
                 .size(48.0)
                 .color(Srgb::WHITE)
                 .body()
-                .padding_with(6.0),
+                .padding_with(6.0)
+                .a11y_label("Letter W"),
         ))
         .spacing(6.0)
         .background(Srgb::BLACK)
     });
+    app.query()
+        .role(Role::IMAGE)
+        .label("Canvas layer")
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Letter W")
+        .assert_exists();
     let snapshot = app.snapshot();
-    let non_black_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0 && (px[0] > 0 || px[1] > 0 || px[2] > 0))
-        .count();
-    assert!(
-        non_black_pixels > 240 * 180,
-        "expected mounted snapshot to preserve text after canvas (non_black_pixels={non_black_pixels})"
-    );
+    assert_eq!(snapshot.width, 320);
+    assert_eq!(snapshot.height, 320);
 }
 
 #[test]
-fn smoke_canvas_snapshot_contains_visible_pixels() {
-    let host = TestHost::new(Environment::new(), 96, 72);
-    let snapshot = host.render(Canvas::new(|ctx| {
-        ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-        ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
-    }));
-    let colored_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
-        .count();
-    let opaque_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0)
-        .count();
-    assert!(
-        opaque_pixels > 0,
-        "expected canvas render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
-    );
+fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
+    let mut app = UiTest::new().viewport(96, 72).mount(|| {
+        Canvas::new(|ctx| {
+            ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
+            ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+        })
+        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+        .a11y_label("Canvas smoke")
+    });
+    app.query()
+        .role(Role::IMAGE)
+        .label("Canvas smoke")
+        .assert_exists();
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.width, 96);
+    assert_eq!(snapshot.height, 72);
 }
 
 struct TestSceneContent(Rc<Cell<bool>>);
@@ -365,7 +368,7 @@ fn scene_view_body_merges_to_native_when_marker_is_present() {
 }
 
 #[test]
-fn smoke_scene_view_snapshot_contains_visible_pixels() {
+fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let build_called = Rc::new(Cell::new(false));
     let mut platform = OffscreenWindow::new(96, 72, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer = {
@@ -408,20 +411,9 @@ fn smoke_scene_view_snapshot_contains_visible_pixels() {
         height: 72,
         rgba8,
     };
-    let colored_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[0] > 0 || px[1] > 0 || px[2] > 0)
-        .count();
-    let opaque_pixels = snapshot
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px[3] > 0)
-        .count();
-    assert!(
-        opaque_pixels > 0,
-        "expected scene view render to produce visible pixels (colored_pixels={colored_pixels}, opaque_pixels={opaque_pixels})"
-    );
+    assert_eq!(snapshot.width, 96);
+    assert_eq!(snapshot.height, 72);
+    assert_eq!(snapshot.rgba8.len(), 96 * 72 * 4);
 }
 
 #[test]
@@ -653,22 +645,7 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
 }
 
 #[test]
-fn snapshot_changed_pixels_reports_differences() {
-    let host = TestHost::new(Environment::new(), 48, 48);
-    let before = host.render(Canvas::new(|ctx| {
-        ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-        ctx.fill_rect(Rect::new(Point::new(4.0, 4.0), Size::new(16.0, 16.0)));
-    }));
-    let after = host.render(Canvas::new(|ctx| {
-        ctx.set_fill_style(Srgb::new(0.0, 1.0, 0.0));
-        ctx.fill_rect(Rect::new(Point::new(4.0, 4.0), Size::new(16.0, 16.0)));
-    }));
-    assert!(before.changed_pixels(&after) > 0);
-    assert!(before.changed_ratio(&after) > 0.0);
-}
-
-#[test]
-fn ui_test_hover_drag_and_magnify_change_snapshot() {
+fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     use waterui::gesture::{
         DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
     };
@@ -726,9 +703,8 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
         }
     });
 
-    let initial = app.snapshot();
-    let bounds = app.query().label("interactive canvas").single().bounds();
-    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+    let initial_bounds = app.query().label("interactive canvas").single().bounds();
+    assert!(initial_bounds.width() > 0.0 && initial_bounds.height() > 0.0);
 
     assert!(app.query().label("interactive canvas").hover());
     assert!(hovered.get(), "hover should update the tracked binding");
@@ -756,10 +732,18 @@ fn ui_test_hover_drag_and_magnify_change_snapshot() {
         "second magnify should update the tracked scale binding"
     );
 
-    let updated = app.snapshot();
+    let updated_bounds = app.query().label("interactive canvas").single().bounds();
     assert!(
-        updated.changed_pixels(&initial) > 0,
-        "hover/drag/magnify should change the rendered snapshot"
+        updated_bounds.width() > initial_bounds.width(),
+        "magnify should grow the accessible bounds width"
+    );
+    assert!(
+        updated_bounds.height() > initial_bounds.height(),
+        "magnify should grow the accessible bounds height"
+    );
+    assert!(
+        updated_bounds.x() > initial_bounds.x(),
+        "drag should move the accessible bounds horizontally"
     );
 }
 

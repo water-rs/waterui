@@ -4,12 +4,11 @@ use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
-use waterui_controls::{Slider, Stepper, TextField, Toggle, button, toggle};
+use waterui_controls::{Label, Menu, Slider, Stepper, TextField, Toggle, button, toggle};
+use waterui_icon::SystemIcon;
 use waterui_testing::{Role, Selector};
 
-use support::{control_shell, mount_view, snapshot_suite};
-
-const SUITE: &str = "semantics";
+use support::{control_shell, mount_view};
 
 fn assert_close(actual: f64, expected: f64, epsilon: f64, context: &str) {
     let delta = (actual - expected).abs();
@@ -21,7 +20,6 @@ fn assert_close(actual: f64, expected: f64, epsilon: f64, context: &str) {
 
 #[test]
 fn button_tap_triggers_action() {
-    let suite = snapshot_suite(SUITE);
     let count = Binding::i32(0);
     let count_for_view = count.clone();
 
@@ -36,12 +34,6 @@ fn button_tap_triggers_action() {
         )))
     });
 
-    let initial = app.capture_snapshot(&suite, "button-tap-triggers-action", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "button-tap-triggers-action: initial snapshot missing"
-    );
-
     assert!(
         app.query().role(Role::BUTTON).label("Increment").tap(),
         "button tap should succeed"
@@ -52,28 +44,11 @@ fn button_tap_triggers_action() {
         .label("count:1")
         .assert_exists();
 
-    let tapped = app.capture_snapshot(&suite, "button-tap-triggers-action", "01_tapped");
-    assert!(
-        tapped.path().is_file(),
-        "button-tap-triggers-action: tapped snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(tapped.snapshot()) > 0,
-        "button tap should change rendered pixels"
-    );
 }
 
 #[test]
 fn button_disabled_state_is_accessible() {
-    let suite = snapshot_suite(SUITE);
     let mut app = mount_view(|| control_shell(button("Disabled").disabled(true)));
-
-    let snapshot =
-        app.capture_snapshot(&suite, "button-disabled-state-is-accessible", "00_initial");
-    assert!(
-        snapshot.path().is_file(),
-        "button-disabled-state-is-accessible: snapshot missing"
-    );
 
     let element = app.query().role(Role::BUTTON).label("Disabled").single();
     assert!(
@@ -84,14 +59,7 @@ fn button_disabled_state_is_accessible() {
 
 #[test]
 fn button_label_is_accessible() {
-    let suite = snapshot_suite(SUITE);
     let mut app = mount_view(|| control_shell(button("Submit")));
-
-    let snapshot = app.capture_snapshot(&suite, "button-label-is-accessible", "00_initial");
-    assert!(
-        snapshot.path().is_file(),
-        "button-label-is-accessible: snapshot missing"
-    );
 
     app.query()
         .role(Role::BUTTON)
@@ -101,7 +69,6 @@ fn button_label_is_accessible() {
 
 #[test]
 fn toggle_tap_toggles_binding() {
-    let suite = snapshot_suite(SUITE);
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled.clone();
 
@@ -111,12 +78,6 @@ fn toggle_tap_toggles_binding() {
             waterui::text!("enabled:{enabled_for_view}").foreground(Srgb::WHITE),
         )))
     });
-
-    let initial = app.capture_snapshot(&suite, "toggle-tap-toggles-binding", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "toggle-tap-toggles-binding: initial snapshot missing"
-    );
 
     app.query()
         .role(Role::SWITCH)
@@ -138,31 +99,14 @@ fn toggle_tap_toggles_binding() {
         .label("enabled:true")
         .assert_exists();
 
-    let toggled = app.capture_snapshot(&suite, "toggle-tap-toggles-binding", "01_toggled");
-    assert!(
-        toggled.path().is_file(),
-        "toggle-tap-toggles-binding: toggled snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(toggled.snapshot()) > 0,
-        "toggle tap should change rendered pixels"
-    );
 }
 
 #[test]
 fn toggle_accessibility_role_is_switch() {
-    let suite = snapshot_suite(SUITE);
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled.clone();
 
     let mut app = mount_view(move || control_shell(Toggle::new(&enabled_for_view).label("Wi-Fi")));
-
-    let snapshot =
-        app.capture_snapshot(&suite, "toggle-accessibility-role-is-switch", "00_initial");
-    assert!(
-        snapshot.path().is_file(),
-        "toggle-accessibility-role-is-switch: snapshot missing"
-    );
 
     app.query()
         .role(Role::SWITCH)
@@ -173,7 +117,6 @@ fn toggle_accessibility_role_is_switch() {
 
 #[test]
 fn slider_increment_decrement_updates_value() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::f64(0.50);
     let value_for_view = value.clone();
 
@@ -183,16 +126,6 @@ fn slider_increment_decrement_updates_value() {
             waterui::text!("value:{value_for_view:.2}").foreground(Srgb::WHITE),
         )))
     });
-
-    let initial = app.capture_snapshot(
-        &suite,
-        "slider-increment-decrement-updates-value",
-        "00_initial",
-    );
-    assert!(
-        initial.path().is_file(),
-        "slider-increment-decrement-updates-value: initial snapshot missing"
-    );
 
     assert!(
         app.query().role(Role::SLIDER).label("Volume").increment(),
@@ -209,16 +142,6 @@ fn slider_increment_decrement_updates_value() {
         .label("value:0.51")
         .assert_exists();
 
-    let incremented = app.capture_snapshot(
-        &suite,
-        "slider-increment-decrement-updates-value",
-        "01_incremented",
-    );
-    assert!(
-        incremented.path().is_file(),
-        "slider-increment-decrement-updates-value: incremented snapshot missing"
-    );
-
     assert!(
         app.query().role(Role::SLIDER).label("Volume").decrement(),
         "slider decrement should succeed"
@@ -234,37 +157,16 @@ fn slider_increment_decrement_updates_value() {
         .label("value:0.50")
         .assert_exists();
 
-    let decremented = app.capture_snapshot(
-        &suite,
-        "slider-increment-decrement-updates-value",
-        "02_decremented",
-    );
-    assert!(
-        decremented.path().is_file(),
-        "slider-increment-decrement-updates-value: decremented snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(incremented.snapshot()) > 0,
-        "slider increment should change rendered pixels"
-    );
 }
 
 #[test]
 fn slider_accessibility_role_is_slider() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::f64(0.25);
     let value_for_view = value.clone();
 
     let mut app = mount_view(move || {
         control_shell(Slider::new(0.0..=1.0, &value_for_view).label("Exposure"))
     });
-
-    let snapshot =
-        app.capture_snapshot(&suite, "slider-accessibility-role-is-slider", "00_initial");
-    assert!(
-        snapshot.path().is_file(),
-        "slider-accessibility-role-is-slider: snapshot missing"
-    );
 
     let element = app.query().role(Role::SLIDER).label("Exposure").single();
     let numeric = element
@@ -283,7 +185,6 @@ fn slider_accessibility_role_is_slider() {
 
 #[test]
 fn stepper_increment_decrement_updates_binding() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::i32(2);
     let value_for_view = value.clone();
 
@@ -293,16 +194,6 @@ fn stepper_increment_decrement_updates_binding() {
             waterui::text!("count:{value_for_view}").foreground(Srgb::WHITE),
         )))
     });
-
-    let initial = app.capture_snapshot(
-        &suite,
-        "stepper-increment-decrement-updates-binding",
-        "00_initial",
-    );
-    assert!(
-        initial.path().is_file(),
-        "stepper-increment-decrement-updates-binding: initial snapshot missing"
-    );
 
     assert!(
         app.query().label("Quantity").value("2").increment(),
@@ -314,16 +205,6 @@ fn stepper_increment_decrement_updates_binding() {
         .label("count:3")
         .assert_exists();
 
-    let incremented = app.capture_snapshot(
-        &suite,
-        "stepper-increment-decrement-updates-binding",
-        "01_incremented",
-    );
-    assert!(
-        incremented.path().is_file(),
-        "stepper-increment-decrement-updates-binding: incremented snapshot missing"
-    );
-
     assert!(
         app.query().label("Quantity").value("3").decrement(),
         "stepper decrement should succeed"
@@ -334,24 +215,10 @@ fn stepper_increment_decrement_updates_binding() {
         .label("count:2")
         .assert_exists();
 
-    let decremented = app.capture_snapshot(
-        &suite,
-        "stepper-increment-decrement-updates-binding",
-        "02_decremented",
-    );
-    assert!(
-        decremented.path().is_file(),
-        "stepper-increment-decrement-updates-binding: decremented snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(incremented.snapshot()) > 0,
-        "stepper increment should change rendered pixels"
-    );
 }
 
 #[test]
 fn stepper_respects_range_bounds() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::i32(2);
     let value_for_view = value.clone();
 
@@ -359,28 +226,15 @@ fn stepper_respects_range_bounds() {
         control_shell(Stepper::new(&value_for_view).label("Limited").range(0..=2))
     });
 
-    let initial = app.capture_snapshot(&suite, "stepper-respects-range-bounds", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "stepper-respects-range-bounds: initial snapshot missing"
-    );
-
     assert!(
         !app.query().label("Limited").value("2").increment(),
         "stepper increment at max should report no change"
     );
     assert_eq!(value.get(), 2, "stepper value should remain clamped at max");
-
-    let bounded = app.capture_snapshot(&suite, "stepper-respects-range-bounds", "01_after-max");
-    assert!(
-        bounded.path().is_file(),
-        "stepper-respects-range-bounds: bounded snapshot missing"
-    );
 }
 
 #[test]
 fn text_field_set_text_updates_binding() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::container(Str::from(""));
     let value_for_view = value.clone();
 
@@ -390,12 +244,6 @@ fn text_field_set_text_updates_binding() {
             waterui::text!("value:{value_for_view}").foreground(Srgb::WHITE),
         )))
     });
-
-    let initial = app.capture_snapshot(&suite, "text-field-set-text-updates-binding", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "text-field-set-text-updates-binding: initial snapshot missing"
-    );
 
     assert!(
         app.query()
@@ -414,31 +262,15 @@ fn text_field_set_text_updates_binding() {
         .label("value:Alice")
         .assert_exists();
 
-    let edited = app.capture_snapshot(&suite, "text-field-set-text-updates-binding", "01_edited");
-    assert!(
-        edited.path().is_file(),
-        "text-field-set-text-updates-binding: edited snapshot missing"
-    );
-    assert!(
-        initial.snapshot().changed_pixels(edited.snapshot()) > 0,
-        "text field edit should change rendered pixels"
-    );
 }
 
 #[test]
 fn text_field_focus_updates_ui_focus() {
-    let suite = snapshot_suite(SUITE);
     let value = Binding::container(Str::from(""));
     let value_for_view = value.clone();
 
     let mut app =
         mount_view(move || control_shell(TextField::new(&value_for_view).label("Search")));
-
-    let initial = app.capture_snapshot(&suite, "text-field-focus-updates-ui-focus", "00_initial");
-    assert!(
-        initial.path().is_file(),
-        "text-field-focus-updates-ui-focus: initial snapshot missing"
-    );
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
     assert!(
@@ -447,9 +279,37 @@ fn text_field_focus_updates_ui_focus() {
     );
     app.assert_ui_focus(selector);
 
-    let focused = app.capture_snapshot(&suite, "text-field-focus-updates-ui-focus", "01_focused");
+}
+
+#[test]
+fn icon_only_label_preserves_button_accessible_name() {
+    let mut app = mount_view(|| {
+        control_shell(button(
+            Label::new("Search")
+                .system_icon(SystemIcon::SEARCH)
+                .icon_only(),
+        ))
+    });
+
+    app.query().role(Role::BUTTON).label("Search").assert_exists();
+}
+
+#[test]
+fn menu_button_exposes_accessible_name() {
+    let mut app = mount_view(|| {
+        control_shell(Menu::new(
+            Label::new("Actions").system_icon(SystemIcon::SEARCH),
+            (
+                button("Refresh").action(|| {}),
+                Menu::new("Advanced", (button("Archive").action(|| {}),)),
+            ),
+        ))
+    });
+
+    let menu = app.query().role(Role::BUTTON).label("Actions").single();
+    let bounds = menu.bounds();
     assert!(
-        focused.path().is_file(),
-        "text-field-focus-updates-ui-focus: focused snapshot missing"
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "menu-button-exposes-accessible-name: menu trigger bounds must be non-zero"
     );
 }

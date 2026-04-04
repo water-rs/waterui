@@ -213,6 +213,18 @@ fn report_fallback_once(flag: &AtomicBool, kind: &str, locale: &Locale, reason: 
     }
 }
 
+fn calendar_component_formatter(
+    locale: &Locale,
+    fallback_locale: &Locale,
+    options: components::Bag,
+) -> Result<DateTimeFormatter, icu_datetime::DateTimeError> {
+    let data_locale = to_data_locale(locale);
+    let fallback_data_locale = to_data_locale(fallback_locale);
+    DateTimeFormatter::try_new_experimental(&data_locale, options.into()).or_else(|_| {
+        DateTimeFormatter::try_new_experimental(&fallback_data_locale, options.into())
+    })
+}
+
 /// Format a calendar month header using locale conventions.
 #[must_use]
 pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
@@ -230,12 +242,7 @@ pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
     bag.year = Some(components::Year::Numeric);
     bag.month = Some(components::Month::Long);
 
-    let data_locale = to_data_locale(locale);
-    let options = bag.into();
-    let formatter = DateTimeFormatter::try_new(&data_locale, options)
-        .or_else(|_| DateTimeFormatter::try_new(&to_data_locale(&locales::EN), bag.into()));
-
-    match formatter {
+    match calendar_component_formatter(locale, &locales::EN, bag) {
         Ok(formatter) => formatter.format(&date_iso.to_any()).map_or_else(
             |err| {
                 report_fallback_once(
@@ -282,12 +289,7 @@ pub fn format_calendar_weekday(locale: &Locale, weekday: Weekday) -> String {
     let mut bag = components::Bag::default();
     bag.weekday = Some(components::Text::Short);
 
-    let data_locale = to_data_locale(locale);
-    let options = bag.into();
-    let formatter = DateTimeFormatter::try_new(&data_locale, options)
-        .or_else(|_| DateTimeFormatter::try_new(&to_data_locale(&locales::EN), bag.into()));
-
-    match formatter {
+    match calendar_component_formatter(locale, &locales::EN, bag) {
         Ok(formatter) => formatter.format(&date_iso.to_any()).map_or_else(
             |err| {
                 report_fallback_once(

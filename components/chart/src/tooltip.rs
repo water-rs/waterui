@@ -4,15 +4,15 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use nami::{Computed, SignalExt as _};
+use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::dynamic::Dynamic;
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
-use waterui_layout::{PositionExt, UnitPoint, absolute};
-use waterui_macros::{view, view_builder};
+use waterui_layout::{absolute, PositionExt, UnitPoint};
+use waterui_macros::view;
 use waterui_shape::{RoundedRectangle, ShapeExt};
 use waterui_text::{IntoText, Text};
 
@@ -172,10 +172,9 @@ impl Tooltip {
 }
 
 impl View for Tooltip {
-    #[view_builder]
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         if self.content.is_empty() {
-            ()
+            AnyView::new(())
         } else {
             let text_color = Color::from(self.text_color);
             let mut views: Vec<AnyView> = Vec::new();
@@ -187,20 +186,23 @@ impl View for Tooltip {
 
             // Add values with optional color indicators
             for val in &self.content.values {
-                let value_view = AnyView::new(view! {
-                    if let Some(color) = val.color {
-                        let indicator =
-                            Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
-                                .width(8.0)
-                                .height(8.0);
-                        let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                            .color(text_color.clone());
-                        HStack::new(VerticalAlignment::Center, 6.0, (indicator, line))
-                    } else {
+                let value_view = if let Some(color) = val.color {
+                    let indicator = Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
+                        .width(8.0)
+                        .height(8.0);
+                    let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                        .color(text_color.clone());
+                    AnyView::new(HStack::new(
+                        VerticalAlignment::Center,
+                        6.0,
+                        (indicator, line),
+                    ))
+                } else {
+                    AnyView::new(
                         (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                            .color(text_color.clone())
-                    }
-                });
+                            .color(text_color.clone()),
+                    )
+                };
                 views.push(value_view);
             }
 
@@ -213,10 +215,10 @@ impl View for Tooltip {
                 .fill(Color::from(self.background));
 
             // Stack content over background
-            Frame::new(waterui_layout::stack::ZStack::new(
+            AnyView::new(Frame::new(waterui_layout::stack::ZStack::new(
                 waterui_layout::stack::Alignment::default(),
                 (background, content),
-            ))
+            )))
         }
     }
 }
@@ -240,14 +242,61 @@ pub(crate) fn chart_tooltip_overlay<T>(
 where
     T: Clone + PartialEq + 'static,
 {
-    Dynamic::watch(hit.zip(&chart_frame), move |(hit, frame)| {
-        view! {
-            if let Some(hit) = hit {
-                let (x, y) = tooltip_anchor_position(hit.anchor.x, hit.anchor.y, frame);
-                let tooltip =
-                    Frame::new(build(hit)).max_width((frame.width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0));
-                absolute((tooltip.position_anchor(UnitPoint::BOTTOM_LEADING, x, y),))
-            }
-        }
-    })
+    TooltipOverlay {
+        hit,
+        chart_frame,
+        build,
+    }
+}
+
+struct TooltipOverlay<T, F> {
+    hit: Computed<Option<HitResult<T>>>,
+    chart_frame: Computed<ChartViewport>,
+    build: F,
+}
+
+impl<T, F> View for TooltipOverlay<T, F>
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn(HitResult<T>) -> AnyView + 'static,
+{
+    fn body(self, env: &Environment) -> impl View {
+        let TooltipOverlay {
+            hit,
+            chart_frame,
+            build,
+        } = self;
+        let current_hit = crate::local_state::local_binding(env, {
+            let hit = hit.clone();
+            move || hit.get()
+        });
+        let guard = hit.watch({
+            let current_hit = current_hit.clone();
+            move |value| current_hit.set(value.into_value())
+        });
+        Metadata::new(
+            absolute((Dynamic::watch(current_hit.clone(), move |hit| {
+                if let Some(hit) = hit {
+                    let anchor = hit.anchor;
+                    let max_width = (chart_frame.get().width * TOOLTIP_MAX_WIDTH_RATIO).max(96.0);
+                    let x = chart_frame
+                        .clone()
+                        .map(move |frame| tooltip_anchor_position(anchor.x, anchor.y, frame).0)
+                        .computed();
+                    let y = chart_frame
+                        .clone()
+                        .map(move |frame| tooltip_anchor_position(anchor.x, anchor.y, frame).1)
+                        .computed();
+                    AnyView::new(Frame::new(build(hit)).max_width(max_width).position_anchor(
+                        UnitPoint::BOTTOM_LEADING,
+                        x,
+                        y,
+                    ))
+                } else {
+                    AnyView::new(())
+                }
+            }),)),
+            Retain::new(guard),
+        )
+    }
 }

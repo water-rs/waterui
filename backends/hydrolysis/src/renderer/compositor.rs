@@ -70,7 +70,7 @@ pub(super) enum RenderLayer {
 
 pub(super) struct PreparedGpuSurfaceLayer {
     pub(super) view: wgpu::TextureView,
-    pub(super) uniform_bytes: [u8; 64],
+    pub(super) uniform_bytes: [u8; 80],
     pub(super) needs_redraw: bool,
 }
 
@@ -107,7 +107,7 @@ impl GpuSurfaceCompositorState {
     ) -> Self {
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_uniform"),
-            size: 64,
+            size: 80,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -127,12 +127,12 @@ impl GpuSurfaceCompositorState {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: Some(
-                            core::num::NonZeroU64::new(64)
+                            core::num::NonZeroU64::new(80)
                                 .expect("static compositor uniform size must be non-zero"),
                         ),
                     },
@@ -363,7 +363,7 @@ impl EmbeddedGpuSurfaceRuntime {
 
         PreparedGpuSurfaceLayer {
             view,
-            uniform_bytes: encode_compositor_uniform(corners),
+            uniform_bytes: encode_compositor_uniform(corners, false),
             needs_redraw,
         }
     }
@@ -470,9 +470,9 @@ fn edge_length_in_pixels(
     ((dx * dx + dy * dy).sqrt().round().max(1.0)) as u32
 }
 
-fn encode_compositor_uniform(corners: [[f32; 2]; 4]) -> [u8; 64] {
+fn encode_compositor_uniform(corners: [[f32; 2]; 4], source_is_srgb: bool) -> [u8; 80] {
     let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    let mut bytes = [0u8; 64];
+    let mut bytes = [0u8; 80];
     for (index, corner) in corners.iter().enumerate() {
         let base = index * 16;
         write_f32(&mut bytes, base, corner[0]);
@@ -480,6 +480,7 @@ fn encode_compositor_uniform(corners: [[f32; 2]; 4]) -> [u8; 64] {
         write_f32(&mut bytes, base + 8, uvs[index][0]);
         write_f32(&mut bytes, base + 12, uvs[index][1]);
     }
+    write_f32(&mut bytes, 64, if source_is_srgb { 1.0 } else { 0.0 });
     bytes
 }
 
@@ -671,7 +672,7 @@ impl HydrolysisRenderer {
         target_format: wgpu::TextureFormat,
         layer_view: &wgpu::TextureView,
         mask_view: &wgpu::TextureView,
-        uniform_bytes: &[u8; 64],
+        uniform_bytes: &[u8; 80],
         load_op: wgpu::LoadOp<wgpu::Color>,
     ) {
         self.ensure_gpu_surface_compositor_state(device, queue, target_format);
@@ -753,7 +754,7 @@ impl HydrolysisRenderer {
 
         self.flush_vello_scene_layer();
         let fullscreen_uniform =
-            encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]]);
+            encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         if render_layers.is_empty() {
             self.clear_target_surface(device, queue, target, base_color);

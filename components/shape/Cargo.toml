@@ -18,5 +18,9 @@ tracing.workspace = true
 nami.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+
 [lints]
 workspace = true
