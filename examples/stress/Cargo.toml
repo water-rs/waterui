@@ -11,12 +11,11 @@ keywords = ["ui", "framework", "example", "stress", "performance"]
 categories = ["gui"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 
 [lints]
 workspace = true

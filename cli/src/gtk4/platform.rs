@@ -38,7 +38,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4");
+    let backend_target_dir = project.backend_target_dir("gtk4").await?;
 
     if !cargo_toml.exists() {
         bail!(
@@ -97,7 +97,7 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4");
+    let backend_target_dir = project.backend_target_dir("gtk4").await?;
 
     if !cargo_toml.exists() {
         return Ok(()); // Nothing to clean
@@ -139,7 +139,7 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // Copy project assets and dependency fonts
     copy_assets_and_fonts(project, &backend_path).await?;
 
-    let target_dir = project.backend_target_dir("gtk4").join(profile);
+    let target_dir = project.backend_target_dir("gtk4").await?.join(profile);
 
     // The binary name is the GTK4 crate name (project-gtk4)
     let binary_name = project.gtk_backend_crate_name();

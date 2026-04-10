@@ -19,7 +19,7 @@ const INSPECTOR_METADATA_FILE: &str = ".waterui-inspector-signature";
 
 #[derive(Debug, Clone)]
 struct InspectorRequirements {
-    waterui_root: PathBuf,
+    waterui_path: Option<PathBuf>,
     runtime_fingerprint: String,
 }
 
@@ -201,7 +201,7 @@ async fn ensure_inspector_support_app(
 async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirements) -> Result<()> {
     use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
 
-    let waterui_path = requirements.waterui_root.clone();
+    let waterui_path = requirements.waterui_path.clone();
 
     let options = CreateOptions {
         name: "WaterUI Inspector".to_string(),
@@ -210,7 +210,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         )
         .expect("inspector support bundle identifier must be valid"),
         package_type: PackageType::Playground,
-        waterui_path: Some(waterui_path.clone()),
+        waterui_path: waterui_path.clone(),
         author: String::new(),
     };
 
@@ -243,8 +243,11 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
 
 fn inspector_signature(requirements: &InspectorRequirements) -> String {
     format!(
-        "template_commit={INSPECTOR_TEMPLATE_COMMIT}\nwaterui_root={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
-        requirements.waterui_root.display(),
+        "template_commit={INSPECTOR_TEMPLATE_COMMIT}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
+        requirements.waterui_path.as_ref().map_or_else(
+            || String::from("registry"),
+            |path| path.display().to_string()
+        ),
         requirements.runtime_fingerprint,
         crate::templates::inspector::template_fingerprint(),
     )
@@ -261,32 +264,36 @@ async fn resolve_inspector_requirements(project_path: &Path) -> Result<Inspector
     .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
 
     let waterui = select_unique_package(&metadata, "waterui")?;
-    if waterui.source.is_some() {
-        bail!(
-            "Inspector requires path-based WaterUI dependencies to guarantee runtime compatibility. \
-Current project resolves `waterui` from a non-path source."
-        );
-    }
-
-    let waterui_root = waterui
-        .manifest_path
-        .as_std_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
-
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let runtime_identity = runtime_package_identity(waterui_core);
-    let runtime_fingerprint_base =
-        compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
-    let runtime_fingerprint = format!(
-        "{runtime_fingerprint_base}|profile={}",
-        runtime_profile_tag()
-    );
+
+    let runtime_fingerprint_base = if waterui.source.is_none() {
+        let waterui_root = waterui
+            .manifest_path
+            .as_std_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
+        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        return Ok(InspectorRequirements {
+            waterui_path: Some(waterui_root),
+            runtime_fingerprint: format!("{fingerprint}|profile={}", runtime_profile_tag()),
+        });
+    } else {
+        let source = waterui
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .expect("registry dependency must have a source");
+        format!("{runtime_identity}:source:{source}")
+    };
 
     Ok(InspectorRequirements {
-        waterui_root,
-        runtime_fingerprint,
+        waterui_path: None,
+        runtime_fingerprint: format!(
+            "{runtime_fingerprint_base}|profile={}",
+            runtime_profile_tag()
+        ),
     })
 }
 

@@ -4,6 +4,9 @@ use serde::de::{Error as DeError, Visitor as DeVisitor};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use waterkit_fs::WaterFs;
 
 /// Build commit hash for protocol compatibility checks.
 pub const PREVIEW_PROTOCOL_COMMIT: &str = env!("WATERUI_PREVIEW_PROTOCOL_COMMIT");
@@ -24,6 +27,84 @@ pub struct PreviewProtocolInfo {
     pub build_commit: String,
     /// Fingerprint of the `waterui-core` package used by this preview app build.
     pub waterui_core_fingerprint: String,
+}
+
+pub mod registry {
+    //! Preview support app instance registry shared between the CLI and local preview apps.
+
+    use std::net::IpAddr;
+    use std::path::PathBuf;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::{SystemTime, UNIX_EPOCH, WaterFs};
+
+    /// A registered local preview support app instance.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PreviewAppInstance {
+        /// Operating-system process identifier of the support app.
+        pub pid: u32,
+        /// Host address the support app listens on.
+        pub host: IpAddr,
+        /// TCP port the support app listens on.
+        pub port: u16,
+        /// Runtime fingerprint of the support app build.
+        pub waterui_core_fingerprint: String,
+        /// Registration timestamp in milliseconds since the Unix epoch.
+        pub registered_at_unix_ms: u64,
+    }
+
+    impl PreviewAppInstance {
+        #[must_use]
+        /// Create a registry entry for a support app instance.
+        pub fn new(
+            pid: u32,
+            host: IpAddr,
+            port: u16,
+            waterui_core_fingerprint: impl Into<String>,
+        ) -> Self {
+            Self {
+                pid,
+                host,
+                port,
+                waterui_core_fingerprint: waterui_core_fingerprint.into(),
+                registered_at_unix_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+                    .unwrap_or_default(),
+            }
+        }
+    }
+
+    fn water_cache_dir() -> PathBuf {
+        if let Some(cache_dir) = std::env::var_os("WATER_CACHE_DIR") {
+            return PathBuf::from(cache_dir);
+        }
+
+        if let Some(cache_dir) = WaterFs::cache_dir() {
+            return cache_dir.join("waterui");
+        }
+
+        std::env::temp_dir().join("waterui-cache")
+    }
+
+    #[must_use]
+    /// Root cache directory for preview support assets.
+    pub fn preview_cache_root_dir() -> PathBuf {
+        water_cache_dir().join("preview")
+    }
+
+    #[must_use]
+    /// Directory containing registered preview support app instances.
+    pub fn preview_instance_registry_dir() -> PathBuf {
+        preview_cache_root_dir().join("instances")
+    }
+
+    #[must_use]
+    /// Path of the JSON registry file for a support app instance.
+    pub fn preview_instance_registry_path(instance: &PreviewAppInstance) -> PathBuf {
+        preview_instance_registry_dir().join(format!("{}-{}.json", instance.pid, instance.port))
+    }
 }
 
 pub mod transport {
@@ -337,6 +418,16 @@ pub enum DylibSource {
         /// Dylib payload identifier.
         id: DylibId,
     },
+    /// Absolute local dylib path on the same host as the preview support app.
+    ///
+    /// This avoids retransmitting large dylibs over TCP when the CLI and support app share
+    /// a filesystem, such as macOS local preview.
+    LocalPath {
+        /// Dylib payload identifier.
+        id: DylibId,
+        /// Absolute local dylib path.
+        path: std::path::PathBuf,
+    },
 }
 
 /// Request from CLI to preview support app.
@@ -413,6 +504,13 @@ pub enum PreviewResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    enum LegacyDylibSource {
+        Bytes { id: DylibId, bytes: Vec<u8> },
+        Cached { id: DylibId },
+    }
 
     #[test]
     fn dylib_id_roundtrip_hex() {
@@ -420,5 +518,60 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         let de: DylibId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, de);
+    }
+
+    #[test]
+    fn cached_variant_stays_backward_compatible_for_bincode() {
+        let id = DylibId::from_bytes([0xCD; 32]);
+        let source = DylibSource::Cached { id };
+        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
+            .expect("encode cached source");
+        let (decoded, consumed): (LegacyDylibSource, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                .expect("decode cached source with legacy layout");
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(decoded, LegacyDylibSource::Cached { id });
+    }
+
+    #[test]
+    fn bytes_variant_stays_backward_compatible_for_bincode() {
+        let id = DylibId::from_bytes([0xEF; 32]);
+        let source = DylibSource::Bytes {
+            id,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
+            .expect("encode bytes source");
+        let (decoded, consumed): (LegacyDylibSource, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                .expect("decode bytes source with legacy layout");
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(
+            decoded,
+            LegacyDylibSource::Bytes {
+                id,
+                bytes: vec![1, 2, 3, 4],
+            }
+        );
+    }
+
+    #[test]
+    fn local_path_variant_uses_new_tag_after_legacy_variants() {
+        let id = DylibId::from_bytes([0x12; 32]);
+        let source = DylibSource::LocalPath {
+            id,
+            path: PathBuf::from("/tmp/example.dylib"),
+        };
+        let bytes = bincode::serde::encode_to_vec(&source, bincode::config::standard())
+            .expect("encode local path source");
+        let err = bincode::serde::decode_from_slice::<LegacyDylibSource, _>(
+            &bytes,
+            bincode::config::standard(),
+        )
+        .expect_err("legacy layout must reject new local-path tag");
+        assert!(
+            err.to_string()
+                .contains("expected variant index 0 <= i < 2")
+        );
     }
 }

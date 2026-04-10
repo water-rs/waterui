@@ -35,6 +35,7 @@ mod embedded {
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
+    pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
@@ -162,11 +163,13 @@ impl TemplateContext {
         app_name: impl Into<String>,
         crate_name: CrateName,
         bundle_identifier: BundleIdentifier,
-        waterui_path: PathBuf,
+        waterui_path: Option<PathBuf>,
         accessory: bool,
         preview_runtime_fingerprint: Option<String>,
     ) -> Self {
-        let android_backend_path = Some(waterui_path.join("backends/android"));
+        let android_backend_path = waterui_path
+            .as_ref()
+            .map(|waterui_path| waterui_path.join("backends/android"));
         Self {
             app_display_name: app_display_name.into(),
             app_name: app_name.into(),
@@ -174,8 +177,8 @@ impl TemplateContext {
             bundle_identifier,
             author: String::new(),
             android_backend_path,
-            use_remote_dev_backend: false,
-            waterui_path: Some(waterui_path),
+            use_remote_dev_backend: waterui_path.is_none(),
+            waterui_path,
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -453,6 +456,7 @@ enum TemplateNamespace {
     Hydrolysis,
     Inspector,
     Preview,
+    PreviewFfi,
     Root,
 }
 
@@ -466,6 +470,7 @@ impl TemplateNamespace {
             Self::Hydrolysis => "src/templates/hydrolysis",
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
+            Self::PreviewFfi => "src/templates/preview_ffi",
             Self::Root => "src/templates",
         }
     }
@@ -586,6 +591,7 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
+    PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
 }
 
 #[cfg(test)]
@@ -636,7 +642,7 @@ mod tests {
             CrateName::try_from("waterui_app").expect("test crate name must be valid"),
             BundleIdentifier::try_from("dev.waterui.playground")
                 .expect("test bundle identifier must be valid"),
-            PathBuf::from("../.."),
+            Some(PathBuf::from("../..")),
             false,
             None,
         )
@@ -863,6 +869,69 @@ mod tests {
     }
 
     #[test]
+    fn ffi_scaffold_resolves_waterui_ffi_from_playground_cache_path() {
+        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+        let project_root = tempdir.path().join("playground");
+        let ffi_dir = tempdir
+            .path()
+            .join("cache")
+            .join("managed_backends")
+            .join("ffi");
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(ffi_dir.clone()),
+            Some(project_root.clone()),
+            crate::project::PackageType::Playground,
+        );
+
+        smol::block_on(crate::templates::ffi::scaffold(
+            &ffi_dir,
+            &ctx,
+            "playground-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
+
+        let cargo_toml = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written");
+        let expected_ffi_path = pathdiff::diff_paths(project_root.join("../waterui/ffi"), &ffi_dir)
+            .expect("expected waterui ffi dependency diff path");
+        let expected_ffi_path = normalize_path_for_config(&expected_ffi_path);
+
+        assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
+    }
+
+    #[test]
+    fn preview_ffi_scaffold_emits_dylib_only_wrapper() {
+        let tempdir = tempdir().expect("temporary preview ffi scaffold dir");
+        let project_root = tempdir.path().join("playground");
+        let preview_ffi_dir = tempdir
+            .path()
+            .join("cache")
+            .join("managed_backends")
+            .join("preview_ffi");
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(preview_ffi_dir.clone()),
+            Some(project_root),
+            crate::project::PackageType::Playground,
+        );
+
+        smol::block_on(crate::templates::preview_ffi::scaffold(
+            &preview_ffi_dir,
+            &ctx,
+            "playground-preview-ffi",
+        ))
+        .expect("preview ffi scaffold should succeed");
+
+        let cargo_toml = std::fs::read_to_string(preview_ffi_dir.join("Cargo.toml"))
+            .expect("preview ffi Cargo.toml should be written");
+        assert!(cargo_toml.contains("crate-type = [\n    \"dylib\",\n    \"rlib\",\n]"));
+        assert!(cargo_toml.contains("features = [\"dev\"]"));
+        assert!(!cargo_toml.contains("staticlib"));
+        assert!(!cargo_toml.contains("cdylib"));
+    }
+
+    #[test]
     fn playground_android_manifest_enables_picture_in_picture_by_default() {
         let ctx = playground_ctx();
         let template = embedded::ANDROID
@@ -977,10 +1046,10 @@ async fn scaffold_dir(
                     .contents_utf8()
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
                 let rendered = render_scaffold_template(namespace, relative_path, content, ctx)?;
-                fs::write(&full_dest, rendered).await?;
+                write_file_if_changed(&full_dest, rendered.as_bytes()).await?;
             } else {
                 // Binary file - copy as-is
-                fs::write(&full_dest, file.contents()).await?;
+                write_file_if_changed(&full_dest, file.contents()).await?;
             }
         }
 
@@ -991,6 +1060,15 @@ async fn scaffold_dir(
     }
 
     Ok(())
+}
+
+async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
+    match fs::read(path).await {
+        Ok(existing) if existing == contents => return Ok(()),
+        Ok(_) | Err(_) => {}
+    }
+
+    fs::write(path, contents).await
 }
 
 #[derive(serde::Serialize)]
@@ -1054,7 +1132,7 @@ async fn write_support_cargo_toml(
     let toml_string = toml::to_string_pretty(&manifest)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::create_dir_all(base_dir).await?;
-    fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+    write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
     Ok(())
 }
 
@@ -1178,7 +1256,7 @@ async fn write_native_backend_bin_cargo_toml(
     let toml_string = toml::to_string_pretty(&manifest)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     fs::create_dir_all(base_dir).await?;
-    fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+    write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
     Ok(())
 }
 
@@ -1340,7 +1418,7 @@ fn render_generated_cargo_toml<T: serde::Serialize>(
 
 async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io::Result<()> {
     fs::create_dir_all(base_dir).await?;
-    fs::write(base_dir.join("Cargo.toml"), toml_string).await
+    write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await
 }
 
 /// Apple backend templates.
@@ -1377,7 +1455,7 @@ pub mod android {
 
     use super::{
         Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
-        scaffold_dir,
+        scaffold_dir, write_file_if_changed,
     };
 
     /// Write all Android templates to the given directory.
@@ -1415,7 +1493,7 @@ pub mod android {
         if let Some(sdk_path) = AndroidSdk::detect_path() {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
-            fs::write(&local_props, content).await?;
+            write_file_if_changed(&local_props, content.as_bytes()).await?;
         }
 
         Ok(())
@@ -1639,7 +1717,7 @@ pub mod ffi {
     use super::{
         NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace,
         WATERUI_FFI_VERSION, WATERUI_VERSION, compute_native_backend_dependency_path, embedded, fs,
-        io, normalize_path_for_config, scaffold_dir,
+        io, scaffold_dir, write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -1716,7 +1794,11 @@ pub mod ffi {
             },
             |waterui_path| {
                 Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(normalize_path_for_config(&waterui_path.join("ffi"))),
+                    path: Some(compute_native_backend_dependency_path(
+                        ctx,
+                        waterui_path,
+                        NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
+                    )),
                     ..Default::default()
                 }))
             },
@@ -1730,7 +1812,7 @@ pub mod ffi {
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::create_dir_all(base_dir).await?;
-        fs::write(base_dir.join("Cargo.toml"), toml_string).await?;
+        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
         Ok(())
     }
 }
@@ -1742,7 +1824,7 @@ pub mod root {
     use super::{
         GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedTargetSection,
         GeneratedWorkspaceSection, Path, TemplateContext, TemplateNamespace, embedded, fs, io,
-        render_scaffold_template, write_generated_cargo_toml,
+        render_scaffold_template, write_file_if_changed, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -1782,7 +1864,7 @@ pub mod root {
                     content,
                     ctx,
                 )?;
-                fs::write(&dest_path, rendered).await?;
+                write_file_if_changed(&dest_path, rendered.as_bytes()).await?;
             }
         }
         Ok(())
@@ -1794,7 +1876,10 @@ pub mod root {
         let manifest = GeneratedCargoManifest {
             package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
             lib: super::generated_lib(&["lib"]),
-            features: BTreeMap::new(),
+            features: BTreeMap::from([(
+                "dev".to_string(),
+                vec!["waterui/dynamic_linking".to_string()],
+            )]),
             dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
             target: native_target_section(waterui_dependency),
             workspace: GeneratedWorkspaceSection {},
@@ -1907,6 +1992,94 @@ pub mod preview {
             );
         }
         write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), dependencies).await
+    }
+}
+
+/// Preview-only wrapper templates.
+pub mod preview_ffi {
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
+
+    use super::{
+        NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace, WATERUI_VERSION,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        write_file_if_changed,
+    };
+
+    /// Write preview-only wrapper templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        scaffold_dir(
+            TemplateNamespace::PreviewFfi,
+            &embedded::PREVIEW_FFI,
+            base_dir,
+            ctx,
+        )
+        .await
+    }
+
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        let mut manifest = Manifest::<()>::default();
+        let mut package = Package::new(package_name.to_string(), "0.1.0".to_string());
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        manifest.package = Some(package);
+
+        manifest.lib = Some(Product {
+            crate_type: vec!["dylib".to_string(), "rlib".to_string()],
+            ..Default::default()
+        });
+
+        manifest.dependencies.insert(
+            ctx.crate_name.to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(ctx.project_root_relative_path()),
+                features: vec!["dev".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
+            || {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    version: Some(WATERUI_VERSION.to_string()),
+                    default_features: false,
+                    ..Default::default()
+                }))
+            },
+            |waterui_path| {
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    path: Some(compute_native_backend_dependency_path(
+                        ctx,
+                        waterui_path,
+                        NativeBackendDependencyPathKind::WateruiRoot,
+                    )),
+                    default_features: false,
+                    ..Default::default()
+                }))
+            },
+        );
+        manifest
+            .dependencies
+            .insert("waterui".to_string(), waterui_dependency);
+
+        manifest.workspace = Some(Workspace::default());
+
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::create_dir_all(base_dir).await?;
+        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
+        Ok(())
     }
 }
 

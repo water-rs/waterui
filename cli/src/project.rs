@@ -2,8 +2,29 @@
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
+use futures::FutureExt as _;
+use futures::future::{BoxFuture, Shared};
 use sha2::Digest as _;
 use tracing::info;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMode {
+    Full,
+    PreviewBuild,
+}
+
+fn spawn_target_dir_resolution(
+    current_dir: &Path,
+) -> Shared<BoxFuture<'static, Result<PathBuf, String>>> {
+    let current_dir = current_dir.to_path_buf();
+    smol::spawn(async move {
+        get_target_dir(&current_dir)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .boxed()
+    .shared()
+}
 
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
@@ -11,7 +32,7 @@ pub struct Project {
     root: PathBuf,
     manifest: Manifest,
     crate_name: CrateName,
-    target_dir: PathBuf,
+    target_dir_future: Shared<BoxFuture<'static, Result<PathBuf, String>>>,
     managed_backends_root: PathBuf,
 }
 
@@ -118,22 +139,27 @@ impl Project {
 
     /// Get the target directory for Rust build artifacts.
     #[must_use]
-    pub fn target_dir(&self) -> &Path {
-        &self.target_dir
+    pub async fn target_dir(&self) -> eyre::Result<PathBuf> {
+        self.target_dir_future
+            .clone()
+            .await
+            .map_err(|error| eyre::eyre!(error.clone()))
     }
 
     /// Get backend-specific target directory under the project's resolved Cargo target directory.
     ///
     /// This keeps generated backend builds inside the user-controlled target tree.
     #[must_use]
-    pub fn backend_target_dir(&self, backend_name: &str) -> PathBuf {
+    pub async fn backend_target_dir(&self, backend_name: &str) -> eyre::Result<PathBuf> {
         let mut hasher = sha2::Sha256::new();
         hasher.update(self.root.display().to_string().as_bytes());
         let digest = format!("{:x}", hasher.finalize());
         let project_fingerprint = &digest[..12];
-        self.target_dir
+        Ok(self
+            .target_dir()
+            .await?
             .join("water-backends")
-            .join(format!("{backend_name}-{project_fingerprint}"))
+            .join(format!("{backend_name}-{project_fingerprint}")))
     }
 
     /// Get the backends configured for the project.
@@ -154,6 +180,35 @@ impl Project {
         self.app_crate_overrides()
             .and_then(|crates| crates.ffi.clone())
             .unwrap_or_else(|| self.crate_name.with_suffix("ffi"))
+    }
+
+    /// Get configured preview wrapper crate name for preview dylib builds.
+    #[must_use]
+    pub fn preview_ffi_crate_name(&self) -> CrateName {
+        self.crate_name.with_suffix("preview-ffi")
+    }
+
+    /// Get the crate root path used to build preview dylibs.
+    ///
+    /// Playground projects preview through the managed FFI wrapper crate so the user crate can
+    /// remain a plain Rust `lib`.
+    #[must_use]
+    pub fn preview_dylib_crate_path(&self) -> PathBuf {
+        if self.is_playground() {
+            return self.preview_ffi_crate_path();
+        }
+
+        self.root.clone()
+    }
+
+    /// Get the crate name used to build preview dylibs.
+    #[must_use]
+    pub fn preview_dylib_crate_name(&self) -> CrateName {
+        if self.is_playground() {
+            return self.preview_ffi_crate_name();
+        }
+
+        self.crate_name.clone()
     }
 
     /// Get configured or default GTK backend crate name for app mode.
@@ -210,6 +265,12 @@ impl Project {
     #[must_use]
     pub fn ffi_crate_path(&self) -> PathBuf {
         self.managed_backends_root.join("ffi")
+    }
+
+    /// Get the full path to the managed preview-only companion crate.
+    #[must_use]
+    pub fn preview_ffi_crate_path(&self) -> PathBuf {
+        self.managed_backends_root.join("preview_ffi")
     }
 
     /// Get the relative path to the managed native FFI companion crate from project root.
@@ -298,9 +359,9 @@ impl Project {
         }
 
         // Clean Rust target directory
-        let target_dir = self.target_dir();
+        let target_dir = self.target_dir().await?;
         if target_dir.exists() {
-            smol::fs::remove_dir_all(target_dir).await?;
+            smol::fs::remove_dir_all(&target_dir).await?;
         }
 
         // Clean Apple backend if configured
@@ -455,6 +516,30 @@ impl Project {
             .map_err(crate::backend::FailToInitBackend::Io)
     }
 
+    async fn scaffold_preview_ffi_companion(
+        &self,
+    ) -> Result<(), crate::backend::FailToInitBackend> {
+        let manifest = self.manifest();
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        let ctx =
+            TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
+                .with_backend_project_path(self.preview_ffi_crate_path())
+                .with_project_root_path(self.root.clone());
+
+        templates::preview_ffi::scaffold(
+            &self.preview_ffi_crate_path(),
+            &ctx,
+            &self.preview_ffi_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)
+    }
+
     async fn remove_ffi_companion_if_unused(&self) -> eyre::Result<()> {
         if self.apple_backend().is_some() || self.android_backend().is_some() {
             return Ok(());
@@ -555,9 +640,6 @@ impl Project {
         // Initialize git repository if not already in one
         Self::ensure_git_init(&path).await?;
 
-        let target_dir = get_target_dir(&path)
-            .await
-            .map_err(FailToCreateProject::TargetDirError)?;
         let managed_backends_root = if options.package_type == PackageType::Playground {
             crate::water_dir::project_build_cache_dir(&path)
                 .await
@@ -566,11 +648,12 @@ impl Project {
             path.join(manifest.backends.path())
         };
 
+        let target_dir_future = spawn_target_dir_resolution(&path);
         Ok(Self {
             root: path,
             manifest,
             crate_name,
-            target_dir,
+            target_dir_future,
             managed_backends_root,
         })
     }
@@ -754,18 +837,54 @@ impl Project {
     /// - `FailToOpenProject::CargoManifest`: If there was an error reading the `Cargo.toml` file.
     /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, FailToOpenProject> {
+        Self::open_with_mode(path, OpenMode::Full).await
+    }
+
+    /// Open a project for preview dylib builds without initializing native app backends.
+    ///
+    /// Playground preview dylib builds only need the managed preview wrapper crate. Native
+    /// backend initialization is reserved for support app projects that actually launch apps.
+    ///
+    /// # Errors
+    /// - `FailToOpenProject::Manifest`: If there was an error opening the `Water.toml` manifest.
+    /// - `FailToOpenProject::CargoManifest`: If there was an error reading the `Cargo.toml` file.
+    /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
+    pub async fn open_for_preview_build(path: impl AsRef<Path>) -> Result<Self, FailToOpenProject> {
+        Self::open_with_mode(path, OpenMode::PreviewBuild).await
+    }
+
+    async fn open_with_mode(
+        path: impl AsRef<Path>,
+        open_mode: OpenMode,
+    ) -> Result<Self, FailToOpenProject> {
         use crate::backend::Backend;
 
+        let total_start = std::time::Instant::now();
         let path = path.as_ref().to_path_buf();
+
+        let manifest_start = std::time::Instant::now();
         let manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
+        info!(
+            path = %path.display(),
+            open_mode = ?open_mode,
+            elapsed_ms = manifest_start.elapsed().as_millis(),
+            "Project::open loaded Water.toml"
+        );
 
         let cargo_path = path.join("Cargo.toml");
 
+        let cargo_manifest_start = std::time::Instant::now();
         let cargo_manifest = unblock(move || CargoManifest::from_path(cargo_path))
             .await
             .map_err(FailToOpenProject::CargoManifest)?;
+        info!(
+            path = %path.display(),
+            open_mode = ?open_mode,
+            elapsed_ms = cargo_manifest_start.elapsed().as_millis(),
+            "Project::open loaded Cargo.toml"
+        );
         let crate_name = cargo_manifest
             .package
             .map(|p| p.name)
@@ -787,22 +906,27 @@ impl Project {
         }
 
         let managed_backends_root = if is_playground {
-            crate::water_dir::ensure_project_build_cache(&path)
+            let build_cache_start = std::time::Instant::now();
+            let root = crate::water_dir::ensure_project_build_cache(&path)
                 .await
-                .map_err(FailToOpenProject::BuildCache)?
+                .map_err(FailToOpenProject::BuildCache)?;
+            info!(
+                path = %path.display(),
+                open_mode = ?open_mode,
+                elapsed_ms = build_cache_start.elapsed().as_millis(),
+                "Project::open ensured project build cache"
+            );
+            root
         } else {
             path.join(manifest.backends.path())
         };
 
-        let target_dir = get_target_dir(&path)
-            .await
-            .map_err(FailToOpenProject::TargetDirError)?;
-
+        let target_dir_future = spawn_target_dir_resolution(&path);
         let mut project = Self {
             root: path,
             manifest,
             crate_name,
-            target_dir,
+            target_dir_future,
             managed_backends_root,
         };
 
@@ -821,23 +945,62 @@ impl Project {
             || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
 
         if is_playground && !skip_backend_init {
-            // Apple backend - always re-scaffold to pick up manifest changes.
-            let apple_backend = AppleBackend::init(&project)
-                .await
-                .map_err(FailToOpenProject::BackendInit)?;
-            project.manifest.backends.set_apple(apple_backend);
+            match open_mode {
+                OpenMode::Full => {
+                    let apple_backend_start = std::time::Instant::now();
+                    let apple_backend = AppleBackend::init(&project)
+                        .await
+                        .map_err(FailToOpenProject::BackendInit)?;
+                    info!(
+                        path = %project.root.display(),
+                        elapsed_ms = apple_backend_start.elapsed().as_millis(),
+                        "Project::open initialized Apple backend"
+                    );
+                    project.manifest.backends.set_apple(apple_backend);
 
-            // Android backend - always re-scaffold to pick up manifest changes.
-            let android_backend = AndroidBackend::init(&project)
-                .await
-                .map_err(FailToOpenProject::BackendInit)?;
-            project.manifest.backends.set_android(android_backend);
+                    let ffi_companion_start = std::time::Instant::now();
+                    project
+                        .scaffold_ffi_companion()
+                        .await
+                        .map_err(FailToOpenProject::BackendInit)?;
+                    info!(
+                        path = %project.root.display(),
+                        elapsed_ms = ffi_companion_start.elapsed().as_millis(),
+                        "Project::open scaffolded native ffi companion"
+                    );
 
-            project
-                .scaffold_ffi_companion()
-                .await
-                .map_err(FailToOpenProject::BackendInit)?;
+                    let preview_wrapper_start = std::time::Instant::now();
+                    project
+                        .scaffold_preview_ffi_companion()
+                        .await
+                        .map_err(FailToOpenProject::BackendInit)?;
+                    info!(
+                        path = %project.root.display(),
+                        elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
+                        "Project::open scaffolded preview wrapper"
+                    );
+                }
+                OpenMode::PreviewBuild => {
+                    let preview_wrapper_start = std::time::Instant::now();
+                    project
+                        .scaffold_preview_ffi_companion()
+                        .await
+                        .map_err(FailToOpenProject::BackendInit)?;
+                    info!(
+                        path = %project.root.display(),
+                        elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
+                        "Project::open scaffolded preview wrapper"
+                    );
+                }
+            }
         }
+
+        info!(
+            path = %project.root.display(),
+            open_mode = ?open_mode,
+            elapsed_ms = total_start.elapsed().as_millis(),
+            "Project::open completed"
+        );
 
         Ok(project)
     }

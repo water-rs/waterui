@@ -5,11 +5,10 @@ edition = "2021"
 authors = ["Lexo Liu"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-graphics.workspace = true
 waterui-particle.workspace = true

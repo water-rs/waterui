@@ -11,16 +11,11 @@ keywords = ["ui", "framework", "example", "camera", "waterkit"]
 categories = ["gui"]
 publish = false
 
-[lib]
-crate-type = [
-    "lib",
-    "staticlib",
-    "cdylib",
-]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterkit-camera = { path = "../../kit/camera" }
 waterkit-permission.workspace = true
 futures.workspace = true

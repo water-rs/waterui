@@ -10,6 +10,22 @@ pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
     Ok(crate::water_dir::water_home_dir()?.join(name))
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) async fn support_app_macos_executable_path(name: &str) -> Result<PathBuf> {
+    let support_project_root = support_app_path(name)?;
+    let managed_backends_root = crate::water_dir::project_build_cache_dir(&support_project_root).await?;
+    let app_bundle_path = managed_backends_root
+        .join("apple")
+        .join("DerivedData")
+        .join("Build")
+        .join("Products")
+        .join("Debug")
+        .join("WaterUIApp.app");
+    crate::device::resolve_macos_bundle_executable_path(&app_bundle_path)
+        .await
+        .map_err(|error| eyre!(error.to_string()))
+}
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn ensure_support_app<F, Fut>(
     path: &Path,

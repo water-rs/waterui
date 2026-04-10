@@ -263,7 +263,14 @@ async fn render_with_symbol(
 ) -> Result<Vec<u8>> {
     match session
         .client
-        .render_with_dylib_file(dylib_id, dylib_path, symbol, width, height)
+        .render_with_dylib_file(
+            dylib_id,
+            dylib_path,
+            symbol,
+            width,
+            height,
+            false,
+        )
         .await
     {
         Ok(data) => Ok(data),

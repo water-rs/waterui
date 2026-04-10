@@ -23,6 +23,7 @@ blocking = "1.6"
 async-fs = "2.2.0"
 async-process = "2.5.0"
 waterkit-fs.workspace = true
+serde_json = "1.0"
 
 # Async runtime
 async-io = "2.6"

@@ -310,4 +310,3 @@ pub fn app(env: Environment) -> App {
     App::new(move || main(webview.clone()), env)
 }
 
-waterui_ffi::export!();

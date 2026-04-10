@@ -19,6 +19,10 @@ const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "oth
 const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one", "other_other"];
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
+    if current_package_name().as_deref() == Some("waterui-internal") {
+        return Ok(quote!(crate));
+    }
+
     match crate_name("waterui") {
         Ok(FoundCrate::Itself) => Ok(quote!(::waterui)),
         Ok(FoundCrate::Name(name)) => {
@@ -29,6 +33,10 @@ fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
             compile_error!("`text!` requires the `waterui` crate as a dependency (it may be renamed; Cargo.toml must include it).");
         }),
     }
+}
+
+fn current_package_name() -> Option<String> {
+    std::env::var("CARGO_PKG_NAME").ok()
 }
 
 /// Parsed translation value from TOML

@@ -73,7 +73,10 @@ pub fn expand_macro(input: TokenStream) -> TokenStream {
 }
 
 fn runtime_watch_path() -> Result<TokenStream2, TokenStream2> {
-    if current_package_name().as_deref() == Some("waterui") {
+    if matches!(
+        current_package_name().as_deref(),
+        Some("waterui") | Some("waterui-internal")
+    ) {
         return Ok(quote!(crate::component::dynamic::watch));
     }
 
