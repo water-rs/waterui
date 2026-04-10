@@ -11,12 +11,11 @@ keywords = ["ui", "framework", "example", "icons"]
 categories = ["gui"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-icons-fontawesome7.workspace = true
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true

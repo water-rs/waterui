@@ -3,11 +3,15 @@
 //! Handles launching the preview app on the target platform and
 //! establishing TCP connection.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre::{Context, Result, bail};
+use futures::{FutureExt as _, pin_mut, select};
+use notify::{EventKind, RecursiveMode, Watcher as _};
 use sha2::Digest as _;
 use smol::stream::StreamExt;
 use tracing::{error, info};
@@ -19,12 +23,16 @@ use super::protocol::PreviewTcpConfig;
 use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
-use crate::device::{Device, DeviceEvent, Local, RunOptions, Running};
+use crate::device::{
+    Device, DeviceEvent, Local, LogLevel, RunOptions, Running, list_local_listen_addrs_for_pid,
+    list_local_process_pids_for_executable,
+};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
+use waterui_preview_protocol::registry::preview_instance_registry_dir;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
@@ -32,7 +40,7 @@ const PREVIEW_DYLIB_METADATA_SUFFIX: &str = ".waterui-preview-dylib-signature";
 
 #[derive(Debug, Clone)]
 struct PreviewRequirements {
-    waterui_root: PathBuf,
+    waterui_path: Option<PathBuf>,
     runtime_fingerprint: String,
 }
 
@@ -95,7 +103,7 @@ impl PreviewSession {
         height: f32,
     ) -> Result<Vec<u8>> {
         self.client
-            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height)
+            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height, false)
             .await
             .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
     }
@@ -105,8 +113,8 @@ impl PreviewSession {
     /// # Errors
     /// This method currently does not return an operational error.
     pub async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.client.shutdown().await;
         if self.owns_app {
+            let _ = self.client.shutdown().await;
             // Dropping `running` will terminate the app if still alive.
             self.running.take();
         }
@@ -145,12 +153,14 @@ async fn build_preview_dylib(
     );
 
     let project_open_start = Instant::now();
-    let project = Project::open(project_path).await?;
+    let project = Project::open_for_preview_build(project_path).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = project_open_start.elapsed().as_millis(),
         "Preview opened project"
     );
+    let preview_crate_path = project.preview_dylib_crate_path();
+    let preview_crate_name = project.preview_dylib_crate_name();
     let target = match platform {
         PreviewPlatform::Macos => TargetPlatform::MacOS,
         PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
@@ -158,13 +168,31 @@ async fn build_preview_dylib(
         PreviewPlatform::Android => TargetPlatform::Android,
     };
 
-    let mut rust_build = RustBuild::new(project.root(), target.triple());
+    ensure_project_dev_feature_for_preview(&project).await?;
+
+    let mut rust_build = RustBuild::new(&preview_crate_path, target.triple());
     if let Some(sccache) = sccache_path {
         rust_build = rust_build.with_sccache(sccache.clone());
     }
+    let enable_preview_dynamic_linking = matches!(platform, PreviewPlatform::Macos);
+    if enable_preview_dynamic_linking {
+        rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
+        if preview_runtime_supports_dynamic_linking(&preview_crate_path).await? {
+            rust_build = rust_build.with_feature("waterui/dynamic_linking");
+        }
+    }
+    rust_build = rust_build.with_crate_type_override(if enable_preview_dynamic_linking {
+        "dylib"
+    } else {
+        "cdylib"
+    });
     let dylib_path_start = Instant::now();
-    let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
+    let expected_path = rust_build
+        .dylib_path(preview_crate_name.as_str(), false)
+        .await?;
     info!(
+        build_crate_path = %preview_crate_path.display(),
+        build_crate_name = %preview_crate_name,
         path = %expected_path.display(),
         elapsed_ms = dylib_path_start.elapsed().as_millis(),
         "Preview resolved dylib path"
@@ -172,19 +200,25 @@ async fn build_preview_dylib(
     let candidate_path = dylib_path.clone().unwrap_or_else(|| expected_path.clone());
 
     let target_triple = target.triple().to_string();
-    let dylib_signature =
-        dylib_build_signature(runtime_fingerprint, &target_triple, project.crate_name());
+    let dylib_signature = dylib_build_signature(
+        runtime_fingerprint,
+        &target_triple,
+        preview_crate_name.as_str(),
+        enable_preview_dynamic_linking,
+    );
     let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
         candidate_path
     } else {
         info!("Building dylib...");
         let build_start = Instant::now();
         let built_path = rust_build
-            .build_dylib(project.crate_name(), false)
+            .build_dylib(preview_crate_name.as_str(), false)
             .await
             .wrap_err("Failed to build dylib")?;
         write_dylib_signature(&built_path, &dylib_signature).await?;
         info!(
+            build_crate_path = %preview_crate_path.display(),
+            build_crate_name = %preview_crate_name,
             path = %built_path.display(),
             elapsed_ms = build_start.elapsed().as_millis(),
             "Preview built dylib"
@@ -208,6 +242,50 @@ async fn build_preview_dylib(
     })
 }
 
+async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
+    let manifest_path = project.root().join("Cargo.toml");
+    let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
+    let Some(dev_features) = manifest.features.get("dev") else {
+        bail!(
+            "Preview requires `{}/dev` feature. Add `[features] dev = [\"waterui/dynamic_linking\"]` to {}",
+            project.crate_name().as_str(),
+            project.root().join("Cargo.toml").display()
+        );
+    };
+    if !dev_features
+        .iter()
+        .any(|feature| feature == "waterui/dynamic_linking")
+    {
+        bail!(
+            "Preview requires `{}/dev` to include `waterui/dynamic_linking`. Update {}",
+            project.crate_name().as_str(),
+            project.root().join("Cargo.toml").display()
+        );
+    }
+    Ok(())
+}
+
+async fn preview_runtime_supports_dynamic_linking(preview_crate_path: &Path) -> Result<bool> {
+    let manifest_path = preview_crate_path.join("Cargo.toml");
+    let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
+    let Some(dep) = manifest.dependencies.get("waterui") else {
+        return Ok(false);
+    };
+
+    let path = match dep.detail() {
+        Some(detail) => detail.path.as_deref(),
+        None => None,
+    };
+    let Some(path) = path else {
+        return Ok(false);
+    };
+
+    let waterui_manifest_path = preview_crate_path.join(path).join("Cargo.toml");
+    let waterui_manifest =
+        smol::unblock(move || CargoManifest::from_path(&waterui_manifest_path)).await?;
+    Ok(waterui_manifest.features.contains_key("dynamic_linking"))
+}
+
 fn dylib_signature_path(path: &Path) -> PathBuf {
     let mut raw = path.as_os_str().to_os_string();
     raw.push(PREVIEW_DYLIB_METADATA_SUFFIX);
@@ -218,12 +296,33 @@ fn dylib_build_signature(
     runtime_fingerprint: &str,
     target_triple: &str,
     crate_name: &str,
+    prefer_dynamic_linking: bool,
 ) -> String {
-    format!("runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}")
+    let link_mode = if prefer_dynamic_linking {
+        "preview-dylib+waterui-dylib+prefer-dynamic"
+    } else {
+        "preview-cdylib+static-waterui"
+    };
+    format!(
+        "runtime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}"
+    )
 }
 
 fn preview_run_options() -> RunOptions {
     let mut run_options = RunOptions::new();
+    run_options.set_replace_existing_macos_app_instances(false);
+    run_options.set_log_level(LogLevel::Info);
+    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
+    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
+        panic!(
+            "preview cache root must have a parent directory: {}",
+            preview_cache_root.display()
+        )
+    });
+    run_options.insert_env_var(
+        "WATER_CACHE_DIR".to_string(),
+        water_cache_dir.display().to_string(),
+    );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
     }
@@ -364,7 +463,15 @@ async fn try_connect_existing_preview_app(
     platform: PreviewPlatform,
     sccache_path: Option<PathBuf>,
 ) -> Result<Option<PreviewSession>> {
-    let Ok(client) = PreviewAppClient::connect(tcp_config, expected_fingerprint).await else {
+    let client = match platform {
+        PreviewPlatform::Macos => connect_existing_macos_preview_app(expected_fingerprint).await?,
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+            PreviewAppClient::connect(tcp_config, expected_fingerprint)
+                .await
+                .ok()
+        }
+    };
+    let Some(client) = client else {
         return Ok(None);
     };
 
@@ -379,6 +486,30 @@ async fn try_connect_existing_preview_app(
         sccache_path,
         runtime_fingerprint: expected_fingerprint.to_string(),
     }))
+}
+
+async fn connect_existing_macos_preview_app(
+    expected_fingerprint: &str,
+) -> Result<Option<PreviewAppClient>> {
+    if let Ok(client) = PreviewAppClient::connect_registered(expected_fingerprint).await {
+        return Ok(Some(client));
+    }
+
+    let executable_path = support_app::support_app_macos_executable_path("preview_support").await?;
+    let pids = list_local_process_pids_for_executable(&executable_path).await?;
+    for pid in pids {
+        let addrs = list_local_listen_addrs_for_pid(pid).await?;
+        for addr in addrs {
+            if !addr.ip().is_loopback() {
+                continue;
+            }
+            if let Ok(client) = PreviewAppClient::connect_addr(addr, expected_fingerprint).await {
+                return Ok(Some(client));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
@@ -505,24 +636,60 @@ async fn build_preview_session_from_launch(
     sccache_path: Option<PathBuf>,
 ) -> Result<PreviewSession> {
     info!("Preview app launched, waiting for TCP connection...");
-    match wait_for_connection_or_crash(running, platform, tcp_config, &expected_fingerprint).await {
-        ConnectionResult::Connected { client, running } => Ok(PreviewSession {
-            client,
-            watcher: ProjectWatcher::new(),
-            platform,
-            dylib_path: None,
-            running: Some(running),
-            owns_app: true,
-            sccache_path,
-            runtime_fingerprint: expected_fingerprint,
-        }),
-        ConnectionResult::Crashed(message) => bail!("Preview app crashed:\n{message}"),
-        ConnectionResult::Exited => {
-            bail!("Preview app exited unexpectedly.\nCheck the app logs for more information.")
+    let mut running = Box::pin(running);
+    match wait_for_connection_or_crash(&mut running, platform, tcp_config, &expected_fingerprint)
+        .await
+    {
+        ConnectionWaitResult::Ready(client) => {
+            let client = match client {
+                Some(client) => client,
+                None => match platform {
+                    PreviewPlatform::Macos => {
+                        PreviewAppClient::connect_registered(&expected_fingerprint)
+                            .await
+                            .wrap_err(
+                                "Preview app became ready but registry connection still failed",
+                            )?
+                    }
+                    PreviewPlatform::IosSimulator
+                    | PreviewPlatform::Ios
+                    | PreviewPlatform::Android => {
+                        PreviewAppClient::connect(tcp_config, &expected_fingerprint)
+                            .await
+                            .wrap_err("Preview app became ready but TCP connection still failed")?
+                    }
+                },
+            };
+            Ok(PreviewSession {
+                client,
+                watcher: ProjectWatcher::new(),
+                platform,
+                dylib_path: None,
+                running: Some(running),
+                owns_app: true,
+                sccache_path,
+                runtime_fingerprint: expected_fingerprint,
+            })
         }
-        ConnectionResult::Timeout => {
+        ConnectionWaitResult::Crashed(message) => bail!(
+            "Preview app crashed:
+{message}"
+        ),
+        ConnectionWaitResult::Exited => {
             bail!(
-                "Preview app started but failed to connect via TCP after 10 seconds.\nPossible causes:\n- The app may have crashed during initialization\n- The TCP server failed to start\n- Port range {}..={} may be blocked\n\nTry running with WATERUI_CRASH_DEBUG=1 for more details.",
+                "Preview app exited unexpectedly.
+Check the app logs for more information."
+            )
+        }
+        ConnectionWaitResult::Timeout => {
+            bail!(
+                "Preview app started but failed to connect via TCP after 10 seconds.
+Possible causes:
+- The app may have crashed during initialization
+- The TCP server failed to start
+- Port range {}..={} may be blocked
+
+Try running with WATERUI_CRASH_DEBUG=1 for more details.",
                 tcp_config.port_start,
                 tcp_config.ports().end()
             )
@@ -530,13 +697,10 @@ async fn build_preview_session_from_launch(
     }
 }
 
-/// Result of waiting for TCP connection.
-enum ConnectionResult {
-    /// Successfully connected to preview app.
-    Connected {
-        client: PreviewAppClient,
-        running: Pin<Box<Running>>,
-    },
+/// Result of waiting for preview-app readiness.
+enum ConnectionWaitResult {
+    /// Preview app reported readiness and should now accept a connection.
+    Ready(Option<PreviewAppClient>),
     /// App crashed with error message.
     Crashed(String),
     /// App exited without crash.
@@ -547,79 +711,236 @@ enum ConnectionResult {
 
 /// Wait for TCP connection while monitoring for app crashes.
 ///
-/// This function polls both the TCP connection and the Running stream
-/// to detect crashes early and provide better error messages.
+/// macOS support apps publish a registry entry once the TCP server is ready, so wait on that
+/// concrete readiness signal instead of sleeping between blind connection retries.
 async fn wait_for_connection_or_crash(
-    running: Running,
-    _platform: PreviewPlatform,
+    running: &mut Pin<Box<Running>>,
+    platform: PreviewPlatform,
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
-) -> ConnectionResult {
-    const MAX_ATTEMPTS: u32 = 100; // 10 seconds total
-    const POLL_INTERVAL_MS: u64 = 100;
+) -> ConnectionWaitResult {
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+    const NON_MACOS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-    let mut running = Box::pin(running);
+    let start = Instant::now();
 
-    for i in 0..MAX_ATTEMPTS {
-        // Check for app events (crash, exit) - non-blocking
-        while let Some(event) = futures_lite::future::poll_once(running.as_mut().next())
+    let ready = match platform {
+        PreviewPlatform::Macos => {
+            wait_for_registered_preview_ready(running, expected_fingerprint, start, STARTUP_TIMEOUT)
+                .await
+        }
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+            wait_for_polled_preview_ready(
+                running,
+                tcp_config,
+                expected_fingerprint,
+                start,
+                STARTUP_TIMEOUT,
+                NON_MACOS_POLL_INTERVAL,
+            )
             .await
-            .flatten()
-        {
-            match event {
-                DeviceEvent::Crashed(message) => {
-                    info!(
-                        "App crashed after {}ms",
-                        u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
-                    );
-                    return ConnectionResult::Crashed(message);
-                }
-                DeviceEvent::Exited => {
-                    info!(
-                        "App exited after {}ms",
-                        u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
-                    );
-                    return ConnectionResult::Exited;
-                }
-                DeviceEvent::Log { level, message } => {
-                    // Print log messages at ERROR level to help diagnose startup issues
-                    if level == tracing::Level::ERROR {
-                        error!("{message}");
-                    }
-                }
-                _ => {}
-            }
         }
+    };
 
-        // Try to connect to TCP
-        if let Ok(client) = PreviewAppClient::connect(tcp_config, expected_fingerprint).await {
-            info!(
-                "Connected to preview app after {}ms",
-                u64::from(i + 1).saturating_mul(POLL_INTERVAL_MS)
-            );
-            return ConnectionResult::Connected { client, running };
-        }
+    match ready {
+        ConnectionWaitResult::Timeout => drain_terminal_preview_event(running).await,
+        other => other,
+    }
+}
 
-        smol::Timer::after(Duration::from_millis(POLL_INTERVAL_MS)).await;
+async fn wait_for_registered_preview_ready(
+    running: &mut Pin<Box<Running>>,
+    expected_fingerprint: &str,
+    start: Instant,
+    timeout: Duration,
+) -> ConnectionWaitResult {
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+    if try_connect_registered_preview(expected_fingerprint, start).await {
+        return ConnectionWaitResult::Ready(None);
     }
 
-    // One final check for crash events before giving up
+    let registry_dir = preview_instance_registry_dir();
+    if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
+        error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
+        return ConnectionWaitResult::Timeout;
+    }
+
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let callback_tx = event_tx.clone();
+    let mut watcher = match notify::recommended_watcher(move |result| {
+        let _ = callback_tx.try_send(result);
+    }) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            error!(path = %registry_dir.display(), "Failed to create preview registry watcher: {error}");
+            return ConnectionWaitResult::Timeout;
+        }
+    };
+    if let Err(error) = watcher.watch(&registry_dir, RecursiveMode::NonRecursive) {
+        error!(path = %registry_dir.display(), "Failed to watch preview registry dir: {error}");
+        return ConnectionWaitResult::Timeout;
+    }
+
+    loop {
+        if try_connect_registered_preview(expected_fingerprint, start).await {
+            return ConnectionWaitResult::Ready(None);
+        }
+
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return ConnectionWaitResult::Timeout;
+        }
+
+        let sleep = futures::FutureExt::fuse(smol::Timer::after(POLL_INTERVAL.min(remaining)));
+        let running_event = running.next().fuse();
+        let registry_event = futures::FutureExt::fuse(event_rx.recv());
+        pin_mut!(sleep);
+        pin_mut!(running_event);
+        pin_mut!(registry_event);
+
+        select! {
+            event = running_event => {
+                if let Some(result) = preview_connection_result_from_device_event(event, expected_fingerprint, start).await {
+                    return result;
+                }
+            },
+            event = registry_event => {
+                match event {
+                    Ok(Ok(notification)) => {
+                        if !matches!(notification.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+                            continue;
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        error!(path = %registry_dir.display(), "Preview registry watcher error: {error}");
+                    }
+                    Err(_) => return ConnectionWaitResult::Timeout,
+                }
+            },
+            _ = sleep => {}
+        }
+    }
+}
+
+async fn wait_for_polled_preview_ready(
+    running: &mut Pin<Box<Running>>,
+    tcp_config: PreviewTcpConfig,
+    expected_fingerprint: &str,
+    start: Instant,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> ConnectionWaitResult {
+    loop {
+        if try_connect_polled_preview(tcp_config, expected_fingerprint, start).await {
+            return ConnectionWaitResult::Ready(None);
+        }
+
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return ConnectionWaitResult::Timeout;
+        }
+
+        let sleep = futures::FutureExt::fuse(smol::Timer::after(poll_interval.min(remaining)));
+        let running_event = running.next().fuse();
+        pin_mut!(sleep);
+        pin_mut!(running_event);
+
+        select! {
+            event = running_event => {
+                if let Some(result) = preview_connection_result_from_device_event(event, expected_fingerprint, start).await {
+                    return result;
+                }
+            },
+            _ = sleep => {}
+        }
+    }
+}
+
+async fn try_connect_registered_preview(expected_fingerprint: &str, start: Instant) -> bool {
+    match PreviewAppClient::connect_registered(expected_fingerprint).await {
+        Ok(_) => {
+            info!(
+                "Connected to preview app after {}ms",
+                start.elapsed().as_millis()
+            );
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+async fn try_connect_polled_preview(
+    tcp_config: PreviewTcpConfig,
+    expected_fingerprint: &str,
+    start: Instant,
+) -> bool {
+    match PreviewAppClient::connect(tcp_config, expected_fingerprint).await {
+        Ok(_) => {
+            info!(
+                "Connected to preview app after {}ms",
+                start.elapsed().as_millis()
+            );
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+async fn preview_connection_result_from_device_event(
+    event: Option<DeviceEvent>,
+    expected_fingerprint: &str,
+    start: Instant,
+) -> Option<ConnectionWaitResult> {
+    match event? {
+        DeviceEvent::Crashed(message) => {
+            info!("App crashed after {}ms", start.elapsed().as_millis());
+            Some(ConnectionWaitResult::Crashed(message))
+        }
+        DeviceEvent::Exited => {
+            info!("App exited after {}ms", start.elapsed().as_millis());
+            Some(ConnectionWaitResult::Exited)
+        }
+        DeviceEvent::Log { level, message } => {
+            info!("Preview app log event: {message}");
+            if level == tracing::Level::ERROR {
+                error!("{message}");
+            }
+            if let Some(addr) = parse_preview_listening_addr(&message)
+                && let Ok(client) = PreviewAppClient::connect_addr(addr, expected_fingerprint).await
+            {
+                info!(
+                    "Connected to preview app after {}ms",
+                    start.elapsed().as_millis()
+                );
+                return Some(ConnectionWaitResult::Ready(Some(client)));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn parse_preview_listening_addr(message: &str) -> Option<SocketAddr> {
+    const PREFIX: &str = "Preview daemon listening on ";
+    let suffix = message.split(PREFIX).nth(1)?;
+    let port = suffix.rsplit(':').next()?.trim().parse::<u16>().ok()?;
+    Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+}
+
+async fn drain_terminal_preview_event(running: &mut Pin<Box<Running>>) -> ConnectionWaitResult {
     while let Some(event) = futures_lite::future::poll_once(running.as_mut().next())
         .await
         .flatten()
     {
         match event {
-            DeviceEvent::Crashed(message) => {
-                return ConnectionResult::Crashed(message);
-            }
-            DeviceEvent::Exited => {
-                return ConnectionResult::Exited;
-            }
+            DeviceEvent::Crashed(message) => return ConnectionWaitResult::Crashed(message),
+            DeviceEvent::Exited => return ConnectionWaitResult::Exited,
             _ => {}
         }
     }
 
-    ConnectionResult::Timeout
+    ConnectionWaitResult::Timeout
 }
 
 /// Get the path to the preview support app.
@@ -647,14 +968,14 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
     use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
     use crate::templates::TemplateContext;
 
-    let waterui_path = requirements.waterui_root.clone();
+    let waterui_path = requirements.waterui_path.clone();
 
     let options = CreateOptions {
         name: "WaterUI Preview".to_string(),
         bundle_identifier: crate::project_types::BundleIdentifier::try_from("dev.waterui.preview")
             .expect("preview support bundle identifier must be valid"),
         package_type: PackageType::Playground,
-        waterui_path: Some(waterui_path.clone()),
+        waterui_path: waterui_path.clone(),
         author: String::new(),
     };
 
@@ -689,8 +1010,11 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
 
 fn preview_signature(requirements: &PreviewRequirements) -> String {
     format!(
-        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nwaterui_root={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
-        requirements.waterui_root.display(),
+        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
+        requirements.waterui_path.as_ref().map_or_else(
+            || String::from("registry"),
+            |path| path.display().to_string()
+        ),
         requirements.runtime_fingerprint,
         crate::templates::preview::template_fingerprint(),
     )
@@ -717,42 +1041,55 @@ async fn resolve_preview_requirements(project_path: &Path) -> Result<PreviewRequ
     );
 
     let waterui = select_unique_package(&metadata, "waterui")?;
-    if waterui.source.is_some() {
-        bail!(
-            "Preview requires path-based WaterUI dependencies to guarantee ABI/runtime compatibility. \
-Current project resolves `waterui` from a non-path source."
-        );
-    }
-    let waterui_root = waterui
-        .manifest_path
-        .as_std_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
-
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
     let runtime_identity = runtime_package_identity(waterui_core);
+
     let runtime_fingerprint_start = Instant::now();
-    let runtime_fingerprint_base =
-        compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
-    info!(
-        waterui_root = %waterui_root.display(),
-        elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
-        "Preview computed runtime fingerprint"
-    );
-    let runtime_fingerprint = format!(
-        "{runtime_fingerprint_base}|profile={}",
-        runtime_profile_tag()
-    );
+    let runtime_fingerprint_base = if waterui.source.is_none() {
+        let waterui_root = waterui
+            .manifest_path
+            .as_std_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
+        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        info!(
+            waterui_root = %waterui_root.display(),
+            elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
+            "Preview computed dev-mode runtime fingerprint"
+        );
+        return Ok(PreviewRequirements {
+            waterui_path: Some(waterui_root),
+            runtime_fingerprint: format!("{fingerprint}|profile={}", runtime_profile_tag()),
+        });
+    } else {
+        let source = waterui
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .expect("registry dependency must have a source");
+        info!(
+            package = %runtime_identity,
+            source = %source,
+            elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
+            "Preview resolved release-mode runtime fingerprint"
+        );
+        format!("{runtime_identity}:source:{source}")
+    };
+
     Ok(PreviewRequirements {
-        waterui_root,
-        runtime_fingerprint,
+        waterui_path: None,
+        runtime_fingerprint: format!(
+            "{runtime_fingerprint_base}|profile={}",
+            runtime_profile_tag()
+        ),
     })
 }
 
 async fn resolve_preview_requirements_from_manifest(
     project_path: &Path,
 ) -> Result<Option<PreviewRequirements>> {
+    let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
         .await
         .map_err(|error| {
@@ -761,12 +1098,32 @@ async fn resolve_preview_requirements_from_manifest(
                 project_path.display()
             )
         })?;
+    info!(
+        project_path = %project_path.display(),
+        elapsed_ms = manifest_open_start.elapsed().as_millis(),
+        "Preview opened Water.toml for runtime requirements"
+    );
     let Some(waterui_path) = manifest.waterui_path else {
         return Ok(None);
     };
 
+    let resolve_root_start = Instant::now();
     let waterui_root = resolve_waterui_root_from_manifest(project_path, &waterui_path).await?;
+    info!(
+        project_path = %project_path.display(),
+        waterui_root = %waterui_root.display(),
+        elapsed_ms = resolve_root_start.elapsed().as_millis(),
+        "Preview resolved waterui root from manifest"
+    );
+
+    let runtime_identity_start = Instant::now();
     let runtime_identity = runtime_identity_from_waterui_root(&waterui_root).await?;
+    info!(
+        waterui_root = %waterui_root.display(),
+        elapsed_ms = runtime_identity_start.elapsed().as_millis(),
+        "Preview resolved runtime identity"
+    );
+
     let runtime_fingerprint_start = Instant::now();
     let runtime_fingerprint = format!(
         "{}|profile={}",
@@ -781,7 +1138,7 @@ async fn resolve_preview_requirements_from_manifest(
     );
 
     Ok(Some(PreviewRequirements {
-        waterui_root,
+        waterui_path: Some(waterui_root),
         runtime_fingerprint,
     }))
 }
