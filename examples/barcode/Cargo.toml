@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-barcode.workspace = true
