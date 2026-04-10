@@ -11,10 +11,9 @@ keywords = ["ui", "framework", "example", "map"]
 categories = ["gui"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-map.workspace = true

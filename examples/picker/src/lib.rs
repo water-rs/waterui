@@ -249,4 +249,3 @@ pub fn app(env: Environment) -> App {
     App::new(main, env)
 }
 
-waterui_ffi::export!();

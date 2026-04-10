@@ -30,6 +30,10 @@ pub struct RustBuild {
     sccache_path: Option<PathBuf>,
     /// Cargo features to enable.
     features: Vec<String>,
+    /// Override the final crate type built by `cargo rustc`.
+    crate_type_override: Option<String>,
+    /// Extra rustc flags to append via `RUSTFLAGS`.
+    rustc_flags: Vec<String>,
     /// Extra environment variables to set for the cargo build process.
     envs: Vec<(String, OsString)>,
 }
@@ -126,6 +130,8 @@ impl RustBuild {
             triple,
             sccache_path: None,
             features: Vec::new(),
+            crate_type_override: None,
+            rustc_flags: Vec::new(),
             envs: Vec::new(),
         }
     }
@@ -153,6 +159,20 @@ impl RustBuild {
     #[must_use]
     pub fn with_features(mut self, features: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.features.extend(features.into_iter().map(Into::into));
+        self
+    }
+
+    /// Add a rustc flag to the build via `RUSTFLAGS`.
+    #[must_use]
+    pub fn with_rustc_flag(mut self, flag: impl Into<String>) -> Self {
+        self.rustc_flags.push(flag.into());
+        self
+    }
+
+    /// Override the library crate type passed to `rustc`.
+    #[must_use]
+    pub fn with_crate_type_override(mut self, crate_type: impl Into<String>) -> Self {
+        self.crate_type_override = Some(crate_type.into());
         self
     }
 
@@ -234,7 +254,7 @@ impl RustBuild {
             return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
-                    "Dylib not found at {}. Ensure Cargo.toml has crate-type = [\"cdylib\"]",
+                    "Dynamic library not found at {} after cargo build",
                     dylib_path.display()
                 ),
             )));
@@ -332,8 +352,13 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         release: bool,
     ) -> Result<std::process::Output, RustBuildError> {
         let mut cmd = Command::new("cargo");
+        let cargo_subcommand = if self.crate_type_override.is_some() {
+            "rustc"
+        } else {
+            "build"
+        };
         let mut cmd = command(&mut cmd)
-            .arg("build")
+            .arg(cargo_subcommand)
             .arg("--lib")
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
@@ -341,6 +366,15 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);
+        }
+
+        if !self.rustc_flags.is_empty() {
+            let mut rustflags = std::env::var_os("RUSTFLAGS").unwrap_or_default();
+            if !rustflags.is_empty() {
+                rustflags.push(" ");
+            }
+            rustflags.push(self.rustc_flags.join(" "));
+            cmd = cmd.env("RUSTFLAGS", rustflags);
         }
 
         // Use sccache as rustc wrapper if configured
@@ -371,6 +405,10 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         // Add cargo features if specified
         if !self.features.is_empty() {
             cmd = cmd.args(["--features", &self.features.join(",")]);
+        }
+
+        if let Some(crate_type) = &self.crate_type_override {
+            cmd = cmd.arg("--").arg("--crate-type").arg(crate_type);
         }
 
         let output = cmd

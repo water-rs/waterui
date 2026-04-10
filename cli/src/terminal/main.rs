@@ -16,7 +16,7 @@ use futures::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, build, clean, create, device, devices, doctor, inspector, package, preview, run,
+    backend, build, clean, create, device, devices, doctor, gc, inspector, package, preview, run,
 };
 
 /// `WaterUI` command line interface.
@@ -59,6 +59,9 @@ enum Commands {
 
     /// List available devices.
     Devices(devices::Args),
+
+    /// Garbage-collect stale managed caches.
+    Gc(gc::Args),
 
     /// Preview a view function as PNG.
     Preview(preview::Args),
@@ -117,6 +120,7 @@ fn main() -> Result<()> {
                     Commands::Doctor(args) => doctor::run(args).await,
                     Commands::Device(args) => device::run(args).await,
                     Commands::Devices(args) => devices::run(args).await,
+                    Commands::Gc(args) => gc::run(args).await,
                     Commands::Preview(args) => preview::run(args).await,
                     Commands::Inspector(args) => inspector::run(args).await,
                 }

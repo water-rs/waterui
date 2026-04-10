@@ -123,4 +123,3 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
         .background(bg.computed())
 }
 
-waterui_ffi::export!();

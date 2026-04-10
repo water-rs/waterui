@@ -173,8 +173,6 @@ pub fn app(mut env: Environment) -> App {
     )
 }
 
-waterui_ffi::export!();
-
 // Preview function for testing the preview system
 #[preview]
 fn sample_card() -> impl View {

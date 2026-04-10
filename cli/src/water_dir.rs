@@ -7,6 +7,7 @@
 use std::{
     ffi::OsStr,
     path::{Component, Path, PathBuf, Prefix, PrefixComponent},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -23,6 +24,7 @@ const BUILD_CACHE_DIR_NAME: &str = "build_cache";
 const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const METADATA_FILE_NAME: &str = "metadata.toml";
+const CLEANUP_LOCK_FILE_NAME: &str = ".cleanup.lock";
 const LEGACY_LOCAL_WATER_DIR_NAME: &str = ".water";
 const DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS: u64 = 30;
 
@@ -55,6 +57,24 @@ struct CacheMetadata {
     project_root: String,
     cli_commit: String,
     last_used_unix_seconds: u64,
+}
+
+/// Summary of one managed build-cache garbage-collection pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildCacheGcSummary {
+    /// Number of managed cache entries inspected, excluding the active project cache.
+    pub scanned_entries: usize,
+    /// Number of stale managed cache entries removed during this pass.
+    pub removed_entries: usize,
+}
+
+/// Result of attempting to garbage-collect stale managed build-cache entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildCacheGcOutcome {
+    /// Cleanup ran to completion and produced a removal summary.
+    Ran(BuildCacheGcSummary),
+    /// Cleanup did not run because another `water gc build-cache` process already holds the lock.
+    SkippedAlreadyRunning,
 }
 
 const fn default_build_cache_cleanup_after_unused_days() -> u64 {
@@ -107,7 +127,54 @@ pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<Pat
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir()?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+    if let Err(error) = spawn_build_cache_cleanup_process(&project_root).await {
+        warn!(
+            current_project_root = %project_root.display(),
+            "Failed to spawn build-cache cleanup process: {error}"
+        );
+    }
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
+}
+
+/// Garbage-collect stale managed build-cache entries while preserving the current project's cache.
+///
+/// # Errors
+/// Returns an error if the project root cannot be canonicalized, config loading fails,
+/// or stale cache removal fails.
+pub async fn cleanup_stale_build_caches_for_project(
+    project_root: &Path,
+) -> eyre::Result<BuildCacheGcOutcome> {
+    let project_root = canonicalize_project_root(project_root)?;
+    let water_home = water_home_dir()?;
+    let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+    cleanup_stale_caches_if_idle(&cache_root, &project_root, &config).await
+}
+
+async fn spawn_build_cache_cleanup_process(project_root: &Path) -> eyre::Result<()> {
+    let current_executable = std::env::current_exe()
+        .wrap_err("Failed to resolve current water executable for build-cache cleanup")?;
+    let project_root = project_root.to_path_buf();
+
+    smol::unblock(move || -> eyre::Result<()> {
+        std::process::Command::new(&current_executable)
+            .arg("gc")
+            .arg("build-cache")
+            .arg("--path")
+            .arg(&project_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(eyre::Report::from)
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to spawn build-cache cleanup process for {}",
+                    project_root.display()
+                )
+            })
+    })
+    .await
 }
 
 /// Remove the managed build cache for a project.
@@ -155,9 +222,8 @@ async fn ensure_global_config_in(water_home: &Path) -> eyre::Result<WaterConfig>
 async fn ensure_project_build_cache_in(
     project_root: &Path,
     cache_root: &Path,
-    config: &WaterConfig,
+    _config: &WaterConfig,
 ) -> eyre::Result<PathBuf> {
-    cleanup_stale_caches(cache_root, project_root, config).await?;
     remove_legacy_local_water_dir(project_root).await?;
 
     let cache_dir = project_build_cache_dir_in(project_root, cache_root);
@@ -316,7 +382,7 @@ async fn cleanup_stale_caches(
     cache_root: &Path,
     current_project_root: &Path,
     config: &WaterConfig,
-) -> eyre::Result<()> {
+) -> eyre::Result<BuildCacheGcSummary> {
     fs::create_dir_all(cache_root).await?;
 
     let current_cache_dir = project_build_cache_dir_in(current_project_root, cache_root);
@@ -326,10 +392,15 @@ async fn cleanup_stale_caches(
         .saturating_mul(24 * 60 * 60);
     let now = now_unix_seconds()?;
 
+    let mut scanned_entries = 0usize;
+    let mut removed_entries = 0usize;
+
     for cache_dir in discover_managed_build_cache_dirs(cache_root).await? {
         if cache_dir == current_cache_dir {
             continue;
         }
+
+        scanned_entries += 1;
 
         let should_remove = match read_metadata(&cache_dir).await {
             Ok(metadata) => {
@@ -361,10 +432,53 @@ async fn cleanup_stale_caches(
                     .expect("managed build cache dir should always have a parent"),
             )
             .await?;
+            removed_entries += 1;
         }
     }
 
-    Ok(())
+    Ok(BuildCacheGcSummary {
+        scanned_entries,
+        removed_entries,
+    })
+}
+
+async fn cleanup_stale_caches_if_idle(
+    cache_root: &Path,
+    current_project_root: &Path,
+    config: &WaterConfig,
+) -> eyre::Result<BuildCacheGcOutcome> {
+    let lock_path = cache_root.join(CLEANUP_LOCK_FILE_NAME);
+    let Some(lock_file) = try_acquire_cleanup_lock(&lock_path).await? else {
+        return Ok(BuildCacheGcOutcome::SkippedAlreadyRunning);
+    };
+
+    let cleanup_result = cleanup_stale_caches(cache_root, current_project_root, config).await;
+    drop(lock_file);
+
+    if let Err(error) = fs::remove_file(&lock_path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(
+            lock_path = %lock_path.display(),
+            "Failed to remove build-cache cleanup lock: {error}"
+        );
+    }
+
+    cleanup_result.map(BuildCacheGcOutcome::Ran)
+}
+
+async fn try_acquire_cleanup_lock(lock_path: &Path) -> eyre::Result<Option<fs::File>> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_path)
+        .await
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(eyre::Report::from(error))
+            .wrap_err_with(|| format!("Failed to create cleanup lock {}", lock_path.display())),
+    }
 }
 
 async fn discover_managed_build_cache_dirs(cache_root: &Path) -> eyre::Result<Vec<PathBuf>> {
@@ -560,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_project_build_cache_cleans_stale_orphaned_caches() {
+    fn cleanup_stale_caches_removes_stale_orphaned_caches() {
         smol::block_on(async {
             let project = tempdir().expect("project dir");
             let water_home = tempdir().expect("water home");
@@ -583,10 +697,17 @@ mod tests {
                 .await
                 .expect("write stale metadata");
 
-            ensure_project_build_cache_in(project.path(), &cache_root, &config)
+            let outcome = super::cleanup_stale_caches_if_idle(&cache_root, project.path(), &config)
                 .await
-                .expect("ensure cache");
+                .expect("cleanup caches");
 
+            assert_eq!(
+                outcome,
+                super::BuildCacheGcOutcome::Ran(super::BuildCacheGcSummary {
+                    scanned_entries: 1,
+                    removed_entries: 1,
+                })
+            );
             assert!(!stale_cache.exists());
         });
     }

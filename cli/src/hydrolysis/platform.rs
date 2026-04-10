@@ -90,7 +90,7 @@ pub async fn build_hydrolysis_with_envs_and_args(
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("hydrolysis");
+    let backend_target_dir = project.backend_target_dir("hydrolysis").await?;
 
     if !cargo_toml.exists() {
         bail!(
@@ -157,8 +157,14 @@ pub async fn build_hydrolysis_with_envs_and_args(
 ///
 /// # Errors
 /// Returns an error if neither the canonical nor underscored backend binary can be found.
-pub fn built_hydrolysis_binary_path(project: &Project, profile: &str) -> eyre::Result<PathBuf> {
-    let target_dir = project.backend_target_dir("hydrolysis").join(profile);
+pub async fn built_hydrolysis_binary_path(
+    project: &Project,
+    profile: &str,
+) -> eyre::Result<PathBuf> {
+    let target_dir = project
+        .backend_target_dir("hydrolysis")
+        .await?
+        .join(profile);
     let binary_name = project.hydrolysis_backend_crate_name();
     let binary_path = if cfg!(windows) {
         target_dir.join(format!("{binary_name}.exe"))
@@ -193,7 +199,7 @@ pub fn built_hydrolysis_binary_path(project: &Project, profile: &str) -> eyre::R
 pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("hydrolysis");
+    let backend_target_dir = project.backend_target_dir("hydrolysis").await?;
 
     if !cargo_toml.exists() {
         return Ok(());
@@ -249,7 +255,7 @@ pub async fn package_hydrolysis(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     copy_assets_and_fonts(project, &backend_path).await?;
 
-    let final_binary_path = built_hydrolysis_binary_path(project, profile)?;
+    let final_binary_path = built_hydrolysis_binary_path(project, profile).await?;
 
     #[cfg(target_os = "macos")]
     {

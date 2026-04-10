@@ -64,4 +64,3 @@ pub fn app(env: Environment) -> App {
     App::new(move || main(manager.clone()), env)
 }
 
-waterui_ffi::export!();
