@@ -11,11 +11,10 @@ keywords = ["ui", "framework", "example", "gradient"]
 categories = ["gui"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-core.workspace = true
 waterui-graphics.workspace = true

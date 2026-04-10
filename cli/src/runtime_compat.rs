@@ -12,6 +12,28 @@ pub(crate) const PREVIEW_RUNTIME_ENV_VARS: [(&str, &str); 2] = [
 
 const PREVIEW_ROOT_INPUT_FILES: [&str; 4] = ["Cargo.toml", "Cargo.lock", "Water.toml", "build.rs"];
 
+const RUNTIME_FINGERPRINT_ROOT_FILES: [&str; 5] = [
+    "Cargo.toml",
+    "Cargo.lock",
+    ".gitmodules",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+];
+
+const RUNTIME_FINGERPRINT_ROOT_DIRS: [&str; 11] = [
+    "core",
+    "components",
+    "utils",
+    "internal",
+    "ffi",
+    "macros",
+    "facade",
+    "crates",
+    "backends",
+    "kit",
+    "icon-packs",
+];
+
 /// Build input extensions relevant to runtime compatibility.
 const PREVIEW_INPUT_EXTENSIONS: [&str; 19] = [
     "rs", "swift", "m", "mm", "h", "hpp", "c", "cc", "cpp", "metal", "wgsl", "kt", "kts", "java",
@@ -39,6 +61,20 @@ pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
             ".git" | ".jj" | ".water" | "target" | "node_modules" | ".gradle" | ".idea" | ".vscode"
         )
     )
+}
+
+/// Return top-level files that participate in preview runtime fingerprinting.
+#[must_use]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn runtime_fingerprint_root_files() -> &'static [&'static str] {
+    &RUNTIME_FINGERPRINT_ROOT_FILES
+}
+
+/// Return top-level directories that participate in preview runtime fingerprinting.
+#[must_use]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn runtime_fingerprint_root_dirs() -> &'static [&'static str] {
+    &RUNTIME_FINGERPRINT_ROOT_DIRS
 }
 
 /// Return whether a file participates in build/runtime compatibility.

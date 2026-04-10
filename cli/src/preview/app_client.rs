@@ -1,10 +1,10 @@
 //! TCP client for communicating with the preview support app.
 
 use std::collections::HashSet;
+use std::fs;
 use std::io;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::WrapErr as _;
@@ -17,6 +17,7 @@ use super::protocol::{
     AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size,
 };
 
+use waterui_preview_protocol::registry::{PreviewAppInstance, preview_instance_registry_dir};
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 
 /// TCP client for the preview support app.
@@ -27,9 +28,51 @@ pub struct PreviewAppClient {
     present_dylibs: HashSet<DylibId>,
 }
 
-static LAST_SUCCESSFUL_PORT: AtomicU16 = AtomicU16::new(0);
-
 impl PreviewAppClient {
+    /// Try to connect directly to a known preview app socket address.
+    ///
+    /// # Errors
+    /// Returns an error if the address is unreachable or the preview handshake fails.
+    pub async fn connect_addr(
+        addr: SocketAddr,
+        expected_waterui_core_fingerprint: &str,
+    ) -> Result<Self> {
+        Self::connect_to_addr(addr, expected_waterui_core_fingerprint)
+            .await
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Could not connect to preview app at {addr} for runtime {expected_waterui_core_fingerprint}"
+                )
+            })
+    }
+
+    /// Try to connect to a registered local preview app instance.
+    ///
+    /// # Errors
+    /// Returns an error if no matching live registered preview app is found.
+    pub async fn connect_registered(expected_waterui_core_fingerprint: &str) -> Result<Self> {
+        let expected = expected_waterui_core_fingerprint.to_string();
+        let instances = smol::unblock(move || load_registered_instances_sync(&expected)).await?;
+        tracing::info!(
+            instance_count = instances.len(),
+            "Preview loaded matching registered app instances"
+        );
+
+        for instance in instances {
+            tracing::info!(pid = instance.pid, host = %instance.host, port = instance.port, "Preview trying registered app instance");
+            let addr = SocketAddr::new(instance.host, instance.port);
+            if let Some(client) =
+                Self::connect_to_addr(addr, expected_waterui_core_fingerprint).await
+            {
+                return Ok(client);
+            }
+        }
+
+        bail!(
+            "Could not connect to a matching registered preview app. Launch a new preview support app for the current runtime."
+        )
+    }
+
     /// Try to connect to a running preview app.
     ///
     /// # Errors
@@ -38,24 +81,10 @@ impl PreviewAppClient {
         config: PreviewTcpConfig,
         expected_waterui_core_fingerprint: &str,
     ) -> Result<Self> {
-        let preferred = preferred_port(config);
-        if let Some(port) = preferred
-            && let Some(client) =
-                Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
-        {
-            LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
-            return Ok(client);
-        }
-
         for port in config.ports() {
-            if Some(port) == preferred {
-                continue;
-            }
-
             if let Some(client) =
                 Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
             {
-                LAST_SUCCESSFUL_PORT.store(port, Ordering::Relaxed);
                 return Ok(client);
             }
         }
@@ -73,7 +102,20 @@ impl PreviewAppClient {
         expected_waterui_core_fingerprint: &str,
     ) -> Option<Self> {
         let addr = SocketAddr::new(config.host, port);
-        let stream = connect_with_timeout(addr, connect_timeout()).await.ok()?;
+        Self::connect_to_addr(addr, expected_waterui_core_fingerprint).await
+    }
+
+    async fn connect_to_addr(
+        addr: SocketAddr,
+        expected_waterui_core_fingerprint: &str,
+    ) -> Option<Self> {
+        let stream = match connect_with_timeout(addr, connect_timeout()).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!("Preview TCP connect failed on {addr}: {error}");
+                return None;
+            }
+        };
 
         tracing::info!("Connected to preview app on {addr}");
         let _ = stream.set_nodelay(true);
@@ -143,6 +185,7 @@ impl PreviewAppClient {
         symbol: &str,
         width: f32,
         height: f32,
+        prefer_local_path: bool,
     ) -> Result<Vec<u8>, AppError> {
         let total_start = Instant::now();
         if self.present_dylibs.contains(&dylib_id) {
@@ -179,6 +222,41 @@ impl PreviewAppClient {
                 "Preview rendered with support-app cached dylib"
             );
             return Ok(png);
+        }
+
+        if prefer_local_path {
+            if !dylib_path.is_absolute() {
+                return Err(AppError::RenderFailed(format!(
+                    "local preview dylib path must be absolute: {}",
+                    dylib_path.display()
+                )));
+            }
+
+            let render_start = Instant::now();
+            let result = self
+                .render_with_source(
+                    DylibSource::LocalPath {
+                        id: dylib_id,
+                        path: dylib_path.to_path_buf(),
+                    },
+                    symbol,
+                    width,
+                    height,
+                )
+                .await;
+            tracing::info!(
+                dylib_id = %dylib_id,
+                path = %dylib_path.display(),
+                elapsed_ms = render_start.elapsed().as_millis(),
+                total_elapsed_ms = total_start.elapsed().as_millis(),
+                "Preview rendered after transferring dylib path"
+            );
+
+            if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
+                self.present_dylibs.insert(dylib_id);
+            }
+
+            return result;
         }
 
         let read_start = Instant::now();
@@ -358,12 +436,61 @@ impl PreviewAppClient {
     }
 }
 
-fn preferred_port(config: PreviewTcpConfig) -> Option<u16> {
-    let preferred = LAST_SUCCESSFUL_PORT.load(Ordering::Relaxed);
-    if preferred == 0 {
-        return Some(config.port_start);
+fn load_registered_instances_sync(
+    expected_waterui_core_fingerprint: &str,
+) -> io::Result<Vec<PreviewAppInstance>> {
+    let dir = preview_instance_registry_dir();
+    fs::create_dir_all(&dir)?;
+
+    let mut matching = Vec::new();
+    let mut stale_paths = Vec::new();
+
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+
+        let instance = match serde_json::from_slice::<PreviewAppInstance>(&bytes) {
+            Ok(instance) => instance,
+            Err(_) => {
+                stale_paths.push(path);
+                continue;
+            }
+        };
+
+        if !is_pid_alive_sync(instance.pid) {
+            stale_paths.push(path);
+            continue;
+        }
+
+        if instance.waterui_core_fingerprint == expected_waterui_core_fingerprint {
+            matching.push(instance);
+        }
     }
-    config.ports().contains(&preferred).then_some(preferred)
+
+    matching.sort_by(|left, right| right.registered_at_unix_ms.cmp(&left.registered_at_unix_ms));
+
+    for path in stale_paths {
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(matching)
+}
+
+fn is_pid_alive_sync(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn connect_timeout() -> Duration {
