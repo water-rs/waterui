@@ -242,4 +242,3 @@ pub fn app(env: Environment) -> App {
     App::new(move || main(system_locale.clone()), env)
 }
 
-waterui_ffi::export!();

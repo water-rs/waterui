@@ -5,10 +5,9 @@ edition = "2024"
 authors = ["Lexo Liu"]
 publish = false
 
-[lib]
-crate-type = ["lib", "staticlib", "cdylib"]
+[features]
+dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-ffi.workspace = true
 waterui-visualizer = { path = "../../components/visualizer" }

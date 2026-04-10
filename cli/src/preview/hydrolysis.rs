@@ -56,7 +56,7 @@ pub async fn render_preview_with_hydrolysis(
     )
     .await?;
 
-    let binary_path = built_hydrolysis_binary_path(&project, "debug")?;
+    let binary_path = built_hydrolysis_binary_path(&project, "debug").await?;
     run_preview_binary(&project, &binary_path, width, height, output_path).await
 }
 
