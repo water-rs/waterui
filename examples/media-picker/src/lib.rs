@@ -275,4 +275,3 @@ fn looks_like_video_url(url: &Url) -> bool {
         || extension.eq_ignore_ascii_case("mpeg")
 }
 
-waterui_ffi::export!();

@@ -1,22 +1,10 @@
 use std::path::PathBuf;
 
-use waterkit_fs::WaterFs;
 use waterui_preview_protocol::DylibId;
-
-fn water_cache_dir() -> PathBuf {
-    if let Some(cache_dir) = std::env::var_os("WATER_CACHE_DIR") {
-        return PathBuf::from(cache_dir);
-    }
-
-    if let Some(cache_dir) = WaterFs::cache_dir() {
-        return cache_dir.join("waterui");
-    }
-
-    std::env::temp_dir().join("waterui-cache")
-}
+use waterui_preview_protocol::registry::preview_cache_root_dir;
 
 pub fn preview_dylib_cache_dir() -> PathBuf {
-    water_cache_dir().join("preview").join("dylibs")
+    preview_cache_root_dir().join("dylibs")
 }
 
 pub fn preview_dylib_cache_path(id: DylibId) -> PathBuf {

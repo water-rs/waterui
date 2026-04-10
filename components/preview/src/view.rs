@@ -7,6 +7,9 @@
 use std::collections::HashSet;
 use std::io;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
@@ -18,6 +21,9 @@ use waterui_core::{Environment, Metadata, Retain, View};
 
 use crate::library::PreviewLibrary;
 use crate::renderer::RenderResultExt as _;
+use waterui_preview_protocol::registry::{
+    PreviewAppInstance, preview_instance_registry_dir, preview_instance_registry_path,
+};
 use waterui_preview_protocol::tcp::PreviewTcpConfig;
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 use waterui_preview_protocol::{
@@ -96,6 +102,8 @@ async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> i
     let config =
         PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let listener = bind_first_available(config)?;
+    let registration_path =
+        register_preview_instance(listener.local_addr()?, &waterui_core_fingerprint).await?;
     tracing::info!(
         "Preview daemon listening on {}:{}",
         config.host,
@@ -105,21 +113,171 @@ async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> i
     let listener = Async::new(listener)?;
 
     let (worker_tx, worker_rx) = async_channel::unbounded::<WorkerMessage>();
+    let activity = Arc::new(PreviewActivity::new());
 
-    let _worker_task = spawn_local(render_worker(env, worker_rx, waterui_core_fingerprint));
+    let worker_fingerprint = waterui_core_fingerprint.clone();
+    let _worker_task = spawn_local(render_worker(env, worker_rx, worker_fingerprint));
+    spawn_local(idle_shutdown_task(
+        activity.clone(),
+        registration_path.clone(),
+    ))
+    .detach();
 
     loop {
         let (stream, addr) = listener.accept().await?;
         tracing::debug!("Preview client connected: {addr}");
 
         let worker_tx = worker_tx.clone();
+        let activity = activity.clone();
+        let registration_path = registration_path.clone();
+        let waterui_core_fingerprint = waterui_core_fingerprint.clone();
         spawn_local(async move {
-            if let Err(e) = handle_connection(stream, worker_tx).await {
+            if let Err(e) = handle_connection(
+                stream,
+                worker_tx,
+                activity,
+                registration_path,
+                &waterui_core_fingerprint,
+            )
+            .await
+            {
                 tracing::warn!("Preview client error ({addr}): {e}");
             }
         })
         .detach();
     }
+}
+
+#[derive(Debug)]
+struct PreviewActivity {
+    active_connections: AtomicUsize,
+    last_activity_epoch_seconds: AtomicUsize,
+}
+
+impl PreviewActivity {
+    fn new() -> Self {
+        Self {
+            active_connections: AtomicUsize::new(0),
+            last_activity_epoch_seconds: AtomicUsize::new(current_epoch_seconds()),
+        }
+    }
+
+    fn begin_connection(&self) {
+        self.touch();
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn end_connection(&self) {
+        self.touch();
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn touch(&self) {
+        self.last_activity_epoch_seconds
+            .store(current_epoch_seconds(), Ordering::Relaxed);
+    }
+
+    fn active_connections(&self) -> usize {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+
+    fn idle_for(&self) -> Duration {
+        let now = current_epoch_seconds();
+        let last = self.last_activity_epoch_seconds.load(Ordering::Relaxed);
+        Duration::from_secs(now.saturating_sub(last) as u64)
+    }
+}
+
+#[derive(Debug)]
+struct ActiveConnectionGuard {
+    activity: Arc<PreviewActivity>,
+}
+
+impl ActiveConnectionGuard {
+    fn new(activity: Arc<PreviewActivity>) -> Self {
+        activity.begin_connection();
+        Self { activity }
+    }
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.activity.end_connection();
+    }
+}
+
+fn current_epoch_seconds() -> usize {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as usize)
+        .unwrap_or_default()
+}
+
+fn preview_idle_shutdown_after() -> Duration {
+    const DEFAULT_SECONDS: u64 = 60;
+    std::env::var("WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or_else(|| Duration::from_secs(DEFAULT_SECONDS), Duration::from_secs)
+}
+
+async fn idle_shutdown_task(activity: Arc<PreviewActivity>, registration_path: Arc<PathBuf>) {
+    let idle_shutdown_after = preview_idle_shutdown_after();
+    let poll_interval = Duration::from_secs(1);
+
+    loop {
+        async_io::Timer::after(poll_interval).await;
+
+        if activity.active_connections() != 0 {
+            continue;
+        }
+
+        let idle_for = activity.idle_for();
+        if idle_for < idle_shutdown_after {
+            continue;
+        }
+
+        tracing::info!(
+            idle_for_ms = idle_for.as_millis(),
+            idle_shutdown_after_ms = idle_shutdown_after.as_millis(),
+            "Preview support app is idle and will exit"
+        );
+        exit_process(registration_path.as_ref());
+    }
+}
+
+async fn register_preview_instance(
+    addr: std::net::SocketAddr,
+    waterui_core_fingerprint: &str,
+) -> io::Result<Arc<PathBuf>> {
+    let instance = PreviewAppInstance::new(
+        std::process::id(),
+        addr.ip(),
+        addr.port(),
+        waterui_core_fingerprint,
+    );
+    let path = preview_instance_registry_path(&instance);
+    let registry_dir = preview_instance_registry_dir();
+    tracing::info!(path = %registry_dir.display(), pid = instance.pid, port = instance.port, "Preview registry create_dir_all");
+    async_fs::create_dir_all(&registry_dir).await?;
+
+    let bytes = serde_json::to_vec_pretty(&instance)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+    tracing::info!(path = %temp.display(), final_path = %path.display(), "Preview registry writing instance file");
+    async_fs::write(&temp, bytes).await?;
+    async_fs::rename(&temp, &path).await?;
+    tracing::info!(path = %path.display(), "Preview registry wrote instance file");
+    Ok(Arc::new(path))
+}
+
+fn cleanup_registration_file(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+fn exit_process(registration_path: &std::path::Path) -> ! {
+    cleanup_registration_file(registration_path);
+    std::process::exit(0)
 }
 
 fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpListener> {
@@ -149,7 +307,11 @@ fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpLis
 async fn handle_connection(
     stream: Async<std::net::TcpStream>,
     worker_tx: Sender<WorkerMessage>,
+    activity: Arc<PreviewActivity>,
+    registration_path: Arc<PathBuf>,
+    waterui_core_fingerprint: &str,
 ) -> io::Result<()> {
+    let _connection_guard = ActiveConnectionGuard::new(activity.clone());
     let mut reader = BufReader::new(&stream);
     let mut writer = &stream;
 
@@ -160,31 +322,44 @@ async fn handle_connection(
             Err(e) => return Err(e),
         };
 
+        activity.touch();
+
         let should_shutdown = matches!(request, PreviewRequest::Shutdown);
 
-        let (resp_tx, resp_rx) = async_channel::bounded::<PreviewResponse>(1);
-        worker_tx
-            .send(WorkerMessage {
-                request,
-                respond_to: resp_tx,
-            })
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "preview worker exited"))?;
+        let response = match request {
+            PreviewRequest::Ping => PreviewResponse::Pong {
+                protocol: protocol_info(waterui_core_fingerprint),
+            },
+            PreviewRequest::HasDylib { id } => PreviewResponse::HasDylib {
+                present: preview_dylib_cache_path(id).exists(),
+            },
+            PreviewRequest::Shutdown => PreviewResponse::Shutdown,
+            request @ PreviewRequest::Render { .. } => {
+                let (resp_tx, resp_rx) = async_channel::bounded::<PreviewResponse>(1);
+                worker_tx
+                    .send(WorkerMessage {
+                        request,
+                        respond_to: resp_tx,
+                    })
+                    .await
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "preview worker exited")
+                    })?;
 
-        let response = resp_rx
-            .recv()
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "preview worker exited"))?;
+                resp_rx.recv().await.map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "preview worker exited")
+                })?
+            }
+        };
+        activity.touch();
 
         write_frame(&mut writer, &response).await?;
+        activity.touch();
 
         if should_shutdown {
-            spawn_local(async {
-                async_io::Timer::after(Duration::from_millis(50)).await;
-                std::process::exit(0);
-            })
-            .detach();
-            return Ok(());
+            drop(reader);
+            drop(writer);
+            exit_process(registration_path.as_ref());
         }
     }
 }
@@ -193,6 +368,8 @@ struct DylibCache {
     capacity: NonZeroUsize,
     libraries: indexmap::IndexMap<DylibId, PreviewLibrary>,
     disk_present: HashSet<DylibId>,
+    #[cfg(target_os = "macos")]
+    rust_sysroot: PathBuf,
 }
 
 impl DylibCache {
@@ -203,6 +380,8 @@ impl DylibCache {
             capacity,
             libraries: indexmap::IndexMap::new(),
             disk_present,
+            #[cfg(target_os = "macos")]
+            rust_sysroot: detect_rust_sysroot().await?,
         })
     }
 
@@ -215,8 +394,12 @@ impl DylibCache {
         self.libraries.get(id)
     }
 
-    fn insert(&mut self, id: DylibId, library: PreviewLibrary) {
+    fn insert_persistent(&mut self, id: DylibId, library: PreviewLibrary) {
         self.disk_present.insert(id);
+        self.insert_loaded(id, library);
+    }
+
+    fn insert_loaded(&mut self, id: DylibId, library: PreviewLibrary) {
         if self.libraries.contains_key(&id) {
             self.libraries.insert(id, library);
             self.touch(&id);
@@ -250,10 +433,15 @@ impl DylibCache {
         }
 
         let path = preview_dylib_cache_path(id);
+        #[cfg(target_os = "macos")]
+        let library = unsafe { PreviewLibrary::load_from_path(&path, &self.rust_sysroot) }
+            .await
+            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+        #[cfg(not(target_os = "macos"))]
         let library = unsafe { PreviewLibrary::load_from_path(&path) }
             .await
             .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
-        self.insert(id, library);
+        self.insert_loaded(id, library);
         Ok(())
     }
 }
@@ -299,6 +487,35 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .and_then(|v| v.parse::<usize>().ok())
         .and_then(NonZeroUsize::new)
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
+}
+
+#[cfg(target_os = "macos")]
+async fn detect_rust_sysroot() -> io::Result<PathBuf> {
+    let output = async_process::Command::new("rustc")
+        .arg("--print")
+        .arg("sysroot")
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(io::Error::other(if stderr.is_empty() {
+            "rustc --print sysroot failed".to_string()
+        } else {
+            stderr
+        }));
+    }
+
+    let sysroot = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let sysroot = sysroot.trim();
+    if sysroot.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rustc --print sysroot returned an empty path",
+        ));
+    }
+
+    Ok(PathBuf::from(sysroot))
 }
 
 async fn render_worker(
@@ -350,16 +567,48 @@ async fn ensure_dylib_cached(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
+                    #[cfg(target_os = "macos")]
+                    let library =
+                        unsafe { PreviewLibrary::load_from_bytes(id, &bytes, &cache.rust_sysroot) }
+                            .await
+                            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    #[cfg(not(target_os = "macos"))]
                     let library = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
-                    cache.insert(id, library);
+                    cache.insert_persistent(id, library);
                 }
                 #[cfg(not(unix))]
                 {
                     let _ = bytes;
                     return Err(PreviewError::DylibLoad(
                         "library loading not supported on this platform".to_string(),
+                    ));
+                }
+            }
+            id
+        }
+        DylibSource::LocalPath { id, path } => {
+            if !cache.contains(&id) {
+                #[cfg(unix)]
+                {
+                    #[cfg(target_os = "macos")]
+                    let library = unsafe {
+                        PreviewLibrary::load_from_local_path(id, &path, &cache.rust_sysroot)
+                    }
+                    .await
+                    .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    #[cfg(not(target_os = "macos"))]
+                    let library = unsafe { PreviewLibrary::load_from_local_path(id, &path) }
+                        .await
+                        .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    cache.insert_persistent(id, library);
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    return Err(PreviewError::DylibLoad(
+                        "local-path preview loading not supported on this platform".to_string(),
                     ));
                 }
             }
