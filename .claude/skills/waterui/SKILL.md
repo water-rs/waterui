@@ -15,9 +15,13 @@ Build views with reactive state. When unsure, use Explore agent to search `examp
 - Every UI component is expected to expose a meaningful accessibility tree. If Hydrolysis coverage is missing, fix the component or renderer rather than falling back to weak tests.
 - "Visual test" means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden: no pixel counters, threshold diffs, non-uniform checks, dominant-color checks, bbox approximations, or similar proxy code.
 - `GpuSurface::new(renderer)` owns a single `GpuView` instance for that surface lifetime. `GpuView::setup()` is the place for persistent GPU resources tied to that renderer instance. Do not move renderer state into shared caches to survive teardown or parent rebuild.
+- Managed playground build-cache GC is an out-of-band maintenance path exposed as `water gc build-cache`. `water preview` and `water run` may trigger that command in a detached subprocess, but they must never scan `~/.water/build_cache` on the hot path.
+- Preview/inspector dev mode is only valid against a clean local `waterui_path` git worktree. Dirty WaterUI worktrees must fail fast; release mode should resolve WaterUI from registry metadata instead of forcing a local path checkout.
+- Preview requires the root crate to expose `[features] dev = ["waterui/dynamic_linking"]`. The generated preview wrapper (`managed_backends/preview_ffi`) must always depend on the app crate with `features = ["dev"]`.
 - Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)` setup. Keep explicit `UiTest` construction only when the test genuinely requires a custom viewport or environment.
 - When testing layout containers with `waterui-testing`, prefer inherently semantic child views such as `text()`, buttons, or other labeled controls, then assert bounds relationships from the Hydrolysis tree. Do not pad test counts with decorative color blocks plus synthetic metadata if a semantic child expresses the behavior more directly.
 - For static components with simple conditional branches, avoid wrapping the whole body in `#[view_builder]` if that would introduce an unnecessary `Dynamic`. `waterui_chart::Tooltip` is a concrete example: explicit `AnyView` branching avoids a Hydrolysis mount-time recursion path that appeared with the generated dynamic wrapper.
+- Playground root crates are plain Rust `lib` crates. Do not make playground examples choose final artifact types such as `staticlib`, `cdylib`, or preview dylib output themselves. App FFI artifacts and preview dylibs must be produced by generated wrapper crates such as `managed_backends/ffi`, with the playground root crate only supplying normal Rust APIs like `app(...)` and `#[preview]` exports.
 
 ## CRITICAL: Reactive-First Pattern
 
@@ -258,6 +262,8 @@ water run --logs debug           # with debug output
 ## Preview System
 
 Use the `#[preview]` macro to enable instant view previews:
+
+- For playground projects, preview dylibs are built from the managed `ffi` wrapper crate, not from the user example crate directly. Keep playground example crates as plain Rust `lib` crates; do not add `crate-type` just for preview or native packaging.
 
 ```rust
 #[preview]

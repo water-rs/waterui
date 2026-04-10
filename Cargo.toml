@@ -4,6 +4,8 @@ members = [
     "core",
     "components/*",
     "utils/*",
+    "internal",
+    "crates/waterui-dylib",
     "testing",
     "ffi",
     "macros",
@@ -40,6 +42,9 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
+
+[lib]
+path = "facade/lib.rs"
 
 [workspace.package]
 version = "0.2.1"
@@ -168,106 +173,22 @@ cpu-time = "1.0"
 
 
 [dependencies]
-nami.workspace = true
-waterui-core.workspace = true
-waterui-str.workspace = true
-waterui-url.workspace = true
-waterui-layout.workspace = true
-waterui-text.workspace = true
-waterui-media = { workspace = true, optional = true }
-waterui-video = { workspace = true, optional = true }
-native-executor.workspace = true
-waterui-navigation.workspace = true
-waterui-form.workspace = true
-waterui-controls.workspace = true
-waterui-webview = { workspace = true, optional = true }
-waterui-locale.workspace = true
-waterkit-screen.workspace = true
-executor-core.workspace = true
-futures.workspace = true
-serde = { workspace = true, features = ["derive"] }
-tracing.workspace = true
-minstant.workspace = true
-cpu-time.workspace = true
-pulldown-cmark = "0.13"
-waterui-macros.workspace = true
-libloading = "0.9"
-waterui-graphics.workspace = true
-waterui-icon.workspace = true
-waterui-shape.workspace = true
-waterui-svg.workspace = true
-waterui-assets = { workspace = true, optional = true }
-waterui-assets-macros = { workspace = true, optional = true }
-waterui-inspector-protocol.workspace = true
-waterkit-haptic = { workspace = true, optional = true }
-waterui-chart = { workspace = true, optional = true }
-waterui-barcode = { workspace = true, optional = true }
-waterui-map = { workspace = true, optional = true }
-waterui-particle = { workspace = true, optional = true }
-
-async-fs = "2.2.0"
-robius-open.workspace = true
-pastey.workspace = true
-tree-sitter = { version = "0.25", optional = true }
-tree-sitter-md = { version = "0.5.3", optional = true }
-tree-sitter-rust = { version = "0.23", optional = true }
-tree-sitter-javascript = { version = "0.23", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.23", optional = true }
-tree-sitter-go = { version = "0.23", optional = true }
-tree-sitter-java = { version = "0.23", optional = true }
-tree-sitter-swift = { version = "0.7", optional = true }
-tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-bash = { version = "0.23", optional = true }
-tree-sitter-sequel = { version = "0.3.11", optional = true }
-
-
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { workspace = true, features = ["native-tls"] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
-android_clipboard = "0.1.0"
-
-[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
-
-
-[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
-arboard = "3.6.1"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
-
-
+waterui-internal = { path = "internal", default-features = false }
+waterui-dylib = { path = "crates/waterui-dylib", optional = true, default-features = false }
 
 [features]
 default = ["assets", "media", "webview", "flow-markdown"]
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
-media = ["dep:waterui-media", "video"]
-video = ["dep:waterui-video"]
-webview = ["dep:waterui-webview"]
-chart = ["dep:waterui-chart"]
-barcode = ["dep:waterui-barcode"]
-map = ["dep:waterui-map"]
-particle = ["dep:waterui-particle"]
-flow-markdown = [
-    "dep:tree-sitter",
-    "dep:tree-sitter-md",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-python",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-java",
-    "dep:tree-sitter-swift",
-    "dep:tree-sitter-json",
-    "dep:tree-sitter-bash",
-    "dep:tree-sitter-sequel",
-]
-std = ["dep:waterkit-haptic"]
+assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
+media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
+video = ["waterui-internal/video", "waterui-dylib?/video"]
+webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
+barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
+map = ["waterui-internal/map", "waterui-dylib?/map"]
+particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
+flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
+std = ["waterui-internal/std", "waterui-dylib?/std"]
+dynamic_linking = ["dep:waterui-dylib"]
 all = [
     "std",
     "assets",
