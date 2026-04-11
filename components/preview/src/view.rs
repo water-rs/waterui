@@ -214,7 +214,7 @@ fn current_epoch_seconds() -> usize {
 }
 
 fn preview_idle_shutdown_after() -> Duration {
-    const DEFAULT_SECONDS: u64 = 60;
+    const DEFAULT_SECONDS: u64 = 900;
     std::env::var("WATERUI_PREVIEW_IDLE_SHUTDOWN_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
