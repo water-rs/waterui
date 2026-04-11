@@ -460,6 +460,42 @@ pub enum PreviewRequest {
 pub struct PreviewOutput {
     /// PNG image bytes.
     pub png_data: Vec<u8>,
+    /// Support-app timing breakdown for this render request.
+    pub timings: PreviewRenderTimings,
+}
+
+/// Timing breakdown for loading a preview dylib into the support app process.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PreviewDylibLoadTimings {
+    /// Time spent materializing the cached dylib file on disk.
+    pub cache_file_ms: u64,
+    /// Total time spent loading the library from disk.
+    pub load_library_ms: u64,
+    /// Time spent in the initial `dlopen`.
+    pub initial_dlopen_ms: u64,
+    /// Time spent verifying an existing code signature, if the initial `dlopen` failed.
+    pub codesign_verify_ms: Option<u64>,
+    /// Time spent codesigning the dylib, if needed.
+    pub codesign_ms: Option<u64>,
+    /// Time spent reloading the dylib after codesigning, if needed.
+    pub reload_after_codesign_ms: Option<u64>,
+}
+
+/// Timing breakdown for a single preview render request inside the support app.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PreviewRenderTimings {
+    /// Time spent ensuring the requested dylib is cached and loaded.
+    pub ensure_dylib_cached_ms: u64,
+    /// Detailed dylib-load timings when this request had to load a new dylib.
+    pub dylib_load: Option<PreviewDylibLoadTimings>,
+    /// Time spent resolving the requested preview symbol into a view.
+    pub load_view_ms: u64,
+    /// Time spent rendering the view to an in-memory image.
+    pub render_ms: u64,
+    /// Time spent encoding the rendered image to PNG.
+    pub png_encode_ms: u64,
+    /// Total request time inside the support app.
+    pub total_ms: u64,
 }
 
 /// Errors that can occur during preview rendering.

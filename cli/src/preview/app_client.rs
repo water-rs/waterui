@@ -356,9 +356,10 @@ impl PreviewAppClient {
             .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
 
         match response {
-            waterui_preview_protocol::PreviewResponse::Render { result } => {
-                result.map(|output| output.png_data)
-            }
+            waterui_preview_protocol::PreviewResponse::Render { result } => result.map(|output| {
+                tracing::info!(timings = ?output.timings, "Preview support app timing breakdown");
+                output.png_data
+            }),
             other => Err(AppError::RenderFailed(format!(
                 "protocol error: unexpected response to Render: {other:?}"
             ))),
