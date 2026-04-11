@@ -180,6 +180,7 @@ async fn build_preview_dylib(
     if let Some(sccache) = sccache_path {
         rust_build = rust_build.with_sccache(sccache.clone());
     }
+    rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
     let enable_preview_dynamic_linking = matches!(platform, PreviewPlatform::Macos);
     if enable_preview_dynamic_linking {
         rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
