@@ -43,3 +43,18 @@ pub use waterui_preview_protocol as protocol;
 pub use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
 };
+
+/// Initialize preview tracing from `RUST_LOG` when the support app wants internal timing logs.
+pub fn init_tracing_from_env() {
+    use tracing_subscriber::EnvFilter;
+
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
