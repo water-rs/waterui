@@ -3,7 +3,7 @@
 //! Handles loading dylibs received from the daemon and resolving preview symbols.
 
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use waterui_core::AnyView;
@@ -26,19 +26,8 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_path(
-        path: &Path,
-        rust_sysroot: &Path,
-    ) -> Result<Self, LoadError> {
+    pub async unsafe fn load_from_path(path: &Path) -> Result<Self, LoadError> {
         let total_start = Instant::now();
-        let prepare_start = Instant::now();
-        let prepared = prepare_macos_runtime_linking(path, rust_sysroot).await?;
-        tracing::info!(
-            path = %path.display(),
-            prepared,
-            elapsed_ms = prepare_start.elapsed().as_millis(),
-            "Preview library prepared macOS runtime linking"
-        );
         let library = Self::load_with_codesign_fallback(path).await?;
         tracing::info!(
             path = %path.display(),
@@ -78,8 +67,6 @@ impl PreviewLibrary {
         match first_try {
             Ok(lib) => Ok(Self { lib }),
             Err(load_error) => {
-                // Only codesign when the file is not already signed/valid. If it's already
-                // signed and dlopen failed, surface the original error immediately.
                 let verify_start = Instant::now();
                 let already_signed = codesign_verify_dylib(path).await?;
                 tracing::info!(
@@ -139,13 +126,7 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_bytes(
-        id: DylibId,
-        data: &[u8],
-        rust_sysroot: &Path,
-    ) -> Result<Self, LoadError> {
-        // Prefer a stable on-disk cache keyed by dylib id. This avoids re-codesigning and also
-        // enables reuse across preview app restarts.
+    pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
@@ -157,13 +138,11 @@ impl PreviewLibrary {
             "Preview library ensured dylib cache file"
         );
 
-        unsafe { Self::load_from_path(&cache_path, rust_sysroot) }.await
+        unsafe { Self::load_from_path(&cache_path) }.await
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
-        // Prefer a stable on-disk cache keyed by dylib id. This avoids re-codesigning and also
-        // enables reuse across preview app restarts.
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
@@ -192,7 +171,6 @@ impl PreviewLibrary {
     pub async unsafe fn load_from_local_path(
         id: DylibId,
         source_path: &Path,
-        rust_sysroot: &Path,
     ) -> Result<Self, LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
@@ -205,7 +183,7 @@ impl PreviewLibrary {
             "Preview library cached dylib from local path"
         );
 
-        unsafe { Self::load_from_path(&cache_path, rust_sysroot) }.await
+        unsafe { Self::load_from_path(&cache_path) }.await
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -356,7 +334,6 @@ async fn ensure_cached_file(path: &Path, source: CachedDylibSource<'_>) -> Resul
                 std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
             ) =>
         {
-            // Another process likely won the race; destination already exists.
             let _ = async_fs::remove_file(&temp).await;
             tracing::info!(
                 path = %path.display(),
@@ -371,193 +348,6 @@ async fn ensure_cached_file(path: &Path, source: CachedDylibSource<'_>) -> Resul
             Err(LoadError::Io(e))
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-async fn prepare_macos_runtime_linking(
-    path: &Path,
-    rust_sysroot: &Path,
-) -> Result<bool, LoadError> {
-    let dependencies = dylib_dependencies(path).await?;
-    let uses_dynamic_rust_std = dependencies
-        .iter()
-        .any(|dependency| dependency.starts_with("@rpath/libstd-"));
-    if !uses_dynamic_rust_std {
-        return Ok(false);
-    }
-
-    let Some(local_dependency) = dependencies.iter().find(|dependency| {
-        dependency.ends_with(".dylib")
-            && !dependency.starts_with("@rpath/")
-            && !is_system_dylib_dependency(dependency)
-    }) else {
-        return Err(LoadError::RuntimeLink(format!(
-            "dynamic preview dylib {} depends on @rpath/libstd but has no local Rust dylib dependency to infer the target triple",
-            path.display()
-        )));
-    };
-
-    let target_triple = infer_target_triple_from_local_dependency(Path::new(local_dependency))
-        .ok_or_else(|| {
-            LoadError::RuntimeLink(format!(
-                "failed to infer Rust target triple from preview dylib dependency {}",
-                local_dependency
-            ))
-        })?;
-    let rust_target_libdir = rust_sysroot
-        .join("lib")
-        .join("rustlib")
-        .join(&target_triple)
-        .join("lib");
-    if !rust_target_libdir.is_dir() {
-        return Err(LoadError::RuntimeLink(format!(
-            "Rust target library directory does not exist: {}",
-            rust_target_libdir.display()
-        )));
-    }
-
-    let existing_rpaths = dylib_rpaths(path).await?;
-    if existing_rpaths
-        .iter()
-        .any(|existing| existing == &rust_target_libdir)
-    {
-        return Ok(false);
-    }
-
-    let patch_start = Instant::now();
-    install_name_tool_add_rpath(path, &rust_target_libdir).await?;
-    tracing::info!(
-        path = %path.display(),
-        rpath = %rust_target_libdir.display(),
-        elapsed_ms = patch_start.elapsed().as_millis(),
-        "Preview library added Rust stdlib rpath"
-    );
-
-    let codesign_start = Instant::now();
-    codesign_dylib(path).await?;
-    tracing::info!(
-        path = %path.display(),
-        elapsed_ms = codesign_start.elapsed().as_millis(),
-        "Preview library codesigned dylib after runtime-link patch"
-    );
-
-    Ok(true)
-}
-
-#[cfg(target_os = "macos")]
-async fn dylib_dependencies(path: &Path) -> Result<Vec<String>, LoadError> {
-    let output = async_process::Command::new("otool")
-        .arg("-L")
-        .arg(path)
-        .output()
-        .await
-        .map_err(LoadError::Io)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(LoadError::RuntimeLink(if stderr.is_empty() {
-            format!("otool -L failed for {}", path.display())
-        } else {
-            stderr
-        }));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let dependencies = stdout
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            trimmed
-                .split_once(" (compatibility version ")
-                .map(|(dependency, _)| dependency.to_string())
-        })
-        .collect();
-    Ok(dependencies)
-}
-
-#[cfg(target_os = "macos")]
-async fn dylib_rpaths(path: &Path) -> Result<Vec<PathBuf>, LoadError> {
-    let output = async_process::Command::new("otool")
-        .arg("-l")
-        .arg(path)
-        .output()
-        .await
-        .map_err(LoadError::Io)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(LoadError::RuntimeLink(if stderr.is_empty() {
-            format!("otool -l failed for {}", path.display())
-        } else {
-            stderr
-        }));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut in_rpath_command = false;
-    let mut rpaths = Vec::new();
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed == "cmd LC_RPATH" {
-            in_rpath_command = true;
-            continue;
-        }
-
-        if in_rpath_command && trimmed.starts_with("path ") {
-            let path_value = trimmed
-                .trim_start_matches("path ")
-                .split_once(" (offset ")
-                .map_or_else(|| trimmed.trim_start_matches("path "), |(value, _)| value);
-            rpaths.push(PathBuf::from(path_value));
-            in_rpath_command = false;
-        }
-    }
-    Ok(rpaths)
-}
-
-#[cfg(target_os = "macos")]
-async fn install_name_tool_add_rpath(path: &Path, rpath: &Path) -> Result<(), LoadError> {
-    let output = async_process::Command::new("install_name_tool")
-        .arg("-add_rpath")
-        .arg(rpath)
-        .arg(path)
-        .output()
-        .await
-        .map_err(LoadError::Io)?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(LoadError::RuntimeLink(if stderr.is_empty() {
-        format!("install_name_tool -add_rpath failed for {}", path.display())
-    } else {
-        stderr
-    }))
-}
-
-#[cfg(target_os = "macos")]
-fn is_system_dylib_dependency(dependency: &str) -> bool {
-    dependency.starts_with("/System/") || dependency.starts_with("/usr/lib/")
-}
-
-#[cfg(target_os = "macos")]
-fn infer_target_triple_from_local_dependency(path: &Path) -> Option<String> {
-    let deps_dir = path.parent()?;
-    if deps_dir.file_name()?.to_str()? != "deps" {
-        return None;
-    }
-
-    let profile_dir = deps_dir.parent()?;
-    let target_triple_dir = profile_dir.parent()?;
-    let target_dir = target_triple_dir.parent()?;
-    if target_dir.file_name()?.to_str()? != "target" {
-        return None;
-    }
-
-    Some(target_triple_dir.file_name()?.to_str()?.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -604,8 +394,6 @@ pub enum LoadError {
     Io(std::io::Error),
     /// Library loading error.
     Library(libloading::Error),
-    /// Runtime linking error while preparing dynamic dylib dependencies.
-    RuntimeLink(String),
     /// Codesign error on macOS.
     CodeSign(String),
 }
@@ -615,7 +403,6 @@ impl std::fmt::Display for LoadError {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Library(e) => write!(f, "Library error: {e}"),
-            Self::RuntimeLink(e) => write!(f, "Runtime link error: {e}"),
             Self::CodeSign(e) => write!(f, "Codesign error: {e}"),
         }
     }
