@@ -189,9 +189,6 @@ async fn build_preview_dylib(
             "-Clink-arg=-Wl,-rpath,{}",
             rust_target_libdir.display()
         ));
-        if preview_runtime_supports_dynamic_linking(&preview_crate_path).await? {
-            rust_build = rust_build.with_feature("waterui/dynamic_linking");
-        }
     }
     if !enable_preview_dynamic_linking {
         rust_build = rust_build.with_crate_type_override("cdylib");
@@ -272,27 +269,6 @@ async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()>
         );
     }
     Ok(())
-}
-
-async fn preview_runtime_supports_dynamic_linking(preview_crate_path: &Path) -> Result<bool> {
-    let manifest_path = preview_crate_path.join("Cargo.toml");
-    let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
-    let Some(dep) = manifest.dependencies.get("waterui") else {
-        return Ok(false);
-    };
-
-    let path = match dep.detail() {
-        Some(detail) => detail.path.as_deref(),
-        None => None,
-    };
-    let Some(path) = path else {
-        return Ok(false);
-    };
-
-    let waterui_manifest_path = preview_crate_path.join(path).join("Cargo.toml");
-    let waterui_manifest =
-        smol::unblock(move || CargoManifest::from_path(&waterui_manifest_path)).await?;
-    Ok(waterui_manifest.features.contains_key("dynamic_linking"))
 }
 
 async fn rust_target_libdir(target_triple: &str) -> Result<PathBuf> {
