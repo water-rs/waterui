@@ -17,6 +17,7 @@ waterui-graphics = { path = "../graphics" }
 waterui-layout = { path = "../layout" }
 waterui-preview-protocol = { path = "../preview-protocol" }
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 async-channel = "2.5"
 indexmap = "2"
 blocking = "1.6"
