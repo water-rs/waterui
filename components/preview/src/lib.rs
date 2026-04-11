@@ -52,9 +52,35 @@ pub fn init_tracing_from_env() {
         return;
     }
 
+    let log_dir = protocol::registry::preview_cache_root_dir().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to create preview log dir {}: {error}",
+            log_dir.display()
+        )
+    });
+    let log_path = log_dir.join(format!("support-app-{}.log", std::process::id()));
+    let make_writer = {
+        let log_path = log_path.clone();
+        move || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to open preview support log {}: {error}",
+                        log_path.display()
+                    )
+                })
+        }
+    };
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_target(false)
-        .with_writer(std::io::stderr)
+        .with_writer(make_writer)
         .try_init();
+
+    tracing::info!(path = %log_path.display(), "Preview support app tracing initialized");
 }
