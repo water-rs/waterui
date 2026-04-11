@@ -23,10 +23,7 @@ use super::protocol::PreviewTcpConfig;
 use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
-use crate::device::{
-    Device, DeviceEvent, Local, LogLevel, RunOptions, Running, list_local_listen_addrs_for_pid,
-    list_local_process_pids_for_executable,
-};
+use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
@@ -102,8 +99,16 @@ impl PreviewSession {
         width: f32,
         height: f32,
     ) -> Result<Vec<u8>> {
+        let prefer_local_path = self.platform == PreviewPlatform::Macos;
         self.client
-            .render_with_dylib_file(dylib.id, &dylib.path, symbol, width, height, false)
+            .render_with_dylib_file(
+                dylib.id,
+                &dylib.path,
+                symbol,
+                width,
+                height,
+                prefer_local_path,
+            )
             .await
             .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
     }
@@ -491,25 +496,9 @@ async fn try_connect_existing_preview_app(
 async fn connect_existing_macos_preview_app(
     expected_fingerprint: &str,
 ) -> Result<Option<PreviewAppClient>> {
-    if let Ok(client) = PreviewAppClient::connect_registered(expected_fingerprint).await {
-        return Ok(Some(client));
-    }
-
-    let executable_path = support_app::support_app_macos_executable_path("preview_support").await?;
-    let pids = list_local_process_pids_for_executable(&executable_path).await?;
-    for pid in pids {
-        let addrs = list_local_listen_addrs_for_pid(pid).await?;
-        for addr in addrs {
-            if !addr.ip().is_loopback() {
-                continue;
-            }
-            if let Ok(client) = PreviewAppClient::connect_addr(addr, expected_fingerprint).await {
-                return Ok(Some(client));
-            }
-        }
-    }
-
-    Ok(None)
+    Ok(PreviewAppClient::connect_registered(expected_fingerprint)
+        .await
+        .ok())
 }
 
 async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
