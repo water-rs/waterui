@@ -862,6 +862,7 @@ mod tests {
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("preview Cargo.toml should be written");
         assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
+        assert!(cargo_toml.contains("default-features = false"));
 
         let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
             .expect("preview lib.rs should be written");
@@ -925,9 +926,11 @@ mod tests {
 
         let cargo_toml = std::fs::read_to_string(preview_ffi_dir.join("Cargo.toml"))
             .expect("preview ffi Cargo.toml should be written");
-        assert!(cargo_toml.contains("crate-type = [\n    \"dylib\",\n    \"rlib\",\n]"));
+        assert!(cargo_toml.contains("crate-type = [\"dylib\"]"));
         assert!(cargo_toml.contains("features = [\"dev\"]"));
+        assert!(!cargo_toml.contains("[dependencies.waterui]"));
         assert!(!cargo_toml.contains("staticlib"));
+        assert!(!cargo_toml.contains("rlib"));
         assert!(!cargo_toml.contains("cdylib"));
     }
 
@@ -1104,7 +1107,14 @@ enum SupportDependencyValue {
 
 #[derive(serde::Serialize)]
 struct SupportDependencyDetail {
-    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
+    default_features: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    features: Vec<String>,
 }
 
 async fn write_support_cargo_toml(
@@ -1262,7 +1272,10 @@ async fn write_native_backend_bin_cargo_toml(
 
 fn dependency_path(path: &Path) -> SupportDependencyValue {
     SupportDependencyValue::Detailed(SupportDependencyDetail {
-        path: normalize_path_for_config(path),
+        version: None,
+        path: Some(normalize_path_for_config(path)),
+        default_features: None,
+        features: Vec::new(),
     })
 }
 
@@ -1923,8 +1936,8 @@ pub mod preview {
     use crate::templates::{PREVIEW_VERSION, WATERUI_VERSION};
 
     use super::{
-        Path, TemplateContext, TemplateNamespace, dependency_path, dependency_version, embedded,
-        io, scaffold_dir, write_support_cargo_toml,
+        Path, SupportDependencyDetail, SupportDependencyValue, TemplateContext, TemplateNamespace,
+        dependency_path, dependency_version, embedded, io, scaffold_dir, write_support_cargo_toml,
     };
 
     /// Hash of embedded preview template files.
@@ -1973,7 +1986,15 @@ pub mod preview {
 
         if let Some(waterui_path) = &ctx.waterui_path {
             // Local path dependencies
-            dependencies.insert("waterui".to_string(), dependency_path(waterui_path));
+            dependencies.insert(
+                "waterui".to_string(),
+                SupportDependencyValue::Detailed(SupportDependencyDetail {
+                    version: None,
+                    path: Some(super::normalize_path_for_config(waterui_path)),
+                    default_features: Some(false),
+                    features: Vec::new(),
+                }),
+            );
 
             let ffi_path = waterui_path.join("ffi");
             dependencies.insert("waterui-ffi".to_string(), dependency_path(&ffi_path));
@@ -1985,7 +2006,15 @@ pub mod preview {
             );
         } else {
             // Registry dependencies
-            dependencies.insert("waterui".to_string(), dependency_version(WATERUI_VERSION));
+            dependencies.insert(
+                "waterui".to_string(),
+                SupportDependencyValue::Detailed(SupportDependencyDetail {
+                    version: Some(WATERUI_VERSION.to_string()),
+                    path: None,
+                    default_features: Some(false),
+                    features: Vec::new(),
+                }),
+            );
             dependencies.insert(
                 "waterui-preview".to_string(),
                 dependency_version(PREVIEW_VERSION),
@@ -2000,8 +2029,7 @@ pub mod preview_ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace, WATERUI_VERSION,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir,
         write_file_if_changed,
     };
 
@@ -2036,7 +2064,7 @@ pub mod preview_ffi {
         manifest.package = Some(package);
 
         manifest.lib = Some(Product {
-            crate_type: vec!["dylib".to_string(), "rlib".to_string()],
+            crate_type: vec!["dylib".to_string()],
             ..Default::default()
         });
 
@@ -2048,30 +2076,6 @@ pub mod preview_ffi {
                 ..Default::default()
             })),
         );
-
-        let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
-            || {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(WATERUI_VERSION.to_string()),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-            |waterui_path| {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(compute_native_backend_dependency_path(
-                        ctx,
-                        waterui_path,
-                        NativeBackendDependencyPathKind::WateruiRoot,
-                    )),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-        );
-        manifest
-            .dependencies
-            .insert("waterui".to_string(), waterui_dependency);
 
         manifest.workspace = Some(Workspace::default());
 
