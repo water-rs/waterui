@@ -17,6 +17,12 @@ pub struct PreviewLibrary {
     lib: libloading::Library,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BlockingDlopenTimings {
+    total_ms: u64,
+    closure_ms: u64,
+}
+
 impl PreviewLibrary {
     /// Load a library from an on-disk cache path, codesigning only if needed (macOS).
     ///
@@ -56,16 +62,13 @@ impl PreviewLibrary {
         path: &Path,
     ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let total_start = Instant::now();
-        let load_start = Instant::now();
-        let first_try = blocking::unblock({
-            let path = path.to_path_buf();
-            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
-        })
-        .await;
-        let initial_dlopen_ms = elapsed_ms(load_start);
+        let (first_try, first_try_timings) = dlopen_via_blocking(path).await;
+        let initial_dlopen_ms = first_try_timings.total_ms;
         tracing::info!(
             path = %path.display(),
             elapsed_ms = initial_dlopen_ms,
+            blocking_closure_ms = first_try_timings.closure_ms,
+            blocking_wait_ms = initial_dlopen_ms.saturating_sub(first_try_timings.closure_ms),
             success = first_try.is_ok(),
             "Preview library attempted initial dlopen"
         );
@@ -101,16 +104,15 @@ impl PreviewLibrary {
                     elapsed_ms = codesign_ms,
                     "Preview library codesigned dylib"
                 );
-                let reload_start = Instant::now();
-                let lib = blocking::unblock({
-                    let path = path.to_path_buf();
-                    move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
-                })
-                .await?;
-                let reload_after_codesign_ms = elapsed_ms(reload_start);
+                let (lib, reload_timings) = dlopen_via_blocking(path).await;
+                let lib = lib?;
+                let reload_after_codesign_ms = reload_timings.total_ms;
                 tracing::info!(
                     path = %path.display(),
                     elapsed_ms = reload_after_codesign_ms,
+                    blocking_closure_ms = reload_timings.closure_ms,
+                    blocking_wait_ms =
+                        reload_after_codesign_ms.saturating_sub(reload_timings.closure_ms),
                     "Preview library reloaded dylib after codesign"
                 );
                 Ok((
@@ -133,16 +135,14 @@ impl PreviewLibrary {
         path: &Path,
     ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let total_start = Instant::now();
-        let load_start = Instant::now();
-        let lib = blocking::unblock({
-            let path = path.to_path_buf();
-            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
-        })
-        .await?;
-        let initial_dlopen_ms = elapsed_ms(load_start);
+        let (lib, load_timings) = dlopen_via_blocking(path).await;
+        let lib = lib?;
+        let initial_dlopen_ms = load_timings.total_ms;
         tracing::info!(
             path = %path.display(),
             elapsed_ms = initial_dlopen_ms,
+            blocking_closure_ms = load_timings.closure_ms,
+            blocking_wait_ms = initial_dlopen_ms.saturating_sub(load_timings.closure_ms),
             "Preview library loaded dylib"
         );
         Ok((
@@ -292,6 +292,32 @@ impl PreviewLibrary {
         let boxed: Box<AnyView> = unsafe { Box::from_raw(ptr.cast()) };
         Ok(*boxed)
     }
+}
+
+async fn dlopen_via_blocking(
+    path: &Path,
+) -> (
+    Result<libloading::Library, LoadError>,
+    BlockingDlopenTimings,
+) {
+    let unblock_start = Instant::now();
+    let (result, closure_ms) = blocking::unblock({
+        let path = path.to_path_buf();
+        move || {
+            let closure_start = Instant::now();
+            let result = unsafe { libloading::Library::new(&path).map_err(LoadError::Library) };
+            (result, elapsed_ms(closure_start))
+        }
+    })
+    .await;
+
+    (
+        result,
+        BlockingDlopenTimings {
+            total_ms: elapsed_ms(unblock_start),
+            closure_ms,
+        },
+    )
 }
 
 fn elapsed_ms(start: Instant) -> u64 {
