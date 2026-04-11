@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use waterui_core::AnyView;
-use waterui_preview_protocol::DylibId;
+use waterui_preview_protocol::{DylibId, PreviewDylibLoadTimings};
 
 use crate::cache::preview_dylib_cache_path;
 
@@ -26,52 +26,66 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_path(path: &Path) -> Result<Self, LoadError> {
-        let total_start = Instant::now();
-        let library = Self::load_with_codesign_fallback(path).await?;
+    pub async unsafe fn load_from_path(
+        path: &Path,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        let (library, timings) = Self::load_with_codesign_fallback(path).await?;
         tracing::info!(
             path = %path.display(),
-            elapsed_ms = total_start.elapsed().as_millis(),
+            elapsed_ms = timings.load_library_ms,
             "Preview library loaded from cached path"
         );
-        Ok(library)
+        Ok((library, timings))
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    pub async unsafe fn load_from_path(path: &Path) -> Result<Self, LoadError> {
-        let total_start = Instant::now();
-        let library = Self::load_with_codesign_fallback(path).await?;
+    pub async unsafe fn load_from_path(
+        path: &Path,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        let (library, timings) = Self::load_with_codesign_fallback(path).await?;
         tracing::info!(
             path = %path.display(),
-            elapsed_ms = total_start.elapsed().as_millis(),
+            elapsed_ms = timings.load_library_ms,
             "Preview library loaded from cached path"
         );
-        Ok(library)
+        Ok((library, timings))
     }
 
     #[cfg(target_os = "macos")]
-    async fn load_with_codesign_fallback(path: &Path) -> Result<Self, LoadError> {
+    async fn load_with_codesign_fallback(
+        path: &Path,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        let total_start = Instant::now();
         let load_start = Instant::now();
         let first_try = blocking::unblock({
             let path = path.to_path_buf();
             move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
         })
         .await;
+        let initial_dlopen_ms = elapsed_ms(load_start);
         tracing::info!(
             path = %path.display(),
-            elapsed_ms = load_start.elapsed().as_millis(),
+            elapsed_ms = initial_dlopen_ms,
             success = first_try.is_ok(),
             "Preview library attempted initial dlopen"
         );
 
         match first_try {
-            Ok(lib) => Ok(Self { lib }),
+            Ok(lib) => Ok((
+                Self { lib },
+                PreviewDylibLoadTimings {
+                    load_library_ms: elapsed_ms(total_start),
+                    initial_dlopen_ms,
+                    ..Default::default()
+                },
+            )),
             Err(load_error) => {
                 let verify_start = Instant::now();
                 let already_signed = codesign_verify_dylib(path).await?;
+                let codesign_verify_ms = elapsed_ms(verify_start);
                 tracing::info!(
                     path = %path.display(),
-                    elapsed_ms = verify_start.elapsed().as_millis(),
+                    elapsed_ms = codesign_verify_ms,
                     already_signed,
                     "Preview library verified existing codesign state"
                 );
@@ -81,9 +95,10 @@ impl PreviewLibrary {
 
                 let codesign_start = Instant::now();
                 codesign_dylib(path).await?;
+                let codesign_ms = elapsed_ms(codesign_start);
                 tracing::info!(
                     path = %path.display(),
-                    elapsed_ms = codesign_start.elapsed().as_millis(),
+                    elapsed_ms = codesign_ms,
                     "Preview library codesigned dylib"
                 );
                 let reload_start = Instant::now();
@@ -92,30 +107,52 @@ impl PreviewLibrary {
                     move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
                 })
                 .await?;
+                let reload_after_codesign_ms = elapsed_ms(reload_start);
                 tracing::info!(
                     path = %path.display(),
-                    elapsed_ms = reload_start.elapsed().as_millis(),
+                    elapsed_ms = reload_after_codesign_ms,
                     "Preview library reloaded dylib after codesign"
                 );
-                Ok(Self { lib })
+                Ok((
+                    Self { lib },
+                    PreviewDylibLoadTimings {
+                        load_library_ms: elapsed_ms(total_start),
+                        initial_dlopen_ms,
+                        codesign_verify_ms: Some(codesign_verify_ms),
+                        codesign_ms: Some(codesign_ms),
+                        reload_after_codesign_ms: Some(reload_after_codesign_ms),
+                        ..Default::default()
+                    },
+                ))
             }
         }
     }
 
     #[cfg(not(target_os = "macos"))]
-    async fn load_with_codesign_fallback(path: &Path) -> Result<Self, LoadError> {
+    async fn load_with_codesign_fallback(
+        path: &Path,
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
+        let total_start = Instant::now();
         let load_start = Instant::now();
         let lib = blocking::unblock({
             let path = path.to_path_buf();
             move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
         })
         .await?;
+        let initial_dlopen_ms = elapsed_ms(load_start);
         tracing::info!(
             path = %path.display(),
-            elapsed_ms = load_start.elapsed().as_millis(),
+            elapsed_ms = initial_dlopen_ms,
             "Preview library loaded dylib"
         );
-        Ok(Self { lib })
+        Ok((
+            Self { lib },
+            PreviewDylibLoadTimings {
+                load_library_ms: elapsed_ms(total_start),
+                initial_dlopen_ms,
+                ..Default::default()
+            },
+        ))
     }
 
     /// Load a library from bytes by writing to a temp file.
@@ -126,35 +163,47 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(target_os = "macos")]
-    pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
+    pub async unsafe fn load_from_bytes(
+        id: DylibId,
+        data: &[u8],
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
+        let cache_file_ms = elapsed_ms(cache_start);
         tracing::info!(
             dylib_id = %id,
             bytes = data.len(),
             path = %cache_path.display(),
-            elapsed_ms = cache_start.elapsed().as_millis(),
+            elapsed_ms = cache_file_ms,
             "Preview library ensured dylib cache file"
         );
 
-        unsafe { Self::load_from_path(&cache_path) }.await
+        let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
+        timings.cache_file_ms = cache_file_ms;
+        Ok((library, timings))
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
+    pub async unsafe fn load_from_bytes(
+        id: DylibId,
+        data: &[u8],
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::Bytes(data)).await?;
+        let cache_file_ms = elapsed_ms(cache_start);
         tracing::info!(
             dylib_id = %id,
             bytes = data.len(),
             path = %cache_path.display(),
-            elapsed_ms = cache_start.elapsed().as_millis(),
+            elapsed_ms = cache_file_ms,
             "Preview library ensured dylib cache file"
         );
 
-        Self::load_with_codesign_fallback(&cache_path).await
+        let (library, mut timings) = Self::load_with_codesign_fallback(&cache_path).await?;
+        timings.cache_file_ms = cache_file_ms;
+        Ok((library, timings))
     }
 
     /// Load a library from a local filesystem path by copying it into the preview cache first.
@@ -171,38 +220,44 @@ impl PreviewLibrary {
     pub async unsafe fn load_from_local_path(
         id: DylibId,
         source_path: &Path,
-    ) -> Result<Self, LoadError> {
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::File(source_path)).await?;
+        let cache_file_ms = elapsed_ms(cache_start);
         tracing::info!(
             dylib_id = %id,
             source_path = %source_path.display(),
             cache_path = %cache_path.display(),
-            elapsed_ms = cache_start.elapsed().as_millis(),
+            elapsed_ms = cache_file_ms,
             "Preview library cached dylib from local path"
         );
 
-        unsafe { Self::load_from_path(&cache_path) }.await
+        let (library, mut timings) = unsafe { Self::load_from_path(&cache_path) }.await?;
+        timings.cache_file_ms = cache_file_ms;
+        Ok((library, timings))
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     pub async unsafe fn load_from_local_path(
         id: DylibId,
         source_path: &Path,
-    ) -> Result<Self, LoadError> {
+    ) -> Result<(Self, PreviewDylibLoadTimings), LoadError> {
         let cache_path = preview_dylib_cache_path(id);
         let cache_start = Instant::now();
         ensure_cached_file(&cache_path, CachedDylibSource::File(source_path)).await?;
+        let cache_file_ms = elapsed_ms(cache_start);
         tracing::info!(
             dylib_id = %id,
             source_path = %source_path.display(),
             cache_path = %cache_path.display(),
-            elapsed_ms = cache_start.elapsed().as_millis(),
+            elapsed_ms = cache_file_ms,
             "Preview library cached dylib from local path"
         );
 
-        Self::load_with_codesign_fallback(&cache_path).await
+        let (library, mut timings) = Self::load_with_codesign_fallback(&cache_path).await?;
+        timings.cache_file_ms = cache_file_ms;
+        Ok((library, timings))
     }
 
     /// Check if the library has a symbol.
@@ -237,6 +292,10 @@ impl PreviewLibrary {
         let boxed: Box<AnyView> = unsafe { Box::from_raw(ptr.cast()) };
         Ok(*boxed)
     }
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 enum CachedDylibSource<'a> {
