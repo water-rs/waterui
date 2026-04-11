@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    net::SocketAddr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -665,44 +664,6 @@ impl Device for Local {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn list_local_process_pids_for_executable(
-    executable_path: &Path,
-) -> eyre::Result<Vec<u32>> {
-    list_matching_pids(executable_path)
-        .await
-        .map_err(|error| eyre::eyre!(error.to_string()))
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) async fn list_local_listen_addrs_for_pid(pid: u32) -> eyre::Result<Vec<SocketAddr>> {
-    let output = Command::new("lsof")
-        .args(["-Pan", "-n", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"])
-        .output()
-        .await
-        .map_err(|error| eyre::eyre!("Failed to inspect listening sockets for pid {pid}: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(eyre::eyre!(
-            "Failed to inspect listening sockets for pid {pid} with lsof: {stderr}"
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut addrs = Vec::new();
-    for line in stdout.lines().skip(1) {
-        for token in line.split_whitespace() {
-            let Some(addr) = token.parse::<SocketAddr>().ok() else {
-                continue;
-            };
-            addrs.push(addr);
-        }
-    }
-
-    Ok(addrs)
-}
-
-#[cfg(target_os = "macos")]
 async fn list_matching_pids(executable_path: &std::path::Path) -> Result<Vec<u32>, FailToRun> {
     let executable = executable_path.to_string_lossy();
     let output = Command::new("ps")
@@ -836,7 +797,9 @@ async fn detect_new_pid(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn resolve_macos_bundle_executable_path(artifact_path: &Path) -> Result<PathBuf, FailToRun> {
+pub(crate) async fn resolve_macos_bundle_executable_path(
+    artifact_path: &Path,
+) -> Result<PathBuf, FailToRun> {
     let plist_path = artifact_path.join("Contents").join("Info.plist");
     let executable_name = smol::unblock({
         let plist_path = plist_path.clone();
