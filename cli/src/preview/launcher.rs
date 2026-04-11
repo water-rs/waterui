@@ -172,6 +172,7 @@ async fn build_preview_dylib(
         PreviewPlatform::Ios => TargetPlatform::IOS,
         PreviewPlatform::Android => TargetPlatform::Android,
     };
+    let target_triple = target.triple().to_string();
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
@@ -182,6 +183,11 @@ async fn build_preview_dylib(
     let enable_preview_dynamic_linking = matches!(platform, PreviewPlatform::Macos);
     if enable_preview_dynamic_linking {
         rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
+        let rust_target_libdir = rust_target_libdir(&target_triple).await?;
+        rust_build = rust_build.with_rustc_flag(format!(
+            "-Clink-arg=-Wl,-rpath,{}",
+            rust_target_libdir.display()
+        ));
         if preview_runtime_supports_dynamic_linking(&preview_crate_path).await? {
             rust_build = rust_build.with_feature("waterui/dynamic_linking");
         }
@@ -204,7 +210,6 @@ async fn build_preview_dylib(
     );
     let candidate_path = dylib_path.clone().unwrap_or_else(|| expected_path.clone());
 
-    let target_triple = target.triple().to_string();
     let dylib_signature = dylib_build_signature(
         runtime_fingerprint,
         &target_triple,
@@ -289,6 +294,47 @@ async fn preview_runtime_supports_dynamic_linking(preview_crate_path: &Path) -> 
     let waterui_manifest =
         smol::unblock(move || CargoManifest::from_path(&waterui_manifest_path)).await?;
     Ok(waterui_manifest.features.contains_key("dynamic_linking"))
+}
+
+async fn rust_target_libdir(target_triple: &str) -> Result<PathBuf> {
+    let target_triple_owned = target_triple.to_string();
+    let output = smol::unblock(move || {
+        std::process::Command::new("rustc")
+            .arg("--print")
+            .arg("target-libdir")
+            .arg("--target")
+            .arg(&target_triple_owned)
+            .output()
+    })
+    .await
+    .wrap_err("Failed to run `rustc --print target-libdir` for preview dynamic linking")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "`rustc --print target-libdir --target {target_triple}` failed: {}",
+            if stderr.is_empty() {
+                "unknown rustc error"
+            } else {
+                &stderr
+            }
+        );
+    }
+
+    let libdir = String::from_utf8(output.stdout)
+        .wrap_err("`rustc --print target-libdir` returned invalid UTF-8")?;
+    let libdir = libdir.trim();
+    if libdir.is_empty() {
+        bail!("`rustc --print target-libdir --target {target_triple}` returned an empty path");
+    }
+    let path = PathBuf::from(libdir);
+    if !path.is_dir() {
+        bail!(
+            "Rust target libdir does not exist for preview dynamic linking: {}",
+            path.display()
+        );
+    }
+
+    Ok(path)
 }
 
 fn dylib_signature_path(path: &Path) -> PathBuf {
