@@ -365,8 +365,6 @@ struct DylibCache {
     capacity: NonZeroUsize,
     libraries: indexmap::IndexMap<DylibId, PreviewLibrary>,
     disk_present: HashSet<DylibId>,
-    #[cfg(target_os = "macos")]
-    rust_sysroot: PathBuf,
 }
 
 impl DylibCache {
@@ -377,8 +375,6 @@ impl DylibCache {
             capacity,
             libraries: indexmap::IndexMap::new(),
             disk_present,
-            #[cfg(target_os = "macos")]
-            rust_sysroot: detect_rust_sysroot().await?,
         })
     }
 
@@ -430,11 +426,6 @@ impl DylibCache {
         }
 
         let path = preview_dylib_cache_path(id);
-        #[cfg(target_os = "macos")]
-        let library = unsafe { PreviewLibrary::load_from_path(&path, &self.rust_sysroot) }
-            .await
-            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
-        #[cfg(not(target_os = "macos"))]
         let library = unsafe { PreviewLibrary::load_from_path(&path) }
             .await
             .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
@@ -486,35 +477,6 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
 }
 
-#[cfg(target_os = "macos")]
-async fn detect_rust_sysroot() -> io::Result<PathBuf> {
-    let output = async_process::Command::new("rustc")
-        .arg("--print")
-        .arg("sysroot")
-        .output()
-        .await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(io::Error::other(if stderr.is_empty() {
-            "rustc --print sysroot failed".to_string()
-        } else {
-            stderr
-        }));
-    }
-
-    let sysroot = String::from_utf8(output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let sysroot = sysroot.trim();
-    if sysroot.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "rustc --print sysroot returned an empty path",
-        ));
-    }
-
-    Ok(PathBuf::from(sysroot))
-}
-
 async fn render_worker(
     env: Environment,
     worker_rx: Receiver<WorkerMessage>,
@@ -564,12 +526,6 @@ async fn ensure_dylib_cached(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
-                    #[cfg(target_os = "macos")]
-                    let library =
-                        unsafe { PreviewLibrary::load_from_bytes(id, &bytes, &cache.rust_sysroot) }
-                            .await
-                            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
-                    #[cfg(not(target_os = "macos"))]
                     let library = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
@@ -589,13 +545,6 @@ async fn ensure_dylib_cached(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
-                    #[cfg(target_os = "macos")]
-                    let library = unsafe {
-                        PreviewLibrary::load_from_local_path(id, &path, &cache.rust_sysroot)
-                    }
-                    .await
-                    .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
-                    #[cfg(not(target_os = "macos"))]
                     let library = unsafe { PreviewLibrary::load_from_local_path(id, &path) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
