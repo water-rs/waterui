@@ -27,8 +27,8 @@ use waterui_preview_protocol::registry::{
 use waterui_preview_protocol::tcp::PreviewTcpConfig;
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 use waterui_preview_protocol::{
-    DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
-    protocol_info,
+    DylibId, DylibSource, PreviewDylibLoadTimings, PreviewError, PreviewOutput,
+    PreviewRenderTimings, PreviewRequest, PreviewResponse, Size, protocol_info,
 };
 
 use crate::cache::{preview_dylib_cache_dir, preview_dylib_cache_path};
@@ -415,10 +415,13 @@ impl DylibCache {
         }
     }
 
-    async fn ensure_loaded(&mut self, id: DylibId) -> Result<(), PreviewError> {
+    async fn ensure_loaded(
+        &mut self,
+        id: DylibId,
+    ) -> Result<Option<PreviewDylibLoadTimings>, PreviewError> {
         if self.libraries.contains_key(&id) {
             self.touch(&id);
-            return Ok(());
+            return Ok(None);
         }
 
         if !self.disk_present.contains(&id) {
@@ -426,11 +429,11 @@ impl DylibCache {
         }
 
         let path = preview_dylib_cache_path(id);
-        let library = unsafe { PreviewLibrary::load_from_path(&path) }
+        let (library, timings) = unsafe { PreviewLibrary::load_from_path(&path) }
             .await
             .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
         self.insert_loaded(id, library);
-        Ok(())
+        Ok(Some(timings))
     }
 }
 
@@ -520,15 +523,17 @@ async fn handle_request(
 async fn ensure_dylib_cached(
     cache: &mut DylibCache,
     dylib: DylibSource,
-) -> Result<DylibId, PreviewError> {
+) -> Result<EnsuredDylib, PreviewError> {
+    let mut load_timings = None;
     let id = match dylib {
         DylibSource::Bytes { id, bytes } => {
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
-                    let library = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
+                    let (library, timings) = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    load_timings = Some(timings);
                     cache.insert_persistent(id, library);
                 }
                 #[cfg(not(unix))]
@@ -545,9 +550,11 @@ async fn ensure_dylib_cached(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
-                    let library = unsafe { PreviewLibrary::load_from_local_path(id, &path) }
-                        .await
-                        .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    let (library, timings) =
+                        unsafe { PreviewLibrary::load_from_local_path(id, &path) }
+                            .await
+                            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+                    load_timings = Some(timings);
                     cache.insert_persistent(id, library);
                 }
                 #[cfg(not(unix))]
@@ -563,8 +570,16 @@ async fn ensure_dylib_cached(
         DylibSource::Cached { id } => id,
     };
 
-    cache.ensure_loaded(id).await?;
-    Ok(id)
+    if load_timings.is_none() {
+        load_timings = cache.ensure_loaded(id).await?;
+    }
+    Ok(EnsuredDylib { id, load_timings })
+}
+
+#[derive(Debug)]
+struct EnsuredDylib {
+    id: DylibId,
+    load_timings: Option<PreviewDylibLoadTimings>,
 }
 
 fn load_preview_view(
@@ -589,19 +604,22 @@ async fn handle_render(
 ) -> Result<PreviewOutput, PreviewError> {
     let total_start = Instant::now();
     let cache_start = Instant::now();
-    let id = ensure_dylib_cached(cache, dylib).await?;
+    let ensured = ensure_dylib_cached(cache, dylib).await?;
+    let cache_elapsed_ms = elapsed_ms(cache_start);
+    let id = ensured.id;
     tracing::info!(
         dylib_id = %id,
-        elapsed_ms = cache_start.elapsed().as_millis(),
+        elapsed_ms = cache_elapsed_ms,
         "Preview support app ensured dylib is cached and loaded"
     );
 
     let load_view_start = Instant::now();
     let view = load_preview_view(cache, id, symbol)?;
+    let load_view_ms = elapsed_ms(load_view_start);
     tracing::info!(
         dylib_id = %id,
         symbol,
-        elapsed_ms = load_view_start.elapsed().as_millis(),
+        elapsed_ms = load_view_ms,
         "Preview support app resolved preview symbol"
     );
 
@@ -612,22 +630,39 @@ async fn handle_render(
 
     let render_start = Instant::now();
     let result = renderer.render(view, render_size).await;
+    let render_ms = elapsed_ms(render_start);
     tracing::info!(
         dylib_id = %id,
         symbol,
-        elapsed_ms = render_start.elapsed().as_millis(),
+        elapsed_ms = render_ms,
         "Preview support app rendered view"
     );
     let png_start = Instant::now();
     let png_data = result.into_png().map_err(PreviewError::RenderFailed)?;
+    let png_encode_ms = elapsed_ms(png_start);
+    let total_ms = elapsed_ms(total_start);
     tracing::info!(
         dylib_id = %id,
         symbol,
         png_bytes = png_data.len(),
-        elapsed_ms = png_start.elapsed().as_millis(),
-        total_elapsed_ms = total_start.elapsed().as_millis(),
+        elapsed_ms = png_encode_ms,
+        total_elapsed_ms = total_ms,
         "Preview support app encoded PNG"
     );
 
-    Ok(PreviewOutput { png_data })
+    Ok(PreviewOutput {
+        png_data,
+        timings: PreviewRenderTimings {
+            ensure_dylib_cached_ms: cache_elapsed_ms,
+            dylib_load: ensured.load_timings,
+            load_view_ms,
+            render_ms,
+            png_encode_ms,
+            total_ms,
+        },
+    })
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
