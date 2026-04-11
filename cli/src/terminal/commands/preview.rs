@@ -261,6 +261,7 @@ async fn render_with_symbol(
     width: f32,
     height: f32,
 ) -> Result<Vec<u8>> {
+    let prefer_local_path = session.platform == PreviewPlatform::Macos;
     match session
         .client
         .render_with_dylib_file(
@@ -269,7 +270,7 @@ async fn render_with_symbol(
             symbol,
             width,
             height,
-            false,
+            prefer_local_path,
         )
         .await
     {

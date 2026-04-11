@@ -330,11 +330,8 @@ async fn handle_connection(
             PreviewRequest::Ping => PreviewResponse::Pong {
                 protocol: protocol_info(waterui_core_fingerprint),
             },
-            PreviewRequest::HasDylib { id } => PreviewResponse::HasDylib {
-                present: preview_dylib_cache_path(id).exists(),
-            },
             PreviewRequest::Shutdown => PreviewResponse::Shutdown,
-            request @ PreviewRequest::Render { .. } => {
+            request @ (PreviewRequest::HasDylib { .. } | PreviewRequest::Render { .. }) => {
                 let (resp_tx, resp_rx) = async_channel::bounded::<PreviewResponse>(1);
                 worker_tx
                     .send(WorkerMessage {
