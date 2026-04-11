@@ -193,11 +193,9 @@ async fn build_preview_dylib(
             rust_build = rust_build.with_feature("waterui/dynamic_linking");
         }
     }
-    rust_build = rust_build.with_crate_type_override(if enable_preview_dynamic_linking {
-        "dylib"
-    } else {
-        "cdylib"
-    });
+    if !enable_preview_dynamic_linking {
+        rust_build = rust_build.with_crate_type_override("cdylib");
+    }
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
