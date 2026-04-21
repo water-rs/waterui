@@ -459,7 +459,7 @@ pub async fn package_apple(
         OsString::from("-derivedDataPath"),
         derived_data.as_os_str().to_owned(),
         archs_arg.into(),
-        OsString::from("ONLY_ACTIVE_ARCHITECTURE=YES"),
+        OsString::from("ONLY_ACTIVE_ARCH=YES"),
         OsString::from("build"),
     ];
 
