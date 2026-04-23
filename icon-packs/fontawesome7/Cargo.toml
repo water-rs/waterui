@@ -55,3 +55,17 @@ required-feature = "webfont"
 name = "Font Awesome 7 Brands"
 remote_path = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip"
 required-feature = "webfont"
+[package.metadata.cargo-machete]
+ignored = [
+    "arkiv",
+    "dirs",
+    "hex",
+    "serde",
+    "serde_json",
+    "sha2",
+    "waterui-build-support",
+    "waterui-core",
+    "waterui-graphics",
+    "waterui-str",
+    "waterui-text",
+]

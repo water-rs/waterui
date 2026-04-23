@@ -123,3 +123,5 @@ all = [
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["async-fs", "libloading", "serde", "zenwave"]

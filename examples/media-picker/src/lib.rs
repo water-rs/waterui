@@ -8,11 +8,12 @@
 
 use waterui::app::App;
 use waterui::component::Dynamic;
+use waterui::media::live::LivePhotoSource;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::media::{LivePhoto, Media};
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
-use waterui::reactive::binding;
+use waterui::reactive::{binding, impl_constant};
 use waterui::task::spawn_local;
 use waterui::{view, view_builder};
 
@@ -24,6 +25,8 @@ enum DisplayState {
     Loaded(Media),
     Error(String),
 }
+
+impl_constant!(DisplayState);
 
 fn main() -> impl View {
     // Single state binding for cleaner reactivity
@@ -175,41 +178,43 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
 #[view_builder]
 fn media_view(media: Media) -> impl View {
     match media {
-        Media::Image(url) => {
-            tracing::debug!("Displaying image from: {}", url);
-            vstack((
-                Photo::new(url.clone()).on_event(move |event| {
-                    tracing::debug!("Photo event: {:?}", event);
-                }),
-                text("Image")
-                    .body()
-                    .foreground(MutedForeground)
-                    .padding_with(8.0),
-            ))
-        }
-        Media::Video(url) => {
-            tracing::debug!("Displaying video from: {}", url);
-            video_view(url)
-        }
-        Media::LivePhoto(source) => {
-            tracing::debug!("Displaying live photo");
-            vstack((
-                LivePhoto::new(source),
-                text("Live Photo")
-                    .body()
-                    .foreground(MutedForeground)
-                    .padding_with(8.0),
-            ))
-        }
+        Media::Image(url) => image_view(url),
+        Media::Video(url) => video_view(url),
+        Media::LivePhoto(source) => live_photo_view(source),
     }
 }
 
+fn image_view(url: Url) -> impl View {
+    tracing::debug!("Displaying image from: {}", url);
+    vstack((
+        Photo::new(url.clone()).on_event(move |event| {
+            tracing::debug!("Photo event: {:?}", event);
+        }),
+        text("Image")
+            .body()
+            .foreground(MutedForeground)
+            .padding_with(8.0),
+    ))
+}
+
 fn video_view(url: Url) -> impl View {
+    tracing::debug!("Displaying video from: {}", url);
     vstack((
         VideoPlayer::new(url)
             .show_controls(true)
             .aspect_ratio(AspectRatio::Fit),
         text("Video")
+            .body()
+            .foreground(MutedForeground)
+            .padding_with(8.0),
+    ))
+}
+
+fn live_photo_view(source: LivePhotoSource) -> impl View {
+    tracing::debug!("Displaying live photo");
+    vstack((
+        LivePhoto::new(source),
+        text("Live Photo")
             .body()
             .foreground(MutedForeground)
             .padding_with(8.0),
