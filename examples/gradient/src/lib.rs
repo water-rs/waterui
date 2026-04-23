@@ -485,4 +485,3 @@ fn main() -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }
-

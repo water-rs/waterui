@@ -89,13 +89,6 @@ impl Backend for AndroidBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
-        // Determine the Android backend path - this is unused for local dev,
-        // kept for potential future remote backend support
-        let android_backend_path = manifest
-            .waterui_path
-            .as_ref()
-            .map(|p| PathBuf::from(p).join("backends/android"));
-
         let project_path = default_android_project_path();
 
         // Extract enabled permissions from the manifest
@@ -113,7 +106,6 @@ impl Backend for AndroidBackend {
             TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
                 .with_backend_project_path(project.backend_path::<Self>())
                 .with_project_root_path(project.root().to_path_buf())
-                .with_android_backend_path(android_backend_path)
                 .with_android_permissions(android_permissions);
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
