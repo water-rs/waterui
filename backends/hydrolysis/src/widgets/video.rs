@@ -135,10 +135,10 @@ fn video_player_content(config: &VideoPlayerConfig, env: &Environment) -> AnyVie
     let playback_rate = playback_rate_binding(&config.playback_rate);
     let previous = button("Previous")
         .action(|| {})
-        .visable(config.has_previous.clone());
+        .visible(config.has_previous.clone());
     let next = button("Next")
         .action(|| {})
-        .visable(config.has_next.clone());
+        .visible(config.has_next.clone());
 
     let play_pause = {
         let is_playing_for_label = is_playing.clone();
