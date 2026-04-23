@@ -958,6 +958,17 @@ impl Project {
                     );
                     project.manifest.backends.set_apple(apple_backend);
 
+                    let android_backend_start = std::time::Instant::now();
+                    let android_backend = AndroidBackend::init(&project)
+                        .await
+                        .map_err(FailToOpenProject::BackendInit)?;
+                    info!(
+                        path = %project.root.display(),
+                        elapsed_ms = android_backend_start.elapsed().as_millis(),
+                        "Project::open initialized Android backend"
+                    );
+                    project.manifest.backends.set_android(android_backend);
+
                     let ffi_companion_start = std::time::Instant::now();
                     project
                         .scaffold_ffi_companion()

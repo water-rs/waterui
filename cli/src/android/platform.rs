@@ -459,6 +459,10 @@ impl AndroidPlatform {
         if let Some(java_home) = Java::detect_home().await {
             cmd.env("JAVA_HOME", java_home);
         }
+        if let Some(sdk_path) = AndroidSdk::detect_path() {
+            cmd.env("ANDROID_HOME", &sdk_path)
+                .env("ANDROID_SDK_ROOT", &sdk_path);
+        }
 
         let output = cmd.output().await?;
 
@@ -732,6 +736,10 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
 
     if let Some(java_home) = Java::detect_home().await {
         cmd.env("JAVA_HOME", java_home);
+    }
+    if let Some(sdk_path) = AndroidSdk::detect_path() {
+        cmd.env("ANDROID_HOME", &sdk_path)
+            .env("ANDROID_SDK_ROOT", &sdk_path);
     }
 
     let output = cmd.output().await?;

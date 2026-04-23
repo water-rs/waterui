@@ -10,7 +10,7 @@ extern crate std;
 use alloc::boxed::Box;
 use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JValue};
-use jni::sys::{jboolean, jlong, jobject};
+use jni::sys::{jboolean, jint, jlong, jobject};
 
 #[inline]
 fn require_ptr<T>(ptr: jlong, function: &str, pointer_name: &str) -> *mut T {

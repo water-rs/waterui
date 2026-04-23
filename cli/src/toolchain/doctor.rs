@@ -274,7 +274,7 @@ async fn push_android_component_checks(items: &mut Vec<DoctorItem>, sdk_ready: b
         items,
         "Android Rust Targets",
         "Required for Android Rust cross-compilation",
-        AndroidRustTargets,
+        AndroidRustTargets::default(),
     )
     .await;
 }

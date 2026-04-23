@@ -85,7 +85,6 @@ fn picker_selection_flow() {
         .role(Role::LABEL)
         .label("selected:Beta")
         .assert_exists();
-
 }
 
 #[test]
@@ -128,7 +127,6 @@ fn date_picker_accessibility() {
         .role(Role::LABEL)
         .label("selected:2025-02-14")
         .assert_exists();
-
 }
 
 #[test]
@@ -179,5 +177,4 @@ fn calendar_navigation_and_selection_update_binding() {
         Date::new(2025, 2, 20).unwrap(),
         "calendar month navigation should change the active month before selection"
     );
-
 }

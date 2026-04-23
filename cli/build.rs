@@ -12,6 +12,7 @@ use toml::Value;
 
 const DEV_BRANCH_BUILD_KIND: &str = "dev-branch";
 const RELEASE_BUILD_KIND: &str = "release";
+const ANDROID_SETTINGS_GRADLE_RELATIVE_PATH: &str = "backends/android/settings.gradle.kts";
 
 struct ScaffoldVersions {
     waterui: String,
@@ -19,6 +20,7 @@ struct ScaffoldVersions {
     hydrolysis: String,
     waterui_gtk: String,
     waterui_preview: String,
+    android_kotlin: String,
 }
 
 struct BackendReference {
@@ -71,6 +73,10 @@ fn main() {
         scaffold_metadata.versions.waterui_preview
     );
     println!(
+        "cargo:rustc-env=WATERUI_CLI_ANDROID_KOTLIN_VERSION={}",
+        scaffold_metadata.versions.android_kotlin
+    );
+    println!(
         "cargo:rustc-env=WATERUI_CLI_APPLE_BACKEND_URL={}",
         scaffold_metadata.apple_backend.repository_url
     );
@@ -119,6 +125,14 @@ fn main() {
                 .join("backends")
                 .join("hydrolysis")
                 .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("backends")
+                .join("android")
+                .join("settings.gradle.kts")
                 .display()
         );
         println!(
@@ -182,6 +196,7 @@ fn resolve_scaffold_metadata(
                         .join("preview")
                         .join("Cargo.toml"),
                 ),
+                android_kotlin: workspace_android_kotlin_version(workspace_root),
                 hydrolysis: manifest_package_version(
                     &workspace_root
                         .join("backends")
@@ -202,6 +217,7 @@ fn resolve_scaffold_metadata(
             waterui_ffi: manifest_scaffold_string(scaffold_metadata, "waterui-ffi-version"),
             waterui_gtk: manifest_scaffold_string(scaffold_metadata, "waterui-gtk-version"),
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
+            android_kotlin: manifest_scaffold_string(scaffold_metadata, "android-kotlin-version"),
             hydrolysis: manifest_scaffold_string(scaffold_metadata, "hydrolysis-version"),
         },
         apple_backend: manifest_backend_reference(scaffold_metadata, "apple-backend"),
@@ -214,6 +230,35 @@ fn manifest_scaffold_string(scaffold_metadata: &Value, key: &str) -> String {
         .as_str()
         .unwrap_or_else(|| panic!("missing package.metadata.waterui-scaffold.{key}"))
         .to_string()
+}
+
+fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.split("//").next()?.trim();
+        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
+            return None;
+        }
+        let version_marker = "version \"";
+        let version_start = line.find(version_marker)? + version_marker.len();
+        let version = line[version_start..].split('"').next()?.trim();
+        if version.is_empty() {
+            None
+        } else {
+            Some(version.to_string())
+        }
+    })
+}
+
+fn workspace_android_kotlin_version(workspace_root: &Path) -> String {
+    let settings_gradle = workspace_root.join(ANDROID_SETTINGS_GRADLE_RELATIVE_PATH);
+    let contents = fs::read_to_string(&settings_gradle)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", settings_gradle.display()));
+    parse_android_kotlin_version_from_settings_gradle(&contents).unwrap_or_else(|| {
+        panic!(
+            "failed to parse Kotlin plugin version from {}",
+            settings_gradle.display()
+        )
+    })
 }
 
 fn workspace_backend_reference(workspace_root: &Path, submodule_path: &str) -> BackendReference {
