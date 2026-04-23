@@ -17,6 +17,7 @@ waterui-ffi-version = "0.2.1"
 hydrolysis-version = "0.1.0"
 waterui-gtk-version = "0.1.0"
 waterui-preview-version = "0.1.0"
+android-kotlin-version = "2.0.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 apple-backend-commit = "4613a5f8425efb52835a90f31f5c2148df6ebd56"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
@@ -81,6 +82,7 @@ waterui-inspector-protocol = { path = "../components/inspector-protocol" }
 tempfile = "3.26"
 walkdir = "2.5"
 pathdiff = "0.2"
+url = "2.5"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }

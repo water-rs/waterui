@@ -110,12 +110,12 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders"
 
 android {
     namespace = "{{ ctx.android_package_name() }}"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "{{ ctx.bundle_identifier }}"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 

@@ -833,4 +833,3 @@ impl SubView for FlameRenderer {
         0
     }
 }
-
