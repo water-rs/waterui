@@ -267,4 +267,3 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }
-

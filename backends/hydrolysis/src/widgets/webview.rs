@@ -47,24 +47,22 @@ fn webview_content(view: &WebView, surface_label: &str, env: &Environment) -> An
     );
 
     normalize_view_for_render(
-        AnyView::new(vstack((
-            zstack((
-                Gradient::linear(
-                    vec![
-                        (0.0, Srgb::new(0.12, 0.14, 0.20).resolve()),
-                        (1.0, Srgb::new(0.22, 0.29, 0.40).resolve()),
-                    ],
-                    [0.0, 0.0],
-                    [1.0, 1.0],
-                )
-                .height(WEBVIEW_SURFACE_HEIGHT)
-                .a11y_role(AccessibilityRole::Group)
-                .a11y_label(surface_label.to_owned()),
-                vstack((Text::new("Hydrolysis WebView"), status, navigation))
-                    .spacing(8.0)
-                    .padding_with(16.0),
-            )),
-        ))),
+        AnyView::new(vstack((zstack((
+            Gradient::linear(
+                vec![
+                    (0.0, Srgb::new(0.12, 0.14, 0.20).resolve()),
+                    (1.0, Srgb::new(0.22, 0.29, 0.40).resolve()),
+                ],
+                [0.0, 0.0],
+                [1.0, 1.0],
+            )
+            .height(WEBVIEW_SURFACE_HEIGHT)
+            .a11y_role(AccessibilityRole::Group)
+            .a11y_label(surface_label.to_owned()),
+            vstack((Text::new("Hydrolysis WebView"), status, navigation))
+                .spacing(8.0)
+                .padding_with(16.0),
+        )),))),
         env,
     )
 }
@@ -84,7 +82,11 @@ impl HydroNativeView for WebView {
         let mut render_env = env.clone();
         render_env.remove::<AccessibilityLabel>();
         render_env.remove::<AccessibilityRole>();
-        measure_view_intrinsic(&webview_content(view, &surface_label, &render_env), state, &render_env)
+        measure_view_intrinsic(
+            &webview_content(view, &surface_label, &render_env),
+            state,
+            &render_env,
+        )
     }
 
     fn dimensions(

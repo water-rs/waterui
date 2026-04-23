@@ -63,4 +63,3 @@ pub fn app(env: Environment) -> App {
         .clone();
     App::new(move || main(manager.clone()), env)
 }
-

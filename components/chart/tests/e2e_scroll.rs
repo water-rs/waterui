@@ -165,11 +165,7 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
     visible_length.set(4.0);
     assert!(
         app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::LABEL)
-                    .label("visible:4.00"),
-            )],
+            &[app.expect_exists(Selector::default().role(Role::LABEL).label("visible:4.00"),)],
             WaitOptions::new(std::time::Duration::from_millis(200)),
         ) == WaitResult::Completed,
         "line-visible-domain-reactive: visible-domain readout should update after binding change"
