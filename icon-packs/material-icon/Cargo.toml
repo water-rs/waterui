@@ -35,3 +35,5 @@ workspace = true
 name = "Material Design Icons"
 remote_path = "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
 required-feature = "webfont"
+[package.metadata.cargo-machete]
+ignored = ["regex", "serde", "serde_json", "waterui-build-support"]

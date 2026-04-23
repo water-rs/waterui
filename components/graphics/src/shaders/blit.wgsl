@@ -39,6 +39,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Use explicit LOD to support unfilterable float textures (e.g. HDR formats).
+    // Use an explicit mip level to support unfilterable float textures (e.g. HDR formats).
     return textureSampleLevel(t_source, s_source, in.uv, 0.0);
 }

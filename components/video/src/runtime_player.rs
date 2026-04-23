@@ -1298,7 +1298,7 @@ enum DecoderControl {
 #[derive(Debug)]
 enum DecoderOutput {
     Opened { duration: Duration },
-    Seeked { progress: f64, pts: Duration },
+    SeekCompleted { progress: f64, pts: Duration },
     Frame(DecodedVideoFrame),
     Ended,
     Error(String),
@@ -1357,7 +1357,7 @@ impl DecoderWorker {
                     match decode.seek_to_progress(progress) {
                         Ok(pts) => {
                             if updates_tx
-                                .send(DecoderOutput::Seeked { progress, pts })
+                                .send(DecoderOutput::SeekCompleted { progress, pts })
                                 .is_err()
                             {
                                 return;
@@ -2943,7 +2943,7 @@ impl VideoRenderer {
                     }
                     self.sync_picture_in_picture_controller(should_play);
                 }
-                DecoderOutput::Seeked { progress, pts } => {
+                DecoderOutput::SeekCompleted { progress, pts } => {
                     self.seek_inflight = false;
                     self.pending_frame = None;
                     self.ended_sent = false;

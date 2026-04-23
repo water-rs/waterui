@@ -1752,7 +1752,7 @@ mod tests {
         let expected = format!("[WaterUI]({INCOMPLETE_LINK_SENTINEL})");
         assert_eq!(complete_incomplete_markdown_fragment("[WaterUI"), expected);
         assert_eq!(
-            complete_incomplete_markdown_fragment("[WaterUI](https://exampl"),
+            complete_incomplete_markdown_fragment("[WaterUI](https://example"),
             expected
         );
     }

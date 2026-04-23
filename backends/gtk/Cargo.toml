@@ -52,3 +52,5 @@ webkitgtk = []
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["cairo-rs", "gdk-pixbuf", "waterui-media"]
