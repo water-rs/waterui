@@ -3,6 +3,7 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Nothing, Parse, ParseStream};
+use syn::token::Brace;
 use syn::visit_mut::{self, VisitMut};
 use syn::{
     Block, Expr, ExprGroup, ExprIf, ExprLet, ExprMacro, ExprMatch, ExprParen, ExprReturn, Ident,
@@ -10,7 +11,7 @@ use syn::{
     parse_quote,
 };
 
-pub fn expand_attribute(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn expand_attribute(args: TokenStream, input: &TokenStream) -> TokenStream {
     if let Err(error) = syn::parse::<Nothing>(args) {
         return error.to_compile_error().into();
     }
@@ -75,7 +76,7 @@ pub fn expand_macro(input: TokenStream) -> TokenStream {
 fn runtime_watch_path() -> Result<TokenStream2, TokenStream2> {
     if matches!(
         current_package_name().as_deref(),
-        Some("waterui") | Some("waterui-internal")
+        Some("waterui" | "waterui-internal")
     ) {
         return Ok(quote!(crate::component::dynamic::watch));
     }
@@ -143,7 +144,7 @@ impl Parse for BuilderInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         Ok(Self {
             block: Block {
-                brace_token: Default::default(),
+                brace_token: Brace::default(),
                 stmts: Block::parse_within(input)?,
             },
         })
@@ -169,21 +170,23 @@ fn lower_block_with(block: &mut Block, watch_path: &TokenStream2, final_wrap: Op
         lower_stmt(stmt, watch_path, is_last, final_wrap);
     }
 
-    if last_index.is_none()
+    if (last_index.is_none()
         || !matches!(
             block.stmts.last(),
-            Some(Stmt::Expr(_, None))
-                | Some(Stmt::Macro(StmtMacro {
-                    semi_token: None,
-                    ..
-                }))
-        )
+            Some(
+                Stmt::Expr(_, None)
+                    | Stmt::Macro(StmtMacro {
+                        semi_token: None,
+                        ..
+                    })
+            )
+        ))
+        && let Some(wrapper) = final_wrap
     {
-        if let Some(wrapper) = final_wrap {
-            block
-                .stmts
-                .push(Stmt::Expr(wrap_plain_expr(parse_quote!(()), wrapper), None));
-        }
+        let unit = parse_quote!(());
+        block
+            .stmts
+            .push(Stmt::Expr(wrap_plain_expr(&unit, wrapper), None));
     }
 }
 
@@ -225,7 +228,10 @@ fn lower_stmt(
 
 fn lower_final_expr(expr: Expr, watch_path: &TokenStream2, final_wrap: Option<FinalWrap>) -> Expr {
     let lowered = lower_result_expr(expr, watch_path);
-    final_wrap.map_or(lowered.clone(), |wrapper| wrap_plain_expr(lowered, wrapper))
+    final_wrap.map_or_else(
+        || lowered.clone(),
+        |wrapper| wrap_plain_expr(&lowered, wrapper),
+    )
 }
 
 fn lower_result_expr(mut expr: Expr, watch_path: &TokenStream2) -> Expr {
@@ -269,16 +275,12 @@ fn lower_if_expr(mut expr_if: ExprIf, watch_path: &TokenStream2) -> Expr {
     let condition_ident = Ident::new("__waterui_condition", Span::call_site());
     let signal_ident = Ident::new("__waterui_condition_signal", Span::call_site());
 
-    let else_expr = match expr_if.else_branch.take() {
-        Some((else_token, else_branch)) => {
-            lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Ok));
-            let _ = else_token;
-            wrap_lowered_expr(*else_branch, watch_path, FinalWrap::Err)
-        }
-        None => {
-            lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Some));
-            parse_quote!(::core::option::Option::None)
-        }
+    let else_expr = if let Some((_, else_branch)) = expr_if.else_branch.take() {
+        lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Ok));
+        wrap_lowered_expr(*else_branch, watch_path, FinalWrap::Err)
+    } else {
+        lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Some));
+        parse_quote!(::core::option::Option::None)
     };
     let then_branch = expr_if.then_branch;
 
@@ -311,7 +313,7 @@ fn lower_match_expr(mut expr_match: ExprMatch, watch_path: &TokenStream2) -> Exp
 
     for (index, arm) in expr_match.arms.iter_mut().enumerate() {
         let original = (*arm.body).clone();
-        arm.body = Box::new(wrap_match_arm_body(original, watch_path, index, arm_count));
+        *arm.body = wrap_match_arm_body(original, watch_path, index, arm_count);
     }
 
     let arms = expr_match.arms;
@@ -336,21 +338,22 @@ fn wrap_match_arm_body(
     let mut wrapped = lower_result_expr(expr, watch_path);
 
     if index + 1 != arm_count {
-        wrapped = wrap_plain_expr(wrapped, FinalWrap::Ok);
+        wrapped = wrap_plain_expr(&wrapped, FinalWrap::Ok);
     }
 
     for _ in 0..index {
-        wrapped = wrap_plain_expr(wrapped, FinalWrap::Err);
+        wrapped = wrap_plain_expr(&wrapped, FinalWrap::Err);
     }
 
     wrapped
 }
 
 fn wrap_lowered_expr(expr: Expr, watch_path: &TokenStream2, wrapper: FinalWrap) -> Expr {
-    wrap_plain_expr(lower_result_expr(expr, watch_path), wrapper)
+    let lowered = lower_result_expr(expr, watch_path);
+    wrap_plain_expr(&lowered, wrapper)
 }
 
-fn wrap_plain_expr(expr: Expr, wrapper: FinalWrap) -> Expr {
+fn wrap_plain_expr(expr: &Expr, wrapper: FinalWrap) -> Expr {
     match wrapper {
         FinalWrap::Some => parse_quote!(::core::option::Option::Some(#expr)),
         FinalWrap::Ok => parse_quote!(::core::result::Result::Ok(#expr)),

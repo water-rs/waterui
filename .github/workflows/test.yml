@@ -20,6 +20,9 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
+      - name: Install nasm
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
