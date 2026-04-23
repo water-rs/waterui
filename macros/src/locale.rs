@@ -614,7 +614,7 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
         &plural_names,
     );
 
-    let tracked_file_lits: Vec<LitStr> = bundle
+    let tracked_file_list: Vec<LitStr> = bundle
         .tracked_files
         .iter()
         .filter_map(|path| path.to_str())
@@ -630,7 +630,7 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
     quote! {
         {
             // Track translation file changes to invalidate macro expansion.
-            #(let _ = include_bytes!(#tracked_file_lits);)*
+            #(let _ = include_bytes!(#tracked_file_list);)*
 
             #waterui::text::Text::localized_with({
                 #(#captures)*

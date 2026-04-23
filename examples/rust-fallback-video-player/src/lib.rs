@@ -92,7 +92,7 @@ fn main() -> impl View {
         .foreground(Srgb::WHITE)
         .padding_with(EdgeInsets::all(10.0))
         .background(Srgb::BLACK.with_opacity(0.7))
-        .visable(is_buffering.clone());
+        .visible(is_buffering.clone());
 
     vstack((
         text("WaterUI Rust Fallback VideoPlayer").headline(),

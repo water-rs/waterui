@@ -164,6 +164,7 @@ where
 
 #[cfg(feature = "serde")]
 mod serde {
+    use core::fmt;
     use core::ops::Deref;
 
     use super::Str;

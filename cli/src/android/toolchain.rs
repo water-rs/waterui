@@ -975,9 +975,9 @@ fn find_kotlin_home_dir(root: &Path) -> eyre::Result<PathBuf> {
 
 fn parse_kotlinc_version_output(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
-        let mut tokens = line.split_whitespace().map(|token| {
-            token.trim_matches(|ch: char| ch == ':' || ch == '(' || ch == ')')
-        });
+        let mut tokens = line
+            .split_whitespace()
+            .map(|token| token.trim_matches(|ch: char| ch == ':' || ch == '(' || ch == ')'));
         while let Some(token) = tokens.next() {
             if token.starts_with("kotlinc") {
                 return tokens

@@ -45,3 +45,5 @@ dispatch = "0.2"
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["dispatch", "libc", "waterkit-fs", "waterui-graphics"]

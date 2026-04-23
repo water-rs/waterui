@@ -56,3 +56,5 @@ wgpu.workspace = true
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["async-oneshot", "base64", "mime", "waterui-macros"]

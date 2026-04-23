@@ -78,7 +78,7 @@ Set `[package].bundle_identifier` in `Water.toml` to a valid Java package name (
 /// Get the NDK host tag based on the current machine's OS and architecture.
 ///
 /// On Apple Silicon, prefer the native `darwin-arm64` toolchain when present,
-/// falling back to `darwin-x86_64` for older NDKs (Rosetta).
+/// falling back to `darwin-x86_64` for older Android NDK releases (Rosetta).
 fn ndk_host_tag(ndk_path: &Path) -> &'static str {
     use target_lexicon::{Architecture, OperatingSystem, Triple};
 
@@ -163,8 +163,8 @@ fn ndk_cxx_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
 
 /// Get the path to `libc++_shared.so` in the NDK.
 ///
-/// NDK r23+ ships it under `sysroot/usr/lib/<triple>/`, while older NDKs
-/// used `sources/cxx-stl/llvm-libc++/libs/<abi>/`.
+/// NDK r23+ ships it under `sysroot/usr/lib/<triple>/`, while older Android
+/// NDK releases used `sources/cxx-stl/llvm-libc++/libs/<abi>/`.
 fn ndk_libcxx_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
     let new_path = ndk_path
         .join("toolchains/llvm/prebuilt")
