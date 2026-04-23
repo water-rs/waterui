@@ -1,4 +1,21 @@
 [default.extend-words]
-udid = "udid"
-thr = "thr"
+COSE = "COSE"
+Dezember = "Dezember"
+cose = "cose"
+cros = "cros"
 hel = "hel"
+seeked = "seeked"
+thr = "thr"
+trak = "trak"
+udid = "udid"
+
+[default.extend-identifiers]
+NdefFormatable = "NdefFormatable"
+formatable = "formatable"
+thw = "thw"
+
+[files]
+extend-exclude = [
+    "examples/locale/README.md",
+    "examples/locale/i18n/*.toml",
+]

@@ -10,7 +10,11 @@ fn main() {
         Config::from_file(crate_dir.join("cbindgen.toml")).expect("failed to load cbindgen.toml"),
     )
     .expect("Unable to generate bindings");
-    let header = repair_known_cbindgen_misgenerations(bindings.to_string());
+    let mut header_bytes = Vec::new();
+    bindings.write(&mut header_bytes);
+    let header = repair_known_cbindgen_misgenerations(
+        String::from_utf8(header_bytes).expect("cbindgen generated a non-UTF-8 header"),
+    );
     fs::write(crate_dir.join("waterui.h"), header).expect("failed to write generated header");
     println!(
         "✅ Bindings generated at {}",

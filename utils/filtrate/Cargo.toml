@@ -17,3 +17,5 @@ workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 filtrate-core.workspace = true
+[package.metadata.cargo-machete]
+ignored = ["bytemuck", "wgpu"]

@@ -47,7 +47,7 @@ async fn run_build_cache(args: BuildCacheArgs) -> Result<()> {
     match water_dir::cleanup_stale_build_caches_for_project(&project_path).await? {
         BuildCacheGcOutcome::Ran(summary) => {
             success!(
-                "Build-cache GC complete: scanned {} cache entrie(s), removed {} stale entrie(s)",
+                "Build-cache GC complete: scanned {} cache entries, removed {} stale entries",
                 summary.scanned_entries,
                 summary.removed_entries
             );

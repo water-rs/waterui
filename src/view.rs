@@ -469,7 +469,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `visible` - A reactive boolean indicating whether the view should be visible
-    fn visable(self, visible: impl IntoComputed<bool>) -> impl View {
+    fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
         let accessibility_state = visible
             .clone()

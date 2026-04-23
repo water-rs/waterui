@@ -17,3 +17,5 @@ dev = ["waterui/dynamic_linking"]
 [dependencies]
 waterui.workspace = true
 waterui-media.workspace = true
+[package.metadata.cargo-machete]
+ignored = ["waterui-media"]

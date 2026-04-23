@@ -46,3 +46,5 @@ waterui-testing.workspace = true
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["naga", "waterui-macros", "waterui-str"]

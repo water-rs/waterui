@@ -846,7 +846,9 @@ mod tests {
             for (dir, _) in ANDROID_MIPMAP_DIRS {
                 let target_dir = backend_path.join("app/src/main/res").join(dir);
                 assert!(
-                    fs::metadata(target_dir.join("ic_launcher.png")).await.is_err(),
+                    fs::metadata(target_dir.join("ic_launcher.png"))
+                        .await
+                        .is_err(),
                     "stale launcher png should be removed from {dir}"
                 );
                 assert!(

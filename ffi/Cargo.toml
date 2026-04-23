@@ -77,3 +77,5 @@ gpu = []
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
 android-jni = ["dep:jni", "dep:bytemuck", "std"]
+[package.metadata.cargo-machete]
+ignored = ["bytemuck", "waterui-media", "waterui-svg"]

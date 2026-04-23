@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - You are not allowed to revert or restore files or hide problems. If you find a bug, fix it properly rather than working around it.
 - Do not leave legacy code for fallback. If a feature is deprecated, remove all related code.
 - No simplify, no stub, no fallback, no patch.
-- Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For intance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
+- Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For instance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
 - Do not clean cache blindly
 - Never disable `sccache` under any circumstance (do not set `WATERUI_DISABLE_SCCACHE=1`, and do not bypass `sccache` via `RUSTC_WRAPPER=`), because disabling cache causes storage usage to explode.
 - Never read back GPU render targets/textures to CPU memory in runtime render paths. This violates GPU-first architecture and causes severe performance degradation.

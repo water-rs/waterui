@@ -15,7 +15,7 @@ use waterui_map::{Coordinate, Map, MapStyle, Region};
 fn main_view() -> impl View {
     // San Francisco coordinates
     let sf = Coordinate::new(37.7749, -122.4194);
-    let region = binding(Region::new(sf, 0.1, 0.1));
+    let region: Binding<Region> = binding(Region::new(sf, 0.1, 0.1));
 
     // Create map with reactive region
     let map = Map::new(region.clone())

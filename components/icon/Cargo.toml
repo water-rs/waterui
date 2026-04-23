@@ -30,3 +30,5 @@ waterui-testing.workspace = true
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["cookie", "thiserror", "waterui-url"]
