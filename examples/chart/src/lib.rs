@@ -4,7 +4,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{binding, Binding};
+use waterui::reactive::{Binding, binding, impl_constant};
 use waterui::view_builder;
 use waterui_chart::{
     AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle,
@@ -40,6 +40,8 @@ enum ChartMode {
     StressLine1K,
     StressHeatmap10K,
 }
+
+impl_constant!(ChartMode);
 
 impl ChartMode {
     const BASIC: &[Self] = &[

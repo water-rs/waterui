@@ -16,3 +16,5 @@ waterui-str.workspace = true
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["waterui-str"]

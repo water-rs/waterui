@@ -190,14 +190,14 @@ fn mesh_gradient(uv: vec2<f32>) -> vec4<f32> {
     let cell_y = uv.y * f32(h - 1u);
 
     let ix = u32(floor(cell_x));
-    let iy = u32(floor(cell_y));
+    let y_index = u32(floor(cell_y));
 
     let fx = fract(cell_x);
     let fy = fract(cell_y);
 
     // Clamp indices
     let x0 = min(ix, w - 2u);
-    let y0 = min(iy, h - 2u);
+    let y0 = min(y_index, h - 2u);
     let x1 = x0 + 1u;
     let y1 = y0 + 1u;
 
