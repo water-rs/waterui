@@ -133,5 +133,4 @@ fn video_player_controls_are_accessible_and_reactive() {
         .role(Role::BUTTON)
         .label("Unmute")
         .assert_exists();
-
 }

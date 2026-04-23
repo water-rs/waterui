@@ -227,20 +227,6 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWeb
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWebView<'local>(
-    env: JNIEnv<'local>,
-    class: JClass<'local>,
-    ptr: jlong,
-) {
-    unsafe {
-        crate::components::webview::Java_dev_waterui_android_ffi_WatcherJni_dropWebview(
-            env, class, ptr,
-        )
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloadEndpoint<
     'local,
 >(

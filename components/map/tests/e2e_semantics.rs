@@ -22,8 +22,7 @@ fn initial_annotations() -> Vec<Annotation> {
 
 fn updated_annotations() -> Vec<Annotation> {
     vec![
-        Annotation::new(Coordinate::new(35.6764, 139.6500), "Tokyo Station")
-            .subtitle("Transit"),
+        Annotation::new(Coordinate::new(35.6764, 139.6500), "Tokyo Station").subtitle("Transit"),
         Annotation::new(Coordinate::new(35.6895, 139.6917), "Shinjuku"),
     ]
 }
@@ -35,17 +34,21 @@ fn map_exposes_accessibility_surface_and_reactive_annotations() {
     let region_for_view = region.clone();
     let annotations_for_view = annotations.clone();
 
-    let mut app = UiTest::new().viewport(420, 320).mount(move || {
-        map_view(region_for_view.clone(), annotations_for_view.clone())
-    });
+    let mut app = UiTest::new()
+        .viewport(420, 320)
+        .mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
 
     app.query()
         .role(Role::IMAGE)
         .label("City map")
         .assert_exists();
-    app.query().label("Center: 37.7749, -122.4194 span 0.120 x 0.120").assert_exists();
+    app.query()
+        .label("Center: 37.7749, -122.4194 span 0.120 x 0.120")
+        .assert_exists();
     app.query().label("Pins: 1").assert_exists();
-    app.query().label("Annotations: San Francisco").assert_exists();
+    app.query()
+        .label("Annotations: San Francisco")
+        .assert_exists();
 
     region.set(updated_region());
     annotations.set(updated_annotations());
@@ -57,8 +60,7 @@ fn map_exposes_accessibility_surface_and_reactive_annotations() {
                 ),
                 app.expect_exists(Selector::default().label("Pins: 2")),
                 app.expect_exists(
-                    Selector::default()
-                        .label("Annotations: Tokyo Station (Transit) | Shinjuku"),
+                    Selector::default().label("Annotations: Tokyo Station (Transit) | Shinjuku"),
                 ),
             ],
             WaitOptions::new(Duration::from_millis(250)),

@@ -8,6 +8,7 @@ use waterui_cli::{
     android::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
         AndroidSdkPlatforms, Java, Kotlin,
+        platform::{ALL_ABIS, AndroidAbi},
     },
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
@@ -134,6 +135,10 @@ pub async fn check_apple(sdk: AppleSdk) -> Result<()> {
 }
 
 pub async fn check_android_build_or_package() -> Result<()> {
+    check_android_build_or_package_for_abis(&ALL_ABIS).await
+}
+
+pub async fn check_android_build_or_package_for_abis(required_abis: &[AndroidAbi]) -> Result<()> {
     let sdk = AndroidSdk;
     if let Err(e) = sdk.check().await {
         bail!(
@@ -186,7 +191,7 @@ pub async fn check_android_build_or_package() -> Result<()> {
             android_failure_message("Java", &e, AndroidCheckScope::BuildOrPackage).await
         );
     }
-    let rust_targets = AndroidRustTargets;
+    let rust_targets = AndroidRustTargets::for_abis(required_abis);
     if let Err(e) = rust_targets.check().await {
         bail!(
             "{}",

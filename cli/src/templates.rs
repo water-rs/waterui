@@ -203,13 +203,6 @@ impl TemplateContext {
         self
     }
 
-    /// Set optional Android backend path for template rendering.
-    #[must_use]
-    pub fn with_android_backend_path(mut self, path: Option<PathBuf>) -> Self {
-        self.android_backend_path = path;
-        self
-    }
-
     /// Set Android permissions for template rendering.
     #[must_use]
     pub fn with_android_permissions(

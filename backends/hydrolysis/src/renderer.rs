@@ -317,7 +317,6 @@ pub struct HydrolysisRenderer {
     accessibility: AccessibilityBuilder,
 }
 
-
 struct AppliedFilterRuntime {
     filter: AppliedFilter,
     setup_complete: bool,

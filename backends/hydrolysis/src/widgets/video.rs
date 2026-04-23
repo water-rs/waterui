@@ -47,7 +47,8 @@ struct HydroVideoPlayerState {
 
 impl core::fmt::Debug for HydroVideoPlayerState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HydroVideoPlayerState").finish_non_exhaustive()
+        f.debug_struct("HydroVideoPlayerState")
+            .finish_non_exhaustive()
     }
 }
 
@@ -60,9 +61,7 @@ impl HydroVideoPlayerState {
     }
 }
 
-fn hydro_video_player_state(
-    env: &Environment,
-) -> Rc<HydroVideoPlayerState> {
+fn hydro_video_player_state(env: &Environment) -> Rc<HydroVideoPlayerState> {
     local_shared(env, HydroVideoPlayerState::new)
 }
 
@@ -137,7 +136,9 @@ fn video_player_content(config: &VideoPlayerConfig, env: &Environment) -> AnyVie
     let previous = button("Previous")
         .action(|| {})
         .visable(config.has_previous.clone());
-    let next = button("Next").action(|| {}).visable(config.has_next.clone());
+    let next = button("Next")
+        .action(|| {})
+        .visable(config.has_next.clone());
 
     let play_pause = {
         let is_playing_for_label = is_playing.clone();
