@@ -35,7 +35,7 @@ pub fn view(input: TokenStream) -> TokenStream {
 /// Rewrites a function or method body so tail-position `if`/`match` branches
 /// can return different concrete `View` types under a shared `impl View`.
 pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
-    view_builder::expand_attribute(args, input)
+    view_builder::expand_attribute(args, &input)
 }
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
