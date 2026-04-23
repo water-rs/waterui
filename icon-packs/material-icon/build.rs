@@ -15,7 +15,7 @@
 
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -138,6 +138,12 @@ fn mdi_var_to_kebab(var_name: &str) -> String {
 fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, String>) {
     let dest_path = Path::new(out_dir).join("icons.rs");
     let mut output = String::new();
+    let path_const_names = icons
+        .iter()
+        .filter(|icon| paths.contains_key(&icon.name))
+        .map(|icon| format!("{}_PATH", rust_const_name(&icon.name)))
+        .collect::<HashSet<_>>();
+    let mut used_symbols = HashSet::new();
 
     output.push_str("// Auto-generated Material Design icon definitions.\n");
     output.push_str("// Icons: Apache 2.0 by Pictogrammers.\n");
@@ -154,23 +160,40 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
         };
 
         let const_name = rust_const_name(&icon.name);
+        let glyph_const_name = if path_const_names.contains(&const_name) {
+            format!("{const_name}_GLYPH")
+        } else {
+            const_name.clone()
+        };
+        let path_const_name = format!("{const_name}_PATH");
         let fn_name = rust_fn_name(&icon.name);
         let codepoint = u32::from_str_radix(&icon.codepoint, 16).unwrap_or(0);
+
+        assert!(
+            used_symbols.insert(glyph_const_name.clone()),
+            "duplicate generated glyph constant `{glyph_const_name}` for material icon `{}`",
+            icon.name
+        );
+        assert!(
+            used_symbols.insert(path_const_name.clone()),
+            "duplicate generated SVG path constant `{path_const_name}` for material icon `{}`",
+            icon.name
+        );
 
         output.push_str(&format!("/// `{}` icon as webfont glyph.\n", icon.name));
         output.push_str("#[cfg(feature = \"webfont\")]\n");
         output.push_str(&format!(
-            "pub const {const_name}: crate::IconGlyph = crate::IconGlyph::new('\\u{{{codepoint:04X}}}', FONT_FAMILY);\n"
+            "pub const {glyph_const_name}: crate::IconGlyph = crate::IconGlyph::new('\\u{{{codepoint:04X}}}', FONT_FAMILY);\n"
         ));
 
         output.push_str(&format!("/// SVG path for `{}`.\n", icon.name));
-        output.push_str(&format!("pub const {const_name}_PATH: &str = {path:?};\n"));
+        output.push_str(&format!("pub const {path_const_name}: &str = {path:?};\n"));
 
         output.push_str("#[cfg(feature = \"svg\")]\n");
         output.push_str(&format!("/// `{}` icon as Svg.\n", icon.name));
         output.push_str("#[inline]\n");
         output.push_str(&format!(
-            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({const_name}_PATH, 24.0, 24.0)\n}}\n"
+            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({path_const_name}, 24.0, 24.0)\n}}\n"
         ));
 
         output.push('\n');
