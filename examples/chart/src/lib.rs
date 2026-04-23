@@ -4,7 +4,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{Binding, binding, impl_constant};
+use waterui::reactive::{binding, impl_constant, Binding};
 use waterui::view_builder;
 use waterui_chart::{
     AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle,
