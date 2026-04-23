@@ -298,4 +298,3 @@ pub fn app(env: Environment) -> App {
         env,
     )
 }
-

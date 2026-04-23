@@ -248,4 +248,3 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }
-

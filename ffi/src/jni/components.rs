@@ -1619,6 +1619,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceInit<'l
 
     let mut wui_surface = crate::components::gpu_surface::WuiGpuSurface {
         surface: renderer_ptr as *mut c_void,
+        has_picture_in_picture_host_id: false,
+        picture_in_picture_host_id: 0,
     };
 
     let state = require_initialized_state(

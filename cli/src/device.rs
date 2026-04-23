@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 
 use color_eyre::eyre;
@@ -15,6 +14,9 @@ use smol::{
 
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
+
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use tracing::debug as trace_debug;
@@ -853,7 +855,6 @@ struct MacosRunningProcess {
     start_instant: Instant,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn format_panic_message(payload: &str, location: Option<&str>) -> String {
     let mut msg = format!("Panic: {payload}");
     if let Some(location) = location {

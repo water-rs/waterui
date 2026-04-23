@@ -122,4 +122,3 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
         .foreground(Srgb::WHITE)
         .background(bg.computed())
 }
-

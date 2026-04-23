@@ -10,8 +10,8 @@ use waterui::{Environment, SignalExt, View};
 use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
 use waterui_webview::cookie::Cookie;
 use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, Url, WebViewController, WebViewEvent,
-    WebViewHandle, WebView,
+    CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent,
+    WebViewHandle,
 };
 const DOCS_URL: &str = "https://waterui.dev/docs";
 const API_URL: &str = "https://waterui.dev/api";
@@ -224,7 +224,12 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
         .label("Navigation: back=false forward=false")
         .assert_exists();
     assert!(
-        !app.query().role(Role::BUTTON).label("Back").single().node().enabled(),
+        !app.query()
+            .role(Role::BUTTON)
+            .label("Back")
+            .single()
+            .node()
+            .enabled(),
         "webview-exposes-accessibility-surface-and-navigation-state: back should start disabled"
     );
 
@@ -242,7 +247,12 @@ fn webview_exposes_accessibility_surface_and_navigation_state() {
         "webview-exposes-accessibility-surface-and-navigation-state: expected forward history after navigating to API"
     );
     assert!(
-        app.query().role(Role::BUTTON).label("Back").single().node().enabled(),
+        app.query()
+            .role(Role::BUTTON)
+            .label("Back")
+            .single()
+            .node()
+            .enabled(),
         "webview-exposes-accessibility-surface-and-navigation-state: back should enable after second page"
     );
 
