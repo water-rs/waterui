@@ -129,4 +129,3 @@ pub fn app(env: Environment) -> App {
     video::install_rust_player_hooks(&mut env);
     App::new(main, env)
 }
-

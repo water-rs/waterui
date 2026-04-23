@@ -220,9 +220,8 @@ fn calendar_component_formatter(
 ) -> Result<DateTimeFormatter, icu_datetime::DateTimeError> {
     let data_locale = to_data_locale(locale);
     let fallback_data_locale = to_data_locale(fallback_locale);
-    DateTimeFormatter::try_new_experimental(&data_locale, options.into()).or_else(|_| {
-        DateTimeFormatter::try_new_experimental(&fallback_data_locale, options.into())
-    })
+    DateTimeFormatter::try_new_experimental(&data_locale, options.into())
+        .or_else(|_| DateTimeFormatter::try_new_experimental(&fallback_data_locale, options.into()))
 }
 
 /// Format a calendar month header using locale conventions.

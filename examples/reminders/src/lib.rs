@@ -394,7 +394,6 @@ pub fn app(env: Environment) -> App {
     App::new(main_view, env)
 }
 
-
 #[preview]
 fn reminders_preview() -> impl View {
     main_view()

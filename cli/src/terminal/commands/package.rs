@@ -131,7 +131,7 @@ pub async fn run(args: Args) -> Result<()> {
         args.release,
         args.distribution,
     );
-    check_packaging_toolchain(args.platform, context.backend).await?;
+    check_packaging_toolchain(args.platform, context.backend, &args.arch).await?;
     build_packaging_artifacts(&args, &context).await?;
     package_artifact(&args, &context).await
 }
@@ -255,9 +255,13 @@ fn print_packaging_header(
     );
 }
 
-async fn check_packaging_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
+async fn check_packaging_toolchain(
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    arch: &[AndroidArch],
+) -> Result<()> {
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(platform, backend).await?;
+    check_toolchain_for_backend(platform, backend, arch).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -465,6 +469,7 @@ fn validate_arch_args(backend: TargetBackend, arch: &[AndroidArch]) -> Result<()
 async fn check_toolchain_for_backend(
     platform: TargetPlatform,
     backend: TargetBackend,
+    arch: &[AndroidArch],
 ) -> Result<()> {
     match backend {
         TargetBackend::Apple => {
@@ -485,7 +490,8 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_build_or_package().await?;
+            let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
+            toolchain_checks::check_android_build_or_package_for_abis(&required_abis).await?;
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
