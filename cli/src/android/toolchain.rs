@@ -7,18 +7,21 @@ use std::{
 };
 
 use color_eyre::eyre::{self, WrapErr};
+use url::Url;
 use walkdir::WalkDir;
 use waterui_assets::{download_remote_bytes, write_bytes_atomically};
 
 use crate::{
     android::platform::{ALL_ABIS, AndroidAbi},
     brew::Brew,
+    build_info,
     toolchain::{
         Installation, Toolchain, ToolchainError,
         linux::{has_supported_package_manager, install_java_jdk},
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{command, run_command, run_command_output_os, which},
+    water_dir::water_home_dir,
 };
 
 /// Android SDK toolchain component.
@@ -38,8 +41,30 @@ pub struct AndroidSdkPlatforms;
 pub struct AndroidBuildTools;
 
 /// Rust targets required for Android cross-compilation.
-#[derive(Debug, Clone, Default)]
-pub struct AndroidRustTargets;
+#[derive(Debug, Clone)]
+pub struct AndroidRustTargets {
+    required_targets: Vec<String>,
+}
+
+impl AndroidRustTargets {
+    /// Build the Rust-target requirement set for the requested Android ABIs.
+    #[must_use]
+    pub fn for_abis(abis: &[AndroidAbi]) -> Self {
+        assert!(
+            !abis.is_empty(),
+            "AndroidRustTargets::for_abis requires at least one ABI"
+        );
+        Self {
+            required_targets: required_android_rust_targets_for_abis(abis),
+        }
+    }
+}
+
+impl Default for AndroidRustTargets {
+    fn default() -> Self {
+        Self::for_abis(&ALL_ABIS)
+    }
+}
 
 /// An Android NDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -191,6 +216,9 @@ fn sdkmanager_candidates_under_sdk_root(sdk_root: &Path) -> Vec<PathBuf> {
         ]
     }
 }
+
+const ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH: &str =
+    "backends/android/runtime/build.gradle.kts";
 
 fn parse_latest_cmdline_tools_archive(repository_xml: &str) -> Option<String> {
     let host_tag = cmdline_tools_host_tag()?;
@@ -591,6 +619,89 @@ fn sdkmanager_combined_output(output: &Output) -> String {
     format!("stdout: {} stderr: {}", stdout.trim(), stderr.trim())
 }
 
+fn sdkmanager_confirmation_input() -> String {
+    "y\n".repeat(128)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SdkManagerProxyType {
+    Http,
+    Socks,
+}
+
+impl SdkManagerProxyType {
+    const fn as_flag(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Socks => "socks",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SdkManagerProxyConfig {
+    proxy_type: SdkManagerProxyType,
+    host: String,
+    port: u16,
+}
+
+fn proxy_env_value() -> Option<String> {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .into_iter()
+    .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
+}
+
+fn parse_sdkmanager_proxy_config(proxy: &str) -> eyre::Result<SdkManagerProxyConfig> {
+    let trimmed = proxy.trim();
+    let normalized = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let url = Url::parse(&normalized)
+        .wrap_err_with(|| format!("Failed to parse proxy URL `{trimmed}` for sdkmanager"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| eyre::eyre!("Proxy URL `{trimmed}` is missing a host"))?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| eyre::eyre!("Proxy URL `{trimmed}` is missing a port"))?;
+    let proxy_type = match url.scheme() {
+        "http" | "https" => SdkManagerProxyType::Http,
+        "socks" | "socks5" | "socks5h" => SdkManagerProxyType::Socks,
+        scheme => {
+            return Err(eyre::eyre!(
+                "Unsupported proxy scheme `{scheme}` for sdkmanager"
+            ));
+        }
+    };
+    Ok(SdkManagerProxyConfig {
+        proxy_type,
+        host,
+        port,
+    })
+}
+
+fn sdkmanager_proxy_args() -> eyre::Result<Vec<OsString>> {
+    let Some(proxy) = proxy_env_value() else {
+        return Ok(Vec::new());
+    };
+    let proxy = parse_sdkmanager_proxy_config(&proxy)?;
+    Ok(vec![
+        OsString::from(format!("--proxy={}", proxy.proxy_type.as_flag())),
+        OsString::from(format!("--proxy_host={}", proxy.host)),
+        OsString::from(format!("--proxy_port={}", proxy.port)),
+    ])
+}
+
 fn sdkmanager_requires_license_acceptance(output: &Output) -> bool {
     let lower = sdkmanager_combined_output(output).to_ascii_lowercase();
     lower.contains("license is not accepted")
@@ -612,6 +723,7 @@ async fn run_sdkmanager_output_with_java(
     let mut sdk_root_arg = OsString::from("--sdk_root=");
     sdk_root_arg.push(&sdk_root);
     let mut full_args = vec![sdk_root_arg];
+    full_args.extend(sdkmanager_proxy_args()?);
     full_args.extend(args);
 
     let mut cmd = smol::process::Command::new(&sdkmanager_path);
@@ -619,7 +731,13 @@ async fn run_sdkmanager_output_with_java(
         .env("ANDROID_SDK_ROOT", &sdk_root)
         .env("ANDROID_HOME", &sdk_root)
         .env("JAVA_HOME", &java_home)
-        .env("PATH", path_env);
+        .env("PATH", path_env)
+        .env_remove("HTTP_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy");
 
     if let Some(stdin_payload) = stdin_payload {
         use smol::io::AsyncWriteExt;
@@ -641,7 +759,7 @@ async fn run_sdkmanager_output_with_java(
 }
 
 async fn accept_sdkmanager_licenses() -> eyre::Result<()> {
-    let license_input = "y\n".repeat(128);
+    let license_input = sdkmanager_confirmation_input();
     let output =
         run_sdkmanager_output_with_java(vec![OsString::from("--licenses")], Some(&license_input))
             .await?;
@@ -656,10 +774,12 @@ async fn accept_sdkmanager_licenses() -> eyre::Result<()> {
 
 async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
     let install_args = vec![OsString::from("--install"), OsString::from(package_id)];
-    let mut output = run_sdkmanager_output_with_java(install_args.clone(), None).await?;
+    let confirmation_input = sdkmanager_confirmation_input();
+    let mut output =
+        run_sdkmanager_output_with_java(install_args.clone(), Some(&confirmation_input)).await?;
     if sdkmanager_requires_license_acceptance(&output) {
         accept_sdkmanager_licenses().await?;
-        output = run_sdkmanager_output_with_java(install_args, None).await?;
+        output = run_sdkmanager_output_with_java(install_args, Some(&confirmation_input)).await?;
     }
     if output.status.success() {
         return Ok(());
@@ -688,18 +808,345 @@ async fn list_sdk_package_ids() -> eyre::Result<Vec<String>> {
         .collect::<Vec<_>>())
 }
 
-async fn latest_ndk_package_id() -> eyre::Result<String> {
-    let mut ndk_packages = list_sdk_package_ids()
-        .await?
-        .into_iter()
-        .filter(|package| package.starts_with("ndk;"))
-        .collect::<Vec<_>>();
-    ndk_packages.sort_by(|left, right| compare_sdk_package_ids(left, right));
-    ndk_packages.dedup();
+fn find_file_in_current_workspace(relative_path: &Path) -> Option<PathBuf> {
+    let cwd = env::current_dir().ok()?;
 
-    ndk_packages.pop().ok_or_else(|| {
-        eyre::eyre!("No installable Android NDK package found via `sdkmanager --list`")
+    let direct = cwd.join(relative_path);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    let mut current = cwd.as_path();
+    loop {
+        let candidate = current.join(relative_path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+
+        let Some(parent) = current.parent() else {
+            return None;
+        };
+        current = parent;
+    }
+}
+
+fn parse_android_ndk_version_from_runtime_build_gradle(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.split("//").next()?.trim();
+        let remainder = line.strip_prefix("ndkVersion")?;
+        let (_, value) = remainder.split_once('=')?;
+        let version = value.trim().trim_matches('"');
+        if version.is_empty() {
+            None
+        } else {
+            Some(version.to_string())
+        }
     })
+}
+
+#[cfg(test)]
+fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.split("//").next()?.trim();
+        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
+            return None;
+        }
+        let version_marker = "version \"";
+        let version_start = line.find(version_marker)? + version_marker.len();
+        let version = line[version_start..].split('"').next()?.trim();
+        if version.is_empty() {
+            None
+        } else {
+            Some(version.to_string())
+        }
+    })
+}
+
+fn required_ndk_version_in_current_workspace() -> Option<String> {
+    let runtime_build_gradle =
+        find_file_in_current_workspace(Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))?;
+    let contents = std::fs::read_to_string(runtime_build_gradle).ok()?;
+    parse_android_ndk_version_from_runtime_build_gradle(&contents)
+}
+
+fn select_installed_ndk_path(ndk_dir: &Path, required_version: Option<&str>) -> Option<PathBuf> {
+    if !ndk_dir.exists() {
+        return None;
+    }
+
+    if let Some(required_version) = required_version {
+        let required_path = ndk_dir.join(required_version);
+        if required_path.is_dir() {
+            return Some(required_path);
+        }
+    }
+
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(ndk_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    versions.sort();
+    versions.pop()
+}
+
+fn ndk_version_from_package_id(package_id: &str) -> eyre::Result<&str> {
+    package_id
+        .strip_prefix("ndk;")
+        .ok_or_else(|| eyre::eyre!("Invalid Android NDK package id `{package_id}`"))
+}
+
+fn ndk_path_for_package_id(sdk_root: &Path, package_id: &str) -> eyre::Result<PathBuf> {
+    Ok(sdk_root
+        .join("ndk")
+        .join(ndk_version_from_package_id(package_id)?))
+}
+
+fn ndk_layout_is_complete(ndk_path: &Path) -> bool {
+    ndk_path.join("toolchains/llvm/prebuilt").exists()
+}
+
+async fn remove_directory_if_exists(path: &Path) -> eyre::Result<()> {
+    let path = path.to_path_buf();
+    smol::unblock(move || {
+        if path.exists() {
+            remove_dir_all::remove_dir_all(&path)?;
+        }
+        Ok::<(), eyre::Report>(())
+    })
+    .await?;
+    Ok(())
+}
+
+fn kotlinc_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "kotlinc.bat"
+    } else {
+        "kotlinc"
+    }
+}
+
+fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
+    let executable = home.join("bin").join(kotlinc_binary_name());
+    executable.exists().then_some(executable)
+}
+
+fn managed_kotlin_home(version: &str) -> eyre::Result<PathBuf> {
+    Ok(water_home_dir()?.join("toolchains/kotlin").join(version))
+}
+
+fn kotlin_compiler_release_url(version: &str) -> String {
+    format!(
+        "https://github.com/JetBrains/kotlin/releases/download/v{version}/kotlin-compiler-{version}.zip"
+    )
+}
+
+fn find_kotlin_home_dir(root: &Path) -> eyre::Result<PathBuf> {
+    let executable_name = kotlinc_binary_name();
+    for entry in WalkDir::new(root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let is_kotlinc = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(executable_name));
+        if !is_kotlinc {
+            continue;
+        }
+
+        let bin_dir = path.parent().ok_or_else(|| {
+            eyre::eyre!("Invalid Kotlin compiler archive layout (missing bin directory)")
+        })?;
+        let kotlin_home = bin_dir.parent().ok_or_else(|| {
+            eyre::eyre!("Invalid Kotlin compiler archive layout (missing compiler root)")
+        })?;
+        return Ok(kotlin_home.to_path_buf());
+    }
+
+    Err(eyre::eyre!(
+        "Kotlin compiler archive does not contain {}",
+        executable_name
+    ))
+}
+
+fn parse_kotlinc_version_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let mut tokens = line.split_whitespace().map(|token| {
+            token.trim_matches(|ch: char| ch == ':' || ch == '(' || ch == ')')
+        });
+        while let Some(token) = tokens.next() {
+            if token.starts_with("kotlinc") {
+                return tokens
+                    .find(|candidate| {
+                        candidate
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_digit())
+                    })
+                    .map(ToOwned::to_owned);
+            }
+        }
+        None
+    })
+}
+
+fn kotlin_version_is_compatible(installed: &str, required: &str) -> bool {
+    let installed_segments = installed
+        .split('.')
+        .map(parse_numeric_prefix)
+        .collect::<Vec<_>>();
+    let required_segments = required
+        .split('.')
+        .map(parse_numeric_prefix)
+        .collect::<Vec<_>>();
+    compare_version_segments(&installed_segments, &required_segments) != Ordering::Less
+}
+
+async fn kotlin_compiler_version(kotlinc_path: &Path) -> eyre::Result<String> {
+    let output = run_command_output_os(kotlinc_path, ["-version"]).await?;
+    let combined = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_kotlinc_version_output(&combined).ok_or_else(|| {
+        eyre::eyre!(
+            "Failed to parse Kotlin compiler version from `{}` output: {}",
+            kotlinc_path.display(),
+            combined.trim()
+        )
+    })
+}
+
+async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf> {
+    let install_home = managed_kotlin_home(version)?;
+    if let Some(kotlinc_path) = kotlin_executable_from_home(&install_home)
+        && let Ok(installed_version) = kotlin_compiler_version(&kotlinc_path).await
+        && kotlin_version_is_compatible(&installed_version, version)
+    {
+        return Ok(kotlinc_path);
+    }
+
+    let install_parent = install_home
+        .parent()
+        .ok_or_else(|| eyre::eyre!("Managed Kotlin install path has no parent"))?
+        .to_path_buf();
+    {
+        let install_parent = install_parent.clone();
+        smol::unblock(move || std::fs::create_dir_all(&install_parent))
+            .await
+            .map_err(eyre::Report::from)?;
+    }
+
+    let temp_dir = {
+        let install_parent = install_parent.clone();
+        smol::unblock(move || {
+            tempfile::Builder::new()
+                .prefix(".water-kotlin-")
+                .tempdir_in(&install_parent)
+                .map_err(eyre::Report::from)
+        })
+        .await?
+    };
+    let extract_dir = temp_dir.path().join("extract");
+    let archive_path = temp_dir
+        .path()
+        .join(format!("kotlin-compiler-{version}.zip"));
+    {
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || {
+            std::fs::create_dir_all(&extract_dir)?;
+            Ok::<_, eyre::Report>(())
+        })
+        .await?;
+    }
+
+    download_file_with_redirect(&kotlin_compiler_release_url(version), &archive_path).await?;
+    {
+        let archive_path = archive_path.clone();
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || {
+            let archive_file = std::fs::File::open(&archive_path)?;
+            let mut archive = zip::ZipArchive::new(archive_file)?;
+            archive.extract(&extract_dir)?;
+            Ok::<_, eyre::Report>(())
+        })
+        .await?;
+    }
+
+    let extracted_home = {
+        let extract_dir = extract_dir.clone();
+        smol::unblock(move || find_kotlin_home_dir(&extract_dir)).await?
+    };
+    remove_directory_if_exists(&install_home).await?;
+    {
+        let extracted_home = extracted_home.clone();
+        let install_home = install_home.clone();
+        smol::unblock(move || std::fs::rename(extracted_home, install_home))
+            .await
+            .map_err(eyre::Report::from)?;
+    }
+
+    let kotlinc_path = kotlin_executable_from_home(&install_home).ok_or_else(|| {
+        eyre::eyre!(
+            "Kotlin compiler `{version}` was extracted but `{}` is still missing",
+            kotlinc_binary_name()
+        )
+    })?;
+    let installed_version = kotlin_compiler_version(&kotlinc_path).await?;
+    if kotlin_version_is_compatible(&installed_version, version) {
+        Ok(kotlinc_path)
+    } else {
+        Err(eyre::eyre!(
+            "Installed Kotlin compiler version `{installed_version}` does not satisfy required version `{version}`"
+        ))
+    }
+}
+
+fn required_kotlin_version() -> &'static str {
+    build_info::ANDROID_KOTLIN_VERSION
+}
+
+async fn required_ndk_package_id() -> eyre::Result<String> {
+    let runtime_build_gradle =
+        find_file_in_current_workspace(Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Failed to locate `{ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH}` while resolving the required Android NDK version"
+                )
+            })?;
+    let contents = smol::fs::read_to_string(&runtime_build_gradle)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "Failed to read Android runtime Gradle config at `{}`",
+                runtime_build_gradle.display()
+            )
+        })?;
+    let version =
+        parse_android_ndk_version_from_runtime_build_gradle(&contents).ok_or_else(|| {
+            eyre::eyre!(
+                "Failed to parse `ndkVersion` from `{}`",
+                runtime_build_gradle.display()
+            )
+        })?;
+    let package_id = format!("ndk;{version}");
+    let available_packages = list_sdk_package_ids().await?;
+    if available_packages
+        .iter()
+        .any(|candidate| candidate == &package_id)
+    {
+        Ok(package_id)
+    } else {
+        Err(eyre::eyre!(
+            "Required Android NDK package `{package_id}` from `{}` is not available via `sdkmanager --list`",
+            runtime_build_gradle.display()
+        ))
+    }
 }
 
 async fn latest_android_platform_package_id() -> eyre::Result<String> {
@@ -739,10 +1186,10 @@ const fn rust_target_for_android_abi(abi: AndroidAbi) -> &'static str {
     }
 }
 
-fn required_android_rust_targets() -> Vec<&'static str> {
-    let mut targets = ALL_ABIS
+fn required_android_rust_targets_for_abis(abis: &[AndroidAbi]) -> Vec<String> {
+    let mut targets = abis
         .iter()
-        .map(|abi| rust_target_for_android_abi(*abi))
+        .map(|abi| rust_target_for_android_abi(*abi).to_owned())
         .collect::<Vec<_>>();
     targets.sort_unstable();
     targets.dedup();
@@ -759,15 +1206,18 @@ async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
         .collect())
 }
 
-fn missing_android_rust_targets(installed_targets: &[String]) -> Vec<String> {
-    required_android_rust_targets()
-        .into_iter()
+fn missing_android_rust_targets(
+    installed_targets: &[String],
+    required_targets: &[String],
+) -> Vec<String> {
+    required_targets
+        .iter()
         .filter(|target| {
             !installed_targets
                 .iter()
-                .any(|installed| installed == target)
+                .any(|installed| installed == *target)
         })
-        .map(ToOwned::to_owned)
+        .cloned()
         .collect()
 }
 
@@ -1231,7 +1681,8 @@ impl Toolchain for AndroidRustTargets {
             )
         })?;
 
-        let missing_targets = missing_android_rust_targets(&installed_targets);
+        let missing_targets =
+            missing_android_rust_targets(&installed_targets, &self.required_targets);
         if missing_targets.is_empty() {
             Ok(())
         } else {
@@ -1262,7 +1713,7 @@ impl Installation for AndroidRustTargetsInstallation {
         let installed_targets = installed_rustup_targets()
             .await
             .map_err(FailToInstallAndroidRustTargets::QueryTargets)?;
-        let still_missing = missing_android_rust_targets(&installed_targets);
+        let still_missing = missing_android_rust_targets(&installed_targets, &self.missing_targets);
         if still_missing.is_empty() {
             Ok(())
         } else {
@@ -1270,6 +1721,150 @@ impl Installation for AndroidRustTargetsInstallation {
                 missing_targets: still_missing.join(", "),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_android_rust_targets_are_deduplicated() {
+        let required = required_android_rust_targets_for_abis(&[
+            AndroidAbi::Arm64V8a,
+            AndroidAbi::Arm64V8a,
+            AndroidAbi::X86_64,
+        ]);
+        assert_eq!(
+            required,
+            vec![
+                "aarch64-linux-android".to_string(),
+                "x86_64-linux-android".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_android_targets_only_consider_requested_abis() {
+        let required = required_android_rust_targets_for_abis(&[AndroidAbi::Arm64V8a]);
+        let installed = vec![
+            "aarch64-linux-android".to_string(),
+            "armv7-linux-androideabi".to_string(),
+            "x86_64-linux-android".to_string(),
+        ];
+        assert!(missing_android_rust_targets(&installed, &required).is_empty());
+    }
+
+    #[test]
+    fn missing_android_targets_report_only_requested_missing_entries() {
+        let required =
+            required_android_rust_targets_for_abis(&[AndroidAbi::Arm64V8a, AndroidAbi::X86]);
+        let installed = vec!["aarch64-linux-android".to_string()];
+        assert_eq!(
+            missing_android_rust_targets(&installed, &required),
+            vec!["i686-linux-android".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_android_ndk_version_from_runtime_build_gradle_extracts_declared_version() {
+        let contents = r#"
+android {
+    compileSdk = 36
+    ndkVersion = "29.0.14206865"
+}
+"#;
+        assert_eq!(
+            parse_android_ndk_version_from_runtime_build_gradle(contents),
+            Some("29.0.14206865".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_android_kotlin_version_from_settings_gradle_extracts_declared_version() {
+        let contents = r#"
+pluginManagement {
+    plugins {
+        id("org.jetbrains.kotlin.android") version "2.0.21"
+    }
+}
+"#;
+        assert_eq!(
+            parse_android_kotlin_version_from_settings_gradle(contents),
+            Some("2.0.21".to_string())
+        );
+    }
+
+    #[test]
+    fn select_installed_ndk_path_prefers_required_version_over_latest_directory() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let ndk_dir = tempdir.path().join("ndk");
+        std::fs::create_dir_all(ndk_dir.join("29.0.14206865")).unwrap();
+        std::fs::create_dir_all(ndk_dir.join("30.0.14904198")).unwrap();
+
+        assert_eq!(
+            select_installed_ndk_path(&ndk_dir, Some("29.0.14206865")),
+            Some(ndk_dir.join("29.0.14206865"))
+        );
+    }
+
+    #[test]
+    fn ndk_path_for_package_id_rejects_non_ndk_package_ids() {
+        let error =
+            ndk_path_for_package_id(Path::new("/tmp/android-sdk"), "platform-tools").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid Android NDK package id `platform-tools`")
+        );
+    }
+
+    #[test]
+    fn parse_kotlinc_version_output_extracts_version_token() {
+        assert_eq!(
+            parse_kotlinc_version_output("info: kotlinc-jvm 1.3-SNAPSHOT (JRE 21.0.10+7)"),
+            Some("1.3-SNAPSHOT".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_kotlinc_version_output_ignores_jdk_warning_prefix() {
+        let output = "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\ninfo: kotlinc-jvm 1.3-SNAPSHOT (JRE 21.0.10+7)";
+        assert_eq!(
+            parse_kotlinc_version_output(output),
+            Some("1.3-SNAPSHOT".to_string())
+        );
+    }
+
+    #[test]
+    fn kotlin_version_compatibility_uses_backend_minimum() {
+        assert!(kotlin_version_is_compatible("2.0.21", "2.0.21"));
+        assert!(kotlin_version_is_compatible("2.1.0", "2.0.21"));
+        assert!(!kotlin_version_is_compatible("1.9.24", "2.0.21"));
+    }
+
+    #[test]
+    fn parse_sdkmanager_proxy_config_maps_http_proxy() {
+        assert_eq!(
+            parse_sdkmanager_proxy_config("http://host.docker.internal:7891").unwrap(),
+            SdkManagerProxyConfig {
+                proxy_type: SdkManagerProxyType::Http,
+                host: "host.docker.internal".to_string(),
+                port: 7891,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_sdkmanager_proxy_config_maps_socks5h_proxy() {
+        assert_eq!(
+            parse_sdkmanager_proxy_config("socks5h://host.docker.internal:7890").unwrap(),
+            SdkManagerProxyConfig {
+                proxy_type: SdkManagerProxyType::Socks,
+                host: "host.docker.internal".to_string(),
+                port: 7890,
+            }
+        );
     }
 }
 
@@ -1671,15 +2266,13 @@ fn map_winget_error_for_java(error: WingetInstallError) -> FailToInstallJava {
 impl Kotlin {
     /// Detect the path to the kotlinc compiler.
     pub async fn detect_path() -> Option<PathBuf> {
-        if let Ok(home) = env::var("KOTLIN_HOME") {
-            let kotlinc_path = PathBuf::from(&home).join("bin/kotlinc");
-            if kotlinc_path.exists() {
-                return Some(kotlinc_path);
-            }
-        }
+        let required_version = required_kotlin_version();
+        let mut candidates = Vec::new();
 
-        if let Ok(path) = which("kotlinc").await {
-            return Some(path);
+        if let Ok(home) = env::var("KOTLIN_HOME") {
+            if let Some(kotlinc_path) = kotlin_executable_from_home(&PathBuf::from(&home)) {
+                candidates.push(kotlinc_path);
+            }
         }
 
         if cfg!(target_os = "macos") {
@@ -1690,7 +2283,7 @@ impl Kotlin {
             for path in ANDROID_STUDIO_KOTLINS {
                 let kotlinc_path = PathBuf::from(path);
                 if kotlinc_path.exists() {
-                    return Some(kotlinc_path);
+                    candidates.push(kotlinc_path);
                 }
             }
         }
@@ -1707,7 +2300,7 @@ impl Kotlin {
             for path in paths {
                 let kotlinc_path = PathBuf::from(&path);
                 if kotlinc_path.exists() {
-                    return Some(kotlinc_path);
+                    candidates.push(kotlinc_path);
                 }
             }
         }
@@ -1718,7 +2311,27 @@ impl Kotlin {
             let kotlinc_path = PathBuf::from(&program_files)
                 .join("Android/Android Studio/plugins/Kotlin/kotlinc/bin/kotlinc.bat");
             if kotlinc_path.exists() {
-                return Some(kotlinc_path);
+                candidates.push(kotlinc_path);
+            }
+        }
+
+        if let Ok(managed_home) = managed_kotlin_home(required_version)
+            && let Some(kotlinc_path) = kotlin_executable_from_home(&managed_home)
+        {
+            candidates.push(kotlinc_path);
+        }
+
+        if let Ok(path) = which("kotlinc").await {
+            candidates.push(path);
+        }
+
+        candidates.dedup();
+        for candidate in candidates {
+            let Ok(installed_version) = kotlin_compiler_version(&candidate).await else {
+                continue;
+            };
+            if kotlin_version_is_compatible(&installed_version, required_version) {
+                return Some(candidate);
             }
         }
 
@@ -1732,18 +2345,20 @@ pub struct KotlinInstallation;
 
 /// Errors that can occur when installing Kotlin.
 #[derive(Debug, thiserror::Error)]
-pub enum FailToInstallKotlin {}
+pub enum FailToInstallKotlin {
+    #[error("Failed to install Kotlin compiler: {0}")]
+    InstallFailed(eyre::Report),
+    #[error("Kotlin compiler is still missing after installation.")]
+    StillMissing,
+}
 
 impl Toolchain for Kotlin {
     type Installation = KotlinInstallation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        let kotlinc_path = Self::detect_path().await.ok_or_else(|| {
-            ToolchainError::unfixable(
-                "Kotlin compiler (kotlinc) not found",
-                kotlin_install_suggestion(),
-            )
-        })?;
+        let kotlinc_path = Self::detect_path()
+            .await
+            .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
 
         #[cfg(unix)]
         {
@@ -1776,7 +2391,15 @@ impl Installation for KotlinInstallation {
     type Error = FailToInstallKotlin;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        Ok(())
+        let required_version = required_kotlin_version();
+        install_managed_kotlin_compiler(&required_version)
+            .await
+            .map_err(FailToInstallKotlin::InstallFailed)?;
+        if Kotlin::detect_path().await.is_some() {
+            Ok(())
+        } else {
+            Err(FailToInstallKotlin::StillMissing)
+        }
     }
 }
 
@@ -1800,21 +2423,10 @@ impl AndroidNdk {
 
         let sdk_path = AndroidSdk::detect_path()?;
         let ndk_dir = sdk_path.join("ndk");
-        if ndk_dir.exists()
-            && let Ok(entries) = std::fs::read_dir(&ndk_dir)
-        {
-            let mut versions: Vec<PathBuf> = entries
-                .filter_map(std::result::Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect();
-            versions.sort();
-            if let Some(latest) = versions.last() {
-                return Some(latest.clone());
-            }
-        }
-
-        None
+        select_installed_ndk_path(
+            &ndk_dir,
+            required_ndk_version_in_current_workspace().as_deref(),
+        )
     }
 }
 
@@ -1887,16 +2499,28 @@ impl Installation for AndroidNdkInstallation {
             return Err(FailToInstallAndroidNdk::SdkManagerNotFound);
         }
 
-        let ndk_package = latest_ndk_package_id()
+        let (_, sdk_root) = resolve_sdkmanager_and_root()
             .await
             .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+        let ndk_package = required_ndk_package_id()
+            .await
+            .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+        let ndk_path = ndk_path_for_package_id(&sdk_root, &ndk_package)
+            .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+        if ndk_path.exists() && !ndk_layout_is_complete(&ndk_path) {
+            remove_directory_if_exists(&ndk_path)
+                .await
+                .map_err(FailToInstallAndroidNdk::InstallFailed)?;
+        }
         install_android_sdk_package(&ndk_package)
             .await
             .map_err(FailToInstallAndroidNdk::InstallFailed)?;
 
-        let ndk_path = AndroidNdk::detect_path().ok_or(FailToInstallAndroidNdk::StillMissing)?;
-        let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
-        if llvm_dir.exists() {
+        if !ndk_path.exists() {
+            return Err(FailToInstallAndroidNdk::StillMissing);
+        }
+
+        if ndk_layout_is_complete(&ndk_path) {
             Ok(())
         } else {
             Err(FailToInstallAndroidNdk::Incomplete)

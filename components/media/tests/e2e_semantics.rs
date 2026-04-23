@@ -5,9 +5,7 @@ use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_media::{
-    LivePhoto, Media, Photo, Url,
-    live::LivePhotoSource,
-    photo::Event as PhotoEvent,
+    LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
 use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
 
@@ -141,10 +139,7 @@ fn media_video_uses_video_player_accessibility_controls() {
 #[test]
 fn live_photo_exposes_still_image_accessibility_before_activation() {
     let sample_path = sample_image_path();
-    let source = LivePhotoSource::new(
-        Url::from_file_path_str(sample_path),
-        sample_video_url(),
-    );
+    let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     let mut app = UiTest::new().mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");

@@ -43,7 +43,6 @@ fn button_tap_triggers_action() {
         .role(Role::LABEL)
         .label("count:1")
         .assert_exists();
-
 }
 
 #[test]
@@ -98,7 +97,6 @@ fn toggle_tap_toggles_binding() {
         .role(Role::LABEL)
         .label("enabled:true")
         .assert_exists();
-
 }
 
 #[test]
@@ -156,7 +154,6 @@ fn slider_increment_decrement_updates_value() {
         .role(Role::LABEL)
         .label("value:0.50")
         .assert_exists();
-
 }
 
 #[test]
@@ -214,7 +211,6 @@ fn stepper_increment_decrement_updates_binding() {
         .role(Role::LABEL)
         .label("count:2")
         .assert_exists();
-
 }
 
 #[test]
@@ -261,7 +257,6 @@ fn text_field_set_text_updates_binding() {
         .role(Role::LABEL)
         .label("value:Alice")
         .assert_exists();
-
 }
 
 #[test]
@@ -278,7 +273,6 @@ fn text_field_focus_updates_ui_focus() {
         "text field focus should succeed"
     );
     app.assert_ui_focus(selector);
-
 }
 
 #[test]
@@ -291,7 +285,10 @@ fn icon_only_label_preserves_button_accessible_name() {
         ))
     });
 
-    app.query().role(Role::BUTTON).label("Search").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Search")
+        .assert_exists();
 }
 
 #[test]

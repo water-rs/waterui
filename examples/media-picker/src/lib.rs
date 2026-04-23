@@ -274,4 +274,3 @@ fn looks_like_video_url(url: &Url) -> bool {
         || extension.eq_ignore_ascii_case("mpg")
         || extension.eq_ignore_ascii_case("mpeg")
 }
-

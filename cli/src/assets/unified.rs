@@ -17,6 +17,8 @@ const ASSET_ROOT_DIR: &str = "waterui_assets";
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
+const ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML: &str =
+    include_str!("../templates/android/app/src/main/res/drawable/ic_launcher_foreground.xml.tpl");
 const ANDROID_MIPMAP_DIRS: &[(&str, u32)] = &[
     ("mipmap-mdpi", 48),
     ("mipmap-hdpi", 72),
@@ -74,7 +76,6 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
 
     let res_root = backend_path.join("app/src/main/res");
     fs::create_dir_all(&res_root).await?;
-    remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
 
     let theme = project.manifest().theme.as_ref();
     write_android_theme_files(theme, backend_path).await?;
@@ -84,7 +85,10 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
         .iter()
         .find(|asset| asset.role == AssetRole::AppIcon)
     {
+        remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
         write_android_icon_resources(icon, theme, backend_path).await?;
+    } else {
+        write_default_android_icon_resources(backend_path).await?;
     }
 
     Ok(())
@@ -486,6 +490,25 @@ async fn write_android_icon_resources(
     Ok(())
 }
 
+async fn write_default_android_icon_resources(backend_path: &Path) -> eyre::Result<()> {
+    let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
+    fs::create_dir_all(&drawable_dir).await?;
+    remove_file_if_exists(drawable_dir.join("ic_launcher_foreground.png")).await?;
+    fs::write(
+        drawable_dir.join("ic_launcher_foreground.xml"),
+        ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML,
+    )
+    .await?;
+
+    for (dir, _) in ANDROID_MIPMAP_DIRS {
+        let target_dir = backend_path.join("app/src/main/res").join(dir);
+        remove_file_if_exists(target_dir.join("ic_launcher.png")).await?;
+        remove_file_if_exists(target_dir.join("ic_launcher_round.png")).await?;
+    }
+
+    Ok(())
+}
+
 fn generate_default_app_icon(accent: Option<&str>) -> eyre::Result<image::DynamicImage> {
     let [red, green, blue] = parse_rgb(accent.unwrap_or("#0A84FF"))?;
     let mut image = image::RgbaImage::from_pixel(1024, 1024, image::Rgba([red, green, blue, 255]));
@@ -771,4 +794,68 @@ async fn write_png(image: &image::DynamicImage, path: &Path) -> eyre::Result<()>
     )?;
     fs::write(path, png).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_default_android_icon_resources_restores_vector_foreground() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("failed to create tempdir");
+            let backend_path = tempdir.path();
+            let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
+            fs::create_dir_all(&drawable_dir)
+                .await
+                .expect("failed to create drawable dir");
+            fs::write(drawable_dir.join("ic_launcher_foreground.png"), b"stale")
+                .await
+                .expect("failed to create stale foreground png");
+
+            for (dir, _) in ANDROID_MIPMAP_DIRS {
+                let target_dir = backend_path.join("app/src/main/res").join(dir);
+                fs::create_dir_all(&target_dir)
+                    .await
+                    .expect("failed to create mipmap dir");
+                fs::write(target_dir.join("ic_launcher.png"), b"stale")
+                    .await
+                    .expect("failed to create stale launcher png");
+                fs::write(target_dir.join("ic_launcher_round.png"), b"stale")
+                    .await
+                    .expect("failed to create stale round launcher png");
+            }
+
+            write_default_android_icon_resources(backend_path)
+                .await
+                .expect("failed to write default android icon resources");
+
+            assert_eq!(
+                fs::read_to_string(drawable_dir.join("ic_launcher_foreground.xml"))
+                    .await
+                    .expect("failed to read foreground xml"),
+                ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML
+            );
+            assert!(
+                fs::metadata(drawable_dir.join("ic_launcher_foreground.png"))
+                    .await
+                    .is_err(),
+                "stale foreground png should be removed"
+            );
+
+            for (dir, _) in ANDROID_MIPMAP_DIRS {
+                let target_dir = backend_path.join("app/src/main/res").join(dir);
+                assert!(
+                    fs::metadata(target_dir.join("ic_launcher.png")).await.is_err(),
+                    "stale launcher png should be removed from {dir}"
+                );
+                assert!(
+                    fs::metadata(target_dir.join("ic_launcher_round.png"))
+                        .await
+                        .is_err(),
+                    "stale round launcher png should be removed from {dir}"
+                );
+            }
+        });
+    }
 }

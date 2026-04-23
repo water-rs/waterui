@@ -60,4 +60,3 @@ fn main_view() -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(main_view, env)
 }
-
