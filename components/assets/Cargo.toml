@@ -38,3 +38,5 @@ std = ["waterui-core/std"]
 
 [lints]
 workspace = true
+[package.metadata.cargo-machete]
+ignored = ["executor-core", "thiserror"]

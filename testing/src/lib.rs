@@ -51,7 +51,7 @@
 //!
 //! When `WATERUI_TEST_ARTIFACTS_DIR` is set, snapshots are written beneath that
 //! directory using WaterUI's canonical `<suite>/<case>/<stage>.png` layout. The
-//! repository's GitHub workflows already upload and summarize those PNGs.
+//! repository's GitHub workflows already upload and summarize those snapshot images.
 
 mod app;
 mod artifacts;

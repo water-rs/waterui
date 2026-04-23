@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
@@ -38,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
@@ -45,6 +49,10 @@ jobs:
         with:
           shared-key: ci-ubuntu
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Prepare coverage target dir
+        run: |
+          mkdir -p target/llvm-cov-target
+          printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
       - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v4
         with:
@@ -62,6 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Generate Cargo.lock
         run: cargo generate-lockfile
       - uses: Swatinem/rust-cache@v2
@@ -94,18 +104,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
       - uses: taiki-e/install-action@cargo-machete
-      - run: cargo machete
+      - name: Run cargo machete on the root workspace
+        run: |
+          printf 'kit\nutils/nami\n' > .ignore
+          cargo machete --with-metadata
 
   feature-checks:
     name: Features
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:

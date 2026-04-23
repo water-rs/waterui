@@ -90,13 +90,13 @@ fn mesh_color(uv: vec2<f32>) -> vec3<f32> {
     let p = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * (grid - 1.0);
 
     let ix = u32(floor(p.x));
-    let iy = u32(floor(p.y));
+    let y_index = u32(floor(p.y));
 
     let fx = fract(p.x);
     let fy = fract(p.y);
 
     let x0 = min(ix, 2u);
-    let y0 = min(iy, 2u);
+    let y0 = min(y_index, 2u);
     let x1 = x0 + 1u;
     let y1 = y0 + 1u;
 

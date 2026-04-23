@@ -22,3 +22,5 @@ waterui-icons-lucide.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 waterui-icons-sf-symbol.workspace = true
+[package.metadata.cargo-machete]
+ignored = ["waterui-icons-fontawesome7"]

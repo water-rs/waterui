@@ -44,7 +44,7 @@ fn main() -> impl View {
     let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
         .spacing(12.0)
         .background(Srgb::BLACK.with_opacity(0.8))
-        .visable(is_buffering.clone());
+        .visible(is_buffering.clone());
 
     // Video player - immersive full screen with Fill aspect ratio
     // VideoPlayer now takes a Url directly (not a Video data source)
