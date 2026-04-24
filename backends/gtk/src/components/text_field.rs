@@ -39,7 +39,7 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
 
         let selection_menu = config.selection_menu;
         let binding = config.value;
-        let prompt = config.prompt.content();
+        let prompt = config.prompt.content;
 
         // Set placeholder text
         let prompt_text = prompt.get().to_plain();

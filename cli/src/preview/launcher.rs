@@ -181,18 +181,12 @@ async fn build_preview_dylib(
         rust_build = rust_build.with_sccache(sccache.clone());
     }
     rust_build = rust_build.with_rustc_flag("-Cdebuginfo=0");
-    let enable_preview_dynamic_linking = matches!(platform, PreviewPlatform::Macos);
-    if enable_preview_dynamic_linking {
-        rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
-        let rust_target_libdir = rust_target_libdir(&target_triple).await?;
-        rust_build = rust_build.with_rustc_flag(format!(
-            "-Clink-arg=-Wl,-rpath,{}",
-            rust_target_libdir.display()
-        ));
-    }
-    if !enable_preview_dynamic_linking {
-        rust_build = rust_build.with_crate_type_override("cdylib");
-    }
+    rust_build = rust_build.with_rustc_flag("-Cprefer-dynamic");
+    let rust_target_libdir = rust_target_libdir(&target_triple).await?;
+    rust_build = rust_build.with_rustc_flag(format!(
+        "-Clink-arg=-Wl,-rpath,{}",
+        rust_target_libdir.display()
+    ));
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -210,7 +204,7 @@ async fn build_preview_dylib(
         runtime_fingerprint,
         &target_triple,
         preview_crate_name.as_str(),
-        enable_preview_dynamic_linking,
+        true,
     );
     let built_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime, &dylib_signature).await? {
         candidate_path
