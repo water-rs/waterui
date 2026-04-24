@@ -978,7 +978,6 @@ fn picture_in_picture_button(request: Binding<u64>) -> impl View {
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
     {
         let _ = request;
-        ()
     }
 }
 
@@ -2031,7 +2030,7 @@ impl VideoRenderer {
         let selection = self.subtitle_selection.get();
         let next = match resolve_selected_subtitle_index(&self.subtitle_tracks, selection) {
             Ok(next) => next,
-            Err(message)
+            Err(_)
                 if !self.embedded_subtitle_tracks_loaded
                     && matches!(selection, SubtitleSelection::Track(_)) =>
             {
