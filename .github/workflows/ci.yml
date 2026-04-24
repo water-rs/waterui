@@ -29,7 +29,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev
+      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
@@ -46,7 +46,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev
+      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
@@ -127,7 +127,7 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
