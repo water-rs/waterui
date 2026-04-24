@@ -96,7 +96,7 @@ impl GtkApp {
     /// This extracts the main window's content and environment from the App
     /// and renders it using GTK.
     pub fn run_app(self, waterui_app: App) -> i32 {
-        let (windows, mut env) = waterui_app.into_parts();
+        let (windows, _menu_bar, mut env) = waterui_app.into_parts();
         let main_window = windows
             .into_iter()
             .next()

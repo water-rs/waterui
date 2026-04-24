@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gtk4::Widget;
 use gtk4::prelude::*;
-use nami::Signal;
+use nami::{Signal, SignalExt};
 use waterui_controls::text_field::TextField;
 use waterui_core::Environment;
 use waterui_core::id::Id;
