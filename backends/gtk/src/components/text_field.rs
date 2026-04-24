@@ -6,16 +6,17 @@ use std::rc::Rc;
 use gtk4::Widget;
 use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
-use waterui_controls::menu::MenuItem as WuiMenuItem;
-use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::menu::ResolvedMenuItem;
+use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
 
 use crate::component::GtkComponent;
+use crate::components::menu::rebuild_menu_popover;
 use crate::renderer::{GtkRenderer, mark_focus_anchor};
 use crate::util::store_watcher_guards;
 
-impl GtkComponent for Native<TextFieldConfig> {
+impl GtkComponent for Native<ResolvedTextFieldConfig> {
     /// Renders a `WaterUI` `TextField` component as a GTK4 Entry.
     ///
     /// This creates a two-way binding:
@@ -108,7 +109,7 @@ impl GtkComponent for Native<TextFieldConfig> {
 fn install_selection_menu(
     entry: &gtk4::Entry,
     env: Environment,
-    selection_items: Rc<RefCell<Vec<WuiMenuItem>>>,
+    selection_items: Rc<RefCell<Vec<ResolvedMenuItem>>>,
 ) {
     let popover_state: Rc<RefCell<Option<gtk4::Popover>>> = Rc::new(RefCell::new(None));
 
@@ -135,26 +136,10 @@ fn install_selection_menu(
                 popover.unparent();
             }
 
-            let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            for item in items {
-                let title = item.label.content().get().to_plain().to_string();
-                let button = gtk4::Button::with_label(&title);
-                let action = item.action.clone();
-                let env = env.clone();
-                let popover_state = popover_state.clone();
-                button.connect_clicked(move |_| {
-                    action.call(&env);
-                    if let Some(popover) = popover_state.borrow().as_ref() {
-                        popover.popdown();
-                    }
-                });
-                menu_box.append(&button);
-            }
-
             let popover = gtk4::Popover::new();
+            rebuild_menu_popover(&popover, items, &env);
             popover.set_has_arrow(true);
             popover.set_autohide(true);
-            popover.set_child(Some(&menu_box));
             popover.set_parent(&entry);
             let rect = gdk4::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
