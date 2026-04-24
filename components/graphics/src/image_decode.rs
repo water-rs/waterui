@@ -73,10 +73,9 @@ pub fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
     if !has_avif_compat {
         if let Some(range) = first_heif_compat {
             patched[range].copy_from_slice(&AVIF_BRAND);
-        } else if let Some(range) = ftyp.compatible_brand_ranges.first() {
-            patched[range.clone()].copy_from_slice(&AVIF_BRAND);
         } else {
-            return None;
+            let range = ftyp.compatible_brand_ranges.first()?;
+            patched[range.clone()].copy_from_slice(&AVIF_BRAND);
         }
     }
 

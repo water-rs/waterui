@@ -110,7 +110,6 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
@@ -128,6 +127,7 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu

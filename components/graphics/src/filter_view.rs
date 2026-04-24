@@ -1728,7 +1728,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
             }
         }
 
-        for (pass, binding_plan) in planned.iter().zip(binding_plans.into_iter()) {
+        for (pass, binding_plan) in planned.iter().zip(binding_plans) {
             match &pass.kind {
                 PlannedPassKind::Color { fragments } => {
                     let target_format = match binding_plan {
