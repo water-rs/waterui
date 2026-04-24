@@ -5,6 +5,7 @@
 //! produce numeric values, converting them uniformly to `Computed<f32>`.
 
 use nami::{Signal, SignalExt};
+use num_traits::ToPrimitive;
 
 /// Converts constants or reactive signals into an `f32` signal.
 pub trait IntoSignalF32 {
@@ -40,7 +41,9 @@ macro_rules! impl_into_f32 {
             impl IntoF32 for $t {
                 #[inline]
                 fn into_f32(self) -> f32 {
-                    self as f32
+                    self.to_f32().unwrap_or_else(|| {
+                        panic!("failed to convert `{}` into f32", stringify!($t))
+                    })
                 }
             }
         )*

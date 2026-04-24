@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre::{Context, Result, bail};
 use futures::{FutureExt as _, pin_mut, select};
-use notify::{EventKind, RecursiveMode, Watcher as _};
+use notify::{RecursiveMode, Watcher as _};
 use sha2::Digest as _;
 use smol::stream::StreamExt;
 use tracing::{error, info};
@@ -817,11 +817,7 @@ async fn wait_for_registered_preview_ready(
             },
             event = registry_event => {
                 match event {
-                    Ok(Ok(notification)) => {
-                        if !matches!(notification.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                            continue;
-                        }
-                    }
+                    Ok(Ok(_notification)) => {}
                     Ok(Err(error)) => {
                         error!(path = %registry_dir.display(), "Preview registry watcher error: {error}");
                     }

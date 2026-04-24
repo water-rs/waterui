@@ -355,6 +355,7 @@ pub async fn clean_apple(project: &Project) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if the backend is missing, packaging prerequisites are invalid, or `xcodebuild` fails.
+#[allow(clippy::too_many_lines)]
 pub async fn package_apple(
     project: &Project,
     platform: TargetPlatform,

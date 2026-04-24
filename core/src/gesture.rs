@@ -333,8 +333,8 @@ impl Exclusive {
 impl Gesture {
     /// Chains another gesture that runs only after this gesture succeeds.
     #[must_use]
-    pub fn then(self, other: impl Into<Gesture>) -> Gesture {
-        Gesture::Then(Box::new(Then {
+    pub fn then(self, other: impl Into<Self>) -> Self {
+        Self::Then(Box::new(Then {
             first: self,
             then: other.into(),
         }))
@@ -342,14 +342,14 @@ impl Gesture {
 
     /// SwiftUI-style alias for [`Gesture::then`].
     #[must_use]
-    pub fn sequenced_before(self, other: impl Into<Gesture>) -> Gesture {
+    pub fn sequenced_before(self, other: impl Into<Self>) -> Self {
         self.then(other)
     }
 
     /// Combines this gesture with another so they can be recognized simultaneously.
     #[must_use]
-    pub fn simultaneously_with(self, other: impl Into<Gesture>) -> Gesture {
-        Gesture::Simultaneous(Box::new(Simultaneous {
+    pub fn simultaneously_with(self, other: impl Into<Self>) -> Self {
+        Self::Simultaneous(Box::new(Simultaneous {
             first: self,
             second: other.into(),
         }))
@@ -357,8 +357,8 @@ impl Gesture {
 
     /// Combines this gesture with another where this gesture has priority.
     #[must_use]
-    pub fn exclusively_before(self, other: impl Into<Gesture>) -> Gesture {
-        Gesture::Exclusive(Box::new(Exclusive {
+    pub fn exclusively_before(self, other: impl Into<Self>) -> Self {
+        Self::Exclusive(Box::new(Exclusive {
             first: self,
             second: other.into(),
         }))
@@ -431,28 +431,37 @@ impl fmt::Debug for GestureObserver {
 impl MetadataKey for GestureObserver {}
 
 impl GestureObserver {
-    /// Creates a gesture observer builder for the given gesture.
+    /// Creates a gesture observer for the given gesture and action.
     ///
-    /// Use `.action()` to set the handler. Local state can be injected by
-    /// wrapping the owning view with `.state(...)`.
+    /// Local state can be injected by wrapping the owning view with
+    /// `.state(...)`.
     ///
     /// # Examples
     ///
     /// Simple action:
     /// ```rust,ignore
-    /// GestureObserver::new(TapGesture::new()).action(|| println!("Tapped!"))
+    /// GestureObserver::new(TapGesture::new(), || {})
     /// ```
     ///
     /// With injected state:
     /// ```rust,ignore
-    /// GestureObserver::new(TapGesture::repeat(2))
-    ///     .action(|State(counter): State<Binding<i32>>| counter.set(counter.get() + 1))
+    /// GestureObserver::new(
+    ///     TapGesture::repeat(2),
+    ///     |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
+    /// )
     /// ```
     #[must_use]
-    pub fn new(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
-        GestureObserverBuilder {
+    pub fn new<Args>(gesture: impl Into<Gesture>, action: impl Handler<Args, ()>) -> Self {
+        Self {
             gesture: gesture.into(),
+            action: boxed_action(action),
         }
+    }
+
+    /// Creates a gesture observer builder for the given gesture.
+    #[must_use]
+    pub fn builder(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
+        GestureObserverBuilder::new(gesture)
     }
 }
 
@@ -467,13 +476,18 @@ pub struct GestureObserverBuilder {
 }
 
 impl GestureObserverBuilder {
+    /// Creates a gesture observer builder for the given gesture.
+    #[must_use]
+    pub fn new(gesture: impl Into<Gesture>) -> Self {
+        Self {
+            gesture: gesture.into(),
+        }
+    }
+
     /// Sets the action handler (no state).
     #[must_use]
     pub fn action<Args>(self, action: impl Handler<Args, ()>) -> GestureObserver {
-        GestureObserver {
-            gesture: self.gesture,
-            action: boxed_action(action),
-        }
+        GestureObserver::new(self.gesture, action)
     }
 }
 

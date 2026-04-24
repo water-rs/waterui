@@ -30,6 +30,10 @@ pub trait Extractor: 'static + Sized {
     /// This variant can track per-type extraction order when a single action
     /// asks for multiple instances of the same extractor, such as repeated
     /// [`State<T>`] parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if extraction fails for the current action invocation.
     fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
         let _ = state;
         Self::extract(env)
@@ -55,7 +59,7 @@ pub struct ExtractionState {
 impl ExtractionState {
     /// Returns the next extraction index for the requested type.
     #[must_use]
-    pub fn next<T: 'static>(&mut self) -> usize {
+    pub fn take_next<T: 'static>(&mut self) -> usize {
         let position = self.positions.entry(TypeId::of::<T>()).or_insert(0);
         let current = *position;
         *position += 1;
@@ -109,13 +113,13 @@ impl<T: Extractor> Extractor for Option<T> {
 
     fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
         let snapshot = state.clone();
-        match T::extract_from_action(env, state) {
-            Ok(value) => Ok(Some(value)),
-            Err(_) => {
+        T::extract_from_action(env, state).map_or_else(
+            |_| {
                 *state = snapshot;
                 Ok(None)
-            }
-        }
+            },
+            |value| Ok(Some(value)),
+        )
     }
 }
 
@@ -151,7 +155,7 @@ impl<T: 'static + Clone> Extractor for State<T> {
     }
 
     fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
-        let position = state.next::<Self>();
+        let position = state.take_next::<Self>();
         env.get_nth::<Self>(position).map_or_else(
             || {
                 Err(Error::msg(format!(

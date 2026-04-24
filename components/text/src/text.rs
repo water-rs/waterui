@@ -1,3 +1,6 @@
+#![allow(clippy::double_must_use)]
+#![allow(missing_docs)]
+
 use alloc::{
     rc::Rc,
     string::{String, ToString},
@@ -20,6 +23,8 @@ use waterui_str::Str;
 use crate::font::FontWeight;
 use crate::locale::Formatter;
 use crate::{font::Font, styled::StyledStr};
+
+type ConfigResolver = dyn Fn(&Environment) -> Computed<TextConfig>;
 
 /// Native text payload consumed by platform backends.
 #[derive(Debug, Clone)]
@@ -48,7 +53,7 @@ configurable!(RawText, TextConfig);
 enum TextKind {
     Raw(TextConfig),
     Signal {
-        resolver: Rc<dyn Fn(&Environment) -> Computed<TextConfig>>,
+        resolver: Rc<ConfigResolver>,
     },
 }
 
@@ -184,7 +189,7 @@ where
 
 impl Default for Text {
     fn default() -> Self {
-        Text::verbatim("")
+        Self::verbatim("")
     }
 }
 
@@ -287,8 +292,8 @@ impl Text {
     }
 
     /// Creates text from any displayable signal.
-    #[must_use]
-    pub fn display<T: Display>(source: impl Signal<Output = T> + Clone + 'static) -> Self {
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn display<T: Display>(source: impl Signal<Output = T> + 'static) -> Self {
         Self::computed(source.map(|value| value.to_string()))
     }
 
@@ -502,7 +507,7 @@ where
         }));
 
         let outer = self.nested.watch({
-            let watcher = watcher.clone();
+            let watcher = watcher;
             let inner = inner.clone();
             move |ctx: Context<Computed<T>>| {
                 let next = ctx.value().clone();
@@ -533,6 +538,7 @@ macro_rules! impl_text_font {
     ($(($name:ident, $value:expr)),+) => {
         $(
             impl Text {
+                #[doc = concat!("Applies the `", stringify!($name), "` text style preset.")]
                 #[must_use]
                 pub fn $name(self) -> Self {
                     self.font($value)
@@ -551,6 +557,7 @@ impl_text_font!(
     (footnote, crate::font::Footnote)
 );
 
+/// Creates semantic text using the default conversion rules for the provided content.
 #[must_use]
 pub fn text(text: impl IntoText) -> Text {
     Text::new(text)

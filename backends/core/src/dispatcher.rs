@@ -170,6 +170,11 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
     }
 
     /// Registers a handler for a specific view type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal erased slot does not match the registered view
+    /// type or if the slot has already been consumed during dispatch.
     pub fn register<V: View>(
         &mut self,
         handler: impl 'static + Clone + Fn(&mut T, C, V, &Environment) -> R,
@@ -203,6 +208,10 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
     ///
     /// If no handler is found, `body()` is called and the result is dispatched
     /// recursively.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an `AnyView` cannot be recovered from the erased dispatch slot.
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, context: C) -> R {
         let tid = TypeId::of::<V>();
 

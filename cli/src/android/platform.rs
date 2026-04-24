@@ -3,7 +3,10 @@
 //! This module provides utility functions for building and packaging Android apps.
 //! These functions are used by `AndroidBackend` to implement the `Backend` trait.
 
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use askama::Template;
 use color_eyre::eyre::{self, bail};
@@ -17,7 +20,7 @@ use std::str::FromStr;
 use crate::{
     android::{
         backend::AndroidBackend,
-        toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
+        toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets::{self, ResolvedFont},
     build::{BuildOptions, RustBuild},
@@ -35,6 +38,25 @@ fn gradle_cmd(gradlew: &Path, backend_path: &Path, task: &str) -> smol::process:
     let mut cmd = smol::process::Command::new(gradlew);
     cmd.arg(task).arg("--project-dir").arg(backend_path);
     cmd
+}
+
+fn apply_gradle_proxy_env(cmd: &mut smol::process::Command) -> eyre::Result<()> {
+    let proxy_properties = java_proxy_properties_from_env()?;
+    if proxy_properties.is_empty() {
+        return Ok(());
+    }
+
+    cmd.args(&proxy_properties);
+
+    let mut gradle_opts = proxy_properties.join(" ");
+    if let Ok(existing) = env::var("GRADLE_OPTS")
+        && !existing.trim().is_empty()
+    {
+        gradle_opts.push(' ');
+        gradle_opts.push_str(&existing);
+    }
+    cmd.env("GRADLE_OPTS", gradle_opts);
+    Ok(())
 }
 
 fn validate_android_package_name(package: &str) -> eyre::Result<()> {
@@ -463,6 +485,7 @@ impl AndroidPlatform {
             cmd.env("ANDROID_HOME", &sdk_path)
                 .env("ANDROID_SDK_ROOT", &sdk_path);
         }
+        apply_gradle_proxy_env(&mut cmd)?;
 
         let output = cmd.output().await?;
 
@@ -741,6 +764,7 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
         cmd.env("ANDROID_HOME", &sdk_path)
             .env("ANDROID_SDK_ROOT", &sdk_path);
     }
+    apply_gradle_proxy_env(&mut cmd)?;
 
     let output = cmd.output().await?;
 

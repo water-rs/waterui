@@ -330,12 +330,12 @@ struct AxisOverlay {
 
 impl View for AxisOverlay {
     fn body(self, _env: &Environment) -> impl View {
-        let grid_y_ticks = if self.y_show_grid {
+        let y_grid_ticks = if self.y_show_grid {
             self.y_ticks.clone()
         } else {
             Vec::new()
         };
-        let grid_x_ticks = if self.x_show_grid {
+        let x_grid_ticks = if self.x_show_grid {
             self.x_ticks.clone()
         } else {
             Vec::new()
@@ -343,8 +343,8 @@ impl View for AxisOverlay {
 
         absolute((
             GridLines {
-                y_ticks: grid_y_ticks,
-                x_ticks: grid_x_ticks,
+                y_ticks: y_grid_ticks,
+                x_ticks: x_grid_ticks,
                 padding_left: self.padding.left,
                 padding_right: self.padding.right,
                 padding_top: self.padding.top,

@@ -147,8 +147,10 @@ impl SharedGpuContext {
 
     /// Get shader cache statistics.
     pub fn shader_cache_stats(&self) -> (usize, usize) {
-        let cache = self.shader_cache.lock();
-        let cached_count = cache.values().map(std::vec::Vec::len).sum::<usize>();
+        let cached_count = {
+            let cache = self.shader_cache.lock();
+            cache.values().map(std::vec::Vec::len).sum::<usize>()
+        };
         (cached_count, cached_count) // (cached_count, hit would require tracking)
     }
 
@@ -187,10 +189,10 @@ impl SharedGpuContext {
             .entry(source_hash)
             .or_default()
             .push(CachedShaderEntry {
-                source: match static_source {
-                    Some(value) => CachedShaderSource::Static(value),
-                    None => CachedShaderSource::Owned(source.to_owned().into_boxed_str()),
-                },
+                source: static_source.map_or_else(
+                    || CachedShaderSource::Owned(source.to_owned().into_boxed_str()),
+                    CachedShaderSource::Static,
+                ),
                 module: module.clone(),
             });
 
@@ -217,6 +219,7 @@ impl SharedGpuContext {
 ///
 /// Falls back to direct module creation when no shared context is initialized
 /// or when the device is not the shared device (for example, isolated tests).
+#[must_use]
 pub fn create_cached_shader_module(
     device: &wgpu::Device,
     label: &str,
@@ -224,7 +227,7 @@ pub fn create_cached_shader_module(
 ) -> Arc<wgpu::ShaderModule> {
     if let Some(ctx) = try_shared_context() {
         let guard = ctx.read();
-        if core::ptr::eq(Arc::as_ptr(&guard.device), device as *const wgpu::Device) {
+        if core::ptr::eq(Arc::as_ptr(&guard.device), std::ptr::from_ref(device)) {
             return guard.get_or_create_shader(label, source);
         }
     }
@@ -238,13 +241,14 @@ pub fn create_cached_shader_module(
 /// Creates a shader module from compile-time `ShaderSource` with precomputed hash.
 ///
 /// Uses shared shader cache when `device` is the global shared device.
+#[must_use]
 pub fn create_cached_shader_module_prewarmed(
     device: &wgpu::Device,
     shader: &'static crate::prewarm::ShaderSource,
 ) -> Arc<wgpu::ShaderModule> {
     if let Some(ctx) = try_shared_context() {
         let guard = ctx.read();
-        if core::ptr::eq(Arc::as_ptr(&guard.device), device as *const wgpu::Device) {
+        if core::ptr::eq(Arc::as_ptr(&guard.device), std::ptr::from_ref(device)) {
             return guard.get_or_create_static_shader(shader);
         }
     }
@@ -279,18 +283,34 @@ static SHARED_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// waterui_graphics::shared_context::init_shared_context_async().await?;
 /// ```
 pub async fn init_shared_context_async() -> Result<(), SharedContextError> {
-    // Ensure only one thread performs the expensive device creation.
     let init_lock = SHARED_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = init_lock.lock();
+    {
+        let _guard = init_lock.lock();
+        if SHARED_CONTEXT.get().is_some() {
+            return Ok(());
+        }
+    }
 
-    if SHARED_CONTEXT.get().is_none() {
-        let ctx = create_shared_context_async().await?;
-        let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
+    let ctx = create_shared_context_async().await?;
+
+    {
+        let _guard = init_lock.lock();
+        if SHARED_CONTEXT.get().is_none() {
+            let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
+        }
     }
 
     Ok(())
 }
 
+/// Initialize the shared GPU context on the current thread.
+///
+/// This is the synchronous entry point for callers that cannot await
+/// [`init_shared_context_async`].
+///
+/// # Errors
+///
+/// Returns the initialization error when adapter or device creation fails.
 pub fn init_shared_context() -> Result<(), SharedContextError> {
     pollster::block_on(init_shared_context_async())
 }
@@ -341,7 +361,7 @@ pub fn save_pipeline_cache() {
         }
 
         match fs::write(path, &data) {
-            Ok(_) => tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path),
+            Ok(()) => tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path),
             Err(e) => tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e),
         }
     }
@@ -358,7 +378,7 @@ pub fn clear_pipeline_cache() {
         && path.exists()
     {
         match fs::remove_file(&path) {
-            Ok(_) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
+            Ok(()) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
             Err(e) => tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e),
         }
     }
@@ -375,11 +395,9 @@ fn sanitize_cache_token(value: &str) -> String {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
             let _ = out.write_char(ch.to_ascii_lowercase());
             previous_was_underscore = false;
-        } else {
-            if !previous_was_underscore {
-                out.push('_');
-                previous_was_underscore = true;
-            }
+        } else if !previous_was_underscore {
+            out.push('_');
+            previous_was_underscore = true;
         }
     }
 
@@ -417,10 +435,6 @@ async fn request_adapter_async(
         })
         .await
         .map_err(|_| SharedContextError::NoAdapter)
-}
-
-fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, SharedContextError> {
-    pollster::block_on(request_adapter_async(instance))
 }
 
 #[cfg(target_os = "android")]
@@ -535,6 +549,7 @@ fn create_android_instance_and_adapter()
 }
 
 /// Create a new shared context (internal).
+#[allow(clippy::too_many_lines)]
 async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContextError> {
     tracing::info!("[SharedGpuContext] Initializing shared GPU context");
 
@@ -614,22 +629,22 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
     // Create pipeline cache only if the feature is available
     let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         // Try to load cache from disk, but don't fail if it's corrupted
-        let cache_data = pipeline_cache_path
-            .as_ref()
-            .and_then(|path| match fs::read(path) {
-                Ok(data) => {
+        let cache_data = pipeline_cache_path.as_ref().and_then(|path| {
+            fs::read(path).map_or_else(
+                |_| {
+                    tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
+                    None
+                },
+                |data| {
                     tracing::info!(
                         "[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)",
                         path,
                         data.len()
                     );
                     Some(data)
-                }
-                Err(_) => {
-                    tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
-                    None
-                }
-            });
+                },
+            )
+        });
 
         // SAFETY: We're providing valid PipelineCacheDescriptor with fallback enabled
         // If the cache data is invalid, wgpu will create an empty cache instead of failing
@@ -658,10 +673,6 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
         pipeline_cache_path,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
-}
-
-fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
-    pollster::block_on(create_shared_context_async())
 }
 
 #[cfg(test)]

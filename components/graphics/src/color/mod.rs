@@ -21,8 +21,9 @@ use core::{
     fmt::{self, Debug, Display},
     ops::{Deref, DerefMut},
 };
+use num_traits::ToPrimitive;
 use pastey::paste;
-pub use srgb::Srgb;
+pub use srgb::{BLACK, Srgb, WHITE};
 
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
@@ -309,7 +310,9 @@ impl core::ops::Mul<f64> for ResolvedColor {
     type Output = Self;
 
     fn mul(self, scalar: f64) -> Self {
-        let s = scalar as f32;
+        let s = scalar
+            .to_f32()
+            .expect("ResolvedColor::mul: scalar must be representable as f32");
         Self {
             red: self.red * s,
             green: self.green * s,
@@ -701,8 +704,7 @@ color_const!(BlueGrey, "Blue grey color.");
 
 impl View for Color {
     fn body(self, env: &Environment) -> impl View {
-        let resolved = self.resolve(env).get();
-        resolved
+        self.resolve(env).get()
     }
 }
 
@@ -710,9 +712,12 @@ impl View for Color {
 // This avoids creating swapchains for simple color blocks.
 waterui_core::raw_view!(ResolvedColor, waterui_core::layout::StretchAxis::Both);
 
+/// Hex parsing helpers shared by color constructors.
 pub mod parse;
 
 // https://www.w3.org/TR/css-color-4/#color-conversion-code
+/// Converts an sRGB channel to linear light.
+#[must_use]
 pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
@@ -721,6 +726,8 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
+/// Converts a linear-light channel to sRGB.
+#[must_use]
 pub fn linear_to_srgb(c: f32) -> f32 {
     if c <= 0.003_130_8 {
         c * 12.92

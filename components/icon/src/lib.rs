@@ -55,7 +55,7 @@ pub use glyph::IconGlyph;
 use waterui_core::raw_view;
 use waterui_str::Str;
 
-/// SystemIcon component representing a platform system icon by name.
+/// `SystemIcon` component representing a platform system icon by name.
 ///
 /// On Apple platforms, this renders SF Symbols.
 /// Other backends may choose not to implement `SystemIcon`; for cross-platform usage, prefer icon-pack crates.

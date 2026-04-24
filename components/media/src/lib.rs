@@ -55,6 +55,15 @@
 //! ```
 
 #![allow(clippy::future_not_send)]
+#![allow(
+    missing_docs,
+    clippy::doc_markdown,
+    clippy::items_after_statements,
+    clippy::option_if_let_else,
+    clippy::semicolon_if_nothing_returned,
+    clippy::unused_async,
+    clippy::use_self
+)]
 #![allow(rustdoc::invalid_rust_codeblocks)]
 
 extern crate alloc;
@@ -93,9 +102,6 @@ pub use filtrate::Filter;
 /// URL types for working with media resources
 pub mod url;
 pub use url::Url;
-pub(crate) mod image_codec {
-    pub use waterui_image::codec::*;
-}
 
 use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
 
