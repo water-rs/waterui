@@ -4,6 +4,14 @@
 //! macros and type-safe form building capabilities.
 
 #![no_std]
+#![allow(
+    missing_docs,
+    clippy::doc_markdown,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::redundant_clone
+)]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;

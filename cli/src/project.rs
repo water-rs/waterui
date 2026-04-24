@@ -138,18 +138,24 @@ impl Project {
     }
 
     /// Get the target directory for Rust build artifacts.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the target directory.
     pub async fn target_dir(&self) -> eyre::Result<PathBuf> {
         self.target_dir_future
             .clone()
             .await
-            .map_err(|error| eyre::eyre!(error.clone()))
+            .map_err(|error| eyre::eyre!(error))
     }
 
     /// Get backend-specific target directory under the project's resolved Cargo target directory.
     ///
     /// This keeps generated backend builds inside the user-controlled target tree.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the project target directory.
     pub async fn backend_target_dir(&self, backend_name: &str) -> eyre::Result<PathBuf> {
         let mut hasher = sha2::Sha256::new();
         hasher.update(self.root.display().to_string().as_bytes());
@@ -853,6 +859,7 @@ impl Project {
         Self::open_with_mode(path, OpenMode::PreviewBuild).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn open_with_mode(
         path: impl AsRef<Path>,
         open_mode: OpenMode,

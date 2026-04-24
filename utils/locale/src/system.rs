@@ -1,4 +1,4 @@
-//! Bridge between regional callbacks and WaterUI locale signals.
+//! Bridge between regional callbacks and `WaterUI` locale signals.
 
 use core::str::FromStr;
 use std::cell::RefCell;
@@ -70,7 +70,8 @@ fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_runtime_locale_state_for_tests() {
+/// Resets the per-thread runtime locale cache so tests can start from a clean state.
+pub fn reset_runtime_locale_state_for_tests() {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let _ = slot.borrow_mut().take();
     });

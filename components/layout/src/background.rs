@@ -22,7 +22,7 @@ use waterui_core::View;
 
 use crate::{
     HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, container::FixedContainer,
+    VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
@@ -128,7 +128,7 @@ where
     Bg: View + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let BackgroundView {
+        let Self {
             content,
             background,
         } = self;
@@ -152,6 +152,7 @@ pub const fn background<Content, Bg>(
 #[allow(clippy::float_cmp)]
 mod tests {
     use waterui_core::layout::Point;
+    use waterui_core::layout::ViewDimensions;
 
     use super::*;
     use alloc::vec;

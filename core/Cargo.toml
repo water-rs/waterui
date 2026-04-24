@@ -20,6 +20,10 @@ waterui-macros.workspace = true
 version = "1.0"
 default-features = false
 
+[dependencies.num-traits]
+version = "0.2"
+default-features = false
+
 [dependencies.serde]
 version = "1.0"
 optional = true

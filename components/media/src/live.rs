@@ -88,7 +88,7 @@ fn live_photo_still(
     let is_playing = is_playing.clone();
     Metadata::new(
         Photo::new(source.image),
-        GestureObserver::new(LongPressGesture::new(activation_duration_ms)).action(move || {
+        GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
             trigger_live_photo_feedback();
             is_playing.set(true);
         }),

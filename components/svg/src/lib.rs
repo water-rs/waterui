@@ -107,7 +107,7 @@ impl Svg {
 
     /// Sets explicit dimensions for the SVG.
     #[must_use]
-    pub fn size(mut self, width: f32, height: f32) -> Self {
+    pub const fn size(mut self, width: f32, height: f32) -> Self {
         self.width = Some(width);
         self.height = Some(height);
         self
@@ -143,13 +143,13 @@ impl Svg {
         }
     }
 
-    /// Creates a SceneView renderer for this SVG with the given color.
+    /// Creates a `SceneView` renderer for this SVG with the given color.
     fn to_scene_view(&self, color: &str) -> SceneView {
         let svg_content = self.build_svg_content(color);
         SceneView::new(scene_renderer::SvgSceneContent::new(&svg_content))
     }
 
-    /// Creates a reactive SceneView renderer for this SVG.
+    /// Creates a reactive `SceneView` renderer for this SVG.
     fn to_reactive_scene_view<S>(&self, color_signal: S) -> impl View
     where
         S: Signal<Output = alloc::string::String> + 'static,
@@ -184,7 +184,7 @@ impl Svg {
         self.frame_view(self.to_reactive_scene_view(color_signal))
     }
 
-    /// Format a ResolvedColor as an SVG-compatible color string.
+    /// Format a `ResolvedColor` as an SVG-compatible color string.
     ///
     /// Converts from linear RGB to sRGB.
     /// - Opaque colors are emitted as `#rrggbb`.
@@ -213,15 +213,13 @@ impl View for Svg {
         if let Some(tint) = self.tint.clone() {
             let color_signal = tint
                 .resolve(env)
-                .map(|resolved| Svg::resolved_color_to_svg_color(&resolved));
+                .map(|resolved| Self::resolved_color_to_svg_color(&resolved));
             return self.to_reactive_framed_scene_view(color_signal);
         }
 
         // No explicit tint: use foreground color if present, else white.
         let color_hex = env
-            .query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
-            .map(Svg::resolved_color_to_svg_color)
-            .unwrap_or_else(|| "#ffffff".into());
+            .query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>().map_or_else(|| "#ffffff".into(), Self::resolved_color_to_svg_color);
         self.to_framed_scene_view(&color_hex)
     }
 }

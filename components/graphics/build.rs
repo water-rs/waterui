@@ -1,3 +1,5 @@
+//! Build-time WGSL validation and `WaterUI` graphics metadata emission.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

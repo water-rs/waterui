@@ -46,7 +46,7 @@ macro_rules! include_fragment_shader {
     };
 }
 
-// Re-export for backwards compatibility.
+/// Backwards-compatible alias for [`ShaderSource`].
 pub type PrewarmedShader = ShaderSource;
 
 const fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -60,6 +60,7 @@ const fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// Shared WGSL prelude prepended to fragment-only shader surfaces.
 pub const SHADER_SURFACE_PRELUDE: &str = include_str!("shaders/prelude.wgsl");
 
 static FLOWING_GRADIENT_SHADER_SURFACE: ShaderSource = ShaderSource::new(
@@ -84,22 +85,27 @@ pub static BUILTIN_SHADER_SOURCES: &[ShaderSource] = &[
     FLOWING_GRADIENT_SHADER_SURFACE,
 ];
 
-/// Returns the pre-composed ShaderSurface source for built-in flowing gradient.
+/// Returns the pre-composed `ShaderSurface` source for built-in flowing gradient.
 #[must_use]
 pub fn flowing_gradient_shader_surface_source() -> &'static ShaderSource {
     &FLOWING_GRADIENT_SHADER_SURFACE
 }
 
 /// Prewarms built-in shaders into the shared module cache.
+///
+/// # Errors
+///
+/// Returns shared-context initialization failures.
 pub fn prewarm_builtin_shaders() -> Result<usize, SharedContextError> {
     if !crate::shared_context::is_initialized() {
         init_shared_context()?;
     }
     let ctx = shared_context();
-    let guard = ctx.read();
-
-    for shader in BUILTIN_SHADER_SOURCES {
-        let _ = guard.get_or_create_static_shader(shader);
+    {
+        let guard = ctx.read();
+        for shader in BUILTIN_SHADER_SOURCES {
+            let _ = guard.get_or_create_static_shader(shader);
+        }
     }
 
     Ok(BUILTIN_SHADER_SOURCES.len())

@@ -108,6 +108,8 @@ impl Default for EasingCurve {
 /// Uses Newton-Raphson iteration to find the t parameter for a given x,
 /// then evaluates the bezier curve at that t to get y.
 fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    const EPSILON: f32 = 0.0001;
+
     // Handle edge cases
     if t <= 0.0 {
         return 0.0;
@@ -120,8 +122,6 @@ fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     if (x1 - y1).abs() < 0.0001 && (x2 - y2).abs() < 0.0001 {
         return t;
     }
-
-    const EPSILON: f32 = 0.0001;
 
     // First try Newton-Raphson for fast convergence.
     let mut guess = t;
@@ -180,7 +180,7 @@ fn bezier_sample(t: f32, p1: f32, p2: f32) -> f32 {
     let t3 = t2 * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
+    (3.0 * mt2 * t).mul_add(p1, (3.0 * mt * t2).mul_add(p2, t3))
 }
 
 /// Derivative of the bezier curve at parameter t.
@@ -190,7 +190,10 @@ fn bezier_derivative(t: f32, p1: f32, p2: f32) -> f32 {
     let t2 = t * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    3.0 * mt2 * p1 + 6.0 * mt * t * (p2 - p1) + 3.0 * t2 * (1.0 - p2)
+    (3.0 * mt2).mul_add(
+        p1,
+        (6.0 * mt * t).mul_add(p2 - p1, 3.0 * t2 * (1.0 - p2)),
+    )
 }
 
 /// Spring easing implementation using damped harmonic oscillator.
@@ -221,7 +224,7 @@ fn spring_ease(t: f32, stiffness: f32, damping: f32) -> f32 {
     if zeta >= 1.0 {
         // Critically damped or overdamped - no oscillation
         let decay = (-omega * zeta * t).exp();
-        1.0 - decay * (1.0 + omega * zeta * t)
+        1.0 - decay * (omega * zeta).mul_add(t, 1.0)
     } else {
         // Underdamped - oscillates
         let omega_d = omega * (1.0 - zeta * zeta).sqrt();
@@ -252,7 +255,7 @@ impl Interpolatable for f32 {
 // Implement for f64
 impl Interpolatable for f64 {
     fn lerp(&self, other: &Self, t: f32) -> Self {
-        self + (other - self) * f64::from(t)
+        self + (other - self) * Self::from(t)
     }
 }
 
@@ -359,8 +362,8 @@ mod tests {
     #[test]
     fn test_bezier_solver_handles_extreme_control_points() {
         let curve = EasingCurve::bezier(0.0, 1.0, 1.0, 0.0);
-        for i in 0..=100 {
-            let t = i as f32 / 100.0;
+        for step in 0_u16..=100 {
+            let t = f32::from(step) / 100.0;
             let eased = curve.ease(t);
             assert!(eased.is_finite(), "eased must be finite at t={t}");
             assert!(

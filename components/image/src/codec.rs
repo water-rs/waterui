@@ -5,14 +5,17 @@ use std::io::{Cursor, Seek, SeekFrom};
 
 use mp4_atom::{Atom, Encode, FourCC, Ftyp, Header, Iinf, Meta, Pitm, ReadAtom, ReadFrom};
 
+/// Decode route selected for a successfully decoded image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodePath {
+    /// Use the platform-native decoder path.
     Platform,
+    /// Fall back to software decoding in Rust.
     SoftwareFallback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DecodeRoute {
+pub(crate) enum DecodeRoute {
     Platform,
     Software,
 }
@@ -90,6 +93,12 @@ pub(crate) fn is_progressive_candidate(content_type: Option<&str>, data: &[u8]) 
         || lower.contains("image/tiff")
 }
 
+/// Decode an image with the software stack, retrying HEIF inputs through an AVIF-compatible
+/// brand patch when necessary.
+///
+/// # Errors
+///
+/// Returns the original decode error when the primary decode and HEIF compatibility retry both fail.
 pub fn decode_dynamic_image_with_heif_fallback(
     data: &[u8],
 ) -> Result<image::DynamicImage, image::ImageError> {
@@ -150,20 +159,7 @@ pub(crate) fn detect_decode_route(data: &[u8]) -> DecodeRoute {
         }
 
         return match format {
-            ::image::ImageFormat::Avif => {
-                if platform_available {
-                    DecodeRoute::Platform
-                } else {
-                    DecodeRoute::Software
-                }
-            }
-            ::image::ImageFormat::Jpeg
-            | ::image::ImageFormat::Png
-            | ::image::ImageFormat::Gif
-            | ::image::ImageFormat::WebP
-            | ::image::ImageFormat::Bmp
-            | ::image::ImageFormat::Ico
-            | ::image::ImageFormat::Tiff => DecodeRoute::Software,
+            ::image::ImageFormat::Avif if platform_available => DecodeRoute::Platform,
             _ => DecodeRoute::Software,
         };
     }
@@ -254,8 +250,7 @@ fn jpeg_has_icc_profile(data: &[u8]) -> bool {
 fn is_heif_family(data: &[u8]) -> bool {
     match parse_heif_container(data) {
         Ok(Some(_)) => true,
-        Ok(None) => false,
-        Err(_) => false,
+        Ok(None) | Err(_) => false,
     }
 }
 
@@ -438,14 +433,14 @@ fn ftyp_contains_heif_brand(ftyp: &Ftyp) -> bool {
     is_heif_brand(ftyp.major_brand) || ftyp.compatible_brands.iter().copied().any(is_heif_brand)
 }
 
-fn is_heif_brand(brand: FourCC) -> bool {
+const fn is_heif_brand(brand: FourCC) -> bool {
     matches!(
         brand,
         MIF1_BRAND | MSF1_BRAND | HEIF_BRAND | HEIC_BRAND | HEIX_BRAND | HEVC_BRAND | HEVX_BRAND
     )
 }
 
-fn heif_primary_codec(primary_item_type: Option<FourCC>) -> HeifPrimaryCodec {
+const fn heif_primary_codec(primary_item_type: Option<FourCC>) -> HeifPrimaryCodec {
     match primary_item_type {
         Some(AV01_ITEM_TYPE) => HeifPrimaryCodec::Av1,
         Some(HVC1_ITEM_TYPE | HEV1_ITEM_TYPE) => HeifPrimaryCodec::Hevc,
