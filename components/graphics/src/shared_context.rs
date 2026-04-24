@@ -78,6 +78,8 @@ pub struct SharedGpuContext {
     pipeline_cache_path: Option<PathBuf>,
     /// Cached shader modules keyed by WGSL source hash with collision buckets.
     shader_cache: parking_lot::Mutex<HashMap<u64, Vec<CachedShaderEntry>>>,
+    /// Serializes full offscreen render operations on the shared device.
+    offscreen_operation_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl fmt::Debug for SharedGpuContext {
@@ -152,6 +154,11 @@ impl SharedGpuContext {
             cache.values().map(std::vec::Vec::len).sum::<usize>()
         };
         (cached_count, cached_count) // (cached_count, hit would require tracking)
+    }
+
+    /// Locks shared-device offscreen work until all GPU resources from that work are dropped.
+    pub(crate) fn offscreen_operation_lock(&self) -> Arc<parking_lot::Mutex<()>> {
+        Arc::clone(&self.offscreen_operation_lock)
     }
 
     fn get_or_create_shader_with_hash(
@@ -658,6 +665,7 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
         pipeline_cache,
         pipeline_cache_path,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
+        offscreen_operation_lock: Arc::new(parking_lot::Mutex::new(())),
     })
 }
 
