@@ -795,16 +795,16 @@ mod tests {
     #[test]
     fn alpha_mode_uses_premultiplied_blending() {
         assert_eq!(
-            blend_state(BlendMode::Alpha, false),
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+            blend_state(BlendMode::Alpha),
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
         );
     }
 
     #[test]
     fn hdr_surfaces_keep_particle_blending() {
         assert_eq!(
-            blend_state(BlendMode::Alpha, true),
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+            blend_state(BlendMode::Alpha),
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
         );
     }
 

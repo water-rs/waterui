@@ -469,10 +469,7 @@ impl Parse for IncludeBundleArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
-        let as_ident: syn::Ident = input.parse()?;
-        if as_ident != "as" {
-            return Err(syn::Error::new(as_ident.span(), "expected `as`"));
-        }
+        input.parse::<Token![as]>()?;
         input.parse::<Token![=]>()?;
         let mount: syn::Ident = input.parse()?;
         Ok(Self { path, mount })

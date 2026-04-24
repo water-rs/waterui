@@ -355,7 +355,7 @@ async fn handle_connection(
 
         if should_shutdown {
             drop(reader);
-            drop(writer);
+            let _ = writer;
             exit_process(registration_path.as_ref());
         }
     }

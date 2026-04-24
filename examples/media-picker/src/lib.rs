@@ -2,7 +2,7 @@
 //!
 //! This example showcases:
 //! - MediaPicker component for selecting photos, videos, and live photos
-//! - Selected::load() for asynchronously loading media content
+//! - Selected::load() for retrieving selected media content
 //! - Displaying loaded media (Photo, Video, LivePhoto)
 //! - Filter options for different media types
 
@@ -14,14 +14,12 @@ use waterui::media::{LivePhoto, Media};
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::{binding, impl_constant};
-use waterui::task::spawn_local;
 use waterui::{view, view_builder};
 
 /// Combined state for the media display area
 #[derive(Debug, Clone, PartialEq)]
 enum DisplayState {
     Empty,
-    Loading,
     Loaded(Media),
     Error(String),
 }
@@ -31,7 +29,6 @@ impl_constant!(DisplayState);
 fn main() -> impl View {
     // Single state binding for cleaner reactivity
     let display_state: Binding<DisplayState> = binding(DisplayState::Empty);
-    let load_revision = Binding::i32(0);
     let image_selection: Binding<Option<Selected>> = Binding::default();
     let video_selection: Binding<Option<Selected>> = Binding::default();
     let live_photo_selection: Binding<Option<Selected>> = Binding::default();
@@ -46,21 +43,18 @@ fn main() -> impl View {
                 "Pick Image",
                 MediaFilter::Image,
                 &image_selection,
-                &load_revision,
                 &display_state,
             ),
             picker_button(
                 "Pick Video",
                 MediaFilter::Video,
                 &video_selection,
-                &load_revision,
                 &display_state,
             ),
             picker_button(
                 "Pick Live Photo",
                 MediaFilter::LivePhoto,
                 &live_photo_selection,
-                &load_revision,
                 &display_state,
             ),
         ))
@@ -83,11 +77,9 @@ fn picker_button(
     label: &'static str,
     filter: MediaFilter,
     selection: &Binding<Option<Selected>>,
-    load_revision: &Binding<i32>,
     display_state: &Binding<DisplayState>,
 ) -> impl View {
     let state = display_state.clone();
-    let load_revision = load_revision.clone();
     let sel = selection.clone();
     let expected_filter = filter.clone();
 
@@ -98,44 +90,21 @@ fn picker_button(
         .on_change(&sel, {
             let state = state.clone();
             let expected_filter = expected_filter.clone();
-            let load_revision = load_revision.clone();
             move |new_selection| {
-                let revision = load_revision.get().wrapping_add(1);
-                load_revision.set(revision);
-
                 let Some(selected) = new_selection else {
                     state.set(DisplayState::Empty);
                     return;
                 };
 
-                // Show loading state immediately
-                state.set(DisplayState::Loading);
-
-                let state = state.clone();
-                let expected_filter = expected_filter.clone();
-                let load_revision = load_revision.clone();
-
-                // Load the selected media asynchronously
-                spawn_local(async move {
-                    let media = selected.load().await;
-
-                    if load_revision.get() != revision {
-                        tracing::debug!(
-                            "Discarding stale media load completion: revision {revision}"
-                        );
-                        return;
+                let media = selected.load();
+                tracing::debug!("Loaded media: {:?}", media);
+                match validate_media_result(&media, &expected_filter) {
+                    Ok(()) => state.set(DisplayState::Loaded(media)),
+                    Err(message) => {
+                        tracing::error!("{message}");
+                        state.set(DisplayState::Error(message));
                     }
-
-                    tracing::debug!("Loaded media: {:?}", media);
-                    match validate_media_result(&media, &expected_filter) {
-                        Ok(()) => state.set(DisplayState::Loaded(media)),
-                        Err(message) => {
-                            tracing::error!("{message}");
-                            state.set(DisplayState::Error(message));
-                        }
-                    }
-                })
-                .detach();
+                }
             }
         })
 }
@@ -154,12 +123,6 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
                         .foreground(MutedForeground),
                 ))
                 .spacing(8.0),
-
-                DisplayState::Loading => vstack((
-                    loading(),
-                    text("Loading media...").body().foreground(MutedForeground),
-                ))
-                .spacing(12.0),
 
                 DisplayState::Loaded(media) => media_view(media),
 
