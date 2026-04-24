@@ -16,6 +16,7 @@ fn button_style_css_classes(style: ButtonStyle) -> &'static [&'static str] {
         ButtonStyle::Plain | ButtonStyle::Borderless => &["flat"],
         ButtonStyle::Link => &["flat", "link"],
         ButtonStyle::BorderedProminent => &["suggested-action"],
+        _ => panic!("unsupported ButtonStyle variant on GTK backend"),
     }
 }
 

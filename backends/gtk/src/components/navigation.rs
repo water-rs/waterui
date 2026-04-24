@@ -469,9 +469,10 @@ impl GtkNavigationControllerInner {
 
 impl GtkComponent for NavigationSplitLayout {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+        let (sidebar, placeholder, selection, detail, sidebar_width) = self.into_parts();
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_position(self.sidebar_width as i32);
-        let sidebar = renderer.render_any(self.sidebar.build(), env);
+        paned.set_position(sidebar_width as i32);
+        let sidebar = renderer.render_any(sidebar.build(), env);
         sidebar.set_hexpand(true);
         sidebar.set_vexpand(true);
         paned.set_start_child(Some(&sidebar));
@@ -480,9 +481,6 @@ impl GtkComponent for NavigationSplitLayout {
         detail_host.set_vexpand(true);
         paned.set_end_child(Some(&detail_host));
 
-        let placeholder = self.placeholder;
-        let selection = self.selection;
-        let detail = self.detail;
         let env = env.clone();
 
         let rebuild_detail = {

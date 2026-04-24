@@ -8,7 +8,8 @@ web/pkg
 .build
 Cargo.lock
 *.log
-/.cargo/
+/.cargo/*
+!/.cargo/config.toml
 *.rlib
 
 # Personal/temporary files
