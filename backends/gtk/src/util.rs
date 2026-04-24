@@ -14,7 +14,7 @@ use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
 use waterui::gesture::GestureObserver;
 use waterui::interaction::Hittable;
-use waterui::metadata::context_menu::ContextMenu;
+use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui_core::event::{LifeCycleHook, OnEvent};
@@ -138,7 +138,7 @@ fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         HighDynamicRange,
         Cursor,
         IgnoreSafeArea,
-        ContextMenu,
+        ResolvedContextMenu,
         Draggable,
         DropDestination,
         Background

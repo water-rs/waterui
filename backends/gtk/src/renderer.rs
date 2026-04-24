@@ -20,16 +20,16 @@ use waterui::component::progress::ProgressConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{DragData, Draggable, DropDestination};
 use waterui::interaction::Hittable;
-use waterui::metadata::context_menu::ContextMenu;
+use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::prelude::Divider;
 use waterui::style::{Offset, Rotation, Scale};
 use waterui_backend_core::ViewDispatcher;
 use waterui_controls::button::ButtonConfig;
-use waterui_controls::menu::{Menu, MenuItem};
+use waterui_controls::menu::ResolvedMenu;
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
-use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::Binding;
 use waterui_core::dynamic::Dynamic;
@@ -57,6 +57,7 @@ use waterui_text::TextConfig;
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
+use crate::components::menu::rebuild_menu_popover;
 use crate::util::store_watcher_guard;
 
 const FOCUS_ANCHOR_DATA_KEY: &str = "waterui_focus_anchor";
@@ -300,10 +301,6 @@ fn cursor_style_to_gtk_name(style: CursorStyle) -> &'static str {
         CursorStyle::Copy => "copy",
         _ => panic!("unsupported CursorStyle variant on GTK backend"),
     }
-}
-
-fn render_menu_item_label(item: &MenuItem) -> String {
-    item.label.content().get().to_plain().as_str().to_owned()
 }
 
 fn apply_shadow_css(provider: &CssProvider, resolved: ResolvedColor, x: f32, y: f32, blur: f32) {
@@ -791,7 +788,7 @@ impl GtkRenderer {
         Self::register_native::<ButtonConfig>(dispatcher);
         Self::register_native::<ToggleConfig>(dispatcher);
         Self::register_native::<SliderConfig>(dispatcher);
-        Self::register_native::<TextFieldConfig>(dispatcher);
+        Self::register_native::<ResolvedTextFieldConfig>(dispatcher);
         Self::register_native::<ProgressConfig>(dispatcher);
         Self::register_native::<StepperConfig>(dispatcher);
         Self::register_native::<ScrollView>(dispatcher);
@@ -802,7 +799,7 @@ impl GtkRenderer {
         Self::register_native::<DatePickerConfig>(dispatcher);
         Self::register_native::<MultiDatePickerConfig>(dispatcher);
         Self::register_native::<ColorPickerConfig>(dispatcher);
-        Self::register_native::<Menu>(dispatcher);
+        Self::register_native::<ResolvedMenu>(dispatcher);
         Self::register_native::<SystemIcon>(dispatcher);
         Self::register_native::<WebView>(dispatcher);
         Self::register_native::<ResolvedColor>(dispatcher);
@@ -1231,8 +1228,8 @@ impl GtkRenderer {
             widget
         });
 
-        // Metadata<ContextMenu> - right-click popover menu
-        dispatcher.register::<Metadata<ContextMenu>>(|_state, ctx, metadata, env| {
+        // Metadata<ResolvedContextMenu> - right-click popover menu
+        dispatcher.register::<Metadata<ResolvedContextMenu>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() };
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
@@ -1256,20 +1253,7 @@ impl GtkRenderer {
                     popover.set_has_arrow(true);
                     popover.set_parent(&widget);
                     popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
-                    let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-                    for item in entries {
-                        let button = gtk4::Button::with_label(&render_menu_item_label(&item));
-                        button.add_css_class("flat");
-                        let action = item.action.clone();
-                        let env = env.clone();
-                        let popover_for_click = popover.clone();
-                        button.connect_clicked(move |_| {
-                            action.call(&env);
-                            popover_for_click.popdown();
-                        });
-                        list.append(&button);
-                    }
-                    popover.set_child(Some(&list));
+                    rebuild_menu_popover(&popover, entries, &env);
                     popover.popup();
                     *popover_state.borrow_mut() = Some(popover);
                 }
