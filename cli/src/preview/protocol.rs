@@ -84,7 +84,7 @@ impl std::str::FromStr for PreviewPlatform {
 
 pub use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError as AppError, PreviewOutput as AppOutput,
-    PreviewRequest as AppRequest, PreviewResponse as AppResponse, Size,
+    PreviewRequest as AppRequest, PreviewResponse as AppResponse, PreviewRuntimePlatform, Size,
 };
 
 pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
