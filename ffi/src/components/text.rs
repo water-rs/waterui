@@ -178,7 +178,7 @@ ffi_computed!(StyledStr, WuiStyledStr);
 
 /// FFI-safe horizontal paragraph alignment.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WuiHorizontalAlignment {
     Leading = 0,
     #[default]
