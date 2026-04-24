@@ -88,7 +88,6 @@ pub struct HorizontalAlignmentGuide<Content, F> {
 
 impl<Content, F> HorizontalAlignmentGuide<Content, F> {
     /// Creates a new horizontal alignment-guide wrapper.
-    #[must_use]
     pub const fn new(content: Content, alignment: HorizontalAlignment, compute: F) -> Self {
         Self {
             content,
@@ -202,7 +201,6 @@ pub struct VerticalAlignmentGuide<Content, F> {
 
 impl<Content, F> VerticalAlignmentGuide<Content, F> {
     /// Creates a new vertical alignment-guide wrapper.
-    #[must_use]
     pub const fn new(content: Content, alignment: VerticalAlignment, compute: F) -> Self {
         Self {
             content,

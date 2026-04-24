@@ -1,4 +1,4 @@
-//! Divider layout primitive shared across WaterUI surfaces.
+//! Divider layout primitive shared across `WaterUI` surfaces.
 
 use waterui_core::View;
 use waterui_graphics::color::Grey;

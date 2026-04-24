@@ -9,7 +9,6 @@ use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
-use waterui_macros::view;
 use waterui_shape::{Rectangle, ShapeExt};
 use waterui_text::{IntoText, Text};
 

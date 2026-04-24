@@ -314,6 +314,9 @@ async fn install_missing_packages(
 
     match manager {
         LinuxPackageManager::Apt => {
+            if packages.iter().any(|package| package.ends_with(":amd64")) {
+                ensure_apt_foreign_architecture("amd64").await?;
+            }
             run_with_optional_sudo("apt-get", &[String::from("update")]).await?;
             let mut args = vec![String::from("install"), String::from("-y")];
             args.extend(packages.iter().cloned());
@@ -350,6 +353,18 @@ async fn install_missing_packages(
     }
 
     Ok(())
+}
+
+async fn ensure_apt_foreign_architecture(architecture: &str) -> eyre::Result<()> {
+    let output = run_command("dpkg", ["--print-foreign-architectures"]).await?;
+    if output.lines().any(|line| line.trim() == architecture) {
+        return Ok(());
+    }
+    run_with_optional_sudo(
+        "dpkg",
+        &[String::from("--add-architecture"), architecture.to_string()],
+    )
+    .await
 }
 
 fn required_packages_to_owned(packages: &[&str]) -> Vec<String> {

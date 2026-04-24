@@ -169,11 +169,8 @@ impl Label {
     /// menus currently only project [`SystemIcon`].
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
-        let icon = if let Some(system_icon) = (&icon as &dyn Any).downcast_ref::<SystemIcon>() {
-            LabelIcon::system(system_icon.clone())
-        } else {
-            LabelIcon::custom(icon)
-        };
+        let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
+        let icon = system_icon.map_or_else(|| LabelIcon::custom(icon), LabelIcon::system);
         self.icon = Some(icon);
         self
     }
@@ -253,8 +250,7 @@ impl Label {
     }
 
     /// Returns the semantic text carried by this label.
-    #[must_use]
-    pub fn semantic_text(&self) -> &Text {
+    pub const fn semantic_text(&self) -> &Text {
         &self.text
     }
 

@@ -1,7 +1,7 @@
-//! # WaterUI Map Component
+//! # `WaterUI` Map Component
 //!
-//! This crate provides a declarative map component for the WaterUI framework.
-//! It displays native maps (MKMapView on Apple platforms) with support for
+//! This crate provides a declarative map component for the `WaterUI` framework.
+//! It displays native maps (`MKMapView` on Apple platforms) with support for
 //! annotations and user location.
 //!
 //! ## Example
@@ -57,7 +57,7 @@ impl Coordinate {
 
     /// Creates a coordinate from a `waterkit_location::Location`.
     #[must_use]
-    pub fn from_location(location: &Location) -> Self {
+    pub const fn from_location(location: &Location) -> Self {
         Self {
             latitude: location.latitude(),
             longitude: location.longitude(),
@@ -108,7 +108,7 @@ impl Region {
 
     /// Creates a region from a coordinate with default zoom.
     #[must_use]
-    pub fn from_coordinate(coordinate: Coordinate) -> Self {
+    pub const fn from_coordinate(coordinate: Coordinate) -> Self {
         Self::new(coordinate, 0.05, 0.05)
     }
 }
@@ -168,6 +168,52 @@ pub enum MapStyle {
     Hybrid,
 }
 
+/// Generic visibility toggle for optional map chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapVisibility {
+    /// Hide the feature.
+    Hidden,
+    /// Show the feature.
+    Visible,
+}
+
+impl MapVisibility {
+    const fn from_bool(value: bool) -> Self {
+        if value { Self::Visible } else { Self::Hidden }
+    }
+
+    /// Returns whether the feature should be visible.
+    #[must_use]
+    pub const fn is_visible(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+}
+
+/// Controls whether the user can pan and zoom the map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapInteractivity {
+    /// Disable direct map interaction.
+    ReadOnly,
+    /// Enable direct map interaction.
+    Interactive,
+}
+
+impl MapInteractivity {
+    const fn from_bool(value: bool) -> Self {
+        if value {
+            Self::Interactive
+        } else {
+            Self::ReadOnly
+        }
+    }
+
+    /// Returns whether gestures are enabled.
+    #[must_use]
+    pub const fn is_interactive(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
+
 /// Configuration for the Map component.
 #[derive(Debug)]
 pub struct MapConfig {
@@ -178,13 +224,13 @@ pub struct MapConfig {
     /// The map display style.
     pub style: MapStyle,
     /// Whether to show the user's current location.
-    pub shows_user_location: bool,
+    pub user_location_visibility: MapVisibility,
     /// Whether the map is interactive (pan/zoom enabled).
-    pub is_interactive: bool,
+    pub interactivity: MapInteractivity,
     /// Whether to show the compass.
-    pub shows_compass: bool,
+    pub compass_visibility: MapVisibility,
     /// Whether to show the scale.
-    pub shows_scale: bool,
+    pub scale_visibility: MapVisibility,
 }
 
 // Use configurable! with StretchAxis::Both - this provides both NativeView and View impls
@@ -207,10 +253,10 @@ impl Map {
             region: region.into_computed(),
             annotations: empty_annotations.into_computed(),
             style: MapStyle::default(),
-            shows_user_location: false,
-            is_interactive: true,
-            shows_compass: true,
-            shows_scale: true,
+            user_location_visibility: MapVisibility::Hidden,
+            interactivity: MapInteractivity::Interactive,
+            compass_visibility: MapVisibility::Visible,
+            scale_visibility: MapVisibility::Visible,
         })
     }
 
@@ -239,15 +285,15 @@ impl Map {
 
     /// Sets the map display style.
     #[must_use]
-    pub fn style(mut self, style: MapStyle) -> Self {
+    pub const fn style(mut self, style: MapStyle) -> Self {
         self.0.style = style;
         self
     }
 
     /// Sets whether to show the user's current location on the map.
     #[must_use]
-    pub fn shows_user_location(mut self, show: bool) -> Self {
-        self.0.shows_user_location = show;
+    pub const fn shows_user_location(mut self, show: bool) -> Self {
+        self.0.user_location_visibility = MapVisibility::from_bool(show);
         self
     }
 
@@ -258,28 +304,28 @@ impl Map {
         self.0.region = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
             .into_computed();
-        self.0.shows_user_location = true;
+        self.0.user_location_visibility = MapVisibility::Visible;
         self
     }
 
     /// Sets whether the map is interactive (pan/zoom enabled).
     #[must_use]
-    pub fn is_interactive(mut self, interactive: bool) -> Self {
-        self.0.is_interactive = interactive;
+    pub const fn is_interactive(mut self, interactive: bool) -> Self {
+        self.0.interactivity = MapInteractivity::from_bool(interactive);
         self
     }
 
     /// Sets whether to show the compass.
     #[must_use]
-    pub fn shows_compass(mut self, show: bool) -> Self {
-        self.0.shows_compass = show;
+    pub const fn shows_compass(mut self, show: bool) -> Self {
+        self.0.compass_visibility = MapVisibility::from_bool(show);
         self
     }
 
     /// Sets whether to show the scale.
     #[must_use]
-    pub fn shows_scale(mut self, show: bool) -> Self {
-        self.0.shows_scale = show;
+    pub const fn shows_scale(mut self, show: bool) -> Self {
+        self.0.scale_visibility = MapVisibility::from_bool(show);
         self
     }
 }

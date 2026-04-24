@@ -173,7 +173,7 @@ impl Command {
             semantic_label: label,
             icon,
             action: shared_action(move |env: Environment| {
-                action.call(&captured_env.layered_on(&env))
+                let _ = action.call(&captured_env.layered_on(&env));
             }),
             disabled: self.disabled,
             selected: self.selected,
@@ -308,7 +308,6 @@ pub trait MenuBarView {
 
 impl MenuView for () {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        let _ = self;
         Computed::constant(Vec::new())
     }
 }
@@ -345,7 +344,6 @@ impl MenuView for Menu {
 
 impl MenuView for Divider {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        let _ = self;
         Computed::constant(vec![MenuItem::Divider])
     }
 }
@@ -362,7 +360,6 @@ where
 
 impl MenuBarView for () {
     fn into_menus(self) -> Computed<Vec<Menu>> {
-        let _ = self;
         Computed::constant(Vec::new())
     }
 }

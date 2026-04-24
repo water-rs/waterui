@@ -36,6 +36,7 @@ inventory = "0.3"
 waterkit-fs.workspace = true
 rayon = "1.11"
 mp4parse = "0.17"
+num-traits = { version = "0.2", default-features = false }
 
 [build-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }

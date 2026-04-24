@@ -74,7 +74,7 @@ impl BarcodeSource {
     }
 
     /// Sets the output size in pixels.
-    pub fn set_size(&mut self, size: u32) {
+    pub const fn set_size(&mut self, size: u32) {
         self.size = size;
     }
 
@@ -100,6 +100,10 @@ impl BarcodeSource {
     }
 
     /// Returns the encoded matrix, generating it if needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if matrix generation failed to populate the cache after `generate_matrix()`.
     pub fn matrix(&mut self) -> &BarcodeMatrix {
         if self.matrix.is_none() {
             self.generate_matrix();
@@ -120,7 +124,8 @@ impl BarcodeSource {
             return BarcodeMatrix::empty();
         };
 
-        let dimension = qr.size as u32;
+        let dimension = u32::try_from(qr.size)
+            .expect("BarcodeSource::generate_qr_matrix: QR size must fit into u32");
         let total_modules = (dimension * dimension) as usize;
         let num_words = total_modules.div_ceil(32);
         let mut packed_data = vec![0u32; num_words];
@@ -165,7 +170,8 @@ impl BarcodeSource {
         }
 
         // Keep current square-matrix shader path: repeat 1D bars on every row.
-        let dimension = encoded.len() as u32;
+        let dimension = u32::try_from(encoded.len())
+            .expect("BarcodeSource::generate_code128_matrix: encoded length must fit into u32");
         let total_modules = (dimension * dimension) as usize;
         let num_words = total_modules.div_ceil(32);
         let mut packed_data = vec![0u32; num_words];

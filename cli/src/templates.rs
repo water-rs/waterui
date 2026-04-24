@@ -248,6 +248,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     }
 
     #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn android_remote_backend_dependency(&self) -> String {
         jitpack_dependency_coordinate(ANDROID_BACKEND.repository_url, ANDROID_BACKEND.commit)
     }

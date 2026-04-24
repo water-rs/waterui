@@ -36,7 +36,7 @@ impl fmt::Debug for BarcodeMaskEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarcodeMaskEffect")
             .field("current_matrix_dim", &self.current_matrix_dim)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

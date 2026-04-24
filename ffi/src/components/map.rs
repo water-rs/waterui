@@ -146,10 +146,10 @@ impl IntoFFI for MapConfig {
             region: self.region.into_ffi(),
             annotations: self.annotations.into_ffi(),
             style: self.style.into_ffi(),
-            shows_user_location: self.shows_user_location,
-            is_interactive: self.is_interactive,
-            shows_compass: self.shows_compass,
-            shows_scale: self.shows_scale,
+            shows_user_location: self.user_location_visibility.is_visible(),
+            is_interactive: self.interactivity.is_interactive(),
+            shows_compass: self.compass_visibility.is_visible(),
+            shows_scale: self.scale_visibility.is_visible(),
         }
     }
 }
