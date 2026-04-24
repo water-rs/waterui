@@ -3,10 +3,7 @@
 use core::ops::RangeInclusive;
 
 use nami::{Binding, Computed, SignalExt as _};
-use waterui_core::{
-    Environment, IntoSignalF32,
-    layout::Point,
-};
+use waterui_core::{Environment, IntoSignalF32, layout::Point};
 
 /// Stable screen-space anchor for chart readouts and overlays.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

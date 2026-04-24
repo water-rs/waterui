@@ -479,9 +479,7 @@ fn scratch_texture_usage() -> wgpu::TextureUsages {
         | wgpu::TextureUsages::RENDER_ATTACHMENT
 }
 
-const fn storage_format_to_wgsl(
-    format: wgpu::TextureFormat,
-) -> Result<&'static str, &'static str> {
+const fn storage_format_to_wgsl(format: wgpu::TextureFormat) -> Result<&'static str, &'static str> {
     match format {
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Ok("rgba8unorm"),
         wgpu::TextureFormat::Rgba16Float => Ok("rgba16float"),
@@ -1816,29 +1814,29 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 })
             && storage_format_to_wgsl(ctx.output_format).is_ok()
         {
-                ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-                match Self::create_spatial_pipeline(ctx, shader, ctx.output_format) {
-                    Ok((pipeline, bind_group_layout)) => {
-                        if Self::take_validation_error(ctx.device).is_none() {
-                            self.final_spatial_output = Some(FinalSpatialOutputPipeline {
-                                pass_index,
-                                pipeline,
-                                bind_group_layout,
-                            });
-                        } else {
-                            tracing::debug!(
-                                "[Filter] final spatial direct-output path unavailable for output format {:?}",
-                                ctx.output_format
-                            );
-                        }
-                    }
-                    Err(_) => {
+            ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            match Self::create_spatial_pipeline(ctx, shader, ctx.output_format) {
+                Ok((pipeline, bind_group_layout)) => {
+                    if Self::take_validation_error(ctx.device).is_none() {
+                        self.final_spatial_output = Some(FinalSpatialOutputPipeline {
+                            pass_index,
+                            pipeline,
+                            bind_group_layout,
+                        });
+                    } else {
                         tracing::debug!(
-                            "[Filter] final spatial direct-output shader specialization unsupported for {:?}",
+                            "[Filter] final spatial direct-output path unavailable for output format {:?}",
                             ctx.output_format
                         );
                     }
                 }
+                Err(_) => {
+                    tracing::debug!(
+                        "[Filter] final spatial direct-output shader specialization unsupported for {:?}",
+                        ctx.output_format
+                    );
+                }
+            }
         }
 
         if self.blit_source_scratch_slot.is_some() {
@@ -2295,60 +2293,59 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             }
         }
 
-        if !used_direct_spatial_output
-            && let Some(blit_source_slot) = self.blit_source_scratch_slot
+        if !used_direct_spatial_output && let Some(blit_source_slot) = self.blit_source_scratch_slot
         {
-                let Some(blit_pipeline) = &self.blit_pipeline else {
-                    return Err("final blit pipeline missing after setup");
-                };
-                let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
-                    return Err("final blit bind group layout missing after setup");
-                };
-                let Some(blit_source_view) = self.scratch_views[blit_source_slot].as_ref() else {
-                    return Err("final blit source scratch view missing");
-                };
+            let Some(blit_pipeline) = &self.blit_pipeline else {
+                return Err("final blit pipeline missing after setup");
+            };
+            let Some(blit_bind_group_layout) = &self.blit_bind_group_layout else {
+                return Err("final blit bind group layout missing after setup");
+            };
+            let Some(blit_source_view) = self.scratch_views[blit_source_slot].as_ref() else {
+                return Err("final blit source scratch view missing");
+            };
 
-                if self.blit_bind_group.is_none() {
-                    self.blit_bind_group =
-                        Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("filter final blit bind group"),
-                            layout: blit_bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(blit_source_view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(sampler),
-                                },
-                            ],
-                        }));
-                }
-                let Some(blit_bind_group) = self.blit_bind_group.as_ref() else {
-                    return Err("final blit bind group missing after creation");
-                };
-
-                {
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("filter final blit pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &output.view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: wgpu::StoreOp::Store,
+            if self.blit_bind_group.is_none() {
+                self.blit_bind_group =
+                    Some(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("filter final blit bind group"),
+                        layout: blit_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(blit_source_view),
                             },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    render_pass.set_pipeline(blit_pipeline);
-                    render_pass.set_bind_group(0, blit_bind_group, &[]);
-                    render_pass.draw(0..6, 0..1);
-                }
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                        ],
+                    }));
+            }
+            let Some(blit_bind_group) = self.blit_bind_group.as_ref() else {
+                return Err("final blit bind group missing after creation");
+            };
+
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("filter final blit pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &output.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                render_pass.set_pipeline(blit_pipeline);
+                render_pass.set_bind_group(0, blit_bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         input.queue.submit([encoder.finish()]);
@@ -2546,9 +2543,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         Ok((pipeline, bind_group_layout))
     }
 
-    fn create_blit_pipeline(
-        ctx: &FilterContext,
-    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    fn create_blit_pipeline(ctx: &FilterContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader = crate::shared_context::create_cached_shader_module(
             ctx.device,
             "filter blit shader",

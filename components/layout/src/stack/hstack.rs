@@ -439,18 +439,17 @@ impl Layout for HStackLayout {
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
 
-            let y = if measurement.stretches_cross_axis()
-                || self.alignment == VerticalAlignment::Top
-            {
-                bounds.y()
-            } else if self.alignment == VerticalAlignment::Bottom {
-                bounds.y() + bounds.height() - child_height
-            } else {
-                let guide = adjusted_dimensions
-                    .vertical(self.alignment)
-                    .clamp(0.0, child_height);
-                guide_line - guide
-            };
+            let y =
+                if measurement.stretches_cross_axis() || self.alignment == VerticalAlignment::Top {
+                    bounds.y()
+                } else if self.alignment == VerticalAlignment::Bottom {
+                    bounds.y() + bounds.height() - child_height
+                } else {
+                    let guide = adjusted_dimensions
+                        .vertical(self.alignment)
+                        .clamp(0.0, child_height);
+                    guide_line - guide
+                };
 
             let rect = Rect::new(
                 Point::new(current_x, y),
