@@ -22,6 +22,7 @@
 //! ```
 
 use core::ops::{Add, Mul, Sub};
+use num_traits::ToPrimitive;
 
 /// Types that can be linearly interpolated.
 ///
@@ -46,7 +47,7 @@ impl<T> VectorArithmetic for T where
 /// Pair for composing two animatable values together.
 ///
 /// Useful when you need to animate multiple related values as a unit.
-#[derive(Clone, Default, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct AnimatablePair<A, B>(pub A, pub B);
 
 impl<A: Add<Output = A>, B: Add<Output = B>> Add for AnimatablePair<A, B> {
@@ -135,7 +136,9 @@ impl Mul<f64> for Point2 {
     type Output = Self;
 
     fn mul(self, scalar: f64) -> Self {
-        let s = scalar as f32;
+        let s = scalar
+            .to_f32()
+            .expect("Point2 scaling requires an f64 representable as f32");
         Self([self.0[0] * s, self.0[1] * s])
     }
 }

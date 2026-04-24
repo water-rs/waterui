@@ -11,6 +11,7 @@ use core::any::TypeId;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
+use num_traits::ToPrimitive;
 
 use waterui_core::View;
 
@@ -238,10 +239,11 @@ impl<T: EffectRenderer> EffectRendererImpl for T {
     }
 }
 
-/// Output size specification for ViewEffect.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Output size specification for `ViewEffect`.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum OutputSize {
     /// Match the input view's size (default).
+    #[default]
     MatchInput,
     /// Fixed pixel dimensions.
     Fixed {
@@ -254,12 +256,6 @@ pub enum OutputSize {
     Scale(f32),
 }
 
-impl Default for OutputSize {
-    fn default() -> Self {
-        Self::MatchInput
-    }
-}
-
 impl OutputSize {
     /// Compute the output dimensions from input dimensions.
     #[must_use]
@@ -268,8 +264,8 @@ impl OutputSize {
             Self::MatchInput => (input_width, input_height),
             Self::Fixed { width, height } => (width, height),
             Self::Scale(factor) => (
-                ((input_width as f32) * factor) as u32,
-                ((input_height as f32) * factor) as u32,
+                scaled_dimension(input_width, factor),
+                scaled_dimension(input_height, factor),
             ),
         }
     }
@@ -287,7 +283,7 @@ impl OutputSize {
 /// size (controlled by `output_size`) does not affect layout calculations. This allows
 /// effects like blur (which may need padding) to work without affecting the view hierarchy.
 ///
-/// # GpuSurface Optimization
+/// # `GpuSurface` Optimization
 ///
 /// When the child view is a `GpuSurface`, the effect can directly sample its texture
 /// without an intermediate capture step. This optimization is handled automatically
@@ -365,18 +361,18 @@ impl<V: View, E: EffectRenderer> ViewEffect<V, E> {
     ///     .output_size(OutputSize::Fixed { width: 1920, height: 1080 })
     /// ```
     #[must_use]
-    pub fn output_size(mut self, size: OutputSize) -> Self {
+    pub const fn output_size(mut self, size: OutputSize) -> Self {
         self.output_size = size;
         self
     }
 }
 
-/// Type-erased ViewEffect for FFI boundary.
+/// Type-erased `ViewEffect` for FFI boundary.
 ///
 /// This wraps the generic `ViewEffect<V, E>` with type-erased content and effect
 /// for use across the FFI boundary.
 pub struct ViewEffectErased {
-    /// The child view (type-erased via AnyView).
+    /// The child view (type-erased via `AnyView`).
     pub(crate) content: waterui_core::AnyView,
     /// The effect renderer (type-erased).
     pub(crate) effect: Box<dyn EffectRendererImpl>,
@@ -417,18 +413,16 @@ impl ViewEffectErased {
 
     /// Returns the output size configuration.
     #[must_use]
-    pub fn output_size(&self) -> OutputSize {
+    pub const fn output_size(&self) -> OutputSize {
         self.output_size
     }
 
     /// Returns a reference to the child view.
-    #[must_use]
-    pub fn content(&self) -> &waterui_core::AnyView {
+    pub const fn content(&self) -> &waterui_core::AnyView {
         &self.content
     }
 
     /// Takes ownership of the child view.
-    #[must_use]
     pub fn take_content(&mut self) -> waterui_core::AnyView {
         core::mem::take(&mut self.content)
     }
@@ -439,7 +433,7 @@ impl ViewEffectErased {
     }
 
     /// Updates the output size configuration while preserving the effect renderer.
-    pub fn set_output_size(&mut self, output_size: OutputSize) {
+    pub const fn set_output_size(&mut self, output_size: OutputSize) {
         self.output_size = output_size;
     }
 }
@@ -456,4 +450,15 @@ impl<V: View, E: EffectRenderer> View for ViewEffect<V, E> {
             output_size: self.output_size,
         }
     }
+}
+
+fn scaled_dimension(value: u32, factor: f32) -> u32 {
+    (value
+        .to_f32()
+        .expect("view_effect: dimension must be representable as f32")
+        * factor)
+        .round()
+        .clamp(0.0, u32::MAX.to_f32().expect("u32::MAX must fit in f32"))
+        .to_u32()
+        .expect("view_effect: scaled dimension must convert to u32")
 }

@@ -16,6 +16,7 @@ use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
+use num_traits::ToPrimitive;
 
 use crate::codec::{self, DecodedRgba};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
@@ -151,16 +152,29 @@ impl Image {
     }
 
     /// Decode encoded image bytes and construct a GPU-backed `Image`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoded image cannot be decoded into GPU-uploadable pixels.
     pub fn from_encoded(data: &[u8]) -> Result<Self, String> {
         codec::decode_to_rgba8(data).map(Self::from_decoded)
     }
 
     /// Decode owned encoded image bytes and construct a GPU-backed `Image`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoded image cannot be decoded into GPU-uploadable pixels.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn from_encoded_bytes(data: Vec<u8>) -> Result<Self, String> {
         Self::from_encoded(&data)
     }
 
     /// Decode encoded image bytes and report which decode path was selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoded image cannot be decoded into GPU-uploadable pixels.
     pub fn from_encoded_with_path(data: &[u8]) -> Result<(Self, DecodePath), String> {
         codec::decode_to_rgba8_with_path(data)
             .map(|(decoded, path)| (Self::from_decoded(decoded), path))
@@ -173,6 +187,10 @@ impl Image {
     }
 
     /// Renders this image into an offscreen RGBA8 target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen(
         self,
         config: OffscreenRenderConfig,
@@ -182,6 +200,10 @@ impl Image {
     }
 
     /// Renders this image into an HDR offscreen target and reads back `RGBA16F`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen_hdr(
         self,
         config: OffscreenRenderConfig,
@@ -211,8 +233,8 @@ impl Image {
 
 impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
-        let width = self.renderer.width as f32;
-        let height = self.renderer.height as f32;
+        let width = u32_to_f32(self.renderer.width);
+        let height = u32_to_f32(self.renderer.height);
         Frame::new(GpuSurface::new(self.renderer))
             .width(width)
             .height(height)
@@ -255,7 +277,7 @@ impl fmt::Debug for ImageRenderer {
 impl ImageRenderer {
     const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 
-    fn new(
+    const fn new(
         pixels: Vec<u8>,
         width: u32,
         height: u32,
@@ -408,7 +430,11 @@ impl ImageRenderer {
 }
 
 impl GpuView for ImageRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ImageRenderer] setup() called with format: {:?}, size: {}x{}, source_hdr={}, source_wide_gamut={}",
             ctx.surface_format,
@@ -520,6 +546,7 @@ impl GpuView for ImageRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.bind_group = Some(bind_group);
         self.sampler = Some(sampler);
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -573,7 +600,7 @@ impl GpuView for ImageRenderer {
 
 impl SubView for ImageRenderer {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let intrinsic = Size::new(self.width as f32, self.height as f32);
+        let intrinsic = Size::new(u32_to_f32(self.width), u32_to_f32(self.height));
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(intrinsic.width),
             proposal.height.unwrap_or(intrinsic.height),
@@ -589,7 +616,7 @@ impl SubView for ImageRenderer {
     }
 }
 
-fn should_tonemap_hdr_to_sdr(
+const fn should_tonemap_hdr_to_sdr(
     source_pixel_format: SourcePixelFormat,
     source_is_hdr: bool,
     target_format: wgpu::TextureFormat,
@@ -637,9 +664,10 @@ impl ImageStreamDecoder {
     }
 
     /// Push a stream chunk and optionally produce a progressive frame.
-    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Option<Image>, String> {
+    #[must_use]
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Option<Image> {
         if chunk.is_empty() {
-            return Ok(None);
+            return None;
         }
         self.bytes.extend_from_slice(chunk);
         let total_len = self.bytes.len();
@@ -649,22 +677,20 @@ impl ImageStreamDecoder {
             || total_len > Self::MAX_BUFFER_BYTES
             || !codec::is_progressive_candidate(self.content_type.as_deref(), &self.bytes)
         {
-            return Ok(None);
+            return None;
         }
 
         self.attempts += 1;
         self.next_attempt_at = total_len.saturating_add(Self::ATTEMPT_STEP_BYTES);
 
-        let Some(decoded) = codec::decode_progressive_frame(&self.bytes) else {
-            return Ok(None);
-        };
+        let decoded = codec::decode_progressive_frame(&self.bytes)?;
 
         let fingerprint = frame_fingerprint(&decoded);
         if self.last_fingerprint == Some(fingerprint) {
-            return Ok(None);
+            return None;
         }
         self.last_fingerprint = Some(fingerprint);
-        Ok(Some(Image::from_decoded(decoded)))
+        Some(Image::from_decoded(decoded))
     }
 
     /// Finish decoding and produce the final full-quality image.
@@ -681,15 +707,21 @@ fn frame_fingerprint(decoded: &DecodedRgba) -> u64 {
     if len == 0 {
         return 0;
     }
-    let first = decoded.pixels[0] as u64;
-    let mid = decoded.pixels[len / 2] as u64;
-    let last = decoded.pixels[len - 1] as u64;
-    ((decoded.width as u64) << 32)
-        ^ (decoded.height as u64)
-        ^ ((len as u64) << 8)
+    let first = u64::from(decoded.pixels[0]);
+    let mid = u64::from(decoded.pixels[len / 2]);
+    let last = u64::from(decoded.pixels[len - 1]);
+    (u64::from(decoded.width) << 32)
+        ^ u64::from(decoded.height)
+        ^ (u64::try_from(len).expect("image fingerprint length must fit in u64") << 8)
         ^ first
         ^ (mid << 16)
         ^ (last << 24)
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("image dimensions must be representable as f32")
 }
 
 #[cfg(test)]

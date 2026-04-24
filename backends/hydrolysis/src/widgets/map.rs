@@ -62,20 +62,28 @@ fn annotation_list_text(annotations: Vec<Annotation>) -> String {
 
 fn map_content(config: &MapConfig, surface_label: &str, env: &Environment) -> AnyView {
     let style = map_style_name(config.style);
-    let shows_location = if config.shows_user_location {
+    let shows_location = if config.user_location_visibility.is_visible() {
         "User location on"
     } else {
         "User location off"
     };
-    let interactivity = if config.is_interactive {
+    let interactivity = if config.interactivity.is_interactive() {
         "Interactive"
     } else {
         "Read only"
     };
     let controls = format!(
         "Compass: {}  Scale: {}",
-        if config.shows_compass { "on" } else { "off" },
-        if config.shows_scale { "on" } else { "off" }
+        if config.compass_visibility.is_visible() {
+            "on"
+        } else {
+            "off"
+        },
+        if config.scale_visibility.is_visible() {
+            "on"
+        } else {
+            "off"
+        }
     );
 
     let region_summary = Text::display(config.region.map(map_region_summary));

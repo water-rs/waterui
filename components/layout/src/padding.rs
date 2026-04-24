@@ -192,7 +192,6 @@ impl Padding {
     }
 
     /// Consumes the padding and returns the edge insets and content.
-    #[must_use]
     pub fn into_inner(self) -> (EdgeInsets, AnyView) {
         (self.layout.edges, self.content)
     }

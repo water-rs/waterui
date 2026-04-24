@@ -120,6 +120,7 @@ impl<K, V> Store<K, V> {
 }
 
 impl Environment {
+    /// Returns a stable identity for this environment overlay chain.
     #[must_use]
     pub fn identity(&self) -> usize {
         Rc::as_ptr(&self.state) as usize
@@ -347,6 +348,11 @@ impl Environment {
     /// inserting a new value if it does not already exist.
     ///
     /// The new value is created by calling the provided closure `f`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if insertion succeeds but the inserted value cannot be retrieved
+    /// back as `T`, which indicates a corrupted environment entry.
     #[must_use]
     pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, f: F) -> &T {
         if self.lookup_any(TypeId::of::<T>()).is_none() {
@@ -416,6 +422,10 @@ impl<F> UseEnv<F> {
 ///     // ...
 /// });
 /// ```
+///
+/// # Panics
+///
+/// Panics if [`Extractor::extract`] fails for `E`.
 #[must_use]
 pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
 where

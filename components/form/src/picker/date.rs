@@ -9,8 +9,6 @@ use waterui_controls::IntoLabel;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
-/// Re-export essential date and time types for external use.
-
 /// Configuration for the `DatePicker` component.
 #[derive(Debug)]
 #[non_exhaustive]

@@ -1,3 +1,5 @@
+//! End-to-end accessibility semantics coverage for the map component.
+
 use std::time::Duration;
 
 use waterui::ViewExt as _;
@@ -5,11 +7,11 @@ use waterui::{Binding, View};
 use waterui_map::{Annotation, Coordinate, Map, Region};
 use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
 
-fn initial_region() -> Region {
+const fn initial_region() -> Region {
     Region::new(Coordinate::new(37.7749, -122.4194), 0.12, 0.12)
 }
 
-fn updated_region() -> Region {
+const fn updated_region() -> Region {
     Region::new(Coordinate::new(35.6764, 139.6500), 0.20, 0.20)
 }
 
