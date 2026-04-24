@@ -497,3 +497,5 @@ text!("{note}").footnote()
 libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
 ```
 Keep these packages installed in Linux lint, coverage, feature-check, and test jobs instead of disabling backend features to make CI pass.
+
+**Windows all-features dylib linking** - `waterui/dynamic_linking` is a real preview path and must remain available for Apple and Android preview builds. Do not make `waterui-dylib` macOS-only or remove the dylib crate from all-features. Windows debug all-features builds should use the Rust toolchain's LLD PE/COFF linker (`rust-lld` with `lld-link` flavor) to avoid MSVC `link.exe` object-count limits while preserving the dylib architecture.
