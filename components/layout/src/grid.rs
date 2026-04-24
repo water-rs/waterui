@@ -2,6 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
+use num_traits::ToPrimitive;
 use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
@@ -54,13 +55,16 @@ impl GridLayout {
             .filter(|width| width.is_finite())
             .map(|width| width.max(0.0));
 
-        let mut column_widths = if let Some(width) = constrained_width {
-            let total_spacing = self.spacing.width * (num_columns.saturating_sub(1) as f32);
-            let width_per_column = ((width - total_spacing) / num_columns as f32).max(0.0);
-            vec![width_per_column; num_columns]
-        } else {
-            vec![0.0; num_columns]
-        };
+        let mut column_widths = constrained_width.map_or_else(
+            || vec![0.0; num_columns],
+            |width| {
+                let total_spacing =
+                    self.spacing.width * usize_to_f32(num_columns.saturating_sub(1));
+                let width_per_column = ((width - total_spacing) / usize_to_f32(num_columns))
+                    .max(0.0);
+                vec![width_per_column; num_columns]
+            },
+        );
 
         if constrained_width.is_none() {
             for (index, child) in children.iter().enumerate() {
@@ -97,15 +101,17 @@ impl GridLayout {
             .collect();
 
         let total_height = row_heights.iter().sum::<f32>()
-            + self.spacing.height * (num_rows.saturating_sub(1) as f32);
+            + self.spacing.height * usize_to_f32(num_rows.saturating_sub(1));
 
-        let total_width = if let Some(width) = constrained_width {
-            width.max(0.0)
-        } else {
-            let used_columns = children.len().min(num_columns);
-            let total_spacing = self.spacing.width * (used_columns.saturating_sub(1) as f32);
-            column_widths.iter().take(used_columns).sum::<f32>() + total_spacing
-        };
+        let total_width = constrained_width.map_or_else(
+            || {
+                let used_columns = children.len().min(num_columns);
+                let total_spacing =
+                    self.spacing.width * usize_to_f32(used_columns.saturating_sub(1));
+                column_widths.iter().take(used_columns).sum::<f32>() + total_spacing
+            },
+            |width| width.max(0.0),
+        );
 
         GridMeasurement {
             measurements,
@@ -258,6 +264,12 @@ impl Layout for GridLayout {
         }
         None
     }
+}
+
+fn usize_to_f32(value: usize) -> f32 {
+    value
+        .to_f32()
+        .expect("GridLayout: index must be representable as f32")
 }
 
 //=============================================================================

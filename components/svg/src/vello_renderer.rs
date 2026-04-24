@@ -10,7 +10,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensi
 use waterui_graphics::{GpuContext, GpuFrame, GpuView};
 
 /// Parsed SVG data reused across renderer paths.
-pub(crate) struct SvgSceneData {
+pub struct SvgSceneData {
     svg_tree: vello_svg::usvg::Tree,
     base_scene: vello::Scene,
 }
@@ -55,8 +55,8 @@ impl SvgSceneData {
         let scale_y = height / svg_height;
         let scale = scale_x.min(scale_y);
 
-        let offset_x = f64::from((width - svg_width * scale) / 2.0);
-        let offset_y = f64::from((height - svg_height * scale) / 2.0);
+        let offset_x = f64::from(svg_width.mul_add(-scale, width) / 2.0);
+        let offset_y = f64::from(svg_height.mul_add(-scale, height) / 2.0);
         let transform = Affine::translate((offset_x, offset_y)) * Affine::scale(f64::from(scale));
 
         let mut scene = vello::Scene::new();
@@ -113,10 +113,7 @@ impl VelloSvgRenderer {
     #[must_use]
     pub fn from_path(path_data: &str, width: f32, height: f32) -> Self {
         let svg_content = alloc::format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}"><path d="{}"/></svg>"#,
-            width,
-            height,
-            path_data
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}"><path d="{path_data}"/></svg>"#
         );
         Self::new(&svg_content)
     }
@@ -198,10 +195,15 @@ impl VelloSvgRenderer {
 }
 
 /// Placeholder token used by reactive SVG templates for tint substitution.
-pub(crate) const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
+pub const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
 
 impl GpuView for VelloSvgRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    #[allow(clippy::too_many_lines)]
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.renderer = Some(
             vello::Renderer::new(
                 ctx.device,
@@ -280,7 +282,7 @@ impl GpuView for VelloSvgRenderer {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -290,7 +292,7 @@ impl GpuView for VelloSvgRenderer {
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -307,6 +309,7 @@ impl GpuView for VelloSvgRenderer {
                 cache: ctx.pipeline_cache,
             },
         ));
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

@@ -17,7 +17,7 @@ use crate::{
     build_info,
     toolchain::{
         Installation, Toolchain, ToolchainError,
-        linux::{has_supported_package_manager, install_java_jdk},
+        linux::{has_supported_package_manager, install_java_jdk, install_named_packages},
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{command, run_command, run_command_output_os, which},
@@ -48,6 +48,10 @@ pub struct AndroidRustTargets {
 
 impl AndroidRustTargets {
     /// Build the Rust-target requirement set for the requested Android ABIs.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `abis` is empty. Android packaging always needs at least one ABI.
     #[must_use]
     pub fn for_abis(abis: &[AndroidAbi]) -> Self {
         assert!(
@@ -62,7 +66,7 @@ impl AndroidRustTargets {
 
 impl Default for AndroidRustTargets {
     fn default() -> Self {
-        Self::for_abis(&ALL_ABIS)
+        Self::for_abis(ALL_ABIS)
     }
 }
 
@@ -78,6 +82,9 @@ pub struct Java;
 #[derive(Debug, Clone, Default)]
 pub struct Kotlin;
 
+const ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES: &[&str] =
+    &["libc6:amd64", "libstdc++6:amd64", "zlib1g:amd64"];
+
 const fn is_linux_arm_host() -> bool {
     cfg!(target_os = "linux")
         && (cfg!(target_arch = "aarch64")
@@ -85,8 +92,12 @@ const fn is_linux_arm_host() -> bool {
             || cfg!(target_arch = "arm64ec"))
 }
 
-const fn android_linux_arm_manual_suggestion() -> &'static str {
-    "Automatic Android SDK/NDK installation is disabled on ARM Linux hosts. Provide compatible Android tools manually, or use an x86_64 Linux/macOS/Windows host for Android builds."
+fn needs_linux_x86_64_host_tools_compat(detail: &str) -> bool {
+    is_linux_arm_host() && detail.contains("ld-linux-x86-64.so.2")
+}
+
+async fn install_android_linux_x86_64_host_tools_compat() -> eyre::Result<()> {
+    install_named_packages(ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES).await
 }
 
 /// Android command-line tools guidance for headless/server environments.
@@ -131,18 +142,6 @@ pub const fn android_platforms_install_suggestion() -> &'static str {
 #[must_use]
 pub const fn android_build_tools_install_suggestion() -> &'static str {
     "Install Android SDK Build-Tools with `sdkmanager --install \"build-tools;<version>\"` (or Android Studio SDK Manager)."
-}
-
-/// Host-specific Kotlin compiler guidance.
-#[must_use]
-pub const fn kotlin_install_suggestion() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "Install Android Studio (includes Kotlin), or install Kotlin manually and set `KOTLIN_HOME`."
-    } else if cfg!(target_os = "macos") {
-        "Install Android Studio (includes Kotlin), or install Kotlin manually and ensure `kotlinc` is in PATH."
-    } else {
-        "Install Kotlin compiler (`kotlinc`) and set `KOTLIN_HOME` if needed."
-    }
 }
 
 const fn sdkmanager_search_names() -> &'static [&'static str] {
@@ -702,6 +701,25 @@ fn sdkmanager_proxy_args() -> eyre::Result<Vec<OsString>> {
     ])
 }
 
+pub(super) fn java_proxy_properties_from_env() -> eyre::Result<Vec<String>> {
+    let Some(proxy) = proxy_env_value() else {
+        return Ok(Vec::new());
+    };
+    let proxy = parse_sdkmanager_proxy_config(&proxy)?;
+    Ok(match proxy.proxy_type {
+        SdkManagerProxyType::Http => vec![
+            format!("-Dhttp.proxyHost={}", proxy.host),
+            format!("-Dhttp.proxyPort={}", proxy.port),
+            format!("-Dhttps.proxyHost={}", proxy.host),
+            format!("-Dhttps.proxyPort={}", proxy.port),
+        ],
+        SdkManagerProxyType::Socks => vec![
+            format!("-DsocksProxyHost={}", proxy.host),
+            format!("-DsocksProxyPort={}", proxy.port),
+        ],
+    })
+}
+
 fn sdkmanager_requires_license_acceptance(output: &Output) -> bool {
     let lower = sdkmanager_combined_output(output).to_ascii_lowercase();
     lower.contains("license is not accepted")
@@ -823,9 +841,7 @@ fn find_file_in_current_workspace(relative_path: &Path) -> Option<PathBuf> {
             return Some(candidate);
         }
 
-        let Some(parent) = current.parent() else {
-            return None;
-        };
+        let parent = current.parent()?;
         current = parent;
     }
 }
@@ -919,7 +935,7 @@ async fn remove_directory_if_exists(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn kotlinc_binary_name() -> &'static str {
+const fn kotlinc_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "kotlinc.bat"
     } else {
@@ -1107,7 +1123,7 @@ async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf>
     }
 }
 
-fn required_kotlin_version() -> &'static str {
+const fn required_kotlin_version() -> &'static str {
     build_info::ANDROID_KOTLIN_VERSION
 }
 
@@ -1331,7 +1347,7 @@ pub enum FailToInstallAndroidSdk {
     )]
     PostInstallSetupRequired,
     #[error(
-        "Automatic Android SDK installation is only supported on macOS and Windows. On Linux, install Android SDK command-line tools manually."
+        "Automatic Android SDK command-line tools installation is unsupported on this host. Set up Android SDK manually and set `ANDROID_SDK_ROOT`."
     )]
     UnsupportedPlatform,
 }
@@ -1341,7 +1357,11 @@ impl Toolchain for AndroidSdk {
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
         if Self::detect_path().is_some() {
-            Ok(())
+            if Self::sdkmanager_path().await.is_some() {
+                Ok(())
+            } else {
+                Err(ToolchainError::fixable(AndroidSdkInstallation))
+            }
         } else if cfg!(target_os = "windows") {
             if which("winget").await.is_ok() {
                 Err(ToolchainError::fixable(AndroidSdkInstallation))
@@ -1365,6 +1385,18 @@ impl Toolchain for AndroidSdk {
                         "Install Homebrew to enable automatic fixes, or install Android SDK manually. {} {}",
                         android_cmdline_tools_suggestion(),
                         android_sdk_path_suggestion()
+                    ),
+                ))
+            }
+        } else if cfg!(target_os = "linux") {
+            if configured_android_sdk_path().is_some() {
+                Err(ToolchainError::fixable(AndroidSdkInstallation))
+            } else {
+                Err(ToolchainError::unfixable(
+                    "Android SDK root cannot be determined",
+                    format!(
+                        "Set `ANDROID_SDK_ROOT` to your Android SDK path, then retry `water doctor --fix`. {}",
+                        android_cmdline_tools_suggestion()
                     ),
                 ))
             }
@@ -1397,6 +1429,8 @@ impl Installation for AndroidSdkInstallation {
             brew.install_cask("android-studio")
                 .await
                 .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+        } else if cfg!(target_os = "linux") {
+            // Linux CI/headless containers only need command-line tools in the SDK root.
         } else {
             return Err(FailToInstallAndroidSdk::UnsupportedPlatform);
         }
@@ -1415,7 +1449,7 @@ impl Installation for AndroidSdkInstallation {
             .await
             .map_err(FailToInstallAndroidSdk::InstallFailed)?;
 
-        if AndroidSdk::detect_path().is_some() {
+        if AndroidSdk::sdkmanager_path().await.is_some() {
             Ok(())
         } else {
             Err(FailToInstallAndroidSdk::PostInstallSetupRequired)
@@ -1438,8 +1472,14 @@ fn map_winget_error_for_android_sdk(error: WingetInstallError) -> FailToInstallA
 }
 
 /// Installation procedure for Android Platform-Tools.
-#[derive(Debug, Clone, Default)]
-pub struct AndroidPlatformToolsInstallation;
+#[derive(Debug, Clone, Copy, Default)]
+pub enum AndroidPlatformToolsInstallation {
+    /// Install the `platform-tools` SDK package with `sdkmanager`.
+    #[default]
+    SdkPackage,
+    /// Install `x86_64` userspace libraries needed by Google's Linux host tools on ARM Linux.
+    LinuxX86_64HostToolsCompat,
+}
 
 /// Errors that can occur when installing Android Platform-Tools.
 #[derive(Debug, thiserror::Error)]
@@ -1448,6 +1488,8 @@ pub enum FailToInstallAndroidPlatformTools {
     SdkManagerNotFound,
     #[error("Failed to install Android Platform-Tools via sdkmanager: {0}")]
     InstallFailed(eyre::Report),
+    #[error("Failed to install Android x86_64 host-tools compatibility packages: {0}")]
+    HostToolsCompatFailed(eyre::Report),
     #[error("Android Platform-Tools (`adb`) is still missing after installation.")]
     StillMissing,
 }
@@ -1460,17 +1502,10 @@ impl Toolchain for AndroidPlatformTools {
             return verify_android_platform_tools_executable(&adb_path).await;
         }
 
-        if is_linux_arm_host() {
-            Err(ToolchainError::unfixable(
-                "Android Platform-Tools (`adb`) is missing on this ARM Linux host",
-                format!(
-                    "{} {}",
-                    android_platform_tools_suggestion(),
-                    android_linux_arm_manual_suggestion()
-                ),
+        if AndroidSdk::sdkmanager_path().await.is_some() {
+            Err(ToolchainError::fixable(
+                AndroidPlatformToolsInstallation::SdkPackage,
             ))
-        } else if AndroidSdk::sdkmanager_path().await.is_some() {
-            Err(ToolchainError::fixable(AndroidPlatformToolsInstallation))
         } else {
             Err(ToolchainError::unfixable(
                 "Android Platform-Tools (`adb`) not found",
@@ -1488,6 +1523,12 @@ impl Installation for AndroidPlatformToolsInstallation {
     type Error = FailToInstallAndroidPlatformTools;
 
     async fn install(&self) -> Result<(), Self::Error> {
+        if matches!(self, Self::LinuxX86_64HostToolsCompat) {
+            return install_android_linux_x86_64_host_tools_compat()
+                .await
+                .map_err(FailToInstallAndroidPlatformTools::HostToolsCompatFailed);
+        }
+
         if AndroidSdk::sdkmanager_path().await.is_none() {
             return Err(FailToInstallAndroidPlatformTools::SdkManagerNotFound);
         }
@@ -1938,9 +1979,16 @@ async fn verify_android_platform_tools_executable(
     } else {
         format!("exit status {}", output.status)
     };
+    if needs_linux_x86_64_host_tools_compat(&detail) {
+        return Err(ToolchainError::fixable(
+            AndroidPlatformToolsInstallation::LinuxX86_64HostToolsCompat,
+        ));
+    }
+
     let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
-        String::from(
-            "This host cannot execute the downloaded Android Platform-Tools binary. Install a compatible ARM Linux adb manually, or use an x86_64 Linux/macOS/Windows host for Android run/package workflows.",
+        format!(
+            "Install x86_64 userspace compatibility libraries for this Linux host, then retry `water doctor --fix`. Required packages on Debian/Ubuntu: {}.",
+            ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES.join(" ")
         )
     } else {
         format!(
@@ -2058,9 +2106,16 @@ async fn verify_ndk_host_toolchain_executable(
     } else {
         format!("exit status {}", output.status)
     };
+    if needs_linux_x86_64_host_tools_compat(&detail) {
+        return Err(ToolchainError::fixable(
+            AndroidNdkInstallation::LinuxX86_64HostToolsCompat,
+        ));
+    }
+
     let suggestion = if detail.contains("ld-linux-x86-64.so.2") {
-        String::from(
-            "This host cannot execute the NDK's x86_64 Linux toolchain binaries. Use an x86_64 Linux machine/VM, or install x86_64 userland emulation/runtime support so the Android clang executable can run.",
+        format!(
+            "Install x86_64 userspace compatibility libraries for this Linux host, then retry `water doctor --fix`. Required packages on Debian/Ubuntu: {}.",
+            ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES.join(" ")
         )
     } else {
         format!(
@@ -2269,10 +2324,10 @@ impl Kotlin {
         let required_version = required_kotlin_version();
         let mut candidates = Vec::new();
 
-        if let Ok(home) = env::var("KOTLIN_HOME") {
-            if let Some(kotlinc_path) = kotlin_executable_from_home(&PathBuf::from(&home)) {
-                candidates.push(kotlinc_path);
-            }
+        if let Ok(home) = env::var("KOTLIN_HOME")
+            && let Some(kotlinc_path) = kotlin_executable_from_home(&PathBuf::from(&home))
+        {
+            candidates.push(kotlinc_path);
         }
 
         if cfg!(target_os = "macos") {
@@ -2392,7 +2447,7 @@ impl Installation for KotlinInstallation {
 
     async fn install(&self) -> Result<(), Self::Error> {
         let required_version = required_kotlin_version();
-        install_managed_kotlin_compiler(&required_version)
+        install_managed_kotlin_compiler(required_version)
             .await
             .map_err(FailToInstallKotlin::InstallFailed)?;
         if Kotlin::detect_path().await.is_some() {
@@ -2431,8 +2486,14 @@ impl AndroidNdk {
 }
 
 /// Android NDK installation handler.
-#[derive(Debug, Clone, Default)]
-pub struct AndroidNdkInstallation;
+#[derive(Debug, Clone, Copy, Default)]
+pub enum AndroidNdkInstallation {
+    /// Install the runtime-declared NDK package with `sdkmanager`.
+    #[default]
+    SdkPackage,
+    /// Install `x86_64` userspace libraries needed by Google's Linux host tools on ARM Linux.
+    LinuxX86_64HostToolsCompat,
+}
 
 /// Errors that can occur when installing the Android NDK.
 #[derive(Debug, thiserror::Error)]
@@ -2441,6 +2502,8 @@ pub enum FailToInstallAndroidNdk {
     SdkManagerNotFound,
     #[error("Failed to install Android NDK via sdkmanager: {0}")]
     InstallFailed(eyre::Report),
+    #[error("Failed to install Android x86_64 host-tools compatibility packages: {0}")]
+    HostToolsCompatFailed(eyre::Report),
     #[error("Android NDK is still missing after installation.")]
     StillMissing,
     #[error("Android NDK is installed but incomplete (`toolchains/llvm/prebuilt` is missing).")]
@@ -2458,7 +2521,7 @@ impl Toolchain for AndroidNdk {
             }
 
             if AndroidSdk::sdkmanager_path().await.is_some() {
-                return Err(ToolchainError::fixable(AndroidNdkInstallation));
+                return Err(ToolchainError::fixable(AndroidNdkInstallation::SdkPackage));
             }
 
             return Err(ToolchainError::unfixable(
@@ -2468,16 +2531,7 @@ impl Toolchain for AndroidNdk {
         }
 
         if AndroidSdk::sdkmanager_path().await.is_some() {
-            Err(ToolchainError::fixable(AndroidNdkInstallation))
-        } else if is_linux_arm_host() {
-            Err(ToolchainError::unfixable(
-                "Android NDK is missing on this ARM Linux host",
-                format!(
-                    "{} {}",
-                    android_ndk_install_suggestion(),
-                    android_linux_arm_manual_suggestion()
-                ),
-            ))
+            Err(ToolchainError::fixable(AndroidNdkInstallation::SdkPackage))
         } else {
             Err(ToolchainError::unfixable(
                 "Android NDK not found",
@@ -2495,6 +2549,12 @@ impl Installation for AndroidNdkInstallation {
     type Error = FailToInstallAndroidNdk;
 
     async fn install(&self) -> Result<(), Self::Error> {
+        if matches!(self, Self::LinuxX86_64HostToolsCompat) {
+            return install_android_linux_x86_64_host_tools_compat()
+                .await
+                .map_err(FailToInstallAndroidNdk::HostToolsCompatFailed);
+        }
+
         if AndroidSdk::sdkmanager_path().await.is_none() {
             return Err(FailToInstallAndroidNdk::SdkManagerNotFound);
         }

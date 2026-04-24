@@ -470,12 +470,20 @@ impl BubblePoint {
 
     /// Creates a bubble point with a custom color.
     #[must_use]
-    pub const fn with_color(x: f32, y: f32, size: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
+    pub const fn with_color(
+        x_position: f32,
+        y_position: f32,
+        size: f32,
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    ) -> Self {
         Self {
-            x,
-            y,
+            x: x_position,
+            y: y_position,
             size,
-            color: [r, g, b, a],
+            color: [red, green, blue, alpha],
         }
     }
 }
@@ -758,11 +766,11 @@ impl ChoroplethData {
         let mut max_x = f32::MIN;
         let mut max_y = f32::MIN;
         for polygon in &self.polygons {
-            let [px_min, py_min, px_max, py_max] = polygon.bounds();
-            min_x = min_x.min(px_min);
-            min_y = min_y.min(py_min);
-            max_x = max_x.max(px_max);
-            max_y = max_y.max(py_max);
+            let [polygon_min_x, polygon_min_y, polygon_max_x, polygon_max_y] = polygon.bounds();
+            min_x = min_x.min(polygon_min_x);
+            min_y = min_y.min(polygon_min_y);
+            max_x = max_x.max(polygon_max_x);
+            max_y = max_y.max(polygon_max_y);
         }
         [min_x, min_y, max_x, max_y]
     }

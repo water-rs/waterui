@@ -787,7 +787,7 @@ mod tests {
 
         list.insert(0, TestItem { id: 9 });
         let borrowed = snapshots.borrow();
-        let last = borrowed.last().expect("watch should emit after insert");
-        assert_eq!(last.as_slice(), &[1, 2]);
+        let latest_snapshot = borrowed.last().expect("watch should emit after insert");
+        assert_eq!(latest_snapshot.as_slice(), &[1, 2]);
     }
 }

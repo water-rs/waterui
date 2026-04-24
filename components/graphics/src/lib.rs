@@ -40,7 +40,7 @@ pub mod image_analysis;
 /// Engine-neutral 2D scene abstraction.
 pub mod scene2d;
 
-/// Vello-backed Scene2D implementation.
+/// Vello-backed `Scene2D` implementation.
 pub mod scene2d_vello;
 
 /// Scene-content view abstraction and GPU-backed fallback renderer.
@@ -119,8 +119,17 @@ pub use bytemuck;
 
 pub use pollster;
 
+/// Synchronously resolves the current top `wgpu` error scope by polling the device once.
+///
+/// This is intended for setup-time validation paths where `WaterUI` needs the scope result
+/// immediately and can safely force a device poll.
+///
+/// # Panics
+///
+/// Panics if the error-scope future is still pending after `device.poll(Poll)`.
 #[inline]
-pub(crate) fn pop_error_scope_now(
+#[must_use]
+pub fn pop_error_scope_now(
     device: &wgpu::Device,
     scope: &'static str,
 ) -> Option<wgpu::Error> {

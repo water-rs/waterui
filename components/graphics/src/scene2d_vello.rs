@@ -8,7 +8,14 @@ pub struct VelloScene2D<'a> {
     scene: &'a mut vello::Scene,
 }
 
+impl core::fmt::Debug for VelloScene2D<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VelloScene2D").finish_non_exhaustive()
+    }
+}
+
 impl<'a> VelloScene2D<'a> {
+    /// Wraps a mutable Vello scene.
     #[must_use]
     pub const fn new(scene: &'a mut vello::Scene) -> Self {
         Self { scene }
@@ -19,6 +26,7 @@ impl<'a> VelloScene2D<'a> {
         self.scene.append(scene, transform);
     }
 
+    /// Returns mutable access to the underlying Vello scene.
     #[must_use]
     pub const fn scene_mut(&mut self) -> &mut vello::Scene {
         self.scene

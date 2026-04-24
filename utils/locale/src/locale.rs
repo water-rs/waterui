@@ -5,6 +5,7 @@ use core::str::FromStr;
 use std::collections::BTreeSet;
 
 use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
+use icu_locid_transform::fallback::LocaleFallbackConfig;
 use icu_locid_transform::LocaleFallbacker;
 use icu_provider::DataLocale;
 use nami::impl_constant;
@@ -31,7 +32,7 @@ impl Locale {
 
     /// Get the language identifier portion of this locale.
     #[must_use]
-    pub fn id(&self) -> &LanguageIdentifier {
+    pub const fn id(&self) -> &LanguageIdentifier {
         &self.0.id
     }
 
@@ -185,6 +186,7 @@ pub mod locales {
 /// This handles script-aware fallback:
 /// - zh-TW → zh-Hant → zh (not zh-Hans!)
 /// - sr-Latn → sr (stays separate from sr-Cyrl)
+#[must_use]
 pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
     let mut seen = BTreeSet::new();
     let mut results = Vec::new();
@@ -205,7 +207,7 @@ pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
 
 fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut Vec<Locale>) {
     let fallbacker = LocaleFallbacker::new();
-    let config = fallbacker.for_config(Default::default());
+    let config = fallbacker.for_config(LocaleFallbackConfig::default());
     let mut iterator = config.fallback_for(DataLocale::from(locale.0.clone()));
 
     // Collect up to 10 fallback locales.
@@ -224,7 +226,7 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
 
 impl Extractor for Locale {
     fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
-        if let Some(locale) = env.get::<Locale>().cloned() {
+        if let Some(locale) = env.get::<Self>().cloned() {
             return Ok(locale);
         }
 

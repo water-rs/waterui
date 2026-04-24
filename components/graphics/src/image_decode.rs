@@ -10,6 +10,12 @@ const FTYP_TYPE: &[u8; 4] = b"ftyp";
 const AVIF_BRAND: [u8; 4] = *b"avif";
 const AVIS_BRAND: [u8; 4] = *b"avis";
 
+/// Loads an image and applies HEIF-to-AVIF patching when needed.
+///
+/// # Errors
+///
+/// Returns the decoder error when the input cannot be loaded, even after AVIF
+/// compatibility patching is attempted.
 pub fn load_dynamic_image(bytes: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
     match image::load_from_memory(bytes) {
         Ok(image) => Ok(image),
@@ -22,25 +28,29 @@ pub fn load_dynamic_image(bytes: &[u8]) -> Result<image::DynamicImage, image::Im
     }
 }
 
+/// Returns whether the container belongs to the HEIF family.
+#[must_use]
 pub fn is_heif_family(data: &[u8]) -> bool {
     let Some(ftyp) = parse_file_type_box(data) else {
         return false;
     };
 
-    is_heif_brand(&ftyp.major_brand)
+    is_heif_brand(ftyp.major_brand)
         || ftyp
             .compatible_brands
             .iter()
-            .any(|brand| is_heif_brand(brand))
+            .any(|brand| is_heif_brand(*brand))
 }
 
+/// Rewrites HEIF AV1 brands to AVIF brands when the container is compatible.
+#[must_use]
 pub fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
     let ftyp = parse_file_type_box(data)?;
-    if !is_heif_brand(&ftyp.major_brand)
+    if !is_heif_brand(ftyp.major_brand)
         && !ftyp
             .compatible_brands
             .iter()
-            .any(|brand| is_heif_brand(brand))
+            .any(|brand| is_heif_brand(*brand))
     {
         return None;
     }
@@ -56,7 +66,7 @@ pub fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
             has_avif_compat = true;
             break;
         }
-        if first_heif_compat.is_none() && is_heif_brand(&[brand[0], brand[1], brand[2], brand[3]]) {
+        if first_heif_compat.is_none() && is_heif_brand([brand[0], brand[1], brand[2], brand[3]]) {
             first_heif_compat = Some(range.clone());
         }
     }
@@ -103,7 +113,7 @@ fn parse_file_type_box(data: &[u8]) -> Option<FileTypeBox> {
     ];
 
     let compatible_bytes = &data[16..box_size];
-    if compatible_bytes.len() % 4 != 0 {
+    if !compatible_bytes.len().is_multiple_of(4) {
         return None;
     }
 
@@ -128,9 +138,12 @@ fn parse_file_type_box(data: &[u8]) -> Option<FileTypeBox> {
     })
 }
 
-fn is_heif_brand(brand: &[u8; 4]) -> bool {
-    matches!(
-        brand,
-        b"mif1" | b"msf1" | b"heif" | b"heic" | b"heix" | b"hevc" | b"hevx"
-    )
+fn is_heif_brand(brand: [u8; 4]) -> bool {
+    brand == *b"mif1"
+        || brand == *b"msf1"
+        || brand == *b"heif"
+        || brand == *b"heic"
+        || brand == *b"heix"
+        || brand == *b"hevc"
+        || brand == *b"hevx"
 }

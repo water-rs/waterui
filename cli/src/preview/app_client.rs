@@ -459,12 +459,9 @@ fn load_registered_instances_sync(
             Err(error) => return Err(error),
         };
 
-        let instance = match serde_json::from_slice::<PreviewAppInstance>(&bytes) {
-            Ok(instance) => instance,
-            Err(_) => {
-                stale_paths.push(path);
-                continue;
-            }
+        let Ok(instance) = serde_json::from_slice::<PreviewAppInstance>(&bytes) else {
+            stale_paths.push(path);
+            continue;
         };
 
         if !is_pid_alive_sync(instance.pid) {
