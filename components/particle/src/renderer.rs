@@ -262,9 +262,8 @@ impl ParticleRenderer {
                     self.config.collision_restitution,
                     self.config.collision_surface_friction,
                     glam::Vec4::from_array(self.config.collision_bounds),
-                    u32::try_from(self.config.collision_circle_obstacles.len()).expect(
-                        "particle collision obstacle count must fit into u32",
-                    ),
+                    u32::try_from(self.config.collision_circle_obstacles.len())
+                        .expect("particle collision obstacle count must fit into u32"),
                 ),
                 life_range: glam::Vec2::from_array(self.config.life_range),
                 speed_range: glam::Vec2::from_array(self.config.speed_range),
