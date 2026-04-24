@@ -1282,9 +1282,7 @@ pub unsafe extern "C" fn waterui_call_shared_action(
 ) {
     let action = unsafe { expect_non_null(action, "waterui_call_shared_action", "action") };
     let env = unsafe { expect_non_null(env, "waterui_call_shared_action", "env") };
-    let _ = ffi_boundary("waterui_call_shared_action", || {
-        action.0.call(env);
-    });
+    let _ = ffi_boundary("waterui_call_shared_action", || action.0.call(env));
 }
 
 /// FFI-safe menu item tag.
@@ -1609,7 +1607,7 @@ mod tests {
     fn shared_action_callback_executes() {
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_action = Arc::clone(&hits);
-        let action_ptr = SharedAction::new(move |_| {
+        let action_ptr = SharedAction::new(move || {
             hits_for_action.fetch_add(1, Ordering::SeqCst);
         })
         .into_ffi();
@@ -1628,7 +1626,7 @@ mod tests {
 
     #[test]
     fn shared_action_panic_does_not_unwind_across_ffi() {
-        let action_ptr = SharedAction::new(|_| {
+        let action_ptr = SharedAction::new(|| {
             panic!("boom");
         })
         .into_ffi();
