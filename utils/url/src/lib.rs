@@ -1011,10 +1011,7 @@ fn existing_fetch_cache_url(url: &Url) -> Option<Url> {
 }
 
 #[cfg(feature = "std")]
-fn infer_extension(
-    path_extension: Option<&str>,
-    content_type: Option<&str>,
-) -> Option<String> {
+fn infer_extension(path_extension: Option<&str>, content_type: Option<&str>) -> Option<String> {
     if let Some(extension) = path_extension {
         return Some(extension.to_ascii_lowercase());
     }
@@ -1060,7 +1057,10 @@ async fn fetch_remote_to_cache(
     let downloaded = download_remote_bytes_with_content_type(&url)
         .await
         .map_err(|error| FetchError::Download(Box::new(error)))?;
-    let extension = infer_extension(path_extension.as_deref(), downloaded.content_type.as_deref());
+    let extension = infer_extension(
+        path_extension.as_deref(),
+        downloaded.content_type.as_deref(),
+    );
     let cache_path = cache_payload_path(&cache_entry_dir, extension.as_deref());
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1506,7 +1506,7 @@ mod tests {
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
         ))
-            .expect("remote fetch should succeed");
+        .expect("remote fetch should succeed");
         let fetched_path = fetched
             .to_file_path()
             .expect("remote fetch should resolve to local cache path");
@@ -1562,7 +1562,7 @@ mod tests {
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
         ))
-            .expect("long-url remote fetch should succeed");
+        .expect("long-url remote fetch should succeed");
         let fetched_path = fetched
             .to_file_path()
             .expect("long-url fetch should resolve to local cache path");
