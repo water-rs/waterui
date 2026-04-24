@@ -125,6 +125,7 @@ pub mod transport {
     /// Hard limit for a single frame to prevent OOM from malformed inputs.
     ///
     /// Override via `WATERUI_PREVIEW_MAX_FRAME_BYTES`.
+    #[must_use]
     pub fn max_frame_bytes() -> usize {
         const DEFAULT: usize = 128 * 1024 * 1024;
         std::env::var("WATERUI_PREVIEW_MAX_FRAME_BYTES")
@@ -134,9 +135,14 @@ pub mod transport {
     }
 
     /// Read a single length-prefixed binary frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reading from the stream fails, the frame exceeds
+    /// [`max_frame_bytes`], or the payload cannot be decoded.
     pub async fn read_frame<R, T>(reader: &mut R) -> io::Result<T>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncRead + Unpin + Send,
         T: DeserializeOwned,
     {
         let mut len_buf = [0u8; LEN_PREFIX_BYTES];
@@ -166,10 +172,15 @@ pub mod transport {
     }
 
     /// Write a single length-prefixed binary frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the payload fails, the encoded payload
+    /// does not fit in a `u32` length prefix, or writing to the stream fails.
     pub async fn write_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
-        T: Serialize,
+        W: AsyncWrite + Unpin + Send,
+        T: Serialize + Sync,
     {
         let config = bincode::config::standard();
         let data = bincode::serde::encode_to_vec(value, config)
@@ -188,19 +199,27 @@ pub mod transport {
     }
 
     /// Backward-compatible alias for older call sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by [`read_frame`].
     pub async fn read_json_frame<R, T>(reader: &mut R) -> io::Result<T>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncRead + Unpin + Send,
         T: DeserializeOwned,
     {
         read_frame(reader).await
     }
 
     /// Backward-compatible alias for older call sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by [`write_frame`].
     pub async fn write_json_frame<W, T>(writer: &mut W, value: &T) -> io::Result<()>
     where
-        W: AsyncWrite + Unpin,
-        T: Serialize,
+        W: AsyncWrite + Unpin + Send,
+        T: Serialize + Sync,
     {
         write_frame(writer, value).await
     }
@@ -252,18 +271,23 @@ pub mod tcp {
         /// - `WATERUI_PREVIEW_PORT_RANGE` (u16)
         ///
         /// Missing variables use defaults; present-but-invalid values fail fast.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when any preview TCP environment variable is present
+        /// but cannot be parsed as its declared type.
         pub fn from_env() -> Result<Self, ConfigError> {
             let mut cfg = Self::default_localhost();
 
-            if let Some(host) = std::env::var("WATERUI_PREVIEW_HOST").ok() {
+            if let Ok(host) = std::env::var("WATERUI_PREVIEW_HOST") {
                 cfg.host = host.parse().map_err(|_| ConfigError::InvalidHost)?;
             }
-            if let Some(port_start) = std::env::var("WATERUI_PREVIEW_PORT_START").ok() {
+            if let Ok(port_start) = std::env::var("WATERUI_PREVIEW_PORT_START") {
                 cfg.port_start = port_start
                     .parse()
                     .map_err(|_| ConfigError::InvalidPortStart)?;
             }
-            if let Some(port_range) = std::env::var("WATERUI_PREVIEW_PORT_RANGE").ok() {
+            if let Ok(port_range) = std::env::var("WATERUI_PREVIEW_PORT_RANGE") {
                 cfg.port_range = port_range
                     .parse()
                     .map_err(|_| ConfigError::InvalidPortRange)?;
@@ -274,7 +298,7 @@ pub mod tcp {
 
         #[must_use]
         /// Inclusive port range to scan/bind.
-        pub fn ports(&self) -> RangeInclusive<u16> {
+        pub const fn ports(&self) -> RangeInclusive<u16> {
             let end = self
                 .port_start
                 .saturating_add(self.port_range.saturating_sub(1));
@@ -342,7 +366,7 @@ impl DylibId {
 
 impl fmt::Debug for DylibId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DylibId({})", self)
+        write!(f, "DylibId({self})")
     }
 }
 
@@ -358,7 +382,7 @@ impl FromStr for DylibId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s).map_err(|_| "invalid hex")?;
         let bytes: [u8; 32] = bytes.try_into().map_err(|_| "expected 32 bytes")?;
-        Ok(DylibId(bytes))
+        Ok(Self(bytes))
     }
 }
 

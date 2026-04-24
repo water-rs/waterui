@@ -14,6 +14,7 @@ use crate::scene2d_vello::VelloScene2D;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SceneViewMergeToParent;
 
+/// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
 
 /// Object-safe scene producer for `SceneView`.
@@ -45,6 +46,7 @@ impl fmt::Debug for SceneView {
 }
 
 impl SceneView {
+    /// Creates a scene view from object-safe scene content.
     #[must_use]
     pub fn new<C: SceneContent>(content: C) -> Self {
         Self {
@@ -120,7 +122,11 @@ impl SceneSurfaceRenderer {
 }
 
 impl GpuView for SceneSurfaceRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let redraw_handle = ctx.redraw_handle.clone();
         self.content
             .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
@@ -191,7 +197,7 @@ impl GpuView for SceneSurfaceRenderer {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -201,7 +207,7 @@ impl GpuView for SceneSurfaceRenderer {
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -219,9 +225,10 @@ impl GpuView for SceneSurfaceRenderer {
         }));
 
         self.blit_bind_group_layout = Some(bind_group_layout);
+        core::future::ready(())
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn render(&mut self, frame: &mut GpuFrame) {
         let renderer = self
             .renderer

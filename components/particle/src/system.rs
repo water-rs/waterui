@@ -1,4 +1,4 @@
-//! ParticleSystem View with ergonomic API.
+//! `ParticleSystem` View with ergonomic API.
 
 use crate::{
     EmitterShape,
@@ -39,56 +39,56 @@ impl ParticleSystem {
 
     /// Set emission rate (particles per second).
     #[must_use]
-    pub fn rate(mut self, rate: f32) -> Self {
+    pub const fn rate(mut self, rate: f32) -> Self {
         self.config.emitter.rate = rate;
         self
     }
 
     /// Set emitter as a single point.
     #[must_use]
-    pub fn emit_from_point(mut self) -> Self {
+    pub const fn emit_from_point(mut self) -> Self {
         self.config.emitter.shape = EmitterShape::Point;
         self
     }
 
     /// Set emitter as a rectangle.
     #[must_use]
-    pub fn emit_from_rect(mut self, width: f32, height: f32) -> Self {
+    pub const fn emit_from_rect(mut self, width: f32, height: f32) -> Self {
         self.config.emitter.shape = EmitterShape::Rect { width, height };
         self
     }
 
     /// Set emitter position (normalized coordinates 0.0-1.0).
     #[must_use]
-    pub fn at(mut self, x: f32, y: f32) -> Self {
+    pub const fn at(mut self, x: f32, y: f32) -> Self {
         self.config.emitter.position = [x, y];
         self
     }
 
     /// Set particle lifespan range.
     #[must_use]
-    pub fn life(mut self, range: Range<f32>) -> Self {
+    pub const fn life(mut self, range: Range<f32>) -> Self {
         self.config.particle.life = range;
         self
     }
 
     /// Set particle speed range.
     #[must_use]
-    pub fn speed(mut self, range: Range<f32>) -> Self {
+    pub const fn speed(mut self, range: Range<f32>) -> Self {
         self.config.particle.speed = range;
         self
     }
 
     /// Set particle emission angle range (in radians).
     #[must_use]
-    pub fn angle(mut self, range: Range<f32>) -> Self {
+    pub const fn angle(mut self, range: Range<f32>) -> Self {
         self.config.particle.angle = range;
         self
     }
 
     /// Set particle size range.
     #[must_use]
-    pub fn size(mut self, range: Range<f32>) -> Self {
+    pub const fn size(mut self, range: Range<f32>) -> Self {
         self.config.particle.size = range;
         self
     }
@@ -103,28 +103,28 @@ impl ParticleSystem {
 
     /// Enable motion blur (stretch particles based on velocity).
     #[must_use]
-    pub fn stretch_with_velocity(mut self) -> Self {
+    pub const fn stretch_with_velocity(mut self) -> Self {
         self.config.particle.stretch_with_velocity = true;
         self
     }
 
     /// Set gravity vector.
     #[must_use]
-    pub fn gravity(mut self, x: f32, y: f32) -> Self {
+    pub const fn gravity(mut self, x: f32, y: f32) -> Self {
         self.config.environment.gravity = [x, y];
         self
     }
 
     /// Set wind vector.
     #[must_use]
-    pub fn wind(mut self, x: f32, y: f32) -> Self {
+    pub const fn wind(mut self, x: f32, y: f32) -> Self {
         self.config.environment.wind = [x, y];
         self
     }
 
     /// Keep particles inside the normalized viewport `[0, 0]..[1, 1]`.
     #[must_use]
-    pub fn collide_with_viewport(mut self) -> Self {
+    pub const fn collide_with_viewport(mut self) -> Self {
         self.config.collision.enabled = true;
         self.config.collision.bounds = [0.0, 0.0, 1.0, 1.0];
         self
@@ -153,21 +153,21 @@ impl ParticleSystem {
 
     /// Set the fraction of normal velocity preserved after a collision.
     #[must_use]
-    pub fn bounce(mut self, restitution: f32) -> Self {
+    pub const fn bounce(mut self, restitution: f32) -> Self {
         self.config.collision.restitution = restitution;
         self
     }
 
     /// Set the fraction of tangential velocity preserved after a collision.
     #[must_use]
-    pub fn surface_friction(mut self, value: f32) -> Self {
+    pub const fn surface_friction(mut self, value: f32) -> Self {
         self.config.collision.surface_friction = value;
         self
     }
 
     /// Enable pure-GPU particle-particle interaction using a neighbor grid.
     #[must_use]
-    pub fn collide_with_particles(mut self, radius: f32, strength: f32) -> Self {
+    pub const fn collide_with_particles(mut self, radius: f32, strength: f32) -> Self {
         self.config.interaction.enabled = true;
         self.config.interaction.radius = radius;
         self.config.interaction.strength = strength;
@@ -176,21 +176,21 @@ impl ParticleSystem {
 
     /// Set additive blending mode.
     #[must_use]
-    pub fn additive(mut self) -> Self {
+    pub const fn additive(mut self) -> Self {
         self.config.blend_mode = BlendMode::Additive;
         self
     }
 
     /// Set edge softness (0.0=hard, 1.0=soft).
     #[must_use]
-    pub fn softness(mut self, value: f32) -> Self {
+    pub const fn softness(mut self, value: f32) -> Self {
         self.config.particle.softness = value;
         self
     }
 
     /// Set turbulence strength.
     #[must_use]
-    pub fn turbulence(mut self, value: f32) -> Self {
+    pub const fn turbulence(mut self, value: f32) -> Self {
         self.config.environment.turbulence = value;
         self
     }
@@ -200,28 +200,28 @@ impl ParticleSystem {
     /// `1.0` keeps velocity unchanged, lower values damp motion over time
     /// without changing behavior across frame rates.
     #[must_use]
-    pub fn drag(mut self, value: f32) -> Self {
+    pub const fn drag(mut self, value: f32) -> Self {
         self.config.environment.drag = value;
         self
     }
 
     /// Set emitter as a disk with the given radius.
     #[must_use]
-    pub fn emit_from_circle(mut self, radius: f32) -> Self {
+    pub const fn emit_from_circle(mut self, radius: f32) -> Self {
         self.config.emitter.shape = EmitterShape::Circle { radius };
         self
     }
 
     /// Set particle shape.
     #[must_use]
-    pub fn shape(mut self, shape: crate::config::ParticleShape) -> Self {
+    pub const fn shape(mut self, shape: crate::config::ParticleShape) -> Self {
         self.config.particle.shape = shape;
         self
     }
 
     /// Set initial particle spin speed (radians/sec).
     #[must_use]
-    pub fn spin(mut self, range: Range<f32>) -> Self {
+    pub const fn spin(mut self, range: Range<f32>) -> Self {
         self.config.particle.spin = range;
         self
     }
@@ -283,15 +283,23 @@ impl ParticleSystem {
     }
 
     /// Render the particle system to an offscreen RGBA8 target via `GpuSurface`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen(
         self,
         config: OffscreenRenderConfig,
         env: &mut Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        self.render_offscreen_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+        self.render_offscreen_frames(config, env, NonZeroU32::MIN)
     }
 
     /// Render the particle system to an offscreen RGBA8 target for `frame_count` frames via `GpuSurface`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen_frames(
         self,
         config: OffscreenRenderConfig,
@@ -307,15 +315,23 @@ impl ParticleSystem {
     }
 
     /// Render the particle system to an HDR offscreen target via `GpuSurface`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen_hdr(
         self,
         config: OffscreenRenderConfig,
         env: &mut Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
-        self.render_offscreen_hdr_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+        self.render_offscreen_hdr_frames(config, env, NonZeroU32::MIN)
     }
 
     /// Render the particle system to an HDR offscreen target for `frame_count` frames via `GpuSurface`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying GPU offscreen render fails.
     pub fn render_offscreen_hdr_frames(
         self,
         config: OffscreenRenderConfig,

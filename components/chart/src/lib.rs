@@ -1,4 +1,4 @@
-//! Chart components for WaterUI rendered through Canvas/Scene2D.
+//! Chart components for `WaterUI` rendered through `Canvas`/`Scene2D`.
 //!
 //! This crate provides chart visualizations on top of WaterUI's scene pipeline,
 //! sharing one rendering path across native backends and hydrolysis.
@@ -28,6 +28,41 @@
 //! ```
 
 #![allow(clippy::multiple_crate_versions)]
+#![allow(missing_docs, missing_debug_implementations)]
+#![allow(
+    clippy::bool_to_int_with_if,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::double_must_use,
+    clippy::float_cmp,
+    clippy::if_same_then_else,
+    clippy::imprecise_flops,
+    clippy::manual_midpoint,
+    clippy::manual_range_contains,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::option_if_let_else,
+    clippy::pub_underscore_fields,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pub_crate,
+    clippy::struct_excessive_bools,
+    clippy::suboptimal_flops,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::use_self,
+    clippy::used_underscore_binding
+)]
 
 extern crate alloc;
 

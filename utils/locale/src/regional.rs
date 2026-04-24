@@ -1,4 +1,4 @@
-//! Shared locale runtime for WaterUI backed by waterkit-regional.
+//! Shared locale runtime for `WaterUI` backed by waterkit-regional.
 
 use core::str::FromStr;
 use std::error::Error;
@@ -33,7 +33,7 @@ impl RegionalContext {
 
     /// Returns the parsed locale value.
     #[must_use]
-    pub fn locale(&self) -> &Locale {
+    pub const fn locale(&self) -> &Locale {
         &self.locale
     }
 
@@ -94,6 +94,11 @@ pub fn current_settings() -> RegionalContext {
 /// Sets the shared runtime locale using a BCP 47 tag.
 ///
 /// Returns an error when `tag` is not a valid locale identifier.
+///
+/// # Errors
+///
+/// Returns [`InvalidLocaleTag`] when `tag` cannot be parsed as a valid BCP 47
+/// locale identifier.
 pub fn set_locale_tag(tag: impl AsRef<str>) -> Result<(), InvalidLocaleTag> {
     let locale_tag = tag.as_ref();
     let locale = Locale::from_str(locale_tag).map_err(|_| InvalidLocaleTag {
@@ -123,7 +128,7 @@ pub fn start_auto_refresh_default() {
 
 impl Extractor for RegionalContext {
     fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
-        if let Some(context) = env.get::<RegionalContext>().cloned() {
+        if let Some(context) = env.get::<Self>().cloned() {
             return Ok(context);
         }
 

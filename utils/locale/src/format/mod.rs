@@ -27,6 +27,10 @@ use crate::locale::Locale;
 /// ```
 pub trait LocalizedDisplay {
     /// Format the value for the given locale.
+    ///
+    /// # Errors
+    ///
+    /// Returns the formatter error propagated from `fmt::Formatter`.
     fn fmt(&self, locale: &Locale, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 
     /// Convert to a localized string.
@@ -61,7 +65,7 @@ pub trait LocalizedDisplay {
 
 /// Blanket implementation for any type that implements Display.
 ///
-/// This allows standard types to be used with LocalizedDisplay,
+/// This allows standard types to be used with `LocalizedDisplay`,
 /// though they won't have locale-specific formatting.
 impl<T: Display> LocalizedDisplay for T {
     fn fmt(&self, _locale: &Locale, f: &mut fmt::Formatter<'_>) -> fmt::Result {

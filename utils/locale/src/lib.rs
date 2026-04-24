@@ -64,83 +64,84 @@ mod tests {
 
     #[test]
     fn test_plural_selection_english() {
+        crate::system::reset_runtime_locale_state_for_tests();
         // English: 1 → One, 0/2+ → Other
-        assert_eq!(select_plural(&locales::EN, 1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::EN, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::EN, 2), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::EN, 100), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::EN, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &100), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_english_fractional() {
         // English fractional values should be "other"
-        assert_eq!(select_plural(&locales::EN, 1.2), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::EN, 0.5), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &1.2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &0.5), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_chinese() {
         // Chinese has no plural distinction - all → Other
-        assert_eq!(select_plural(&locales::ZH_CN, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::ZH_CN, 1), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::ZH_CN, 100), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::ZH_CN, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::ZH_CN, &1), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::ZH_CN, &100), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_japanese() {
         // Japanese has no plural distinction - all → Other
-        assert_eq!(select_plural(&locales::JA, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::JA, 1), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::JA, 100), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::JA, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::JA, &1), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::JA, &100), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_korean() {
         // Korean has no plural distinction - all → Other
-        assert_eq!(select_plural(&locales::KO, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::KO, 1), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::KO, 100), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::KO, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::KO, &1), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::KO, &100), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_german() {
         // German: 1 → One, others → Other
-        assert_eq!(select_plural(&locales::DE, 1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::DE, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::DE, 2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::DE, &1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::DE, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::DE, &2), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_french() {
         // French: 0,1 → One, 2+ → Other (differs from English!)
-        assert_eq!(select_plural(&locales::FR, 0), PluralCategory::One);
-        assert_eq!(select_plural(&locales::FR, 1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::FR, 2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::FR, &0), PluralCategory::One);
+        assert_eq!(select_plural(&locales::FR, &1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::FR, &2), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_spanish() {
         // Spanish: 1 → One, others → Other
-        assert_eq!(select_plural(&locales::ES, 1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::ES, 0), PluralCategory::Other);
-        assert_eq!(select_plural(&locales::ES, 2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::ES, &1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::ES, &0), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::ES, &2), PluralCategory::Other);
     }
 
     #[test]
     fn test_plural_selection_russian() {
         // Russian: complex rules with One, Few, Many
-        assert_eq!(select_plural(&locales::RU, 1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::RU, 2), PluralCategory::Few);
-        assert_eq!(select_plural(&locales::RU, 5), PluralCategory::Many);
-        assert_eq!(select_plural(&locales::RU, 21), PluralCategory::One);
-        assert_eq!(select_plural(&locales::RU, 22), PluralCategory::Few);
+        assert_eq!(select_plural(&locales::RU, &1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::RU, &2), PluralCategory::Few);
+        assert_eq!(select_plural(&locales::RU, &5), PluralCategory::Many);
+        assert_eq!(select_plural(&locales::RU, &21), PluralCategory::One);
+        assert_eq!(select_plural(&locales::RU, &22), PluralCategory::Few);
     }
 
     #[test]
     fn test_plural_selection_negative_uses_absolute_value() {
         // CLDR plural rules use absolute value.
-        assert_eq!(select_plural(&locales::EN, -1), PluralCategory::One);
-        assert_eq!(select_plural(&locales::EN, -2), PluralCategory::Other);
+        assert_eq!(select_plural(&locales::EN, &-1), PluralCategory::One);
+        assert_eq!(select_plural(&locales::EN, &-2), PluralCategory::Other);
     }
 
     // =========================================================
@@ -173,7 +174,7 @@ mod tests {
         // English
         let en_str = distance.to_localized_string(&locales::EN);
         assert!(en_str.contains("100"));
-        assert!(en_str.contains("m"));
+        assert!(en_str.contains('m'));
 
         // Chinese
         let zh_str = distance.to_localized_string(&locales::ZH_CN);
@@ -201,22 +202,22 @@ mod tests {
 
         // Chinese
         let zh_str = mass.to_localized_string(&locales::ZH_CN);
-        assert!(zh_str.contains("5"));
+        assert!(zh_str.contains('5'));
         assert!(zh_str.contains("公斤"));
 
         // Japanese
         let ja_str = mass.to_localized_string(&locales::JA);
-        assert!(ja_str.contains("5"));
+        assert!(ja_str.contains('5'));
         assert!(ja_str.contains("キログラム"));
 
         // Korean
         let ko_str = mass.to_localized_string(&locales::KO);
-        assert!(ko_str.contains("5"));
+        assert!(ko_str.contains('5'));
         assert!(ko_str.contains("킬로그램"));
 
         // European languages use "kg"
         let de_str = mass.to_localized_string(&locales::DE);
-        assert!(de_str.contains("5"));
+        assert!(de_str.contains('5'));
         assert!(de_str.contains("kg"));
     }
 

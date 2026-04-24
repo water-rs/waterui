@@ -1,4 +1,14 @@
 #![no_std]
+#![allow(
+    missing_docs,
+    missing_debug_implementations,
+    clippy::doc_markdown,
+    clippy::double_must_use,
+    clippy::missing_const_for_fn,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::semicolon_if_nothing_returned
+)]
 
 //! Navigation module for `WaterUI` framework.
 //!

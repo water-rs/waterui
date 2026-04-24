@@ -4,6 +4,7 @@ use crate::multi_input_filter::FilterImage;
 use crate::shader_surface::ShaderSurface;
 use std::path::Path;
 
+/// CPU-owned RGBA8 image produced by shader-based generators.
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
     width: u32,
@@ -12,6 +13,11 @@ pub struct GeneratedImage {
 }
 
 impl GeneratedImage {
+    /// Creates an image from RGBA8 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `rgba8` does not contain exactly `width * height * 4` bytes.
     #[must_use]
     pub fn from_rgba8(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
         let expected_len = width as usize * height as usize * 4;
@@ -28,26 +34,41 @@ impl GeneratedImage {
         }
     }
 
+    /// Returns the image width in pixels.
     #[must_use]
     pub const fn width(&self) -> u32 {
         self.width
     }
+    /// Returns the image height in pixels.
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
     }
+    /// Returns the raw RGBA8 bytes.
     #[must_use]
     pub fn rgba8(&self) -> &[u8] {
         &self.rgba8
     }
+    /// Consumes the image and returns the raw RGBA8 bytes.
     #[must_use]
     pub fn into_rgba8(self) -> Vec<u8> {
         self.rgba8
     }
+    /// Converts the generated image into a reusable filter input.
     #[must_use]
     pub fn to_filter_image(&self) -> FilterImage {
         FilterImage::from_rgba8(self.width, self.height, self.rgba8.clone())
     }
+
+    /// Saves the image as a PNG file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the image encoder's filesystem or encoding error.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the cached RGBA buffer shape no longer matches the stored dimensions.
     pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
         let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
             .expect("GeneratedImage::save_png: rgba buffer shape must match dimensions");
@@ -55,7 +76,9 @@ impl GeneratedImage {
     }
 }
 
+/// Trait implemented by procedural image generators.
 pub trait ImageGenerator {
+    /// Produces a fresh image from the generator's current parameters.
     fn generate(&mut self) -> GeneratedImage;
 }
 
@@ -79,14 +102,22 @@ fn render_fragment(width: u32, height: u32, fragment: String) -> GeneratedImage 
     GeneratedImage::from_rgba8(output.width, output.height, output.rgba8)
 }
 
+/// Generates a checkerboard texture.
 #[derive(Debug, Clone)]
 pub struct CheckerboardGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Checker cell size in pixels.
     pub cell_size: u32,
+    /// Light cell color.
     pub light: Srgb,
+    /// Dark cell color.
     pub dark: Srgb,
+    /// Horizontal pattern offset in pixels.
     pub offset_x: u32,
+    /// Vertical pattern offset in pixels.
     pub offset_y: u32,
 }
 
@@ -113,14 +144,22 @@ impl ImageGenerator for CheckerboardGenerator {
     }
 }
 
+/// Generates a striped texture.
 #[derive(Debug, Clone)]
 pub struct StripeGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Stripe width in pixels.
     pub stripe_width: u32,
+    /// Whether stripes run horizontally.
     pub horizontal: bool,
+    /// Primary stripe color.
     pub primary: Srgb,
+    /// Secondary stripe color.
     pub secondary: Srgb,
+    /// Pattern offset in pixels.
     pub offset: u32,
 }
 
@@ -149,13 +188,20 @@ impl ImageGenerator for StripeGenerator {
     }
 }
 
+/// Generates a dotted grid texture.
 #[derive(Debug, Clone)]
 pub struct DotGridGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Grid spacing in pixels.
     pub spacing: u32,
+    /// Dot radius in pixels.
     pub radius: f32,
+    /// Dot color.
     pub foreground: Srgb,
+    /// Background color.
     pub background: Srgb,
 }
 
@@ -177,10 +223,14 @@ impl ImageGenerator for DotGridGenerator {
     }
 }
 
+/// Generates deterministic noise from a seed.
 #[derive(Debug, Clone)]
 pub struct NoiseGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Seed value passed to the shader.
     pub seed: u64,
 }
 
@@ -192,13 +242,20 @@ impl ImageGenerator for NoiseGenerator {
     }
 }
 
+/// Generates a linear gradient texture.
 #[derive(Debug, Clone)]
 pub struct LinearGradientGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Start color.
     pub start_color: Srgb,
+    /// End color.
     pub end_color: Srgb,
+    /// Normalized start point.
     pub start_point: [f32; 2],
+    /// Normalized end point.
     pub end_point: [f32; 2],
 }
 
@@ -221,13 +278,20 @@ impl ImageGenerator for LinearGradientGenerator {
     }
 }
 
+/// Generates a radial gradient texture.
 #[derive(Debug, Clone)]
 pub struct RadialGradientGenerator {
+    /// Output width in pixels.
     pub width: u32,
+    /// Output height in pixels.
     pub height: u32,
+    /// Color at the center.
     pub inner_color: Srgb,
+    /// Color at the outer radius.
     pub outer_color: Srgb,
+    /// Normalized gradient center.
     pub center: [f32; 2],
+    /// Gradient radius in normalized units.
     pub radius: f32,
 }
 

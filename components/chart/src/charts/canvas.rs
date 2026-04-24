@@ -37,7 +37,14 @@ use crate::{
 const PLOT_PADDING_RATIO: f32 = 0.1;
 const CHART_TRANSITION: AnimationConfig = AnimationConfig::ease_in_out(Duration::from_millis(240));
 const PIE_DEFAULT_COLORS: [u32; 8] = [
-    0x3B82F6, 0x22C55E, 0xEF4444, 0xF59E0B, 0x8B5CF6, 0xEC4899, 0x06B6D4, 0xF97316,
+    0x003B_82F6,
+    0x0022_C55E,
+    0x00EF_4444,
+    0x00F5_9E0B,
+    0x008B_5CF6,
+    0x00EC_4899,
+    0x0006_B6D4,
+    0x00F9_7316,
 ];
 const VIRIDIS_STOPS: [(f32, Srgb); 5] = [
     (0.0, Srgb::from_hex("#440154")),
@@ -260,7 +267,7 @@ impl<T: Clone + 'static> HitGeometry<T> for CartesianGeometry<T> {
     }
 }
 
-fn gesture_point_to_point(point: &GesturePoint) -> Point {
+fn gesture_point_to_point(point: GesturePoint) -> Point {
     Point::new(point.x, point.y)
 }
 
@@ -333,31 +340,6 @@ fn polygon_contains(vertices: &[Point], point: Point) -> bool {
     inside
 }
 
-pub(crate) fn signal_canvas<S, D, F>(signal: S, mut draw: F) -> Canvas
-where
-    S: Signal<Output = D> + 'static,
-    S::Guard: 'static,
-    D: Clone + PartialEq + 'static,
-    F: FnMut(&mut DrawingContext<'_>, &D) + 'static,
-{
-    let transition = Rc::new(RefCell::new(ChartTransitionState::<D>::new()));
-    Canvas::with_signal(signal, move |ctx, data| {
-        let (progress, animating) = {
-            let mut transition = transition.borrow_mut();
-            let progress = transition.progress_for(&data);
-            let animating = transition.is_animating();
-            (progress, animating)
-        };
-        if animating {
-            ctx.request_next_frame();
-        }
-        ctx.save();
-        ctx.set_global_alpha(progress);
-        draw(ctx, &data);
-        ctx.restore();
-    })
-}
-
 fn cartesian_x_from_point<T>(
     geometry: &CartesianGeometry<T>,
     point: Point,
@@ -412,7 +394,7 @@ pub(crate) fn interactive_cartesian_signal_canvas<S, D, T, B, G, F>(
     signal: S,
     bounds_of: B,
     build_geometry: G,
-    mut draw: F,
+    mut draw_chart: F,
     mut selection: SelectionBindings<T>,
     cartesian_selection: CartesianSelectionBindings,
     cartesian_viewport: CartesianViewportBindings,
@@ -457,13 +439,13 @@ where
                 *base_bounds.borrow_mut() = current_base_bounds;
                 let visible_bounds =
                     cartesian_viewport.resolve_bounds(current_base_bounds, viewport_state);
-                let built_geometry = build_geometry(ctx, &data, visible_bounds);
-                *geometry.borrow_mut() = Some(built_geometry.clone());
+                let chart_geometry = build_geometry(ctx, &data, visible_bounds);
+                *geometry.borrow_mut() = Some(chart_geometry.clone());
                 let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
                 if chart_frame.get() != current_chart_frame {
                     chart_frame.set(current_chart_frame);
                 }
-                let current_plot_area = built_geometry.viewport();
+                let current_plot_area = chart_geometry.viewport();
                 if plot_area_frame.get() != current_plot_area {
                     plot_area_frame.set(current_plot_area);
                 }
@@ -478,14 +460,14 @@ where
                 }
                 ctx.save();
                 ctx.set_global_alpha(progress);
-                draw(ctx, &data, &built_geometry);
+                draw_chart(ctx, &data, &chart_geometry);
                 ctx.restore();
             },
         )
     };
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(TapGesture::new()).action({
+        GestureObserver::new(TapGesture::new(), {
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
             let cartesian_selection = cartesian_selection.clone();
@@ -496,7 +478,7 @@ where
                 let tap = env
                     .get::<TapEvent>()
                     .expect("interactive_cartesian_signal_canvas: TapEvent missing from gesture environment");
-                let point = gesture_point_to_point(&tap.location);
+                let point = gesture_point_to_point(tap.location);
                 let geometry_ref = geometry.borrow();
                 let Some(geometry) = geometry_ref.as_ref() else {
                     return;
@@ -515,7 +497,7 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(DragGesture::new(0.0)).action({
+        GestureObserver::new(DragGesture::new(0.0), {
             let geometry = Rc::clone(&geometry);
             let base_bounds = Rc::clone(&base_bounds);
             let selection = selection.clone();
@@ -524,8 +506,8 @@ where
             let x_range_start = x_range_start.clone();
             let y_range_start = y_range_start.clone();
             move |env: Environment| {
-                let handles_selection_drag = cartesian_selection.is_active()
-                    || selection.has_external_bindings()
+                let handles_selection_drag = selection.is_active()
+                    || cartesian_selection.is_active()
                     || (!cartesian_viewport.allows_horizontal_drag()
                         && !cartesian_viewport.allows_vertical_drag());
                 if !handles_selection_drag
@@ -535,23 +517,23 @@ where
                     return;
                 }
 
-                let drag = env.get::<DragEvent>().expect(
+                let drag_event = env.get::<DragEvent>().expect(
                     "interactive_cartesian_signal_canvas: DragEvent missing from gesture environment",
                 );
                 let geometry_ref = geometry.borrow();
                 let Some(geometry) = geometry_ref.as_ref() else {
                     return;
                 };
-                let point = gesture_point_to_point(&drag.location);
+                let point = gesture_point_to_point(drag_event.location);
 
                 if handles_selection_drag {
-                    match drag.phase {
+                    match drag_event.phase {
                         GesturePhase::Started => {
                             let hit = geometry.hit_test(point);
                             selection.set_focus(hit.clone());
                             let start_point = Point::new(
-                                point.x - drag.translation.x,
-                                point.y - drag.translation.y,
+                                point.x - drag_event.translation.x,
+                                point.y - drag_event.translation.y,
                             );
                             if cartesian_selection.tracks_x_range() {
                                 if let Some(start) = cartesian_x_from_point(geometry, start_point, true) {
@@ -652,7 +634,7 @@ where
 
                 let base_bounds = *base_bounds.borrow();
                 let plot_viewport = geometry.viewport;
-                match drag.phase {
+                match drag_event.phase {
                     GesturePhase::Started => {
                         selection.clear_focus();
                         if cartesian_viewport.allows_horizontal_drag() {
@@ -667,7 +649,8 @@ where
                             if let Some(start) = x_range_start.get() {
                                 let visible_width = geometry.bounds.width();
                                 let max_start = (base_bounds.max_x - visible_width).max(base_bounds.min_x);
-                                let candidate = start - drag.translation.x / plot_viewport.width * visible_width;
+                                let candidate =
+                                    start - drag_event.translation.x / plot_viewport.width * visible_width;
                                 let clamped = if max_start <= base_bounds.min_x {
                                     base_bounds.min_x
                                 } else {
@@ -675,7 +658,7 @@ where
                                 };
                                 cartesian_viewport.set_x_position(clamped);
                             }
-                            if matches!(drag.phase, GesturePhase::Ended) {
+                            if matches!(drag_event.phase, GesturePhase::Ended) {
                                 x_range_start.set(None);
                             }
                         }
@@ -683,7 +666,8 @@ where
                             if let Some(start) = y_range_start.get() {
                                 let visible_height = geometry.bounds.height();
                                 let max_start = (base_bounds.max_y - visible_height).max(base_bounds.min_y);
-                                let candidate = start - drag.translation.y / plot_viewport.height * visible_height;
+                                let candidate =
+                                    start - drag_event.translation.y / plot_viewport.height * visible_height;
                                 let clamped = if max_start <= base_bounds.min_y {
                                     base_bounds.min_y
                                 } else {
@@ -691,7 +675,7 @@ where
                                 };
                                 cartesian_viewport.set_y_position(clamped);
                             }
-                            if matches!(drag.phase, GesturePhase::Ended) {
+                            if matches!(drag_event.phase, GesturePhase::Ended) {
                                 y_range_start.set(None);
                             }
                         }
@@ -743,7 +727,7 @@ pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
     env: &Environment,
     signal: S,
     build_geometry: B,
-    mut draw: F,
+    mut draw_chart: F,
     mut selection: SelectionBindings<T>,
     composition: ChartComposition<T>,
 ) -> impl waterui_core::View
@@ -773,13 +757,13 @@ where
         let chart_frame = chart_frame.clone();
         let plot_area_frame = plot_area_frame.clone();
         Canvas::with_signal(signal, move |ctx, data| {
-            let built_geometry = build_geometry(ctx, &data);
-            *geometry.borrow_mut() = Some(built_geometry.clone());
+            let chart_geometry = build_geometry(ctx, &data);
+            *geometry.borrow_mut() = Some(chart_geometry.clone());
             let current_chart_frame = ChartViewport::new(0.0, 0.0, ctx.width, ctx.height);
             if chart_frame.get() != current_chart_frame {
                 chart_frame.set(current_chart_frame);
             }
-            let current_plot_area = built_geometry.viewport();
+            let current_plot_area = chart_geometry.viewport();
             if plot_area_frame.get() != current_plot_area {
                 plot_area_frame.set(current_plot_area);
             }
@@ -794,13 +778,13 @@ where
             }
             ctx.save();
             ctx.set_global_alpha(progress);
-            draw(ctx, &data, &built_geometry);
+            draw_chart(ctx, &data, &chart_geometry);
             ctx.restore();
         })
     };
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(TapGesture::new()).action({
+        GestureObserver::new(TapGesture::new(), {
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
             move |env: Environment| {
@@ -813,7 +797,7 @@ where
                 let hit = geometry
                     .borrow()
                     .as_ref()
-                    .and_then(|geometry| geometry.hit_test(gesture_point_to_point(&tap.location)));
+                    .and_then(|geometry| geometry.hit_test(gesture_point_to_point(tap.location)));
                 selection.set_focus(hit.clone());
                 selection.set_selected(hit);
             }
@@ -821,26 +805,26 @@ where
     );
     let canvas = Metadata::new(
         canvas,
-        GestureObserver::new(DragGesture::new(0.0)).action({
+        GestureObserver::new(DragGesture::new(0.0), {
             let geometry = Rc::clone(&geometry);
             let selection = selection.clone();
             move |env: Environment| {
                 if !selection.is_active() {
                     return;
                 }
-                let drag = env.get::<DragEvent>().expect(
+                let drag_event = env.get::<DragEvent>().expect(
                     "interactive_signal_canvas: DragEvent missing from gesture environment",
                 );
-                match drag.phase {
+                match drag_event.phase {
                     GesturePhase::Started | GesturePhase::Updated => {
                         let hit = geometry.borrow().as_ref().and_then(|geometry| {
-                            geometry.hit_test(gesture_point_to_point(&drag.location))
+                            geometry.hit_test(gesture_point_to_point(drag_event.location))
                         });
                         selection.set_focus(hit);
                     }
                     GesturePhase::Ended => {
                         let hit = geometry.borrow().as_ref().and_then(|geometry| {
-                            geometry.hit_test(gesture_point_to_point(&drag.location))
+                            geometry.hit_test(gesture_point_to_point(drag_event.location))
                         });
                         selection.set_selected(hit);
                         selection.clear_focus();
@@ -1340,10 +1324,10 @@ pub(crate) fn choropleth_geometry(
                 Point::new(x, y)
             })
             .collect();
-        let [px_min, py_min, px_max, py_max] = polygon.bounds();
+        let [polygon_min_x, polygon_min_y, polygon_max_x, polygon_max_y] = polygon.bounds();
         let anchor = Point::new(
-            offset_x + ((px_min + px_max) * 0.5 - min_x) * scale,
-            offset_y + (max_y - (py_min + py_max) * 0.5) * scale,
+            offset_x + ((polygon_min_x + polygon_max_x) * 0.5 - min_x) * scale,
+            offset_y + (max_y - (polygon_min_y + polygon_max_y) * 0.5) * scale,
         );
         let datum = RegionDatum::new(index, polygon.id, polygon.value);
         targets.push_polygon(HitResult::new(0, index, datum, anchor), vertices);
@@ -1802,6 +1786,7 @@ pub(crate) fn draw_gauge(
 
     let normalized = data.normalized_value();
     let value_end = start_angle + (end_angle - start_angle) * normalized;
+    let value_span = data.max_value - data.min_value;
 
     if data.regions.is_empty() {
         let mut value_arc = Path::new();
@@ -1810,12 +1795,14 @@ pub(crate) fn draw_gauge(
         ctx.set_stroke_style(value_color);
         ctx.stroke_path(&value_arc);
     } else {
+        assert!(
+            value_span.is_finite() && value_span > 0.0,
+            "draw_gauge requires finite max_value > min_value"
+        );
         let mut last_threshold = data.min_value;
         for region in &data.regions {
-            let start_t = ((last_threshold - data.min_value) / (data.max_value - data.min_value))
-                .clamp(0.0, 1.0);
-            let end_t = ((region.threshold - data.min_value) / (data.max_value - data.min_value))
-                .clamp(0.0, 1.0);
+            let start_t = ((last_threshold - data.min_value) / value_span).clamp(0.0, 1.0);
+            let end_t = ((region.threshold - data.min_value) / value_span).clamp(0.0, 1.0);
             let seg_start = start_angle + (end_angle - start_angle) * start_t;
             let seg_end = start_angle + (end_angle - start_angle) * end_t;
             let mut segment = Path::new();
@@ -1981,8 +1968,8 @@ pub(crate) fn draw_pie(
                 center.y + angle.sin() * outer_r,
             ));
             path.arc(center, outer_r, angle, end, false);
-            path.close();
         }
+        path.close();
 
         ctx.set_fill_style(color);
         ctx.fill_path(&path);

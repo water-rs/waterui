@@ -13,6 +13,15 @@ const fn from_hex_byte(s: &[u8], i: usize) -> u8 {
     (hex_digit(s[i]) << 4) | hex_digit(s[i + 1])
 }
 
+/// Parses a six-digit hex color string in const contexts.
+///
+/// Accepts `#RRGGBB`, `0xRRGGBB`, or bare `RRGGBB`.
+///
+/// # Panics
+///
+/// Panics if the input does not contain exactly six hexadecimal digits after
+/// removing an optional prefix or if any digit is invalid.
+#[must_use]
 pub const fn parse_hex_color(s: &str) -> (u8, u8, u8) {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -59,6 +68,13 @@ fn parse_runtime_hex_byte(bytes: &[u8], index: usize) -> Result<u8, HexColorErro
     Ok((hi << 4) | lo)
 }
 
+/// Parses a six-digit hex color string at runtime.
+///
+/// Accepts `#RRGGBB`, `0xRRGGBB`, or bare `RRGGBB`.
+///
+/// # Errors
+///
+/// Returns [`HexColorError`] when the input length or digit contents are invalid.
 pub fn parse_hex_color_runtime(s: &str) -> Result<(u8, u8, u8), HexColorError> {
     let bytes = s.as_bytes();
     let offset = parse_runtime_prefix(bytes);

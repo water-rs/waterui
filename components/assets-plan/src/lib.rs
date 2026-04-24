@@ -1,5 +1,12 @@
 //! Shared asset discovery and planning for `WaterUI` applications.
 
+#![allow(
+    missing_docs,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;

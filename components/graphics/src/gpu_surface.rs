@@ -13,6 +13,7 @@ use core::num::NonZeroU32;
 use core::pin::Pin;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
+use num_traits::ToPrimitive;
 use std::error::Error;
 use std::path::Path;
 use std::sync::mpsc;
@@ -65,6 +66,10 @@ pub fn resolve_surface_hdr_preference(prefer_hdr_override: Option<bool>) -> bool
         .unwrap_or(true)
 }
 
+/// Picks the best supported surface format using the resolved HDR preference.
+///
+/// `WaterUI` prefers HDR surfaces when requested and supported, otherwise it
+/// prefers an sRGB SDR format for correct UI compositing.
 #[must_use]
 pub fn preferred_surface_format_with_preference(
     caps: &wgpu::SurfaceCapabilities,
@@ -191,7 +196,7 @@ impl PointerState {
     #[must_use]
     pub fn normalized(&self, width: u32, height: u32) -> Option<(f32, f32)> {
         self.position
-            .map(|p| (p.x / width as f32, p.y / height as f32))
+            .map(|p| (p.x / u32_to_f32(width), p.y / u32_to_f32(height)))
     }
 
     /// Returns `true` if the pointer is hovering over this surface.
@@ -272,6 +277,7 @@ impl RedrawHandle {
     }
 
     /// Check and clear the dirty flag. Returns `true` if a redraw was requested.
+    #[must_use]
     pub fn take_dirty(&self) -> bool {
         self.dirty.swap(false, Ordering::AcqRel)
     }
@@ -336,7 +342,8 @@ impl fmt::Debug for GpuFrame<'_> {
 impl<'a> GpuFrame<'a> {
     /// Creates a frame payload for a single render pass.
     #[must_use]
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
         texture: &'a wgpu::Texture,
@@ -403,7 +410,7 @@ impl<'a> GpuFrame<'a> {
     ///
     /// Use this for animations. If not called, the surface stays idle
     /// until an external event triggers a redraw via [`RedrawHandle`].
-    pub fn request_redraw(&mut self) {
+    pub const fn request_redraw(&mut self) {
         self.redraw_requested = true;
     }
 
@@ -454,7 +461,7 @@ pub trait GpuView: SubView + 'static {
     /// GPU resources that persist across frames.
     ///
     /// `ctx.redraw_handle` can be cloned here for external redraw triggers.
-    /// `env` provides access to the WaterUI environment (theme, fonts, etc.).
+    /// `env` provides access to the `WaterUI` environment (theme, fonts, etc.).
     ///
     /// Async setup hook for GPU resources.
     #[allow(async_fn_in_trait)]
@@ -523,7 +530,11 @@ impl OffscreenSize {
     }
 
     /// Creates a new offscreen size from raw pixel dimensions.
-    pub fn try_from_pixels(width: u32, height: u32) -> Result<Self, OffscreenRenderError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OffscreenRenderError::InvalidSize`] when either dimension is zero.
+    pub const fn try_from_pixels(width: u32, height: u32) -> Result<Self, OffscreenRenderError> {
         let (raw_width, raw_height) = (width, height);
         let Some(width) = NonZeroU32::new(width) else {
             return Err(OffscreenRenderError::InvalidSize {
@@ -636,16 +647,28 @@ pub struct OffscreenRenderOutput {
 
 impl OffscreenRenderOutput {
     /// Encodes the RGBA data as a PNG byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the PNG encoding error when the raw RGBA buffer is invalid.
     pub fn into_png(self) -> Result<Vec<u8>, OffscreenRenderError> {
         encode_png(self.width, self.height, self.rgba8)
     }
 
     /// Encodes the RGBA data as PNG without consuming output.
+    ///
+    /// # Errors
+    ///
+    /// Returns the PNG encoding error when the raw RGBA buffer is invalid.
     pub fn to_png(&self) -> Result<Vec<u8>, OffscreenRenderError> {
         encode_png(self.width, self.height, self.rgba8.clone())
     }
 
     /// Saves the rendered image as a PNG file.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding or filesystem write errors.
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
@@ -694,7 +717,7 @@ impl OffscreenRenderOutputHdr {
         if total == 0 {
             0.0
         } else {
-            hdr as f32 / total as f32
+            usize_to_f32(hdr) / usize_to_f32(total)
         }
     }
 
@@ -703,42 +726,74 @@ impl OffscreenRenderOutputHdr {
     /// - If HDR headroom is detected (`RGB > 1.0`), emits a standards-based HDR PNG
     ///   (PQ-coded 16-bit RGBA + `cICP` chunk).
     /// - Otherwise emits SDR PNG (16-bit sRGB transfer).
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding errors or validation errors for invalid HDR buffers.
     pub fn to_png(&self) -> Result<Vec<u8>, OffscreenRenderError> {
-        encode_auto_png(self.width, self.height, self.rgba16f.clone())
+        encode_auto_png(self.width, self.height, &self.rgba16f)
     }
 
     /// Encodes PNG with automatic dynamic-range handling without consuming output.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding errors or validation errors for invalid HDR buffers.
     pub fn into_png(self) -> Result<Vec<u8>, OffscreenRenderError> {
-        encode_auto_png(self.width, self.height, self.rgba16f)
+        encode_auto_png(self.width, self.height, &self.rgba16f)
     }
 
     /// Encodes as SDR PNG using automatic tone mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding errors or validation errors for invalid HDR buffers.
     pub fn to_sdr_png(&self) -> Result<Vec<u8>, OffscreenRenderError> {
-        encode_sdr_tonemapped_png(self.width, self.height, self.rgba16f.clone())
+        encode_sdr_tonemapped_png(self.width, self.height, &self.rgba16f)
     }
 
     /// Encodes as SDR PNG without consuming output.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding errors or validation errors for invalid HDR buffers.
     pub fn into_sdr_png(self) -> Result<Vec<u8>, OffscreenRenderError> {
-        encode_sdr_tonemapped_png(self.width, self.height, self.rgba16f)
+        encode_sdr_tonemapped_png(self.width, self.height, &self.rgba16f)
     }
 
     /// Converts to SDR `RGBA8` bytes using automatic tone mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation errors for invalid HDR buffers.
     pub fn to_sdr_rgba8(&self) -> Result<Vec<u8>, OffscreenRenderError> {
         decode_sdr_tonemapped_rgba8(self.width, self.height, &self.rgba16f)
     }
 
     /// Converts to SDR `RGBA8` bytes using automatic tone mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation errors for invalid HDR buffers.
     pub fn into_sdr_rgba8(self) -> Result<Vec<u8>, OffscreenRenderError> {
         decode_sdr_tonemapped_rgba8(self.width, self.height, &self.rgba16f)
     }
 
     /// Saves the rendered image as PNG with automatic dynamic-range handling.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding or filesystem write errors.
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
     }
 
     /// Saves the rendered image as SDR PNG using automatic tone mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns PNG encoding or filesystem write errors.
     pub fn save_sdr_png<P: AsRef<Path>>(&self, path: P) -> Result<(), OffscreenRenderError> {
         let png = self.to_sdr_png()?;
         std::fs::write(path, png).map_err(|e| OffscreenRenderError::PngWriteFailed(e.to_string()))
@@ -999,17 +1054,25 @@ impl GpuSurface {
     ///
     /// This is intended for fast visual regression checks and snapshot generation
     /// without launching a full app window.
+    ///
+    /// # Errors
+    ///
+    /// Returns context initialization, format validation, MSAA validation, or readback errors.
     pub fn render_offscreen(
         self,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
-        self.render_offscreen_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+        self.render_offscreen_frames(config, env, NonZeroU32::MIN)
     }
 
     /// Renders this surface into an offscreen texture for `frame_count` frames and reads back RGBA8 pixels.
     ///
     /// This is useful for animated GPU views that need one or more warm-up frames before producing a stable snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns context initialization, format validation, MSAA validation, or readback errors.
     pub fn render_offscreen_frames(
         mut self,
         config: OffscreenRenderConfig,
@@ -1035,7 +1098,7 @@ impl GpuSurface {
         let adapter = &guard.adapter;
         let max_msaa = config
             .msaa_samples
-            .map_or(self.msaa_max_samples.get(), NonZeroU32::get)
+            .map_or_else(|| self.msaa_max_samples.get(), NonZeroU32::get)
             .max(1);
         let supported_msaa = preferred_msaa_samples(adapter, config.format, max_msaa);
         let msaa_samples = match config.msaa_samples {
@@ -1049,19 +1112,23 @@ impl GpuSurface {
             None => supported_msaa,
         };
 
-        let device = guard.device.as_ref();
-        let queue = guard.queue.as_ref();
-
-        let ctx = GpuContext {
-            adapter: Some(adapter),
-            device,
-            queue,
-            surface_format: config.format,
-            msaa_samples,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
-        crate::pollster::block_on(self.setup(&ctx, env));
+        let device = alloc::sync::Arc::clone(&guard.device);
+        let queue = alloc::sync::Arc::clone(&guard.queue);
+        {
+            let ctx = GpuContext {
+                adapter: Some(adapter),
+                device: device.as_ref(),
+                queue: queue.as_ref(),
+                surface_format: config.format,
+                msaa_samples,
+                pipeline_cache: guard.pipeline_cache.as_ref(),
+                redraw_handle: RedrawHandle::new(),
+            };
+            crate::pollster::block_on(self.setup(&ctx, env));
+        }
+        drop(guard);
+        let device = device.as_ref();
+        let queue = queue.as_ref();
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface"),
@@ -1110,15 +1177,23 @@ impl GpuSurface {
     /// Renders this surface into an HDR offscreen texture and reads back `RGBA16F` pixels.
     ///
     /// Use this when you need to preserve HDR headroom during capture/export.
+    ///
+    /// # Errors
+    ///
+    /// Returns context initialization, format validation, MSAA validation, or readback errors.
     pub fn render_offscreen_hdr(
         self,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
     ) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
-        self.render_offscreen_hdr_frames(config, env, NonZeroU32::new(1).expect("non-zero literal"))
+        self.render_offscreen_hdr_frames(config, env, NonZeroU32::MIN)
     }
 
     /// Renders this surface into an HDR offscreen texture for `frame_count` frames and reads back `RGBA16F` pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns context initialization, format validation, MSAA validation, or readback errors.
     pub fn render_offscreen_hdr_frames(
         mut self,
         config: OffscreenRenderConfig,
@@ -1141,7 +1216,7 @@ impl GpuSurface {
         let adapter = &guard.adapter;
         let max_msaa = config
             .msaa_samples
-            .map_or(self.msaa_max_samples.get(), NonZeroU32::get)
+            .map_or_else(|| self.msaa_max_samples.get(), NonZeroU32::get)
             .max(1);
         let supported_msaa = preferred_msaa_samples(adapter, config.format, max_msaa);
         let msaa_samples = match config.msaa_samples {
@@ -1155,19 +1230,23 @@ impl GpuSurface {
             None => supported_msaa,
         };
 
-        let device = guard.device.as_ref();
-        let queue = guard.queue.as_ref();
-
-        let ctx = GpuContext {
-            adapter: Some(adapter),
-            device,
-            queue,
-            surface_format: config.format,
-            msaa_samples,
-            pipeline_cache: guard.pipeline_cache.as_ref(),
-            redraw_handle: RedrawHandle::new(),
-        };
-        crate::pollster::block_on(self.setup(&ctx, env));
+        let device = alloc::sync::Arc::clone(&guard.device);
+        let queue = alloc::sync::Arc::clone(&guard.queue);
+        {
+            let ctx = GpuContext {
+                adapter: Some(adapter),
+                device: device.as_ref(),
+                queue: queue.as_ref(),
+                surface_format: config.format,
+                msaa_samples,
+                pipeline_cache: guard.pipeline_cache.as_ref(),
+                redraw_handle: RedrawHandle::new(),
+            };
+            crate::pollster::block_on(self.setup(&ctx, env));
+        }
+        drop(guard);
+        let device = device.as_ref();
+        let queue = queue.as_ref();
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface_hdr"),
@@ -1266,7 +1345,7 @@ impl SubView for GpuSurface {
     }
 
     fn require_main_thread(&self) -> bool {
-        GpuSurface::require_main_thread(self)
+        Self::require_main_thread(self)
     }
 }
 
@@ -1297,7 +1376,7 @@ fn readback_texture_rgba8(
     const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let unpadded_bpr = width * BYTES_PER_PIXEL;
     let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-    let copy_size = (padded_bpr * height) as u64;
+    let copy_size = u64::from(padded_bpr) * u64::from(height);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("waterui_offscreen_readback"),
@@ -1368,7 +1447,7 @@ fn readback_texture_rgba16f(
     const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let unpadded_bpr = width * BYTES_PER_PIXEL;
     let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-    let copy_size = (padded_bpr * height) as u64;
+    let copy_size = u64::from(padded_bpr) * u64::from(height);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("waterui_offscreen_readback_hdr"),
@@ -1457,12 +1536,10 @@ fn encode_png(
     Ok(png_bytes)
 }
 
-fn encode_auto_png(
-    width: u32,
-    height: u32,
-    rgba16f: Vec<u8>,
-) -> Result<Vec<u8>, OffscreenRenderError> {
-    let (max_rgb, hdr_ratio) = analyze_hdr_headroom(&rgba16f);
+const SDR_WHITE_NITS: f32 = 203.0;
+
+fn encode_auto_png(width: u32, height: u32, rgba16f: &[u8]) -> Result<Vec<u8>, OffscreenRenderError> {
+    let (max_rgb, hdr_ratio) = analyze_hdr_headroom(rgba16f);
     if max_rgb > 1.0 && hdr_ratio > 0.0 {
         encode_hdr_pq_png(width, height, rgba16f)
     } else {
@@ -1473,11 +1550,11 @@ fn encode_auto_png(
 fn encode_sdr_tonemapped_png(
     width: u32,
     height: u32,
-    rgba16f: Vec<u8>,
+    rgba16f: &[u8],
 ) -> Result<Vec<u8>, OffscreenRenderError> {
-    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
-    let white_point = compute_tonemap_white_point(&rgba16f);
-    let png16 = rgba16f_to_sdr_srgb16_bytes(&rgba16f, white_point, expected);
+    let expected = validate_rgba16f_buffer(width, height, rgba16f)?;
+    let white_point = compute_tonemap_white_point(rgba16f);
+    let png16 = rgba16f_to_sdr_srgb16_bytes(rgba16f, white_point, expected);
     encode_png16(width, height, &png16, None)
 }
 
@@ -1501,22 +1578,21 @@ fn decode_sdr_tonemapped_rgba8(
 fn encode_sdr_png_linear(
     width: u32,
     height: u32,
-    rgba16f: Vec<u8>,
+    rgba16f: &[u8],
 ) -> Result<Vec<u8>, OffscreenRenderError> {
-    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
-    let png16 = rgba16f_to_sdr_srgb16_bytes(&rgba16f, 1.0, expected);
+    let expected = validate_rgba16f_buffer(width, height, rgba16f)?;
+    let png16 = rgba16f_to_sdr_srgb16_bytes(rgba16f, 1.0, expected);
     encode_png16(width, height, &png16, None)
 }
 
 fn encode_hdr_pq_png(
     width: u32,
     height: u32,
-    rgba16f: Vec<u8>,
+    rgba16f: &[u8],
 ) -> Result<Vec<u8>, OffscreenRenderError> {
-    let expected = validate_rgba16f_buffer(width, height, &rgba16f)?;
+    let expected = validate_rgba16f_buffer(width, height, rgba16f)?;
     // Treat linear 1.0 as HDR reference white (203 nits), then encode absolute PQ.
     // This keeps >1.0 headroom while producing standards-based HDR signaling.
-    const SDR_WHITE_NITS: f32 = 203.0;
     let mut png16 = Vec::with_capacity(expected);
     for px in rgba16f.chunks_exact(8) {
         let r = linear_to_pq(
@@ -1529,10 +1605,10 @@ fn encode_hdr_pq_png(
             (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0)) * SDR_WHITE_NITS,
         );
         let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
-        let r16 = (r * 65535.0).round() as u16;
-        let g16 = (g * 65535.0).round() as u16;
-        let b16 = (b * 65535.0).round() as u16;
-        let a16 = (a * 65535.0).round() as u16;
+        let r16 = unit_f32_to_u16(r);
+        let g16 = unit_f32_to_u16(g);
+        let b16 = unit_f32_to_u16(b);
+        let a16 = unit_f32_to_u16(a);
         png16.extend_from_slice(&r16.to_be_bytes());
         png16.extend_from_slice(&g16.to_be_bytes());
         png16.extend_from_slice(&b16.to_be_bytes());
@@ -1609,10 +1685,10 @@ fn rgba16f_to_sdr_srgb16_bytes(rgba16f: &[u8], white_point: f32, capacity: usize
             (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0) / white_point).min(1.0),
         );
         let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
-        let r16 = (r * 65535.0).round() as u16;
-        let g16 = (g * 65535.0).round() as u16;
-        let b16 = (b * 65535.0).round() as u16;
-        let a16 = (a * 65535.0).round() as u16;
+        let r16 = unit_f32_to_u16(r);
+        let g16 = unit_f32_to_u16(g);
+        let b16 = unit_f32_to_u16(b);
+        let a16 = unit_f32_to_u16(a);
         png16.extend_from_slice(&r16.to_be_bytes());
         png16.extend_from_slice(&g16.to_be_bytes());
         png16.extend_from_slice(&b16.to_be_bytes());
@@ -1635,10 +1711,10 @@ fn rgba16f_to_sdr_srgb8_bytes(rgba16f: &[u8], white_point: f32, capacity: usize)
             (f16_to_f32(u16::from_le_bytes([px[4], px[5]])).max(0.0) / white_point).min(1.0),
         );
         let a = f16_to_f32(u16::from_le_bytes([px[6], px[7]])).clamp(0.0, 1.0);
-        rgba8.push((r * 255.0).round() as u8);
-        rgba8.push((g * 255.0).round() as u8);
-        rgba8.push((b * 255.0).round() as u8);
-        rgba8.push((a * 255.0).round() as u8);
+        rgba8.push(unit_f32_to_u8(r));
+        rgba8.push(unit_f32_to_u8(g));
+        rgba8.push(unit_f32_to_u8(b));
+        rgba8.push(unit_f32_to_u8(a));
     }
     rgba8
 }
@@ -1654,8 +1730,8 @@ fn compute_tonemap_white_point(rgba16f: &[u8]) -> f32 {
     if frame_max.is_empty() {
         return 1.0;
     }
-    frame_max.sort_unstable_by(|a, b| a.total_cmp(b));
-    let idx = (((frame_max.len() - 1) as f32) * 0.995).round() as usize;
+    frame_max.sort_unstable_by(f32::total_cmp);
+    let idx = (((frame_max.len() - 1) * 995) + 500) / 1000;
     frame_max[idx].max(1.0)
 }
 
@@ -1677,17 +1753,17 @@ fn analyze_hdr_headroom(rgba16f: &[u8]) -> (f32, f32) {
     let ratio = if total == 0 {
         0.0
     } else {
-        hdr as f32 / total as f32
+        usize_to_f32(hdr) / usize_to_f32(total)
     };
     (max_rgb, ratio)
 }
 
 #[inline]
 fn linear_to_srgb(x: f32) -> f32 {
-    if x <= 0.0031308 {
+    if x <= 0.003_130_8 {
         x * 12.92
     } else {
-        1.055 * x.powf(1.0 / 2.4) - 0.055
+        1.055f32.mul_add(x.powf(1.0 / 2.4), -0.055)
     }
 }
 
@@ -1707,9 +1783,9 @@ fn linear_to_pq(luminance_nits: f32) -> f32 {
 }
 
 fn f16_to_f32(bits: u16) -> f32 {
-    let sign = ((bits >> 15) & 0x1) as u32;
-    let exp = ((bits >> 10) & 0x1f) as u32;
-    let frac = (bits & 0x03ff) as u32;
+    let sign = u32::from((bits >> 15) & 0x1);
+    let exp = u32::from((bits >> 10) & 0x1f);
+    let frac = u32::from(bits & 0x03ff);
 
     let f32_bits = if exp == 0 {
         if frac == 0 {
@@ -1722,16 +1798,43 @@ fn f16_to_f32(bits: u16) -> f32 {
                 e -= 1;
             }
             frac_norm &= 0x03ff;
-            let exp32 = (e + 127) as u32;
+            let exp32 = (e + 127).cast_unsigned();
             (sign << 31) | (exp32 << 23) | (frac_norm << 13)
         }
     } else if exp == 0x1f {
         (sign << 31) | 0x7f80_0000 | (frac << 13)
     } else {
-        let exp32 = (exp as i32 - 15 + 127) as u32;
+        let exp32 = (i32::try_from(exp).expect("half-float exponent fits in i32") - 15 + 127)
+            .cast_unsigned();
         (sign << 31) | (exp32 << 23) | (frac << 13)
     };
     f32::from_bits(f32_bits)
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("gpu_surface: u32 value must be representable as f32")
+}
+
+fn usize_to_f32(value: usize) -> f32 {
+    value
+        .to_f32()
+        .expect("gpu_surface: usize value must be representable as f32")
+}
+
+fn unit_f32_to_u16(value: f32) -> u16 {
+    (value.clamp(0.0, 1.0) * 65535.0)
+        .round()
+        .to_u16()
+        .expect("gpu_surface: unit float must convert to u16")
+}
+
+fn unit_f32_to_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0)
+        .round()
+        .to_u8()
+        .expect("gpu_surface: unit float must convert to u8")
 }
 
 #[cfg(test)]

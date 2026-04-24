@@ -233,7 +233,7 @@ async fn push_android_sdk_checks(items: &mut Vec<DoctorItem>) -> bool {
     )
     .await;
 
-    AndroidSdk::detect_path().is_some() || AndroidSdk::sdkmanager_path().await.is_some()
+    AndroidSdk::sdkmanager_path().await.is_some()
 }
 
 async fn push_android_component_checks(items: &mut Vec<DoctorItem>, sdk_ready: bool) {

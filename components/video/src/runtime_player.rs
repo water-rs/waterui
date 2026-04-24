@@ -252,14 +252,14 @@ fn is_hdr_transfer(transfer: u16) -> bool {
 }
 
 fn is_wide_gamut_primaries(primaries: u16) -> bool {
-    matches!(primaries, 9 | 10 | 11 | 12)
+    matches!(primaries, 9..=12)
 }
 
 fn map_color_matrix(matrix: u16, height_hint: Option<u32>) -> ColorMatrix {
     match matrix {
         1 => ColorMatrix::Bt709,
         5 | 6 => ColorMatrix::Bt601,
-        9 | 10 => ColorMatrix::Bt2020,
+        9..=10 => ColorMatrix::Bt2020,
         _ if height_hint.is_some_and(|h| h <= 576) => ColorMatrix::Bt601,
         _ => ColorMatrix::Bt709,
     }
@@ -267,9 +267,9 @@ fn map_color_matrix(matrix: u16, height_hint: Option<u32>) -> ColorMatrix {
 
 fn map_color_primaries(primaries: u16, height_hint: Option<u32>) -> ColorPrimaries {
     match primaries {
-        9 | 10 => ColorPrimaries::Bt2020,
-        11 | 12 => ColorPrimaries::DisplayP3,
-        5 | 6 | 7 => ColorPrimaries::Bt601,
+        9..=10 => ColorPrimaries::Bt2020,
+        11..=12 => ColorPrimaries::DisplayP3,
+        5..=7 => ColorPrimaries::Bt601,
         1 => ColorPrimaries::Bt709,
         _ if height_hint.is_some_and(|h| h <= 576) => ColorPrimaries::Bt601,
         _ => ColorPrimaries::Bt709,
@@ -1413,7 +1413,7 @@ impl DecoderWorker {
         }
     }
 
-    fn try_recv(&mut self) -> Result<DecoderOutput, TryRecvError> {
+    fn try_recv(&self) -> Result<DecoderOutput, TryRecvError> {
         self.updates.try_recv()
     }
 
@@ -2969,15 +2969,15 @@ impl VideoRenderer {
                     tracing::info!("[VideoFallback] decoder reached end");
                     if self.is_source_downloading() {
                         let now = Instant::now();
-                        if !self.is_realtime_policy() {
+                        if self.is_realtime_policy() {
+                            self.set_buffering(false);
+                        } else {
                             self.set_buffering(true);
                             self.maybe_emit_buffer_level(now);
                             let buffered_ms = self.estimated_buffered_ahead_ms(now);
                             if buffered_ms < self.playback_policy.vod_resume_buffer_ms {
                                 return;
                             }
-                        } else {
-                            self.set_buffering(false);
                         }
 
                         if self.download_retry_at.is_none_or(|next| now >= next) {
@@ -3179,7 +3179,7 @@ impl VideoRenderer {
         self.update_ui_progress();
     }
 
-    fn update_ui_progress(&mut self) {
+    fn update_ui_progress(&self) {
         if self.player.is_none() {
             return;
         }
@@ -3567,10 +3567,15 @@ impl GpuView for VideoRenderer {
         })
     }
 
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.redraw_handle = Some(ctx.redraw_handle.clone());
         self.ensure_pipeline(ctx.device, ctx.surface_format);
         self.open_decode_state();
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

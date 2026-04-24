@@ -25,6 +25,7 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
+use zenwave::{Client, Method, redirect::FollowRedirect};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::{AnyView, Binding, Environment, Metadata, View};
@@ -61,7 +62,11 @@ impl core::fmt::Debug for Photo {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Photo")
             .field("url", &self.url)
+            .field("preloaded_local", &self.preloaded_local)
             .field("on_event", &self.on_event.is_some())
+            .field("content", &self.content)
+            .field("content_handler", &self.content_handler)
+            .field("load_started", &self.load_started)
             .finish()
     }
 }
@@ -108,6 +113,7 @@ impl Photo {
         }
     }
 
+    /// Creates a `Photo` from a local filesystem path.
     #[must_use]
     pub fn from_path(path: impl Into<String>) -> Self {
         Self::new(Url::from_file_path_str(path.into()))
@@ -137,7 +143,7 @@ impl Photo {
 
 impl View for Photo {
     fn body(self, _env: &Environment) -> impl View {
-        let Photo {
+        let Self {
             url,
             preloaded_local,
             on_event,
@@ -162,7 +168,7 @@ impl View for Photo {
                         AnyView::new(Metadata::new(
                             (),
                             LifeCycleHook::new(LifeCycle::Appear, move || {
-                                on_event(Event::Error(error.clone()))
+                                on_event(Event::Error(error.clone()));
                             }),
                         ))
                     } else {
@@ -236,8 +242,6 @@ async fn fetch_and_decode_streaming(
         return Ok(());
     }
 
-    // Fetch the image data using redirect-following client
-    use zenwave::{Client, Method, redirect::FollowRedirect};
     let mut client = FollowRedirect::new(zenwave::client());
     let response = client
         .method(Method::GET, url.as_str())
@@ -259,7 +263,7 @@ async fn fetch_and_decode_streaming(
 
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
-        if let Some(progressive_image) = decoder.push_chunk(&chunk)? {
+        if let Some(progressive_image) = decoder.push_chunk(&chunk) {
             on_decoded_frame(progressive_image);
         }
     }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! GPU buffer structs with correct alignment for wgpu.
 //!
 //! Uses encase for automatic WGSL-compatible alignment.
@@ -77,7 +79,7 @@ pub struct CollisionUniforms {
     pub surface_friction: f32,
     /// Number of circular obstacle colliders in the storage buffer.
     pub circle_obstacle_count: u32,
-    /// Collision bounds encoded as min_x, min_y, max_x, max_y.
+    /// Collision bounds encoded as `min_x`, `min_y`, `max_x`, `max_y`.
     pub bounds: glam::Vec4,
 }
 

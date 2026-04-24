@@ -17,6 +17,7 @@ wgpu.workspace = true
 tracing.workspace = true
 nami.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
+num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 waterui.workspace = true

@@ -44,34 +44,63 @@ impl AccessibilityLabel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AccessibilityRole {
+    /// Interactive control that triggers an action.
     Button,
+    /// Interactive text or element that opens a destination.
     Link,
+    /// Non-text visual content.
     Image,
+    /// Plain readable text content.
     Text,
+    /// Section heading.
     Header,
+    /// Section footer.
     Footer,
+    /// Landmark for primary site or app navigation.
     Navigation,
+    /// Landmark for the main content region.
     Main,
+    /// Landmark for search controls or results.
     Search,
+    /// Self-contained article or post content.
     Article,
+    /// Thematic content section.
     Section,
+    /// Container for list items.
     List,
+    /// Item within a list.
     ListItem,
+    /// Toggleable checkbox control.
     Checkbox,
+    /// Mutually exclusive radio button control.
     RadioButton,
+    /// On/off switch control.
     Switch,
+    /// Adjustable range control.
     Slider,
+    /// Read-only progress indicator.
     ProgressBar,
+    /// Individual tab selector.
     Tab,
+    /// Container that owns a set of tabs.
     TabList,
+    /// Content region paired with a tab.
     TabPanel,
+    /// Popup or contextual menu.
     Menu,
+    /// Action entry inside a menu.
     MenuItem,
+    /// Horizontal menu bar container.
     MenuBar,
+    /// Checkbox-style menu item.
     MenuItemCheckbox,
+    /// Radio-style menu item.
     MenuItemRadio,
+    /// Editable or pick-list combo box.
     Combobox,
+    /// Selectable option within a list or combo box.
     Option,
+    /// Logical grouping container.
     Group,
 }
 
@@ -102,7 +131,9 @@ impl AccessibilityHidden {
 #[non_exhaustive]
 pub enum AccessibilityChildren {
     #[default]
+    /// Let the backend choose the default child exposure behavior.
     Automatic,
+    /// Hide descendants and expose only the parent node.
     ExcludeDescendants,
 }
 
@@ -146,67 +177,79 @@ impl AccessibilityState {
         }
     }
 
+    /// Marks whether the element is currently disabled.
     #[must_use]
     pub const fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
+    /// Marks whether the element is currently selected.
     #[must_use]
     pub const fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
 
+    /// Sets the checkbox or tri-state checked value.
     #[must_use]
     pub const fn checked(mut self, checked: Option<bool>) -> Self {
         self.checked = checked;
         self
     }
 
+    /// Sets the expanded or collapsed state when applicable.
     #[must_use]
     pub const fn expanded(mut self, expanded: Option<bool>) -> Self {
         self.expanded = expanded;
         self
     }
 
+    /// Marks whether the element is busy processing work.
     #[must_use]
     pub const fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
         self
     }
 
+    /// Marks whether the element should be hidden from accessibility output.
     #[must_use]
     pub const fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
         self
     }
 
+    /// Returns whether the element is disabled.
     #[must_use]
     pub const fn is_disabled(&self) -> bool {
         self.disabled
     }
 
+    /// Returns whether the element is selected.
     #[must_use]
     pub const fn is_selected(&self) -> bool {
         self.selected
     }
 
+    /// Returns the checked state for checkbox-like roles.
     #[must_use]
     pub const fn checked_state(&self) -> Option<bool> {
         self.checked
     }
 
+    /// Returns the expanded state for expandable roles.
     #[must_use]
     pub const fn expanded_state(&self) -> Option<bool> {
         self.expanded
     }
 
+    /// Returns whether the element is marked busy.
     #[must_use]
     pub const fn is_busy(&self) -> bool {
         self.busy
     }
 
+    /// Returns whether the element is hidden from accessibility output.
     #[must_use]
     pub const fn is_hidden(&self) -> bool {
         self.hidden
@@ -228,7 +271,7 @@ impl AccessibilityStateSignal {
 
     /// Returns the computed accessibility state.
     #[must_use]
-    pub fn state(&self) -> &Computed<AccessibilityState> {
+    pub const fn state(&self) -> &Computed<AccessibilityState> {
         &self.0
     }
 }
