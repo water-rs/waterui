@@ -46,7 +46,7 @@ glow = "0.16"
 libloading = "0.9"
 pollster.workspace = true
 
-[target.'cfg(target_os = "linux")'.build-dependencies]
+[build-dependencies]
 pkg-config = "0.3"
 
 [features]
@@ -56,4 +56,4 @@ webkitgtk = []
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["cairo-rs", "gdk-pixbuf", "waterui-media"]
+ignored = ["cairo-rs", "gdk-pixbuf", "pkg-config", "waterui-media"]
