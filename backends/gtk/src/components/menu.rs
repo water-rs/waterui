@@ -49,7 +49,7 @@ pub(crate) fn rebuild_menu_popover(
     env: &Environment,
 ) {
     let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    let on_activate = Rc::new({
+    let on_activate: Rc<dyn Fn()> = Rc::new({
         let popover = popover.clone();
         move || popover.popdown()
     });
