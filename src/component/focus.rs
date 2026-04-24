@@ -85,7 +85,7 @@ impl Focused {
             value,
             {
                 let equals = equals.clone();
-                move |value| value.as_ref().filter(|value| **value == equals).is_some()
+                move |value| value.as_ref().is_some_and(|value| value == &equals)
             },
             move |binding, is_focused| {
                 if is_focused {
