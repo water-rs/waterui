@@ -578,21 +578,7 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
     );
     let pipeline_cache_path = pipeline_cache_path_for_adapter(&adapter_info);
 
-    // Determine appropriate limits
-    let adapter_limits = adapter.limits();
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let required_limits = if downlevel_caps.is_webgpu_compliant() {
-        wgpu::Limits::default()
-    } else if downlevel_caps
-        .flags
-        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-    {
-        wgpu::Limits::downlevel_defaults()
-    } else {
-        wgpu::Limits::downlevel_webgl2_defaults()
-    }
-    .using_resolution(adapter_limits.clone())
-    .using_alignment(adapter_limits);
+    let required_limits = required_device_limits(&adapter);
 
     // Determine features to request (pipeline cache if available)
     let adapter_features = adapter.features();
@@ -673,6 +659,24 @@ async fn create_shared_context_async() -> Result<SharedGpuContext, SharedContext
         pipeline_cache_path,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
+}
+
+fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let adapter_limits = adapter.limits();
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let base_limits = if downlevel_caps.is_webgpu_compliant()
+        || downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    {
+        wgpu::Limits::default()
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    };
+
+    base_limits
+        .using_resolution(adapter_limits.clone())
+        .using_alignment(adapter_limits)
 }
 
 #[cfg(test)]
