@@ -1,3 +1,13 @@
+#![cfg_attr(
+    not(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    )),
+    allow(dead_code, unused_imports)
+)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -13,8 +23,7 @@ use waterui_webview::{
 type Watcher = Rc<dyn Fn(WebViewEvent)>;
 type JsHandler = Rc<dyn Fn(&[u8]) -> Vec<u8>>;
 
-const WEBKIT_FEATURE_MSG: &str =
-    "WebView requires waterui-gtk feature `webkitgtk` on Linux (fast-fail: no placeholder backend)";
+const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
 struct SharedState {
     watchers: RefCell<Vec<Watcher>>,
@@ -51,7 +60,12 @@ struct InjectedScript {
     time: ScriptInjectionTime,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 mod webkitgtk {
     use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
     use std::os::raw::c_ulong;
@@ -686,7 +700,12 @@ impl CustomWebViewController for GtkWebViewController {
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct NativeState {
     ptr: std::ptr::NonNull<webkitgtk::WebKitWebView>,
     manager: std::ptr::NonNull<webkitgtk::WebKitUserContentManager>,
@@ -696,7 +715,12 @@ struct NativeState {
     handler_signal_ids: RefCell<HashMap<String, std::os::raw::c_ulong>>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 impl Drop for NativeState {
     fn drop(&mut self) {
         let mut ids = self.handler_signal_ids.borrow_mut();
@@ -716,7 +740,12 @@ impl Drop for NativeState {
 pub(crate) struct GtkWebViewHandle {
     widget: Widget,
     shared: Rc<SharedState>,
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     native: Rc<NativeState>,
 }
 
@@ -728,10 +757,20 @@ impl core::fmt::Debug for GtkWebViewHandle {
 
 impl GtkWebViewHandle {
     pub(crate) fn new() -> Self {
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
 
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             let shared = Rc::new(SharedState::default());
             let parts = webkitgtk::create_webview();
@@ -764,7 +803,12 @@ impl GtkWebViewHandle {
         Url::parse(raw).unwrap_or_else(|| Url::from(raw.to_owned()))
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn current_uri_or_default(&self) -> String {
         let uri = webkitgtk::current_uri(self.native.ptr);
         if uri.is_empty() {
@@ -774,7 +818,12 @@ impl GtkWebViewHandle {
         }
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn install_observers(&self) {
         assert!(
             self.widget.find_property("uri").is_some(),
@@ -920,7 +969,12 @@ impl GtkWebViewHandle {
         }
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn bridge_base_script() -> &'static str {
         r#"(function(){
   if (window.__waterui) { return; }
@@ -936,7 +990,12 @@ impl GtkWebViewHandle {
 })();"#
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn handler_script(name: &str) -> String {
         let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
         format!(
@@ -966,7 +1025,12 @@ impl GtkWebViewHandle {
         )
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn rebuild_user_scripts(&self) {
         webkitgtk::remove_all_scripts(self.native.manager);
         webkitgtk::add_user_script(
@@ -994,7 +1058,12 @@ impl GtkWebViewHandle {
         }
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn refresh_cookie_cache(&self) {
         let uri = self.current_uri_or_default();
         let data = CookieRefreshData {
@@ -1009,7 +1078,12 @@ impl GtkWebViewHandle {
         );
     }
 
-    #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
     fn run_javascript_impl(&self, script: &str) -> JsFuture {
         let state = Rc::new(RefCell::new(JsFutureState::default()));
         let data = JsEvalData {
@@ -1032,32 +1106,62 @@ impl GtkWebViewHandle {
 
 impl WebViewHandle for GtkWebViewHandle {
     fn go_back(&self) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::go_back(self.native.ptr);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn go_forward(&self) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::go_forward(self.native.ptr);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn go_to(&self, url: &str) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::load_uri(self.native.ptr, url);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = url;
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1065,7 +1169,12 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             self.native
                 .custom_scripts
@@ -1077,7 +1186,12 @@ impl WebViewHandle for GtkWebViewHandle {
             self.rebuild_user_scripts();
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = (script, time);
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1085,7 +1199,12 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             let handler: Rc<dyn Fn(&[u8]) -> Vec<u8>> = Rc::from(handler);
             self.shared
@@ -1141,7 +1260,12 @@ impl WebViewHandle for GtkWebViewHandle {
             self.rebuild_user_scripts();
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = (name, handler);
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1149,7 +1273,12 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn remove_handler(&self, name: &str) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             self.shared.handler_callbacks.borrow_mut().remove(name);
             if let Some(signal_id) = self.native.handler_signal_ids.borrow_mut().remove(name) {
@@ -1160,7 +1289,12 @@ impl WebViewHandle for GtkWebViewHandle {
             self.rebuild_user_scripts();
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = name;
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1168,32 +1302,62 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn stop(&self) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::stop(self.native.ptr);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn refresh(&self) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::reload(self.native.ptr);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn set_user_agent(&self, user_agent: &str) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             webkitgtk::set_user_agent(self.native.ptr, user_agent);
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = user_agent;
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1209,25 +1373,50 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn can_go_back(&self) -> bool {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             return webkitgtk::can_go_back(self.native.ptr);
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn can_go_forward(&self) -> bool {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             return webkitgtk::can_go_forward(self.native.ptr);
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         panic!("{WEBKIT_FEATURE_MSG}");
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             let cookie_value = cookie.to_string();
             let raw_cookie = webkitgtk::parse_cookie(&cookie_value);
@@ -1252,7 +1441,12 @@ impl WebViewHandle for GtkWebViewHandle {
             );
             return;
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = cookie;
             panic!("{WEBKIT_FEATURE_MSG}");
@@ -1277,11 +1471,21 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn run_javascript(&self, script: &str) -> impl std::future::Future<Output = Result<Str, Str>> {
-        #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
         {
             return Box::pin(self.run_javascript_impl(script));
         }
-        #[cfg(not(all(feature = "webkitgtk", unix, not(target_os = "macos"))))]
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
         {
             let _ = script;
             return Box::pin(async { Err(Str::from(WEBKIT_FEATURE_MSG)) });
@@ -1289,25 +1493,45 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 #[derive(Clone)]
 struct DecidePolicyData {
     shared: Rc<SharedState>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 #[derive(Clone)]
 struct LoadFailedData {
     shared: Rc<SharedState>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 #[derive(Clone)]
 struct TlsFailedData {
     shared: Rc<SharedState>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 #[derive(Clone)]
 struct ScriptMessageData {
     shared: Rc<SharedState>,
@@ -1315,13 +1539,23 @@ struct ScriptMessageData {
     handler_name: String,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct CookieRefreshData {
     shared: Rc<SharedState>,
     cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct CookieAddData {
     shared: Rc<SharedState>,
     cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
@@ -1329,13 +1563,23 @@ struct CookieAddData {
     cookie: *mut webkitgtk::SoupCookie,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct JsFutureState {
     result: Option<Result<Str, Str>>,
     waker: Option<std::task::Waker>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 impl Default for JsFutureState {
     fn default() -> Self {
         Self {
@@ -1345,12 +1589,22 @@ impl Default for JsFutureState {
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct JsFuture {
     state: Rc<RefCell<JsFutureState>>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 impl std::future::Future for JsFuture {
     type Output = Result<Str, Str>;
 
@@ -1368,13 +1622,23 @@ impl std::future::Future for JsFuture {
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct JsEvalData {
     state: Rc<RefCell<JsFutureState>>,
     webview: std::ptr::NonNull<webkitgtk::WebKitWebView>,
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 fn wake_js_state(state: &Rc<RefCell<JsFutureState>>, result: Result<Str, Str>) {
     let mut state = state.borrow_mut();
     state.result = Some(result);
@@ -1383,7 +1647,12 @@ fn wake_js_state(state: &Rc<RefCell<JsFutureState>>, result: Result<Str, Str>) {
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_javascript_evaluated(
     _source_object: *mut gtk4::glib::gobject_ffi::GObject,
     result: *mut gtk4::gio::ffi::GAsyncResult,
@@ -1401,7 +1670,12 @@ unsafe extern "C" fn on_javascript_evaluated(
     wake_js_state(&data.state, outcome);
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_cookie_added(
     _source_object: *mut gtk4::glib::gobject_ffi::GObject,
     result: *mut gtk4::gio::ffi::GAsyncResult,
@@ -1427,7 +1701,12 @@ unsafe extern "C" fn on_cookie_added(
     );
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_cookie_refresh_finished(
     _source_object: *mut gtk4::glib::gobject_ffi::GObject,
     result: *mut gtk4::gio::ffi::GAsyncResult,
@@ -1457,7 +1736,12 @@ unsafe extern "C" fn on_cookie_refresh_finished(
     }
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_script_message_received(
     _manager: *mut webkitgtk::WebKitUserContentManager,
     value: *mut webkitgtk::JSCValue,
@@ -1499,7 +1783,12 @@ unsafe extern "C" fn on_script_message_received(
     let _ = webkitgtk::evaluate_javascript(data.webview, &js, None, std::ptr::null_mut());
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_decide_policy(
     _web_view: *mut webkitgtk::WebKitWebView,
     decision: *mut webkitgtk::WebKitPolicyDecision,
@@ -1536,7 +1825,12 @@ unsafe extern "C" fn on_decide_policy(
     1
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_load_failed(
     _web_view: *mut webkitgtk::WebKitWebView,
     _load_event: i32,
@@ -1557,7 +1851,12 @@ unsafe extern "C" fn on_load_failed(
     0
 }
 
-#[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 unsafe extern "C" fn on_load_failed_with_tls_errors(
     _web_view: *mut webkitgtk::WebKitWebView,
     failing_uri: *const std::ffi::c_char,
