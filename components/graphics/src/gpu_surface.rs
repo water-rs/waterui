@@ -1092,6 +1092,8 @@ impl GpuSurface {
             .map_err(|e| OffscreenRenderError::SharedContextInitFailed(e.to_string()))?;
         let shared = crate::shared_context::shared_context();
         let guard = shared.read();
+        let offscreen_operation_lock = guard.offscreen_operation_lock();
+        let _offscreen_operation_guard = offscreen_operation_lock.lock();
 
         let width = config.size.width();
         let height = config.size.height();
@@ -1166,7 +1168,11 @@ impl GpuSurface {
             self.render(&mut frame);
         }
 
-        let rgba8 = readback_texture_rgba8(device, queue, &texture, width, height)?;
+        let rgba8 = readback_texture_rgba8(device, queue, &texture, width, height);
+        drop(frame);
+        drop(texture);
+        drop(self);
+        let rgba8 = rgba8?;
         Ok(OffscreenRenderOutput {
             width,
             height,
@@ -1210,6 +1216,8 @@ impl GpuSurface {
             .map_err(|e| OffscreenRenderError::SharedContextInitFailed(e.to_string()))?;
         let shared = crate::shared_context::shared_context();
         let guard = shared.read();
+        let offscreen_operation_lock = guard.offscreen_operation_lock();
+        let _offscreen_operation_guard = offscreen_operation_lock.lock();
 
         let width = config.size.width();
         let height = config.size.height();
@@ -1284,7 +1292,11 @@ impl GpuSurface {
             self.render(&mut frame);
         }
 
-        let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height)?;
+        let rgba16f = readback_texture_rgba16f(device, queue, &texture, width, height);
+        drop(frame);
+        drop(texture);
+        drop(self);
+        let rgba16f = rgba16f?;
         Ok(OffscreenRenderOutputHdr {
             width,
             height,
