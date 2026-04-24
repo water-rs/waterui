@@ -277,7 +277,7 @@ where
 {
     let action = shared_action(handler);
     Box::new(move |env, index| {
-        action.call(&env.extending(ListDelete(index)));
+        let _ = action.call(&env.extending(ListDelete(index)));
     })
 }
 
@@ -287,7 +287,7 @@ where
 {
     let action = shared_action(handler);
     Box::new(move |env, movement| {
-        action.call(&env.extending(ListMove(movement)));
+        let _ = action.call(&env.extending(ListMove(movement)));
     })
 }
 

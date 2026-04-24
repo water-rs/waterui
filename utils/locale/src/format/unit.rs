@@ -151,10 +151,10 @@ impl<U: LengthUnit> Default for Length<U> {
 /// Add different length units seamlessly.
 /// Result is in the left-hand unit.
 impl<U: LengthUnit, V: LengthUnit> Add<Length<V>> for Length<U> {
-    type Output = Length<U>;
+    type Output = Self;
 
     fn add(self, rhs: Length<V>) -> Self::Output {
-        Length::new(self.value + rhs.to::<U>().value)
+        Self::new(self.value + rhs.to::<U>().value)
     }
 }
 
@@ -415,10 +415,10 @@ impl<U: MassUnit> Default for Mass<U> {
 
 /// Add different mass units seamlessly.
 impl<U: MassUnit, V: MassUnit> Add<Mass<V>> for Mass<U> {
-    type Output = Mass<U>;
+    type Output = Self;
 
     fn add(self, rhs: Mass<V>) -> Self::Output {
-        Mass::new(self.value + rhs.to::<U>().value)
+        Self::new(self.value + rhs.to::<U>().value)
     }
 }
 

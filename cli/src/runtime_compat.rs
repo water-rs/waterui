@@ -66,14 +66,14 @@ pub(crate) fn should_skip_scan_dir(name: &OsStr) -> bool {
 /// Return top-level files that participate in preview runtime fingerprinting.
 #[must_use]
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) fn runtime_fingerprint_root_files() -> &'static [&'static str] {
+pub(crate) const fn runtime_fingerprint_root_files() -> &'static [&'static str] {
     &RUNTIME_FINGERPRINT_ROOT_FILES
 }
 
 /// Return top-level directories that participate in preview runtime fingerprinting.
 #[must_use]
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) fn runtime_fingerprint_root_dirs() -> &'static [&'static str] {
+pub(crate) const fn runtime_fingerprint_root_dirs() -> &'static [&'static str] {
     &RUNTIME_FINGERPRINT_ROOT_DIRS
 }
 

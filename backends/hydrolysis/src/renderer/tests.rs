@@ -98,9 +98,9 @@ fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
     let view = AnyView::new(Metadata::new(
         Metadata::new(
             ().size(20.0, 10.0),
-            GestureObserver::new(DragGesture::new(8.0)).action(|| {}),
+            GestureObserver::new(DragGesture::new(8.0), || {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0)).action(|| {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
     ));
     let outer = view
         .downcast_ref::<Metadata<GestureObserver>>()
@@ -132,7 +132,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let drag_hits = Rc::clone(&drag_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(DragGesture::new(0.0)).action(move || {
+                GestureObserver::new(DragGesture::new(0.0), move || {
                     drag_hits.set(drag_hits.get() + 1);
                 }),
             )
@@ -141,7 +141,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let magnify_hits = Rc::clone(&magnify_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(MagnificationGesture::new(1.0)).action(move || {
+                GestureObserver::new(MagnificationGesture::new(1.0), move || {
                     magnify_hits.set(magnify_hits.get() + 1);
                 }),
             )

@@ -50,6 +50,15 @@ fn main() {
     };
     let scaffold_metadata = resolve_scaffold_metadata(&cli_manifest_dir, workspace_root.as_deref());
 
+    emit_scaffold_metadata(&cli_commit, build_kind, &scaffold_metadata);
+    register_rerun_inputs(workspace_root.as_deref());
+}
+
+fn emit_scaffold_metadata(
+    cli_commit: &str,
+    build_kind: &str,
+    scaffold_metadata: &ScaffoldMetadata,
+) {
     println!("cargo:rustc-env=WATERUI_CLI_COMMIT={cli_commit}");
     println!("cargo:rustc-env=WATERUI_CLI_BUILD_KIND={build_kind}");
     println!(
@@ -92,7 +101,9 @@ fn main() {
         "cargo:rustc-env=WATERUI_CLI_ANDROID_BACKEND_COMMIT={}",
         scaffold_metadata.android_backend.commit
     );
+}
 
+fn register_rerun_inputs(workspace_root: Option<&Path>) {
     println!("cargo:rerun-if-changed=Cargo.toml");
     if let Some(workspace_root) = workspace_root {
         println!(
@@ -139,7 +150,7 @@ fn main() {
             "cargo:rerun-if-changed={}",
             workspace_root.join(".gitmodules").display()
         );
-        register_git_head_rerun(&workspace_root);
+        register_git_head_rerun(workspace_root);
         register_git_head_rerun(&workspace_root.join("backends").join("apple"));
         register_git_head_rerun(&workspace_root.join("backends").join("android"));
     }

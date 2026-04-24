@@ -12,9 +12,17 @@ pub enum EmitterShape {
     #[default]
     Point,
     /// Emit from a rectangle with given width and height.
-    Rect { width: f32, height: f32 },
+    Rect {
+        /// Rectangle width in normalized coordinates.
+        width: f32,
+        /// Rectangle height in normalized coordinates.
+        height: f32,
+    },
     /// Emit from a circle with given radius.
-    Circle { radius: f32 },
+    Circle {
+        /// Circle radius in normalized coordinates.
+        radius: f32,
+    },
 }
 
 /// Blend mode for particle rendering.
@@ -29,11 +37,10 @@ pub enum BlendMode {
 
 /// Internal emitter configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct EmitterConfig {
+pub struct EmitterConfig {
     pub position: [f32; 2],
     pub shape: EmitterShape,
     pub rate: f32,
-    pub enabled: bool,
 }
 
 impl Default for EmitterConfig {
@@ -42,7 +49,6 @@ impl Default for EmitterConfig {
             position: [0.5, 0.5],
             shape: EmitterShape::Point,
             rate: 100.0,
-            enabled: true,
         }
     }
 }
@@ -50,14 +56,16 @@ impl Default for EmitterConfig {
 /// Particle shape for SDF rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParticleShape {
+    /// Circular particle sprite.
     #[default]
     Circle,
+    /// Rectangular particle sprite.
     Rect,
 }
 
 /// Internal particle properties configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct ParticleProps {
+pub struct ParticleProps {
     pub life: Range<f32>,
     pub speed: Range<f32>,
     pub angle: Range<f32>,
@@ -92,7 +100,7 @@ impl Default for ParticleProps {
 
 /// Internal environment configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct EnvironmentConfig {
+pub struct EnvironmentConfig {
     pub gravity: [f32; 2],
     pub wind: [f32; 2],
     pub drag: f32,
@@ -112,14 +120,14 @@ impl Default for EnvironmentConfig {
 
 /// Internal collision configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct CircleObstacleConfig {
+pub struct CircleObstacleConfig {
     pub center: [f32; 2],
     pub radius: f32,
 }
 
 /// Internal particle-particle interaction configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct ParticleInteractionConfig {
+pub struct ParticleInteractionConfig {
     pub enabled: bool,
     pub radius: f32,
     pub strength: f32,
@@ -137,9 +145,9 @@ impl Default for ParticleInteractionConfig {
 
 /// Internal collision configuration.
 #[derive(Clone, Debug)]
-pub(crate) struct CollisionConfig {
+pub struct CollisionConfig {
     pub enabled: bool,
-    /// Bounds encoded as min_x, min_y, max_x, max_y in normalized coordinates.
+    /// Bounds encoded as `min_x`, `min_y`, `max_x`, `max_y` in normalized coordinates.
     pub bounds: [f32; 4],
     pub restitution: f32,
     pub surface_friction: f32,
@@ -160,7 +168,7 @@ impl Default for CollisionConfig {
 
 /// Full internal configuration (built by modifier chain).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ParticleConfig {
+pub struct ParticleConfig {
     pub emitter: EmitterConfig,
     pub particle: ParticleProps,
     pub environment: EnvironmentConfig,

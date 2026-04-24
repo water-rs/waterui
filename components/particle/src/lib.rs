@@ -1,4 +1,4 @@
-//! High-performance GPU particle system for WaterUI.
+//! High-performance GPU particle system for `WaterUI`.
 //!
 //! This crate provides a GPU-accelerated particle system using `wgpu` Compute Shaders
 //! for simulation and instanced rendering for visualization.

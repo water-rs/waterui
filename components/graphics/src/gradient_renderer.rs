@@ -14,11 +14,12 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
+use num_traits::ToPrimitive;
 
 use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::include_shader;
-use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
+use encase::{ShaderSize, StorageBuffer, UniformBuffer};
 use waterui_core::{AnyView, Signal, View};
 
 static MESH_GRADIENT_SHADER: crate::prewarm::PrewarmedShader =
@@ -58,6 +59,10 @@ pub struct ResolvedGradientStop {
 
 impl ResolvedGradientStop {
     /// Creates a stop from position + color.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the position or any color channel is outside the documented range.
     #[must_use]
     pub fn new(position: f32, color: ResolvedColor) -> Self {
         assert!(
@@ -148,6 +153,10 @@ impl ResolvedGradient {
     }
 
     /// Creates a radial gradient.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the center is invalid or the radii violate the required bounds.
     #[must_use]
     pub fn radial(
         stops: Vec<ResolvedGradientStop>,
@@ -176,6 +185,10 @@ impl ResolvedGradient {
     }
 
     /// Creates an angular gradient.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the center is invalid or the angle sweep is not finite and positive.
     #[must_use]
     pub fn angular(
         stops: Vec<ResolvedGradientStop>,
@@ -325,6 +338,10 @@ impl GradientConfig {
     }
 
     /// Creates a mesh gradient configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `vertices.len() != width * height`.
     #[must_use]
     pub fn mesh(
         width: u32,
@@ -463,37 +480,45 @@ impl View for Gradient {
     }
 }
 
-/// A resolved color stop ready for GPU upload.
-#[derive(Debug, Clone, Copy, Default, ShaderType)]
-pub struct GpuColorStop {
-    /// RGBA color in linear space.
-    pub color: glam::Vec4,
-    /// Position along the gradient (0.0 to 1.0).
-    pub position: f32,
+mod shader_types {
+    #![allow(dead_code)]
+
+    use encase::ShaderType;
+
+    /// A resolved color stop ready for GPU upload.
+    #[derive(Debug, Clone, Copy, Default, ShaderType)]
+    pub(super) struct GpuColorStop {
+        /// RGBA color in linear space.
+        pub(super) color: glam::Vec4,
+        /// Position along the gradient (0.0 to 1.0).
+        pub(super) position: f32,
+    }
+
+    /// A resolved mesh vertex ready for GPU upload.
+    #[derive(Debug, Clone, Copy, Default, ShaderType)]
+    pub(super) struct GpuMeshVertex {
+        /// Position in unit coordinates (0.0 to 1.0).
+        pub(super) position: glam::Vec2,
+        /// RGBA color in linear space.
+        pub(super) color: glam::Vec4,
+    }
+
+    /// Uniform buffer layout for mesh gradient parameters.
+    #[derive(Debug, Clone, Copy, Default, ShaderType)]
+    pub(super) struct GradientUniforms {
+        pub(super) gradient_type: u32,
+        pub(super) num_stops: u32,
+        pub(super) mesh_width: u32,
+        pub(super) mesh_height: u32,
+        pub(super) start_point: glam::Vec2,
+        pub(super) end_point: glam::Vec2,
+        pub(super) start_value: f32,
+        pub(super) end_value: f32,
+        pub(super) smooths_colors: u32,
+    }
 }
 
-/// A resolved mesh vertex ready for GPU upload.
-#[derive(Debug, Clone, Copy, Default, ShaderType)]
-pub struct GpuMeshVertex {
-    /// Position in unit coordinates (0.0 to 1.0).
-    pub position: glam::Vec2,
-    /// RGBA color in linear space.
-    pub color: glam::Vec4,
-}
-
-/// Uniform buffer layout for mesh gradient parameters.
-#[derive(Debug, Clone, Copy, Default, ShaderType)]
-struct GradientUniforms {
-    pub gradient_type: u32,
-    pub num_stops: u32,
-    pub mesh_width: u32,
-    pub mesh_height: u32,
-    pub start_point: glam::Vec2,
-    pub end_point: glam::Vec2,
-    pub start_value: f32,
-    pub end_value: f32,
-    pub smooths_colors: u32,
-}
+use shader_types::{GpuColorStop, GpuMeshVertex, GradientUniforms};
 
 struct MeshGpuResources {
     pipeline: wgpu::RenderPipeline,
@@ -504,13 +529,14 @@ struct MeshGpuResources {
     pipeline_format: wgpu::TextureFormat,
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
     let shader = crate::shared_context::create_cached_shader_module_prewarmed(
         ctx.device,
         &MESH_GRADIENT_SHADER,
     );
 
-    let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
+    let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get();
     let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} Uniforms")),
         size: uniform_size,
@@ -518,7 +544,7 @@ fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuRes
         mapped_at_creation: false,
     });
 
-    let stop_size = <GpuColorStop as ShaderSize>::SHADER_SIZE.get() as u64;
+    let stop_size = <GpuColorStop as ShaderSize>::SHADER_SIZE.get();
     let stops_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} Color Stops")),
         size: stop_size * MAX_COLOR_STOPS as u64,
@@ -526,7 +552,7 @@ fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuRes
         mapped_at_creation: false,
     });
 
-    let vertex_size = <GpuMeshVertex as ShaderSize>::SHADER_SIZE.get() as u64;
+    let vertex_size = <GpuMeshVertex as ShaderSize>::SHADER_SIZE.get();
     let mesh_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} Vertices")),
         size: vertex_size * MAX_MESH_VERTICES as u64,
@@ -781,8 +807,13 @@ impl StaticMeshRenderer {
 }
 
 impl GpuView for StaticMeshRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         self.resources = Some(create_mesh_resources(ctx, "Static Mesh Gradient"));
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -882,7 +913,11 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         if self.watcher_guard.is_none() {
             let pending_update = Arc::clone(&self.pending_update);
             let redraw_handle = ctx.redraw_handle.clone();
@@ -894,6 +929,7 @@ where
         }
 
         self.resources = Some(create_mesh_resources(ctx, "Reactive Mesh Gradient"));
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -911,19 +947,10 @@ where
         if pending_update || self.last_colors.is_none() {
             let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
 
-            let colors_changed = match &self.last_colors {
-                Some(last) => {
-                    last.len() != colors.len()
-                        || last.iter().zip(&colors).any(|(a, b)| {
-                            a.red != b.red
-                                || a.green != b.green
-                                || a.blue != b.blue
-                                || a.opacity != b.opacity
-                                || a.headroom != b.headroom
-                        })
-                }
-                None => true,
-            };
+            let colors_changed = self.last_colors.as_ref().is_none_or(|last| {
+                last.len() != colors.len()
+                    || last.iter().zip(&colors).any(|(a, b)| !resolved_color_eq(a, b))
+            });
 
             if colors_changed {
                 self.last_colors = Some(colors.clone());
@@ -932,8 +959,8 @@ where
                 let h = self.height as usize;
                 let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
                 for (index, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
-                    let x = (index % w) as f32 / (w - 1).max(1) as f32;
-                    let y = (index / w) as f32 / (h - 1).max(1) as f32;
+                    let x = usize_to_f32(index % w) / usize_to_f32((w - 1).max(1));
+                    let y = usize_to_f32(index / w) / usize_to_f32((h - 1).max(1));
                     vertices.push(GpuMeshVertex {
                         position: glam::Vec2::new(x, y),
                         color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
@@ -1004,4 +1031,18 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.into_surface()
     }
+}
+
+const fn resolved_color_eq(a: &ResolvedColor, b: &ResolvedColor) -> bool {
+    a.red.to_bits() == b.red.to_bits()
+        && a.green.to_bits() == b.green.to_bits()
+        && a.blue.to_bits() == b.blue.to_bits()
+        && a.opacity.to_bits() == b.opacity.to_bits()
+        && a.headroom.to_bits() == b.headroom.to_bits()
+}
+
+fn usize_to_f32(value: usize) -> f32 {
+    value
+        .to_f32()
+        .expect("gradient_renderer: index must be representable as f32")
 }

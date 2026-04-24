@@ -73,8 +73,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::layout::{Point, Rect, Size, StretchAxis};
 
 // Internal imports for rendering (not exposed to users)
-use kurbo::{self, Shape as _};
-use peniko;
+use kurbo::Shape as _;
 
 use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::state::{DrawingState, FillStyle, StrokeStyle};
@@ -153,28 +152,15 @@ impl waterui_core::View for Canvas {
     }
 }
 
+#[derive(Default)]
 struct TextEngine {
     font_cx: Option<parley::FontContext>,
     layout_cx: Option<parley::LayoutContext>,
 }
 
-impl Default for TextEngine {
-    fn default() -> Self {
-        Self {
-            font_cx: None,
-            layout_cx: None,
-        }
-    }
-}
-
 impl TextEngine {
     fn font_cx(&mut self) -> &mut parley::FontContext {
         self.font_cx.get_or_insert_with(parley::FontContext::new)
-    }
-
-    fn layout_cx(&mut self) -> &mut parley::LayoutContext {
-        self.layout_cx
-            .get_or_insert_with(parley::LayoutContext::new)
     }
 }
 
@@ -256,7 +242,7 @@ impl DrawingContext<'_> {
     }
 
     /// Requests another frame after the current one completes.
-    pub fn request_next_frame(&mut self) {
+    pub const fn request_next_frame(&mut self) {
         self.requested_next_frame = true;
     }
 
@@ -292,10 +278,7 @@ impl DrawingContext<'_> {
         let signal = value.into_signal_f32();
         self.track_signal(&signal);
         let resolved = signal.get();
-        assert!(
-            !(!resolved.is_finite()),
-            "Canvas f32 signal resolved to a non-finite value"
-        );
+        assert!(resolved.is_finite(), "Canvas f32 signal resolved to a non-finite value");
         resolved
     }
 
@@ -1096,7 +1079,7 @@ impl DrawingContext<'_> {
     }
 
     #[inline]
-    fn normalized_global_alpha(&self) -> f32 {
+    const fn normalized_global_alpha(&self) -> f32 {
         self.current_state.global_alpha.clamp(0.0, 1.0)
     }
 
@@ -1193,7 +1176,7 @@ fn build_text_layout_with_engine(
     let mut layout_cx = text_engine
         .layout_cx
         .take()
-        .unwrap_or_else(parley::LayoutContext::new);
+        .unwrap_or_default();
     let mut builder = layout_cx.ranged_builder(text_engine.font_cx(), text, 1.0, true);
     builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
     builder.push_default(parley::StyleProperty::FontSize(font.size));
@@ -1224,7 +1207,7 @@ fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
     parley::FontWeight::new(f32::from(weight.value()))
 }
 
-fn parley_font_style(style: FontStyle) -> parley::FontStyle {
+const fn parley_font_style(style: FontStyle) -> parley::FontStyle {
     match style {
         FontStyle::Normal => parley::FontStyle::Normal,
         FontStyle::Italic => parley::FontStyle::Italic,

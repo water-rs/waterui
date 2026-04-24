@@ -26,6 +26,7 @@ extern crate alloc;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use core::fmt;
 use core::time::Duration;
+use num_traits::ToPrimitive;
 use std::time::Instant;
 
 use nami::{Computed, Signal, signal::IntoComputed};
@@ -111,7 +112,7 @@ pub enum PathCommand {
 }
 
 #[inline]
-fn clamp_radius(value: f32) -> f32 {
+const fn clamp_radius(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 0.5)
     } else {
@@ -524,6 +525,7 @@ pub struct ClipShape {
 
 impl ClipShape {
     /// Creates a new clip shape from any type implementing Shape.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape) -> Self {
         Self {
             commands: shape.path().into_iter().collect(),
@@ -602,6 +604,7 @@ pub struct FilledShape {
 
 impl FilledShape {
     /// Creates a new filled shape from a shape and color.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
             kind: ShapeKind::CustomPath,
@@ -610,6 +613,7 @@ impl FilledShape {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn with_kind(kind: ShapeKind, shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
             kind,
@@ -626,13 +630,13 @@ impl FilledShape {
 
     /// Returns the fill color.
     #[must_use]
-    pub fn fill(&self) -> &Color {
+    pub const fn fill(&self) -> &Color {
         &self.fill
     }
 
     /// Returns the shape kind.
     #[must_use]
-    pub fn kind(&self) -> ShapeKind {
+    pub const fn kind(&self) -> ShapeKind {
         self.kind
     }
 
@@ -641,6 +645,7 @@ impl FilledShape {
     /// Morphing currently supports SDF-backed built-in shapes:
     /// `Rectangle`, `Circle`, `Ellipse`, `RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`.
     #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn morph_to(self, target: impl ShapeExt) -> MorphShape {
         MorphShape::new(self.kind, target.shape_kind(), self.fill)
     }
@@ -673,7 +678,7 @@ impl Default for MorphAnimation {
 impl MorphAnimation {
     /// Creates a one-shot morph animation.
     #[must_use]
-    pub fn once(duration: Duration, easing: EasingCurve) -> Self {
+    pub const fn once(duration: Duration, easing: EasingCurve) -> Self {
         Self {
             duration,
             easing,
@@ -690,7 +695,10 @@ impl MorphAnimation {
         let raw = elapsed.as_secs_f32() / self.duration.as_secs_f32();
         let cycle = if self.repeat {
             let base = raw.fract();
-            let index = raw.floor() as u64;
+            let index = raw
+                .floor()
+                .to_u64()
+                .expect("MorphAnimation::sample: cycle index must fit into u64");
             if self.autoreverse && index % 2 == 1 {
                 1.0 - base
             } else {
@@ -912,7 +920,11 @@ impl MorphShapeRenderer {
 }
 
 impl GpuView for MorphShapeRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let shader = waterui_graphics::shared_context::create_cached_shader_module(
             ctx.device,
             MORPH_SHADER_LABEL,
@@ -1001,13 +1013,14 @@ impl GpuView for MorphShapeRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = Instant::now();
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        if let Some(target_fmt) = self.pipeline_format {
-            if target_fmt != frame.format {
-                return;
-            }
+        if let Some(target_fmt) = self.pipeline_format
+            && target_fmt != frame.format
+        {
+            return;
         }
 
         let Some(pipeline) = &self.pipeline else {
@@ -1034,10 +1047,15 @@ impl GpuView for MorphShapeRenderer {
         let [r, g, b] = self.fill_color.linear_with_headroom();
         let uniforms = MorphUniforms {
             color: [r, g, b, self.fill_color.opacity],
-            dimensions_and_progress: [frame.width as f32, frame.height as f32, progress, 0.0],
+            dimensions_and_progress: [
+                u32_to_f32(frame.width),
+                u32_to_f32(frame.height),
+                progress,
+                0.0,
+            ],
             shape_types: [
-                self.from.shape_type as f32,
-                self.to.shape_type as f32,
+                u32_to_f32(self.from.shape_type),
+                u32_to_f32(self.to.shape_type),
                 0.0,
                 0.0,
             ],
@@ -1089,6 +1107,12 @@ impl GpuView for MorphShapeRenderer {
 }
 
 impl_gpu_subview!(MorphShapeRenderer);
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("shape dimensions must be representable as f32")
+}
 
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes

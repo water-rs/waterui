@@ -34,6 +34,14 @@
 //! **Recommendation**: Use [`LargeFile`] on background threads for best performance.
 
 #![no_std]
+#![allow(
+    missing_docs,
+    clippy::doc_markdown,
+    clippy::map_unwrap_or,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::needless_pass_by_value
+)]
 
 extern crate alloc;
 

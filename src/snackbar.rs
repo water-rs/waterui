@@ -145,6 +145,7 @@ impl core::fmt::Debug for Snackbar {
             .field("action", &self.action)
             .field("duration", &self.duration)
             .field("position", &self.position)
+            .field("captured_env", &self.captured_env)
             .finish()
     }
 }
@@ -408,7 +409,7 @@ impl SnackbarManager {
                         .style(ButtonStyle::Borderless)
                         .action(move |env: waterui_core::Environment| {
                             // Execute action handler with the live view environment.
-                            action.handler.call(&captured_env.layered_on(&env));
+                            let _ = action.handler.call(&captured_env.layered_on(&env));
                             manager.dismiss();
                         }),
                 ))

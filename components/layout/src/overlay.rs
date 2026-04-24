@@ -173,7 +173,7 @@ fn overlay_axis_size(measured: f32, proposal: Option<f32>) -> f32 {
     }
 }
 
-fn overlay_placement_axis(measured: f32, bounds_axis: f32) -> f32 {
+const fn overlay_placement_axis(measured: f32, bounds_axis: f32) -> f32 {
     if measured.is_infinite() {
         bounds_axis.max(0.0)
     } else {
@@ -225,7 +225,7 @@ where
     Layer: View + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let Overlay {
+        let Self {
             mut layout,
             base,
             layer,

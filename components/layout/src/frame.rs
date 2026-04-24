@@ -118,7 +118,7 @@ impl Layout for FrameLayout {
         };
 
         let final_child_size = Size::new(child_width, child_height);
-        let mut adjusted_dimensions = child_dimensions.clone();
+        let mut adjusted_dimensions = child_dimensions;
         adjusted_dimensions.size = final_child_size;
 
         // Calculate the child's origin point (top-left) based on alignment.
@@ -209,10 +209,10 @@ fn frame_resolved_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> f32 {
-    match parent_proposal {
-        Some(value) => clamp_frame_axis(value, min, max),
-        None => clamp_frame_axis(ideal.unwrap_or(child_size), min, max),
-    }
+    parent_proposal.map_or_else(
+        || clamp_frame_axis(ideal.unwrap_or(child_size), min, max),
+        |value| clamp_frame_axis(value, min, max),
+    )
 }
 
 /// A view that provides a frame with optional size constraints and alignment for its child.

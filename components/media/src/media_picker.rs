@@ -17,7 +17,7 @@ use crate::{Media, live::LivePhotoSource, url::Url};
 /// A media picker view that lets users select photos, videos, or live media.
 ///
 /// `MediaPicker` renders as a button that, when clicked, presents the native
-/// platform media picker via WaterKit dialog APIs.
+/// platform media picker via `WaterKit` dialog APIs.
 #[derive(Debug)]
 pub struct MediaPicker<Label> {
     selection: Binding<Option<Selected>>,
@@ -173,7 +173,7 @@ pub struct Selected {
 impl Selected {
     /// Load the selected media item asynchronously.
     #[must_use]
-    pub async fn load(self) -> Media {
+    pub fn load(self) -> Media {
         self.media
     }
 

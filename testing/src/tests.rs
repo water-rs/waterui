@@ -684,13 +684,15 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                 .scale(scale.clone(), scale.clone())
                 .opacity(hovered_opacity);
             surface
-                .gesture_observer(GestureObserver::new(DragGesture::new(0.0)).action(
+                .gesture_observer(GestureObserver::new(
+                    DragGesture::new(0.0),
                     |State(DragOffset(offset)): State<DragOffset>, drag: Use<DragEvent>| {
                         offset.set(drag.translation.x);
                     },
                 ))
                 .state(&drag_offset_state)
-                .gesture_observer(GestureObserver::new(MagnificationGesture::new(1.0)).action(
+                .gesture_observer(GestureObserver::new(
+                    MagnificationGesture::new(1.0),
                     |State(ZoomScale(scale)): State<ZoomScale>,
                      magnification: Use<MagnificationEvent>| {
                         scale.set(magnification.scale);

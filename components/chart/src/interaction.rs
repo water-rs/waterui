@@ -5,7 +5,6 @@ use core::ops::RangeInclusive;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_core::{
     Environment, IntoSignalF32,
-    gesture::{DragEvent, GesturePhase},
     layout::Point,
 };
 
@@ -375,15 +374,6 @@ impl Default for CartesianViewportBindings {
 }
 
 impl CartesianViewportBindings {
-    #[must_use]
-    pub const fn is_active(&self) -> bool {
-        !self.scrollable_axes.is_empty()
-            || self.track_x_visible_length
-            || self.track_y_visible_length
-            || self.external_x_position
-            || self.external_y_position
-    }
-
     pub fn validate(&self) {
         if self.track_x_visible_length {
             assert!(
@@ -779,11 +769,6 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.track_focus || self.track_selected
-    }
-
-    #[must_use]
-    pub const fn has_external_bindings(&self) -> bool {
-        self.external_focus || self.external_selected
     }
 
     #[must_use]
