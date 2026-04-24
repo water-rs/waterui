@@ -22,7 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install nasm
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}

@@ -89,7 +89,7 @@ waterui_ffi::export!();
 Every UI component implements the `View` trait, which defines how it renders:
 
 ```rust
-use waterui_core::Environment;
+use waterui::Environment;
 
 pub trait View: 'static {
     fn body(self, env: &Environment) -> impl View;
@@ -126,8 +126,7 @@ The `Environment` provides dependency injection for themes, fonts, and custom se
 ```rust
 use waterui::app::App;
 use waterui::prelude::*;
-use waterui_core::Environment;
-use waterui_text::font::{ResolvedFont, FontWeight};
+use waterui::text::font::{FontWeight, ResolvedFont};
 
 pub fn app(mut env: Environment) -> App {
     let theme = Theme::new()
@@ -200,8 +199,10 @@ fn gestures() -> impl View {
             .padding()
             .background(Color::srgb_hex("#2196F3").with_opacity(0.3))
             .gesture_observer(
-                GestureObserver::new(TapGesture::new())
-                    .action(|State(count): State<Binding<i32>>| count.set(count.get() + 1)),
+                GestureObserver::new(
+                    TapGesture::new(),
+                    |State(count): State<Binding<i32>>| count.set(count.get() + 1),
+                ),
             ),
         text("Long Press")
             .padding()
