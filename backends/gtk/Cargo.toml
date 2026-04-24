@@ -46,6 +46,9 @@ glow = "0.16"
 libloading = "0.9"
 pollster.workspace = true
 
+[target.'cfg(target_os = "linux")'.build-dependencies]
+pkg-config = "0.3"
+
 [features]
 default = []
 webkitgtk = []
