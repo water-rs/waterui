@@ -770,7 +770,7 @@ fn generate_plural_translation_arm(
     let other_format_lit = translation_format_lit(forms.other);
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
     let body = quote! {
-        let category = #waterui::locale::select_plural(&#locale_ident, #plural_ident);
+        let category = #waterui::locale::select_plural(&#locale_ident, &#plural_ident);
         match category {
             #(#category_arms)*
             _ => #waterui::reactive::__alloc::format!(#other_format_lit),
@@ -820,8 +820,8 @@ fn generate_dual_plural_translation_arm(
     let other_one_expr = optional_format_expr(waterui, other_one_format, &other_other_lit);
 
     let body = quote! {
-        let category_1 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_1);
-        let category_2 = #waterui::locale::select_plural(&#locale_ident, #plural_ident_2);
+        let category_1 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_1);
+        let category_2 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_2);
         match (category_1, category_2) {
             (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
                 #one_one_expr

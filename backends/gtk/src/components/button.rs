@@ -60,8 +60,8 @@ mod tests {
 
     #[test]
     fn gtk_button_style_css_classes_match_semantic_style() {
-        assert_eq!(button_style_css_classes(ButtonStyle::Automatic), &[]);
-        assert_eq!(button_style_css_classes(ButtonStyle::Bordered), &[]);
+        assert!(button_style_css_classes(ButtonStyle::Automatic).is_empty());
+        assert!(button_style_css_classes(ButtonStyle::Bordered).is_empty());
         assert_eq!(button_style_css_classes(ButtonStyle::Plain), &["flat"]);
         assert_eq!(button_style_css_classes(ButtonStyle::Borderless), &["flat"]);
         assert_eq!(
