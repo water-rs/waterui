@@ -7,9 +7,9 @@ use waterui_url::Url;
 pub fn is_remote_url(path: &str) -> bool {
     Url::parse(path)
         .and_then(|parsed| {
-            parsed
-                .scheme()
-                .map(|scheme| matches!(scheme, "http" | "https"))
+            parsed.scheme().map(|scheme| {
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            })
         })
         .unwrap_or(false)
 }
@@ -27,7 +27,10 @@ pub fn is_loopback_http_url(url: &str) -> bool {
     let Some(parsed) = Url::parse(url) else {
         return false;
     };
-    if parsed.scheme() != Some("http") {
+    if !parsed
+        .scheme()
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http"))
+    {
         return false;
     }
     parsed
@@ -38,7 +41,11 @@ pub fn is_loopback_http_url(url: &str) -> bool {
 
 fn has_http_scheme(url: &str) -> bool {
     Url::parse(url)
-        .and_then(|parsed| parsed.scheme().map(|scheme| scheme == "http"))
+        .and_then(|parsed| {
+            parsed
+                .scheme()
+                .map(|scheme| scheme.eq_ignore_ascii_case("http"))
+        })
         .unwrap_or(false)
 }
 

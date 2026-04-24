@@ -107,7 +107,9 @@ fn apply_multi_date_state(calendar: &Calendar, selected: &[Date], decorated: &[D
 
     for date in selected.iter().chain(decorated.iter()) {
         if date.year() == visible_year && date.month() == visible_month {
-            calendar.mark_day(date.day().into());
+            calendar.mark_day(
+                u32::try_from(date.day()).expect("WaterUI dates always use positive day numbers"),
+            );
         }
     }
 
