@@ -494,6 +494,6 @@ text!("{note}").footnote()
 
 **Linux all-features CI native dependencies** - backend-enabled jobs need the native link headers for every compiled backend:
 ```text
-libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev
+libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev
 ```
 Keep these packages installed in Linux lint, coverage, feature-check, and test jobs instead of disabling backend features to make CI pass.
