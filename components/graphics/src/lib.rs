@@ -129,10 +129,7 @@ pub use pollster;
 /// Panics if the error-scope future is still pending after `device.poll(Poll)`.
 #[inline]
 #[must_use]
-pub fn pop_error_scope_now(
-    device: &wgpu::Device,
-    scope: &'static str,
-) -> Option<wgpu::Error> {
+pub fn pop_error_scope_now(device: &wgpu::Device, scope: &'static str) -> Option<wgpu::Error> {
     use core::future::Future as _;
     use core::pin::Pin;
     use core::task::{Context, Poll};

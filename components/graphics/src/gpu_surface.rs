@@ -1538,7 +1538,11 @@ fn encode_png(
 
 const SDR_WHITE_NITS: f32 = 203.0;
 
-fn encode_auto_png(width: u32, height: u32, rgba16f: &[u8]) -> Result<Vec<u8>, OffscreenRenderError> {
+fn encode_auto_png(
+    width: u32,
+    height: u32,
+    rgba16f: &[u8],
+) -> Result<Vec<u8>, OffscreenRenderError> {
     let (max_rgb, hdr_ratio) = analyze_hdr_headroom(rgba16f);
     if max_rgb > 1.0 && hdr_ratio > 0.0 {
         encode_hdr_pq_png(width, height, rgba16f)
