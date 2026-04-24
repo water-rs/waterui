@@ -439,9 +439,9 @@ impl Layout for HStackLayout {
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
 
-            let y = if measurement.stretches_cross_axis() {
-                bounds.y()
-            } else if self.alignment == VerticalAlignment::Top {
+            let y = if measurement.stretches_cross_axis()
+                || self.alignment == VerticalAlignment::Top
+            {
                 bounds.y()
             } else if self.alignment == VerticalAlignment::Bottom {
                 bounds.y() + bounds.height() - child_height

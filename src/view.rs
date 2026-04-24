@@ -917,7 +917,7 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        Metadata::new(self, GestureObserver::new(gesture).action(action))
+        Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
     /// Attaches a pre-built gesture observer to this view.
@@ -930,7 +930,8 @@ pub trait ViewExt: View + Sized {
     /// use waterui::gesture::{GestureObserver, TapGesture};
     ///
     /// view.gesture_observer(
-    ///     GestureObserver::new(TapGesture::repeat(2)).action(
+    ///     GestureObserver::new(
+    ///         TapGesture::repeat(2),
     ///         |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
     ///     )
     /// )

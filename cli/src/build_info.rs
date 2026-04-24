@@ -49,13 +49,17 @@ pub const ANDROID_BACKEND: BackendReference = BackendReference {
 /// How this CLI binary was built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildKind {
-    /// Built from a local, non-release WaterUI checkout and should force local-checkout dev behavior.
+    /// Built from a local, non-release `WaterUI` checkout and should force local-checkout dev behavior.
     DevBranch,
     /// Built from any non-dev source and should default to registry dependencies.
     Release,
 }
 
 /// Return the embedded CLI build kind.
+///
+/// # Panics
+///
+/// Panics when the build script embedded an unknown `WATERUI_CLI_BUILD_KIND`.
 #[must_use]
 pub fn build_kind() -> BuildKind {
     match BUILD_KIND {

@@ -3,6 +3,19 @@
 //!
 
 #![no_std]
+#![allow(
+    missing_docs,
+    clippy::double_must_use,
+    clippy::ignored_unit_patterns,
+    clippy::let_unit_value,
+    clippy::missing_const_for_fn,
+    clippy::needless_pass_by_value,
+    clippy::new_ret_no_self,
+    clippy::option_if_let_else,
+    clippy::redundant_clone,
+    clippy::semicolon_if_nothing_returned,
+    clippy::struct_excessive_bools
+)]
 extern crate alloc;
 
 pub mod label;

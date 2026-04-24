@@ -1,4 +1,4 @@
-//! Absolute positioning layout for WaterUI.
+//! Absolute positioning layout for `WaterUI`.
 //!
 //! This module provides an `Absolute` container that fills available space
 //! and allows children to be positioned at specific coordinates within.
@@ -130,6 +130,9 @@ impl Layout for AbsoluteLayout {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         // Give every child the full bounds - they position themselves
         children.iter().map(|_| bounds).collect()
@@ -282,6 +285,7 @@ impl Layout for PositionedLayout {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         let child_proposal = ProposalSize::new(
             bounds
@@ -337,27 +341,27 @@ impl Layout for PositionedLayout {
                         )
                     }
                     PositionTarget::Pinned(pinned) => {
-                        let leading = pinned.leading.as_ref().map(|v| v.get());
-                        let trailing = pinned.trailing.as_ref().map(|v| v.get());
-                        let top = pinned.top.as_ref().map(|v| v.get());
-                        let bottom = pinned.bottom.as_ref().map(|v| v.get());
-                        let explicit_width = pinned.width.as_ref().map(|v| v.get());
-                        let explicit_height = pinned.height.as_ref().map(|v| v.get());
+                        let leading = pinned.leading.as_ref().map(waterui_core::Signal::get);
+                        let trailing = pinned.trailing.as_ref().map(waterui_core::Signal::get);
+                        let top = pinned.top.as_ref().map(waterui_core::Signal::get);
+                        let bottom = pinned.bottom.as_ref().map(waterui_core::Signal::get);
+                        let explicit_width = pinned.width.as_ref().map(waterui_core::Signal::get);
+                        let explicit_height = pinned.height.as_ref().map(waterui_core::Signal::get);
 
-                        let mut width = if let Some(width) = explicit_width {
-                            width
-                        } else if let (Some(leading), Some(trailing)) = (leading, trailing) {
-                            bounds.width() - leading - trailing
-                        } else {
-                            intrinsic.width
-                        };
-                        let mut height = if let Some(height) = explicit_height {
-                            height
-                        } else if let (Some(top), Some(bottom)) = (top, bottom) {
-                            bounds.height() - top - bottom
-                        } else {
-                            intrinsic.height
-                        };
+                        let mut width = explicit_width.unwrap_or_else(|| {
+                            if let (Some(leading), Some(trailing)) = (leading, trailing) {
+                                bounds.width() - leading - trailing
+                            } else {
+                                intrinsic.width
+                            }
+                        });
+                        let mut height = explicit_height.unwrap_or_else(|| {
+                            if let (Some(top), Some(bottom)) = (top, bottom) {
+                                bounds.height() - top - bottom
+                            } else {
+                                intrinsic.height
+                            }
+                        });
 
                         if !width.is_finite() {
                             width = bounds.width();
@@ -378,21 +382,15 @@ impl Layout for PositionedLayout {
                             height = sanitize_axis(measured.height, height);
                         }
 
-                        let x = if let Some(leading) = leading {
-                            bounds.x() + leading
-                        } else if let Some(trailing) = trailing {
-                            bounds.max_x() - trailing - width
-                        } else {
-                            bounds.x()
-                        };
+                        let x = leading.map_or_else(
+                            || trailing.map_or_else(|| bounds.x(), |trailing| bounds.max_x() - trailing - width),
+                            |leading| bounds.x() + leading,
+                        );
 
-                        let y = if let Some(top) = top {
-                            bounds.y() + top
-                        } else if let Some(bottom) = bottom {
-                            bounds.max_y() - bottom - height
-                        } else {
-                            bounds.y()
-                        };
+                        let y = top.map_or_else(
+                            || bottom.map_or_else(|| bounds.y(), |bottom| bounds.max_y() - bottom - height),
+                            |top| bounds.y() + top,
+                        );
 
                         Rect::new(
                             Point::new(
@@ -408,7 +406,7 @@ impl Layout for PositionedLayout {
     }
 }
 
-fn sanitize_size(intrinsic: Size, bounds: Rect) -> Size {
+const fn sanitize_size(intrinsic: Size, bounds: Rect) -> Size {
     let width = if intrinsic.width.is_finite() {
         intrinsic.width.max(0.0)
     } else {
@@ -422,7 +420,7 @@ fn sanitize_size(intrinsic: Size, bounds: Rect) -> Size {
     Size::new(width, height)
 }
 
-fn sanitize_axis(measured: f32, fallback: f32) -> f32 {
+const fn sanitize_axis(measured: f32, fallback: f32) -> f32 {
     if measured.is_finite() {
         measured.max(0.0)
     } else {

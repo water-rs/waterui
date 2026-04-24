@@ -55,7 +55,7 @@ impl fmt::Debug for BarcodeRenderer {
         f.debug_struct("BarcodeRenderer")
             .field("source", &self.source)
             .field("current_matrix_dim", &self.current_matrix_dim)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -249,12 +249,17 @@ impl BarcodeRenderer {
 }
 
 impl GpuView for BarcodeRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let (pipeline, bgl) =
             Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
         self.render_pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
         self.ensure_uniform_buffer(ctx.device);
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {

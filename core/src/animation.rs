@@ -154,7 +154,7 @@ pub trait Animatable: Clone {
 }
 
 impl Animatable for f32 {
-    type AnimatableData = f32;
+    type AnimatableData = Self;
 
     fn animatable_data(&self) -> Self::AnimatableData {
         *self
@@ -166,7 +166,7 @@ impl Animatable for f32 {
 }
 
 impl Animatable for f64 {
-    type AnimatableData = f64;
+    type AnimatableData = Self;
 
     fn animatable_data(&self) -> Self::AnimatableData {
         *self
@@ -250,7 +250,7 @@ where
     }
 
     fn from_animatable_data(data: Self::AnimatableData) -> Self {
-        core::array::from_fn(|index| T::from_animatable_data(data[index].clone()))
+        core::array::from_fn(|index| T::from_animatable_data(data[index]))
     }
 }
 
@@ -315,10 +315,9 @@ impl<T: Animatable> AnimationTrack<T> {
         };
 
         active.elapsed = active.elapsed.saturating_add(delta);
-        self.current =
-            active
-                .animation
-                .interpolate(active.from.clone(), active.to.clone(), active.elapsed);
+        self.current = active
+            .animation
+            .interpolate(&active.from, &active.to, active.elapsed);
 
         if active.animation.is_complete(active.elapsed) {
             self.current = active.to.clone();
@@ -331,7 +330,7 @@ impl<T: Animatable> AnimationTrack<T> {
 
     /// Whether this track has an active animation.
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         self.active.is_some()
     }
 }
@@ -388,6 +387,7 @@ impl Animation {
     /// let animation = Animation::linear(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::linear(Duration::from_secs(1)); // 1 second
     /// ```
+    #[must_use]
     pub const fn linear(duration: Duration) -> Self {
         Self::Bezier {
             duration,
@@ -409,6 +409,7 @@ impl Animation {
     /// let animation = Animation::ease_in(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in(Duration::from_secs(1)); // 1 second
     /// ```
+    #[must_use]
     pub const fn ease_in(duration: Duration) -> Self {
         Self::Bezier {
             duration,
@@ -430,6 +431,7 @@ impl Animation {
     /// let animation = Animation::ease_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_out(Duration::from_secs(1)); // 1 second
     /// ```
+    #[must_use]
     pub const fn ease_out(duration: Duration) -> Self {
         Self::Bezier {
             duration,
@@ -451,6 +453,7 @@ impl Animation {
     /// let animation = Animation::ease_in_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in_out(Duration::from_secs(1)); // 1 second
     /// ```
+    #[must_use]
     pub const fn ease_in_out(duration: Duration) -> Self {
         Self::Bezier {
             duration,
@@ -470,14 +473,19 @@ impl Animation {
     ///
     /// let animation = Animation::spring(100.0, 10.0);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stiffness` is not finite or is less than or equal to zero,
+    /// or if `damping` is not finite or is negative.
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
         assert!(
-            !(!stiffness.is_finite() || stiffness <= 0.0),
+            stiffness.is_finite() && stiffness > 0.0,
             "Animation::spring requires finite stiffness > 0"
         );
         assert!(
-            !(!damping.is_finite() || damping < 0.0),
+            damping.is_finite() && damping >= 0.0,
             "Animation::spring requires finite damping >= 0"
         );
         Self::Spring { stiffness, damping }
@@ -501,6 +509,12 @@ impl Animation {
     /// // Custom bounce-like curve
     /// let animation = Animation::bezier(Duration::from_millis(400), 0.25, 0.1, 0.25, 1.0);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if any control point is non-finite or if `x1` or `x2` falls
+    /// outside the normalized `[0, 1]` range.
+    #[must_use]
     pub const fn bezier(duration: Duration, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
         assert!(
             !(!x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite()),
@@ -523,7 +537,7 @@ impl Animation {
     ///
     /// This allows using the unified easing system for interpolation.
     #[must_use]
-    pub fn curve(&self) -> EasingCurve {
+    pub const fn curve(&self) -> EasingCurve {
         match self {
             Self::Default => EasingCurve::EASE_IN_OUT,
             Self::Bezier { x1, y1, x2, y2, .. } => EasingCurve::bezier(*x1, *y1, *x2, *y2),
@@ -536,7 +550,7 @@ impl Animation {
     /// For spring animations, returns a default duration (600ms) since spring
     /// duration depends on the physics parameters.
     #[must_use]
-    pub fn duration(&self) -> Duration {
+    pub const fn duration(&self) -> Duration {
         match self {
             Self::Default => DEFAULT_TIMED_DURATION,
             Self::Bezier { duration: d, .. } => *d,
@@ -576,10 +590,10 @@ impl Animation {
     /// let anim = Animation::ease_in_out(Duration::from_millis(300));
     /// let elapsed = Duration::from_millis(150); // halfway through
     ///
-    /// let value = anim.interpolate(0.0_f32, 100.0_f32, elapsed);
+    /// let value = anim.interpolate(&0.0_f32, &100.0_f32, elapsed);
     /// // value is approximately 50.0, but eased
     /// ```
-    pub fn interpolate<T: Animatable>(&self, from: T, to: T, elapsed: Duration) -> T {
+    pub fn interpolate<T: Animatable>(&self, from: &T, to: &T, elapsed: Duration) -> T {
         let progress = self.progress(elapsed);
         let from_data = from.animatable_data();
         let to_data = to.animatable_data();
@@ -730,11 +744,9 @@ mod tests {
     #[test]
     fn custom_animatable_interpolates() {
         let animation = Animation::linear(Duration::from_millis(100));
-        let value = animation.interpolate(
-            Pair { x: 0.0, y: 0.0 },
-            Pair { x: 10.0, y: 20.0 },
-            Duration::from_millis(50),
-        );
+        let from = Pair { x: 0.0, y: 0.0 };
+        let to = Pair { x: 10.0, y: 20.0 };
+        let value = animation.interpolate(&from, &to, Duration::from_millis(50));
         assert!((value.x - 5.0).abs() < 0.001);
         assert!((value.y - 10.0).abs() < 0.001);
     }

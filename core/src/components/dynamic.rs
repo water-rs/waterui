@@ -146,6 +146,10 @@ impl Dynamic {
         self.connect_internal(None, receiver);
     }
 
+    /// Connects the dynamic node while preserving a pending measurement view.
+    ///
+    /// This is used by renderers that need to stage a temporary child view
+    /// before the final backend receiver is attached.
     pub fn connect_with_pending_view(
         self,
         pending_view_slot: Rc<RefCell<Option<AnyView>>>,
@@ -207,6 +211,10 @@ impl Dynamic {
         }
     }
 
+    /// Mutates whichever view snapshot should be used for layout measurement.
+    ///
+    /// Before connection this is the unconnected snapshot; after connection it
+    /// targets the pending connected snapshot when one exists.
     pub fn with_measurement_view_mut<R>(
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
@@ -225,6 +233,8 @@ impl Dynamic {
         }
     }
 
+    /// Mutates the pending connected snapshot without affecting the
+    /// pre-connection snapshot.
     pub fn with_connected_pending_view_mut<R>(
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,

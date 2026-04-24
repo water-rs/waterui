@@ -742,7 +742,7 @@ impl FetchedState {
         self.in_flight.set(false);
     }
 
-    fn remaining_attempts(&self) -> u8 {
+    const fn remaining_attempts(&self) -> u8 {
         self.remaining_attempts.get()
     }
 }
@@ -780,15 +780,16 @@ impl Fetched {
         }
 
         let state = self.state.clone();
-        let url = self.url.clone();
+        let url_string = self.url.as_str().to_owned();
+        let path_extension = self.url.extension().map(str::to_owned);
         spawn_local(async move {
-            match fetch_remote_to_cache(&url).await {
+            match fetch_remote_to_cache(url_string.clone(), path_extension.clone()).await {
                 Ok(fetched) => state.resolve(fetched),
                 Err(error) => {
                     state.fail();
                     tracing::warn!(
                         "Url::fetch failed for '{}' ({} retries remaining): {error}",
-                        url.as_str(),
+                        url_string,
                         state.remaining_attempts(),
                     );
                 }
@@ -819,15 +820,20 @@ impl Signal for Fetched {
 }
 
 #[cfg(feature = "std")]
+/// Errors that can occur while downloading a remote resource into memory.
 #[derive(Debug)]
 pub enum RemoteDownloadError {
-    Http(zenwave::Error),
+    /// The HTTP transport or request pipeline failed.
+    Http(Box<zenwave::Error>),
+    /// The server returned a non-success status code.
     UnsuccessfulStatus(u16),
+    /// Reading the response body failed after a successful response.
     ReadBody(String),
 }
 
 #[cfg(feature = "std")]
 impl RemoteDownloadError {
+    /// Returns the upstream HTTP status code when one exists.
     #[must_use]
     pub const fn status_code(&self) -> Option<u16> {
         match self {
@@ -860,6 +866,12 @@ struct DownloadedRemoteBytes {
 }
 
 #[cfg(feature = "std")]
+/// Downloads the bytes for a remote URL without writing them to disk.
+///
+/// # Errors
+///
+/// Returns [`RemoteDownloadError`] if the request fails, the server responds
+/// with a non-success status, or the body cannot be read.
 pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadError> {
     Ok(download_remote_bytes_with_content_type(url).await?.bytes)
 }
@@ -872,7 +884,7 @@ async fn download_remote_bytes_with_content_type(
     let response = client
         .method(Method::GET, url)
         .await
-        .map_err(|error| RemoteDownloadError::Http(error.into()))?;
+        .map_err(|error| RemoteDownloadError::Http(Box::new(error.into())))?;
 
     if !response.status().is_success() {
         return Err(RemoteDownloadError::UnsuccessfulStatus(
@@ -902,7 +914,7 @@ async fn download_remote_bytes_with_content_type(
 enum FetchError {
     CacheRootUnavailable,
     CreateCacheDir(std::io::Error),
-    Download(RemoteDownloadError),
+    Download(Box<RemoteDownloadError>),
     WriteTemp(std::io::Error),
     Persist(std::io::Error),
 }
@@ -934,8 +946,8 @@ fn fetch_cache_root() -> Option<PathBuf> {
 }
 
 #[cfg(feature = "std")]
-fn fetch_cache_key(url: &Url) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(url.as_str().as_bytes()))
+fn fetch_cache_key(url: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(url.as_bytes()))
 }
 
 #[cfg(feature = "std")]
@@ -988,7 +1000,7 @@ fn existing_fetch_cache_path_in(cache_root: &Path, key: &str) -> Option<PathBuf>
 #[cfg(feature = "std")]
 fn existing_fetch_cache_path(url: &Url) -> Option<PathBuf> {
     let cache_root = fetch_cache_root()?;
-    let key = fetch_cache_key(url);
+    let key = fetch_cache_key(url.as_str());
     existing_fetch_cache_path_in(&cache_root, &key)
 }
 
@@ -999,8 +1011,11 @@ fn existing_fetch_cache_url(url: &Url) -> Option<Url> {
 }
 
 #[cfg(feature = "std")]
-fn infer_extension(url: &Url, content_type: Option<&str>) -> Option<String> {
-    if let Some(extension) = url.extension() {
+fn infer_extension(
+    path_extension: Option<&str>,
+    content_type: Option<&str>,
+) -> Option<String> {
+    if let Some(extension) = path_extension {
         return Some(extension.to_ascii_lowercase());
     }
 
@@ -1025,10 +1040,13 @@ fn preferred_extension<'a>(extensions: &'a [&'a str]) -> Option<&'a str> {
 }
 
 #[cfg(feature = "std")]
-async fn fetch_remote_to_cache(url: &Url) -> Result<Url, FetchError> {
+async fn fetch_remote_to_cache(
+    url: String,
+    path_extension: Option<String>,
+) -> Result<Url, FetchError> {
     let cache_root = fetch_cache_root().ok_or(FetchError::CacheRootUnavailable)?;
     std::fs::create_dir_all(&cache_root).map_err(FetchError::CreateCacheDir)?;
-    let key = fetch_cache_key(url);
+    let key = fetch_cache_key(&url);
 
     if let Some(cached) = existing_fetch_cache_path_in(&cache_root, &key) {
         return Ok(Url::from_file_path_str(
@@ -1039,10 +1057,10 @@ async fn fetch_remote_to_cache(url: &Url) -> Result<Url, FetchError> {
     let cache_entry_dir = fetch_cache_entry_dir(&cache_root, &key);
     std::fs::create_dir_all(&cache_entry_dir).map_err(FetchError::CreateCacheDir)?;
 
-    let downloaded = download_remote_bytes_with_content_type(url.as_str())
+    let downloaded = download_remote_bytes_with_content_type(&url)
         .await
-        .map_err(FetchError::Download)?;
-    let extension = infer_extension(url, downloaded.content_type.as_deref());
+        .map_err(|error| FetchError::Download(Box::new(error)))?;
+    let extension = infer_extension(path_extension.as_deref(), downloaded.content_type.as_deref());
     let cache_path = cache_payload_path(&cache_entry_dir, extension.as_deref());
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1380,7 +1398,7 @@ mod tests {
     fn infer_extension_uses_content_type_when_url_has_no_extension() {
         let url = Url::new("https://example.com/download");
         assert_eq!(
-            infer_extension(&url, Some("image/png; charset=utf-8")),
+            infer_extension(url.extension(), Some("image/png; charset=utf-8")),
             Some(String::from("png"))
         );
     }
@@ -1390,7 +1408,7 @@ mod tests {
     fn fetch_cache_key_has_fixed_length() {
         let long_path = "a".repeat(512);
         let url = Url::from(format!("https://example.com/{long_path}"));
-        let key = fetch_cache_key(&url);
+        let key = fetch_cache_key(url.as_str());
         assert_eq!(key.len(), 43);
     }
 
@@ -1403,7 +1421,7 @@ mod tests {
             .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("waterui-url-cache-test-{unique}"));
         let url = Url::new("https://example.com/download");
-        let key = fetch_cache_key(&url);
+        let key = fetch_cache_key(url.as_str());
         let cache_entry_dir = fetch_cache_entry_dir(&temp_dir, &key);
         std::fs::create_dir_all(&cache_entry_dir).expect("cache entry dir should be created");
 
@@ -1484,7 +1502,10 @@ mod tests {
         });
 
         let url = Url::from(format!("http://{address}/download"));
-        let fetched = futures::executor::block_on(fetch_remote_to_cache(&url))
+        let fetched = futures::executor::block_on(fetch_remote_to_cache(
+            url.as_str().to_owned(),
+            url.extension().map(str::to_owned),
+        ))
             .expect("remote fetch should succeed");
         let fetched_path = fetched
             .to_file_path()
@@ -1537,7 +1558,10 @@ mod tests {
         });
 
         let url = Url::from(format!("http://{address}/{long_path}"));
-        let fetched = futures::executor::block_on(fetch_remote_to_cache(&url))
+        let fetched = futures::executor::block_on(fetch_remote_to_cache(
+            url.as_str().to_owned(),
+            url.extension().map(str::to_owned),
+        ))
             .expect("long-url remote fetch should succeed");
         let fetched_path = fetched
             .to_file_path()

@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
+use num_traits::ToPrimitive;
 
 use crate::filter_view::{FilterContext, FilterInput, FilterOutput, GpuFilter};
 
@@ -25,6 +26,7 @@ struct MultiInputUniform {
     op2: [f32; 4],
 }
 
+/// Immutable RGBA8 image payload uploaded as an auxiliary filter input.
 #[derive(Clone, Debug)]
 pub struct FilterImage {
     width: u32,
@@ -33,6 +35,11 @@ pub struct FilterImage {
 }
 
 impl FilterImage {
+    /// Creates an RGBA8 filter image from raw bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `rgba8` does not contain exactly `width * height * 4` bytes.
     #[must_use]
     pub fn from_rgba8(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
         let expected_len = width as usize * height as usize * 4;
@@ -49,13 +56,19 @@ impl FilterImage {
         }
     }
 
+    /// Decodes an encoded image and converts it to RGBA8 pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decode error when the bytes cannot be parsed as an image.
     pub fn from_encoded(bytes: &[u8]) -> Result<Self, image::ImageError> {
         let decoded = image::load_from_memory(bytes)?;
-        Ok(Self::from_dynamic_image(decoded))
+        Ok(Self::from_dynamic_image(&decoded))
     }
 
+    /// Converts a dynamic image into a filter image.
     #[must_use]
-    pub fn from_dynamic_image(image: image::DynamicImage) -> Self {
+    pub fn from_dynamic_image(image: &image::DynamicImage) -> Self {
         let rgba = image.to_rgba8();
         let width = rgba.width();
         let height = rgba.height();
@@ -66,11 +79,13 @@ impl FilterImage {
         }
     }
 
+    /// Returns the image width in pixels.
     #[must_use]
     pub const fn width(&self) -> u32 {
         self.width
     }
 
+    /// Returns the image height in pixels.
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
@@ -81,6 +96,7 @@ impl FilterImage {
     }
 }
 
+/// A 3D LUT packed into the common 2D strip layout.
 #[derive(Clone, Debug)]
 pub struct LutImage {
     image: FilterImage,
@@ -88,6 +104,11 @@ pub struct LutImage {
 }
 
 impl LutImage {
+    /// Creates a LUT image from an already validated filter image.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `size < 2` or when `image` does not match the expected strip dimensions.
     #[must_use]
     pub fn new(image: FilterImage, size: u32) -> Self {
         assert!(
@@ -110,48 +131,73 @@ impl LutImage {
         Self { image, size }
     }
 
+    /// Creates a LUT image from RGBA8 bytes.
     #[must_use]
     pub fn from_rgba8(size: u32, rgba8: Vec<u8>) -> Self {
         let image = FilterImage::from_rgba8(size * size, size, rgba8);
         Self::new(image, size)
     }
 
+    /// Decodes a LUT image from encoded image bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decode error when the bytes cannot be parsed as an image.
     pub fn from_encoded(size: u32, encoded: &[u8]) -> Result<Self, image::ImageError> {
         let image = FilterImage::from_encoded(encoded)?;
         Ok(Self::new(image, size))
     }
 
+    /// Returns the LUT cube size.
     #[must_use]
     pub const fn size(&self) -> u32 {
         self.size
     }
 
-    fn image(&self) -> &FilterImage {
+    const fn image(&self) -> &FilterImage {
         &self.image
     }
 }
 
+/// Blend operators for combining the input image with an auxiliary image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
+    /// Alpha compositing with the auxiliary image.
     Normal,
+    /// Multiply input and auxiliary colors.
     Multiply,
+    /// Screen the auxiliary image over the input.
     Screen,
+    /// Overlay the auxiliary image onto the input.
     Overlay,
+    /// Keep the darker channel from each source.
     Darken,
+    /// Keep the lighter channel from each source.
     Lighten,
+    /// Apply a soft light blend.
     SoftLight,
+    /// Apply a hard light blend.
     HardLight,
+    /// Subtract shared luminance to emphasize differences.
     Difference,
+    /// Blend using the exclusion operator.
     Exclusion,
+    /// Brighten the input with color dodge.
     ColorDodge,
+    /// Darken the input with color burn.
     ColorBurn,
 }
 
+/// Swipe direction for image transition filters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionDirection {
+    /// Reveal from left to right.
     LeftToRight,
+    /// Reveal from right to left.
     RightToLeft,
+    /// Reveal from top to bottom.
     TopToBottom,
+    /// Reveal from bottom to top.
     BottomToTop,
 }
 
@@ -185,11 +231,16 @@ impl BlendMode {
     }
 }
 
-trait MultiInputOperation: 'static {
+/// Low-level operation contract implemented by concrete multi-input filters.
+pub trait MultiInputOperation: 'static {
+    /// Shader mode selector used by the shared multi-input shader.
     const MODE_ID: u32;
+    /// Number of auxiliary images required by the operation.
     const AUX_IMAGE_COUNT: usize;
 
+    /// Returns the auxiliary image bound at the given slot.
     fn aux_image(&self, index: usize) -> &FilterImage;
+    /// Writes operation-specific parameters into the shared uniform buffer.
     fn write_params(&self, params: &mut [f32; MAX_PARAMS]);
 }
 
@@ -199,7 +250,7 @@ struct UploadedAuxImage {
     view: wgpu::TextureView,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct MultiInputRuntime {
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     pipeline: Option<wgpu::RenderPipeline>,
@@ -211,21 +262,7 @@ struct MultiInputRuntime {
     setup_error: Option<&'static str>,
 }
 
-impl Default for MultiInputRuntime {
-    fn default() -> Self {
-        Self {
-            bind_group_layout: None,
-            pipeline: None,
-            sampler: None,
-            uniform_buffer: None,
-            last_uniform: None,
-            uploaded_aux_images: [None, None, None],
-            fallback_aux: None,
-            setup_error: None,
-        }
-    }
-}
-
+/// Generic GPU filter wrapper for operations that need multiple input textures.
 pub struct MultiInputFilter<O: MultiInputOperation> {
     operation: O,
     runtime: MultiInputRuntime,
@@ -238,6 +275,7 @@ impl<O: MultiInputOperation> fmt::Debug for MultiInputFilter<O> {
 }
 
 impl<O: MultiInputOperation> MultiInputFilter<O> {
+    /// Creates a multi-input filter from a concrete operation.
     #[must_use]
     pub fn new(operation: O) -> Self {
         Self {
@@ -300,6 +338,71 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         }
     }
 
+    fn create_bind_group_layout(ctx: &FilterContext) -> wgpu::BindGroupLayout {
+        ctx.device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("multi-input filter bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            })
+    }
+
     fn create_pipeline(
         ctx: &FilterContext,
     ) -> (
@@ -313,70 +416,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
             "multi-input filter shader",
             include_str!("shaders/multi_input_filter.wgsl"),
         );
-
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("multi-input filter bind group layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
+        let bind_group_layout = Self::create_bind_group_layout(ctx);
 
         let pipeline_layout = ctx
             .device
@@ -445,9 +485,9 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         params: [f32; MAX_PARAMS],
     ) -> MultiInputUniform {
         MultiInputUniform {
-            output_size: [width as f32, height as f32],
+            output_size: [u32_to_f32(width), u32_to_f32(height)],
             _pad0: [0.0, 0.0],
-            op0: [mode as f32, params[0], params[1], params[2]],
+            op0: [u32_to_f32(mode), params[0], params[1], params[2]],
             op1: [params[3], params[4], params[5], params[6]],
             op2: [params[7], 0.0, 0.0, 0.0],
         }
@@ -603,10 +643,14 @@ impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
     }
 }
 
+/// Blends the current frame with a second image.
 #[derive(Debug, Clone)]
 pub struct BlendWithImage {
+    /// Auxiliary image used during blending.
     pub image: FilterImage,
+    /// Blend strength in the range expected by the shader.
     pub amount: f32,
+    /// Blend operator to apply.
     pub mode: BlendMode,
 }
 
@@ -627,10 +671,14 @@ impl MultiInputOperation for BlendWithImage {
     }
 }
 
+/// Applies blur intensity based on a mask image.
 #[derive(Debug, Clone)]
 pub struct MaskedBlur {
+    /// Blur mask image.
     pub mask: FilterImage,
+    /// Blur radius in pixels.
     pub radius: f32,
+    /// Additional blur strength multiplier.
     pub strength: f32,
 }
 
@@ -651,10 +699,14 @@ impl MultiInputOperation for MaskedBlur {
     }
 }
 
+/// Transitions from the input image to a target image.
 #[derive(Debug, Clone)]
 pub struct TransitionToImage {
+    /// Target image revealed by the transition.
     pub target: FilterImage,
+    /// Transition progress from `0.0` to `1.0`.
     pub progress: f32,
+    /// Feathering amount around the transition boundary.
     pub softness: f32,
 }
 
@@ -675,10 +727,14 @@ impl MultiInputOperation for TransitionToImage {
     }
 }
 
+/// Warps the input image using a displacement map.
 #[derive(Debug, Clone)]
 pub struct DisplacementWarp {
+    /// Displacement map image.
     pub map: FilterImage,
+    /// Horizontal displacement scale.
     pub scale_x: f32,
+    /// Vertical displacement scale.
     pub scale_y: f32,
 }
 
@@ -699,11 +755,16 @@ impl MultiInputOperation for DisplacementWarp {
     }
 }
 
+/// Smooths the input image with guidance from another image.
 #[derive(Debug, Clone)]
 pub struct GuidedSmooth {
+    /// Guide image that preserves major edges.
     pub guide: FilterImage,
+    /// Filter radius.
     pub radius: f32,
+    /// Range sensitivity.
     pub range_sigma: f32,
+    /// Blend amount for the smoothed result.
     pub amount: f32,
 }
 
@@ -725,11 +786,16 @@ impl MultiInputOperation for GuidedSmooth {
     }
 }
 
+/// Blurs the input based on a depth texture.
 #[derive(Debug, Clone)]
 pub struct DepthAwareBlur {
+    /// Depth map that drives blur strength.
     pub depth: FilterImage,
+    /// Depth plane that remains in focus.
     pub focus_depth: f32,
+    /// Simulated aperture size.
     pub aperture: f32,
+    /// Maximum blur radius.
     pub max_radius: f32,
 }
 
@@ -751,10 +817,14 @@ impl MultiInputOperation for DepthAwareBlur {
     }
 }
 
+/// Denoises the current frame using history and motion textures.
 #[derive(Debug, Clone)]
 pub struct TemporalDenoise {
+    /// Previous filtered frame.
     pub history: FilterImage,
+    /// Motion vectors or reprojection helper image.
     pub motion: FilterImage,
+    /// Weight assigned to history data.
     pub history_weight: f32,
 }
 
@@ -775,10 +845,14 @@ impl MultiInputOperation for TemporalDenoise {
     }
 }
 
+/// Composites the subject over a replacement background.
 #[derive(Debug, Clone)]
 pub struct BackgroundReplace {
+    /// Foreground matte image.
     pub matte: FilterImage,
+    /// Replacement background image.
     pub background: FilterImage,
+    /// Softening factor for matte edges.
     pub edge_softness: f32,
 }
 
@@ -799,9 +873,12 @@ impl MultiInputOperation for BackgroundReplace {
     }
 }
 
+/// Applies a 3D LUT-based color grade.
 #[derive(Debug, Clone)]
 pub struct LutColorGrade {
+    /// LUT texture encoded as a 2D strip.
     pub lut: LutImage,
+    /// Grade intensity multiplier.
     pub intensity: f32,
 }
 
@@ -817,17 +894,23 @@ impl MultiInputOperation for LutColorGrade {
     }
 
     fn write_params(&self, params: &mut [f32; MAX_PARAMS]) {
-        params[0] = self.lut.size() as f32;
+        params[0] = u32_to_f32(self.lut.size());
         params[1] = self.intensity;
     }
 }
 
+/// Shapes tonal regions of the input image.
 #[derive(Debug, Clone)]
 pub struct ToneCurve {
+    /// Shadow adjustment.
     pub shadows: f32,
+    /// Midtone adjustment.
     pub midtones: f32,
+    /// Highlight adjustment.
     pub highlights: f32,
+    /// Gamma adjustment.
     pub gamma: f32,
+    /// Overall blend amount.
     pub amount: f32,
 }
 
@@ -848,11 +931,16 @@ impl MultiInputOperation for ToneCurve {
     }
 }
 
+/// Performs a directional swipe transition to a target image.
 #[derive(Debug, Clone)]
 pub struct SwipeTransitionToImage {
+    /// Target image revealed by the transition.
     pub target: FilterImage,
+    /// Transition progress from `0.0` to `1.0`.
     pub progress: f32,
+    /// Feathering amount around the swipe edge.
     pub softness: f32,
+    /// Swipe direction.
     pub direction: TransitionDirection,
 }
 
@@ -874,12 +962,18 @@ impl MultiInputOperation for SwipeTransitionToImage {
     }
 }
 
+/// Performs a radial transition to a target image.
 #[derive(Debug, Clone)]
 pub struct RadialTransitionToImage {
+    /// Target image revealed by the transition.
     pub target: FilterImage,
+    /// Transition progress from `0.0` to `1.0`.
     pub progress: f32,
+    /// Feathering amount around the radial edge.
     pub softness: f32,
+    /// Horizontal transition center in normalized coordinates.
     pub center_x: f32,
+    /// Vertical transition center in normalized coordinates.
     pub center_y: f32,
 }
 
@@ -902,12 +996,18 @@ impl MultiInputOperation for RadialTransitionToImage {
     }
 }
 
+/// Performs a zoom-based transition to a target image.
 #[derive(Debug, Clone)]
 pub struct ZoomTransitionToImage {
+    /// Target image revealed by the transition.
     pub target: FilterImage,
+    /// Transition progress from `0.0` to `1.0`.
     pub progress: f32,
+    /// Zoom magnitude applied during the transition.
     pub amount: f32,
+    /// Horizontal zoom center in normalized coordinates.
     pub center_x: f32,
+    /// Vertical zoom center in normalized coordinates.
     pub center_y: f32,
 }
 
@@ -930,11 +1030,16 @@ impl MultiInputOperation for ZoomTransitionToImage {
     }
 }
 
+/// Performs a displacement-driven transition to a target image.
 #[derive(Debug, Clone)]
 pub struct DisplacementTransitionToImage {
+    /// Target image revealed by the transition.
     pub target: FilterImage,
+    /// Displacement map used during transition.
     pub map: FilterImage,
+    /// Transition progress from `0.0` to `1.0`.
     pub progress: f32,
+    /// Displacement strength.
     pub scale: f32,
 }
 
@@ -956,22 +1061,37 @@ impl MultiInputOperation for DisplacementTransitionToImage {
     }
 }
 
+/// Filter type for [`BlendWithImage`].
 pub type BlendWithImageFilter = MultiInputFilter<BlendWithImage>;
+/// Filter type for [`MaskedBlur`].
 pub type MaskedBlurFilter = MultiInputFilter<MaskedBlur>;
+/// Filter type for [`TransitionToImage`].
 pub type TransitionToImageFilter = MultiInputFilter<TransitionToImage>;
+/// Filter type for [`DisplacementWarp`].
 pub type DisplacementWarpFilter = MultiInputFilter<DisplacementWarp>;
+/// Filter type for [`GuidedSmooth`].
 pub type GuidedSmoothFilter = MultiInputFilter<GuidedSmooth>;
+/// Filter type for [`DepthAwareBlur`].
 pub type DepthAwareBlurFilter = MultiInputFilter<DepthAwareBlur>;
+/// Filter type for [`TemporalDenoise`].
 pub type TemporalDenoiseFilter = MultiInputFilter<TemporalDenoise>;
+/// Filter type for [`BackgroundReplace`].
 pub type BackgroundReplaceFilter = MultiInputFilter<BackgroundReplace>;
+/// Filter type for [`LutColorGrade`].
 pub type LutColorGradeFilter = MultiInputFilter<LutColorGrade>;
+/// Filter type for [`ToneCurve`].
 pub type ToneCurveFilter = MultiInputFilter<ToneCurve>;
+/// Filter type for [`SwipeTransitionToImage`].
 pub type SwipeTransitionToImageFilter = MultiInputFilter<SwipeTransitionToImage>;
+/// Filter type for [`RadialTransitionToImage`].
 pub type RadialTransitionToImageFilter = MultiInputFilter<RadialTransitionToImage>;
+/// Filter type for [`ZoomTransitionToImage`].
 pub type ZoomTransitionToImageFilter = MultiInputFilter<ZoomTransitionToImage>;
+/// Filter type for [`DisplacementTransitionToImage`].
 pub type DisplacementTransitionToImageFilter = MultiInputFilter<DisplacementTransitionToImage>;
 
 #[must_use]
+/// Creates a blend filter that composites an auxiliary image over the input.
 pub fn blend_with_image_filter(
     image: FilterImage,
     amount: f32,
@@ -985,6 +1105,7 @@ pub fn blend_with_image_filter(
 }
 
 #[must_use]
+/// Creates a masked blur filter.
 pub fn masked_blur_filter(mask: FilterImage, radius: f32, strength: f32) -> MaskedBlurFilter {
     MultiInputFilter::new(MaskedBlur {
         mask,
@@ -994,6 +1115,7 @@ pub fn masked_blur_filter(mask: FilterImage, radius: f32, strength: f32) -> Mask
 }
 
 #[must_use]
+/// Creates a single-image transition filter.
 pub fn transition_to_image_filter(
     target: FilterImage,
     progress: f32,
@@ -1007,6 +1129,7 @@ pub fn transition_to_image_filter(
 }
 
 #[must_use]
+/// Creates a displacement warp filter.
 pub fn displacement_warp_filter(
     map: FilterImage,
     scale_x: f32,
@@ -1020,6 +1143,7 @@ pub fn displacement_warp_filter(
 }
 
 #[must_use]
+/// Creates a guided smoothing filter.
 pub fn guided_smooth_filter(
     guide: FilterImage,
     radius: f32,
@@ -1035,6 +1159,7 @@ pub fn guided_smooth_filter(
 }
 
 #[must_use]
+/// Creates a depth-aware blur filter.
 pub fn depth_aware_blur_filter(
     depth: FilterImage,
     focus_depth: f32,
@@ -1050,6 +1175,7 @@ pub fn depth_aware_blur_filter(
 }
 
 #[must_use]
+/// Creates a temporal denoise filter.
 pub fn temporal_denoise_filter(
     history: FilterImage,
     motion: FilterImage,
@@ -1063,6 +1189,7 @@ pub fn temporal_denoise_filter(
 }
 
 #[must_use]
+/// Creates a background replacement filter.
 pub fn background_replace_filter(
     matte: FilterImage,
     background: FilterImage,
@@ -1076,11 +1203,13 @@ pub fn background_replace_filter(
 }
 
 #[must_use]
+/// Creates a LUT color grading filter.
 pub fn lut_color_grade_filter(lut: LutImage, intensity: f32) -> LutColorGradeFilter {
     MultiInputFilter::new(LutColorGrade { lut, intensity })
 }
 
 #[must_use]
+/// Creates a tone-curve adjustment filter.
 pub fn tone_curve_filter(
     shadows: f32,
     midtones: f32,
@@ -1098,6 +1227,7 @@ pub fn tone_curve_filter(
 }
 
 #[must_use]
+/// Creates a directional swipe transition filter.
 pub fn swipe_transition_to_image_filter(
     target: FilterImage,
     progress: f32,
@@ -1113,6 +1243,7 @@ pub fn swipe_transition_to_image_filter(
 }
 
 #[must_use]
+/// Creates a radial transition filter.
 pub fn radial_transition_to_image_filter(
     target: FilterImage,
     progress: f32,
@@ -1130,6 +1261,7 @@ pub fn radial_transition_to_image_filter(
 }
 
 #[must_use]
+/// Creates a zoom transition filter.
 pub fn zoom_transition_to_image_filter(
     target: FilterImage,
     progress: f32,
@@ -1147,6 +1279,7 @@ pub fn zoom_transition_to_image_filter(
 }
 
 #[must_use]
+/// Creates a displacement-driven transition filter.
 pub fn displacement_transition_to_image_filter(
     target: FilterImage,
     map: FilterImage,
@@ -1159,6 +1292,12 @@ pub fn displacement_transition_to_image_filter(
         progress,
         scale,
     })
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("multi_input_filter: u32 value must be representable as f32")
 }
 
 #[cfg(test)]

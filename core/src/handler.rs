@@ -126,8 +126,11 @@ pub fn boxed_action_once<Args, T: 'static>(f: impl HandlerOnce<Args, T>) -> Boxe
 ///
 /// This uses `Rc<RefCell<...>>` to allow the action to be shared across
 /// multiple owners while still supporting mutation.
+type SharedActionFn<T> = Rc<RefCell<Box<dyn FnMut(&Environment) -> T>>>;
+
+/// Cloneable action handle backed by shared mutable state.
 #[derive(Clone)]
-pub struct SharedAction<T = ()>(Rc<RefCell<Box<dyn FnMut(&Environment) -> T>>>);
+pub struct SharedAction<T = ()>(SharedActionFn<T>);
 
 impl<T: 'static> SharedAction<T> {
     /// Creates a new shared action from a closure.
@@ -136,6 +139,7 @@ impl<T: 'static> SharedAction<T> {
     }
 
     /// Calls the action with the given environment.
+    #[must_use]
     pub fn call(&self, env: &Environment) -> T {
         (self.0.borrow_mut())(env)
     }

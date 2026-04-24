@@ -2,6 +2,8 @@
 //!
 //! Provides `asset!`, `assets!`, and `include_bundle!`.
 
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use proc_macro::TokenStream;

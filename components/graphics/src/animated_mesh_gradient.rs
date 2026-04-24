@@ -4,9 +4,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt;
+use num_traits::ToPrimitive;
 use std::time::Instant;
 
-use encase::{ShaderSize, ShaderType, UniformBuffer};
+use encase::{ShaderSize, UniformBuffer};
 
 use crate::color::ResolvedColor;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
@@ -32,6 +33,10 @@ pub struct AnimatedMeshGradientConfig {
 
 impl AnimatedMeshGradientConfig {
     /// Sets the animation speed (must be >= 0.0).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `speed` is negative.
     #[must_use]
     pub fn speed(mut self, speed: f32) -> Self {
         assert!(speed >= 0.0, "AnimatedMeshGradient speed must be >= 0.0");
@@ -40,6 +45,10 @@ impl AnimatedMeshGradientConfig {
     }
 
     /// Sets the warp strength (recommended 0.0..0.5).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `warp` is negative.
     #[must_use]
     pub fn warp(mut self, warp: f32) -> Self {
         assert!(warp >= 0.0, "AnimatedMeshGradient warp must be >= 0.0");
@@ -49,14 +58,14 @@ impl AnimatedMeshGradientConfig {
 
     /// Sets the 4x4 palette (row-major).
     #[must_use]
-    pub fn palette(mut self, palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN]) -> Self {
+    pub const fn palette(mut self, palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN]) -> Self {
         self.palette = palette;
         self
     }
 
     /// Aqua + lavender pastel palette with soft contrast.
     #[must_use]
-    pub fn aqua_bloom() -> Self {
+    pub const fn aqua_bloom() -> Self {
         Self {
             speed: 0.6,
             warp: 0.24,
@@ -83,7 +92,7 @@ impl AnimatedMeshGradientConfig {
 
     /// Soft pastel palette with gentle cyan/pink transitions.
     #[must_use]
-    pub fn pastel_lagoon() -> Self {
+    pub const fn pastel_lagoon() -> Self {
         Self {
             speed: 0.55,
             warp: 0.16,
@@ -110,7 +119,7 @@ impl AnimatedMeshGradientConfig {
 
     /// Bright white base with blush lavender accents.
     #[must_use]
-    pub fn soft_blush() -> Self {
+    pub const fn soft_blush() -> Self {
         Self {
             speed: 0.45,
             warp: 0.12,
@@ -137,7 +146,7 @@ impl AnimatedMeshGradientConfig {
 
     /// Deep blue palette with soft cyan transitions.
     #[must_use]
-    pub fn deep_blue() -> Self {
+    pub const fn deep_blue() -> Self {
         Self {
             speed: 0.6,
             warp: 0.2,
@@ -163,7 +172,7 @@ impl AnimatedMeshGradientConfig {
     }
 }
 
-fn palette_color(r: f32, g: f32, b: f32) -> ResolvedColor {
+const fn palette_color(r: f32, g: f32, b: f32) -> ResolvedColor {
     ResolvedColor {
         red: r,
         green: g,
@@ -179,16 +188,25 @@ impl Default for AnimatedMeshGradientConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, ShaderType)]
-struct AnimatedMeshUniforms {
-    time: f32,
-    speed: f32,
-    warp: f32,
-    _pad0: f32,
-    resolution: glam::Vec2,
-    _pad1: glam::Vec2,
-    palette: [glam::Vec4; ANIMATED_MESH_PALETTE_LEN],
+mod shader_types {
+    #![allow(dead_code)]
+
+    use super::ANIMATED_MESH_PALETTE_LEN;
+    use encase::ShaderType;
+
+    #[derive(Debug, Clone, Copy, ShaderType)]
+    pub(super) struct AnimatedMeshUniforms {
+        pub(super) time: f32,
+        pub(super) speed: f32,
+        pub(super) warp: f32,
+        pub(super) _pad0: f32,
+        pub(super) resolution: glam::Vec2,
+        pub(super) _pad1: glam::Vec2,
+        pub(super) palette: [glam::Vec4; ANIMATED_MESH_PALETTE_LEN],
+    }
 }
+
+use shader_types::AnimatedMeshUniforms;
 
 struct AnimatedMeshRenderer {
     config: AnimatedMeshGradientConfig,
@@ -220,13 +238,17 @@ impl AnimatedMeshRenderer {
 }
 
 impl GpuView for AnimatedMeshRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         let shader = crate::shared_context::create_cached_shader_module_prewarmed(
             ctx.device,
             &ANIMATED_MESH_SHADER,
         );
 
-        let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
+        let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get();
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Animated Mesh Gradient Uniforms"),
             size: uniform_size,
@@ -309,6 +331,7 @@ impl GpuView for AnimatedMeshRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = Instant::now();
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -335,7 +358,7 @@ impl GpuView for AnimatedMeshRenderer {
             speed: self.config.speed,
             warp: self.config.warp,
             _pad0: 0.0,
-            resolution: glam::Vec2::new(frame.width as f32, frame.height as f32),
+            resolution: glam::Vec2::new(u32_to_f32(frame.width), u32_to_f32(frame.height)),
             _pad1: glam::Vec2::ZERO,
             palette: self.palette_gpu,
         };
@@ -417,4 +440,10 @@ impl View for AnimatedMeshGradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.inner
     }
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("animated_mesh_gradient: dimension must be representable as f32")
 }

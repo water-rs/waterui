@@ -25,7 +25,8 @@ use core::any::TypeId;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use num_traits::ToPrimitive;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use filtrate_core::{Chain, Filter, ParamArray};
@@ -147,6 +148,11 @@ pub trait GpuFilter: 'static {
     ///
     /// Use this to create pipelines, bind groups, samplers, and other
     /// GPU resources that persist across frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit setup error when the filter cannot build the
+    /// required GPU pipeline for the current device or texture formats.
     fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult>;
 
     /// Called each frame to apply the filter.
@@ -155,6 +161,11 @@ pub trait GpuFilter: 'static {
     /// Input and output may have different dimensions.
     ///
     /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit render error when the compiled filter graph is
+    /// incomplete or required GPU resources are missing.
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
 
     /// Resolve the output dimensions from the current snapped filter state.
@@ -249,6 +260,10 @@ impl AppliedFilter {
     /// Calls `render` on the filter.
     ///
     /// Returns `Ok(true)` if another frame is needed (animation in progress).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the wrapped filter's render failure.
     pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         self.filter.render(input, output)
     }
@@ -296,7 +311,7 @@ impl<V: View, F: GpuFilter> fmt::Debug for Filtered<V, F> {
 impl<V: View, F: GpuFilter> Filtered<V, F> {
     /// Create a new filtered view with a `GpuFilter`.
     #[must_use]
-    pub fn new(content: V, filter: F) -> Self {
+    pub const fn new(content: V, filter: F) -> Self {
         Self { content, filter }
     }
 }
@@ -326,6 +341,7 @@ impl<V: View, F: Filter + FilterGraph> Filtered<V, FilterAdapter<F>> {
 
     /// Set HDR behavior policy for this filtered view.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
         self.filter = self.filter.hdr_policy(policy);
         self
@@ -333,18 +349,21 @@ impl<V: View, F: Filter + FilterGraph> Filtered<V, FilterAdapter<F>> {
 
     /// Require HDR intermediates; setup fails if unsupported.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn require_hdr(self) -> Self {
         self.hdr_policy(HdrPolicy::RequireHdr)
     }
 
     /// Prefer HDR intermediates with automatic LDR fallback.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn prefer_hdr(self) -> Self {
         self.hdr_policy(HdrPolicy::PreferHdr)
     }
 
     /// Force LDR intermediates for compatibility/performance.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn force_ldr(self) -> Self {
         self.hdr_policy(HdrPolicy::ForceLdr)
     }
@@ -379,24 +398,22 @@ impl<F: GpuFilter> fmt::Debug for FilteredView<F> {
 impl<F: GpuFilter> FilteredView<F> {
     /// Create a backend hook node with type-erased content.
     #[must_use]
-    pub fn new(content: AnyView, filter: F) -> Self {
+    pub const fn new(content: AnyView, filter: F) -> Self {
         Self { content, filter }
     }
 
     /// Returns a reference to the wrapped content.
-    #[must_use]
-    pub fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &AnyView {
         &self.content
     }
 
     /// Returns a reference to the wrapped filter.
     #[must_use]
-    pub fn filter(&self) -> &F {
+    pub const fn filter(&self) -> &F {
         &self.filter
     }
 
     /// Takes ownership of the wrapped content.
-    #[must_use]
     pub fn into_content(self) -> AnyView {
         self.content
     }
@@ -427,30 +444,25 @@ const FILTER_UNIFORM_WORDS: usize = 4 + MAX_FILTER_PARAMS;
 const SPATIAL_OUTPUT_FORMAT_TOKEN: &str = "OUTPUT_STORAGE_FORMAT";
 
 /// Policy for HDR behavior in filter pipelines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HdrPolicy {
     /// Require HDR-capable intermediate pipeline; fail setup if unavailable.
     RequireHdr,
     /// Prefer HDR intermediates and automatically downgrade to LDR when unsupported.
+    #[default]
     PreferHdr,
     /// Force LDR intermediates even on HDR-capable devices.
     ForceLdr,
 }
 
-impl Default for HdrPolicy {
-    fn default() -> Self {
-        Self::PreferHdr
-    }
-}
-
-fn is_hdr_texture_format(format: wgpu::TextureFormat) -> bool {
+const fn is_hdr_texture_format(format: wgpu::TextureFormat) -> bool {
     matches!(
         format,
         wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
     )
 }
 
-fn preferred_scratch_format(
+const fn preferred_scratch_format(
     input_format: wgpu::TextureFormat,
     output_format: wgpu::TextureFormat,
 ) -> wgpu::TextureFormat {
@@ -467,7 +479,9 @@ fn scratch_texture_usage() -> wgpu::TextureUsages {
         | wgpu::TextureUsages::RENDER_ATTACHMENT
 }
 
-fn storage_format_to_wgsl(format: wgpu::TextureFormat) -> Result<&'static str, &'static str> {
+const fn storage_format_to_wgsl(
+    format: wgpu::TextureFormat,
+) -> Result<&'static str, &'static str> {
     match format {
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Ok("rgba8unorm"),
         wgpu::TextureFormat::Rgba16Float => Ok("rgba16float"),
@@ -1229,12 +1243,12 @@ fn upload_uniform_if_changed(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
     last_uniform_data: &mut Option<[f32; FILTER_UNIFORM_WORDS]>,
-    uniform_data: [f32; FILTER_UNIFORM_WORDS],
+    uniform_data: &[f32; FILTER_UNIFORM_WORDS],
 ) {
-    let needs_upload = *last_uniform_data != Some(uniform_data);
+    let needs_upload = last_uniform_data.as_ref() != Some(uniform_data);
     if needs_upload {
         queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniform_data[..]));
-        *last_uniform_data = Some(uniform_data);
+        *last_uniform_data = Some(*uniform_data);
     }
 }
 
@@ -1455,26 +1469,26 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
 
     /// Set HDR behavior policy for this filter chain.
     #[must_use]
-    pub fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
+    pub const fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
         self.hdr_policy = policy;
         self
     }
 
     /// Require HDR intermediates; setup fails if unsupported.
     #[must_use]
-    pub fn require_hdr(self) -> Self {
+    pub const fn require_hdr(self) -> Self {
         self.hdr_policy(HdrPolicy::RequireHdr)
     }
 
     /// Prefer HDR intermediates with automatic LDR fallback.
     #[must_use]
-    pub fn prefer_hdr(self) -> Self {
+    pub const fn prefer_hdr(self) -> Self {
         self.hdr_policy(HdrPolicy::PreferHdr)
     }
 
     /// Force LDR intermediates for maximum compatibility.
     #[must_use]
-    pub fn force_ldr(self) -> Self {
+    pub const fn force_ldr(self) -> Self {
         self.hdr_policy(HdrPolicy::ForceLdr)
     }
 
@@ -1492,21 +1506,16 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     }
 
     fn consume_animation_events(&mut self) {
-        loop {
-            match self.animation_events.try_recv() {
-                Ok(event) => {
-                    if event.param_index >= self.animation_state.current_values.len() {
-                        continue;
-                    }
-                    let entry = &mut self.animation_state.tracks[event.param_index];
-                    entry
-                        .track
-                        .set_target(event.target_value, Some(event.animation));
-                    entry.animated_target = Some(event.target_value);
-                    self.animation_state.has_active_animation = true;
-                }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+        while let Ok(event) = self.animation_events.try_recv() {
+            if event.param_index >= self.animation_state.current_values.len() {
+                continue;
             }
+            let entry = &mut self.animation_state.tracks[event.param_index];
+            entry
+                .track
+                .set_target(event.target_value, Some(event.animation));
+            entry.animated_target = Some(event.target_value);
+            self.animation_state.has_active_animation = true;
         }
     }
 
@@ -1634,8 +1643,8 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         let size_changed = self.scratch_size != (width, height);
         let mut bindings_invalidated = false;
 
-        for slot in 0..2 {
-            if !required_slots[slot] {
+        for (slot, required) in required_slots.iter().copied().enumerate() {
+            if !required {
                 if self.scratch_textures[slot].is_some() || self.scratch_views[slot].is_some() {
                     self.scratch_textures[slot] = None;
                     self.scratch_views[slot] = None;
@@ -1686,6 +1695,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         crate::pop_error_scope_now(device, "filter_view::take_validation_error")
     }
 
+    #[allow(clippy::too_many_lines)]
     fn build_compiled_passes(
         &mut self,
         ctx: &FilterContext,
@@ -1738,7 +1748,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     };
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
-                        self.create_color_pipeline(ctx, fragments, target_format);
+                        Self::create_color_pipeline(ctx, fragments, target_format);
                     if Self::take_validation_error(ctx.device).is_some() {
                         return Err("failed to create color pipeline for selected target format");
                     }
@@ -1764,7 +1774,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     }
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let (pipeline, bind_group_layout) =
-                        self.create_spatial_pipeline(ctx, shader, scratch_format)?;
+                        Self::create_spatial_pipeline(ctx, shader, scratch_format)?;
                     if let Some(err) = Self::take_validation_error(ctx.device) {
                         tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
                         return Err(
@@ -1804,10 +1814,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                     }
                     _ => None,
                 })
+            && storage_format_to_wgsl(ctx.output_format).is_ok()
         {
-            if storage_format_to_wgsl(ctx.output_format).is_ok() {
                 ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-                match self.create_spatial_pipeline(ctx, shader, ctx.output_format) {
+                match Self::create_spatial_pipeline(ctx, shader, ctx.output_format) {
                     Ok((pipeline, bind_group_layout)) => {
                         if Self::take_validation_error(ctx.device).is_none() {
                             self.final_spatial_output = Some(FinalSpatialOutputPipeline {
@@ -1829,12 +1839,11 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                         );
                     }
                 }
-            }
         }
 
         if self.blit_source_scratch_slot.is_some() {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let (blit_pipeline, blit_bind_group_layout) = self.create_blit_pipeline(ctx);
+            let (blit_pipeline, blit_bind_group_layout) = Self::create_blit_pipeline(ctx);
             if Self::take_validation_error(ctx.device).is_some() {
                 return Err("failed to create final blit pipeline");
             }
@@ -1950,6 +1959,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         core::future::ready(Ok(()))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
         #[cfg(test)]
         {
@@ -2056,7 +2066,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         input.queue,
                         &pass.uniform_buffer,
                         &mut pass.last_uniform_data,
-                        uniform_data,
+                        &uniform_data,
                     );
 
                     let transient_bind_group;
@@ -2198,7 +2208,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                         input.queue,
                         &pass.uniform_buffer,
                         &mut pass.last_uniform_data,
-                        uniform_data,
+                        &uniform_data,
                     );
 
                     let transient_bind_group;
@@ -2285,8 +2295,9 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
             }
         }
 
-        if !used_direct_spatial_output {
-            if let Some(blit_source_slot) = self.blit_source_scratch_slot {
+        if !used_direct_spatial_output
+            && let Some(blit_source_slot) = self.blit_source_scratch_slot
+        {
                 let Some(blit_pipeline) = &self.blit_pipeline else {
                     return Err("final blit pipeline missing after setup");
                 };
@@ -2338,7 +2349,6 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
                     render_pass.set_bind_group(0, blit_bind_group, &[]);
                     render_pass.draw(0..6, 0..1);
                 }
-            }
         }
 
         input.queue.submit([encoder.finish()]);
@@ -2369,7 +2379,6 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
 #[allow(private_bounds)]
 impl<F: Filter + FilterGraph> FilterAdapter<F> {
     fn create_color_pipeline(
-        &self,
         ctx: &FilterContext,
         fragments: &str,
         target_format: wgpu::TextureFormat,
@@ -2466,7 +2475,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     }
 
     fn create_spatial_pipeline(
-        &self,
         ctx: &FilterContext,
         shader_source: &str,
         storage_format: wgpu::TextureFormat,
@@ -2539,7 +2547,6 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     }
 
     fn create_blit_pipeline(
-        &self,
         ctx: &FilterContext,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader = crate::shared_context::create_cached_shader_module(
@@ -2621,8 +2628,8 @@ fn build_color_uniform_data(
     params: &[f32],
 ) -> [f32; FILTER_UNIFORM_WORDS] {
     let mut data = [0.0f32; FILTER_UNIFORM_WORDS];
-    data[0] = width as f32;
-    data[1] = height as f32;
+    data[0] = u32_to_f32(width);
+    data[1] = u32_to_f32(height);
     for (idx, value) in params.iter().enumerate().take(MAX_FILTER_PARAMS) {
         data[4 + idx] = *value;
     }
@@ -2637,10 +2644,10 @@ fn build_spatial_uniform_data(
     params: &[f32],
 ) -> [f32; FILTER_UNIFORM_WORDS] {
     let mut data = [0.0f32; FILTER_UNIFORM_WORDS];
-    data[0] = output_width as f32;
-    data[1] = output_height as f32;
-    data[2] = input_width as f32;
-    data[3] = input_height as f32;
+    data[0] = u32_to_f32(output_width);
+    data[1] = u32_to_f32(output_height);
+    data[2] = u32_to_f32(input_width);
+    data[3] = u32_to_f32(input_height);
     for (idx, value) in params.iter().enumerate().take(MAX_FILTER_PARAMS) {
         data[4 + idx] = *value;
     }
@@ -3920,52 +3927,88 @@ mod tests {
 ///
 /// These aliases intentionally normalize reactive parameters to `Computed<f32>`
 /// so backend hook nodes remain concrete (`FilteredView<Blur>`, etc.).
+/// Alias for a box-blur filter.
 pub type Blur = FilterAdapter<filtrate_core::filters::Blur<Computed<f32>>>;
+/// Alias for a brightness adjustment filter.
 pub type Brightness = FilterAdapter<filtrate_core::filters::Brightness<Computed<f32>>>;
+/// Alias for a contrast adjustment filter.
 pub type Contrast = FilterAdapter<filtrate_core::filters::Contrast<Computed<f32>>>;
+/// Alias for an exposure adjustment filter.
 pub type Exposure = FilterAdapter<filtrate_core::filters::Exposure<Computed<f32>>>;
+/// Alias for a 4x5 color-matrix filter.
 pub type ColorMatrix = FilterAdapter<filtrate_core::filters::ColorMatrix<f32>>;
+/// Alias for a gamma adjustment filter.
 pub type Gamma = FilterAdapter<filtrate_core::filters::Gamma<Computed<f32>>>;
+/// Alias for a Gaussian blur filter.
 pub type GaussianBlur = FilterAdapter<filtrate_core::filters::GaussianBlur<Computed<f32>>>;
+/// Alias for a saturation adjustment filter.
 pub type Saturation = FilterAdapter<filtrate_core::filters::Saturation<Computed<f32>>>;
+/// Alias for a temperature/tint adjustment filter.
 pub type TemperatureTint =
     FilterAdapter<filtrate_core::filters::TemperatureTint<Computed<f32>, Computed<f32>>>;
+/// Alias for a grayscale mix filter.
 pub type Grayscale = FilterAdapter<filtrate_core::filters::Grayscale<Computed<f32>>>;
+/// Alias for a bloom filter.
 pub type Bloom = FilterAdapter<filtrate_core::filters::Bloom<Computed<f32>>>;
+/// Alias for a gloom filter.
 pub type Gloom = FilterAdapter<filtrate_core::filters::Gloom<Computed<f32>>>;
+/// Alias for a highlights/shadows adjustment filter.
 pub type HighlightsShadows =
     FilterAdapter<filtrate_core::filters::HighlightsShadows<Computed<f32>, Computed<f32>>>;
+/// Alias for a hue-rotation filter.
 pub type HueRotation = FilterAdapter<filtrate_core::filters::HueRotation<Computed<f32>>>;
+/// Alias for a color inversion filter.
 pub type Invert = FilterAdapter<filtrate_core::filters::Invert>;
+/// Alias for a motion blur filter.
 pub type MotionBlur =
     FilterAdapter<filtrate_core::filters::MotionBlur<Computed<f32>, Computed<f32>>>;
+/// Alias for a bump distortion filter.
 pub type BumpDistortion = FilterAdapter<filtrate_core::filters::BumpDistortion<Computed<f32>>>;
+/// Alias for a pinch distortion filter.
 pub type PinchDistortion = FilterAdapter<filtrate_core::filters::PinchDistortion<Computed<f32>>>;
+/// Alias for a twirl distortion filter.
 pub type TwirlDistortion = FilterAdapter<filtrate_core::filters::TwirlDistortion<Computed<f32>>>;
+/// Alias for a vortex distortion filter.
 pub type VortexDistortion = FilterAdapter<filtrate_core::filters::VortexDistortion<Computed<f32>>>;
+/// Alias for a perspective transform filter.
 pub type PerspectiveTransform = FilterAdapter<filtrate_core::filters::PerspectiveTransform<f32>>;
+/// Alias for a perspective correction filter.
 pub type PerspectiveCorrection = FilterAdapter<filtrate_core::filters::PerspectiveCorrection<f32>>;
+/// Alias for a sepia-toning filter.
 pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
+/// Alias for a vibrance adjustment filter.
 pub type Vibrance = FilterAdapter<filtrate_core::filters::Vibrance<Computed<f32>>>;
+/// Alias for a pixellation filter.
 pub type Pixellate = FilterAdapter<filtrate_core::filters::Pixellate<Computed<f32>>>;
+/// Alias for a crystallize filter.
 pub type Crystallize = FilterAdapter<filtrate_core::filters::Crystallize<Computed<f32>>>;
+/// Alias for an edge-work stylization filter.
 pub type EdgeWork = FilterAdapter<filtrate_core::filters::EdgeWork<Computed<f32>>>;
+/// Alias for a dot-halftone filter.
 pub type DotHalftone = FilterAdapter<filtrate_core::filters::DotHalftone<Computed<f32>>>;
+/// Alias for a line-halftone filter.
 pub type LineHalftone = FilterAdapter<filtrate_core::filters::LineHalftone<Computed<f32>>>;
+/// Alias for a kaleidoscope filter.
 pub type Kaleidoscope = FilterAdapter<filtrate_core::filters::Kaleidoscope<Computed<f32>>>;
+/// Alias for a mirror-tile filter.
 pub type MirrorTile = FilterAdapter<filtrate_core::filters::MirrorTile<Computed<f32>>>;
+/// Alias for an unsharp-mask filter.
 pub type UnsharpMask = FilterAdapter<filtrate_core::filters::UnsharpMask<Computed<f32>>>;
+/// Alias for a sharpen filter.
 pub type Sharpen = FilterAdapter<filtrate_core::filters::Sharpen<Computed<f32>>>;
+/// Alias for a vignette filter.
 pub type Vignette = FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
+/// Alias for a white-point adjustment filter.
 pub type WhitePoint =
     FilterAdapter<filtrate_core::filters::WhitePoint<Computed<f32>, Computed<f32>, Computed<f32>>>;
+/// Alias for a zoom-blur filter.
 pub type ZoomBlur =
     FilterAdapter<filtrate_core::filters::ZoomBlur<Computed<f32>, Computed<f32>, Computed<f32>>>;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
     #[must_use]
-    pub fn radius_signal(&self) -> &Computed<f32> {
+    pub const fn radius_signal(&self) -> &Computed<f32> {
         &self.filter.0
     }
 }
@@ -3974,6 +4017,12 @@ impl Blur {
 #[must_use]
 pub fn blur_from_radius_signal(radius: Computed<f32>) -> Blur {
     FilterAdapter::new(filtrate_core::filters::Blur(radius))
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("filter_view: u32 value must be representable as f32")
 }
 
 /// Extension methods for applying filters to views.

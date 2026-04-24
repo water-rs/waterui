@@ -156,7 +156,7 @@ macro_rules! shader {
 
 /// Internal renderer that handles all the wgpu boilerplate.
 struct ShaderRenderer {
-    /// Optional label for cache lookup (from include_fragment_shader!)
+    /// Optional label for cache lookup (from `include_fragment_shader!`)
     label: Option<&'static str>,
     /// Optional full WGSL source known at compile-time.
     prewarmed_source: Option<&'static crate::prewarm::PrewarmedShader>,
@@ -220,8 +220,8 @@ impl ShaderRenderer {
     }
 }
 
-/// Standard prelude for ShaderSurface shaders.
-/// Includes Uniforms, VertexOutput, and default vertex shader.
+/// Standard prelude for `ShaderSurface` shaders.
+/// Includes `Uniforms`, `VertexOutput`, and the default vertex shader.
 pub const PRELUDE: &str = crate::prewarm::SHADER_SURFACE_PRELUDE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -249,7 +249,12 @@ fn shader_source_hash(source: &str) -> u64 {
 }
 
 impl GpuView for ShaderRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+    #[allow(clippy::too_many_lines)]
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ShaderSurface] setup() called with format: {:?}",
             ctx.surface_format
@@ -274,7 +279,7 @@ impl GpuView for ShaderRenderer {
         };
 
         let pipeline_key = ShaderPipelineKey {
-            device_key: ctx.device as *const wgpu::Device as usize,
+            device_key: std::ptr::from_ref(ctx.device) as usize,
             shader_hash,
             format: ctx.surface_format,
             hdr: ctx.is_hdr(),
@@ -353,13 +358,15 @@ impl GpuView for ShaderRenderer {
 
             let cache =
                 SHADER_PIPELINE_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
-            let mut cache = cache.lock();
-            cache
-                .entry(pipeline_key)
-                .or_insert_with(|| ShaderPipelineCacheEntry {
-                    bind_group_layout: bind_group_layout.clone(),
-                    pipeline: pipeline.clone(),
-                });
+            {
+                let mut cache = cache.lock();
+                cache
+                    .entry(pipeline_key)
+                    .or_insert_with(|| ShaderPipelineCacheEntry {
+                        bind_group_layout: bind_group_layout.clone(),
+                        pipeline: pipeline.clone(),
+                    });
+            }
 
             (pipeline, bind_group_layout)
         };
@@ -392,6 +399,7 @@ impl GpuView for ShaderRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = Instant::now();
+        core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
