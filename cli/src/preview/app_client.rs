@@ -14,7 +14,8 @@ use smol::Timer;
 use smol::net::TcpStream;
 
 use super::protocol::{
-    AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size,
+    AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewRuntimePlatform,
+    PreviewTcpConfig, Size,
 };
 
 use waterui_preview_protocol::registry::{PreviewAppInstance, preview_instance_registry_dir};
@@ -36,12 +37,13 @@ impl PreviewAppClient {
     pub async fn connect_addr(
         addr: SocketAddr,
         expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
     ) -> Result<Self> {
-        Self::connect_to_addr(addr, expected_waterui_core_fingerprint)
+        Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform)
             .await
             .ok_or_else(|| {
                 color_eyre::eyre::eyre!(
-                    "Could not connect to preview app at {addr} for runtime {expected_waterui_core_fingerprint}"
+                    "Could not connect to preview app at {addr} for runtime {expected_waterui_core_fingerprint} on {expected_platform:?}"
                 )
             })
     }
@@ -50,7 +52,10 @@ impl PreviewAppClient {
     ///
     /// # Errors
     /// Returns an error if no matching live registered preview app is found.
-    pub async fn connect_registered(expected_waterui_core_fingerprint: &str) -> Result<Self> {
+    pub async fn connect_registered(
+        expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
+    ) -> Result<Self> {
         let expected = expected_waterui_core_fingerprint.to_string();
         let instances = smol::unblock(move || load_registered_instances_sync(&expected)).await?;
         tracing::info!(
@@ -62,7 +67,8 @@ impl PreviewAppClient {
             tracing::info!(pid = instance.pid, host = %instance.host, port = instance.port, "Preview trying registered app instance");
             let addr = SocketAddr::new(instance.host, instance.port);
             if let Some(client) =
-                Self::connect_to_addr(addr, expected_waterui_core_fingerprint).await
+                Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform)
+                    .await
             {
                 return Ok(client);
             }
@@ -80,10 +86,16 @@ impl PreviewAppClient {
     pub async fn connect(
         config: PreviewTcpConfig,
         expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
     ) -> Result<Self> {
         for port in config.ports() {
-            if let Some(client) =
-                Self::connect_on_port(config, port, expected_waterui_core_fingerprint).await
+            if let Some(client) = Self::connect_on_port(
+                config,
+                port,
+                expected_waterui_core_fingerprint,
+                expected_platform,
+            )
+            .await
             {
                 return Ok(client);
             }
@@ -100,14 +112,16 @@ impl PreviewAppClient {
         config: PreviewTcpConfig,
         port: u16,
         expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
     ) -> Option<Self> {
         let addr = SocketAddr::new(config.host, port);
-        Self::connect_to_addr(addr, expected_waterui_core_fingerprint).await
+        Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform).await
     }
 
     async fn connect_to_addr(
         addr: SocketAddr,
         expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
     ) -> Option<Self> {
         let stream = match connect_with_timeout(addr, connect_timeout()).await {
             Ok(stream) => stream,
@@ -135,15 +149,19 @@ impl PreviewAppClient {
             .await
         {
             Ok(AppResponse::Pong { protocol }) => {
-                if protocol.waterui_core_fingerprint == expected_waterui_core_fingerprint {
+                if protocol.waterui_core_fingerprint == expected_waterui_core_fingerprint
+                    && protocol.platform == expected_platform
+                {
                     return Some(client);
                 }
 
                 tracing::warn!(
-                    "Preview runtime mismatch on {addr}: app waterui_core='{}' (build {}), expected='{}'",
+                    "Preview runtime mismatch on {addr}: app waterui_core='{}' platform={:?} (build {}), expected='{}' platform={:?}",
                     protocol.waterui_core_fingerprint,
+                    protocol.platform,
                     protocol.build_commit,
-                    expected_waterui_core_fingerprint
+                    expected_waterui_core_fingerprint,
+                    expected_platform,
                 );
             }
             Ok(other) => {
