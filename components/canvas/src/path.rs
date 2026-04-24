@@ -174,9 +174,9 @@ impl Path {
 
                     // Normalize sweep to be in correct direction
                     if sweep > core::f64::consts::PI {
-                        sweep -= 2.0 * core::f64::consts::PI;
+                        sweep -= core::f64::consts::TAU;
                     } else if sweep < -core::f64::consts::PI {
-                        sweep += 2.0 * core::f64::consts::PI;
+                        sweep += core::f64::consts::TAU;
                     }
 
                     let arc = kurbo::Arc::new(center, (r, r), start_angle, sweep, 0.0);
