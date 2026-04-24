@@ -2,9 +2,10 @@
 
 use gtk4::prelude::*;
 use gtk4::{Calendar, Widget};
+use jiff::civil::{Date, DateTime};
 use nami::Signal;
 use waterui_core::{Environment, Native};
-use waterui_form::picker::date::{Date, DatePickerConfig, Month};
+use waterui_form::picker::date::DatePickerConfig;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -24,24 +25,30 @@ impl GtkComponent for Native<DatePickerConfig> {
         let value = config.value.clone();
         calendar.connect_day_selected(move |calendar| {
             let selected = calendar.date();
-            let month = Month::try_from(
-                u8::try_from(selected.month()).expect("GTK Calendar month must fit u8"),
+            let date = Date::new(
+                i16::try_from(selected.year()).expect("GTK Calendar year must fit jiff::Date"),
+                i8::try_from(selected.month()).expect("GTK Calendar month must fit jiff::Date"),
+                i8::try_from(selected.day_of_month())
+                    .expect("GTK Calendar day must fit jiff::Date"),
             )
-            .expect("GTK Calendar month must be a valid time::Month");
-            let day = u8::try_from(selected.day_of_month())
-                .expect("GTK Calendar day must fit u8 and be positive");
-            let date = Date::from_calendar_date(selected.year(), month, day)
-                .expect("GTK Calendar selected date must be representable");
-            value.set(date);
+            .expect("GTK Calendar selected date must be representable");
+            let current = value.get();
+            let time = current.time();
+            value.set(date.at(
+                time.hour(),
+                time.minute(),
+                time.second(),
+                time.subsec_nanosecond(),
+            ));
         });
 
         let guard = config.value.watch({
             let calendar = calendar.clone();
-            move |ctx: nami::watcher::Context<Date>| {
-                let date = ctx.into_value();
+            move |ctx: nami::watcher::Context<DateTime>| {
+                let date_time = ctx.into_value();
                 let calendar = calendar.clone();
                 glib::idle_add_local_once(move || {
-                    apply_calendar_date(&calendar, date);
+                    apply_calendar_date(&calendar, date_time);
                 });
             }
         });
@@ -52,10 +59,11 @@ impl GtkComponent for Native<DatePickerConfig> {
     }
 }
 
-fn apply_calendar_date(calendar: &Calendar, date: Date) {
-    let (year, month, day) = date.to_calendar_date();
-    let month = i32::from(month as u8);
-    let day = i32::from(day);
+fn apply_calendar_date(calendar: &Calendar, date_time: DateTime) {
+    let date = date_time.date();
+    let year = i32::from(date.year());
+    let month = i32::from(date.month());
+    let day = i32::from(date.day());
     let date_time = glib::DateTime::from_local(year, month, day, 0, 0, 0.0)
         .expect("DatePicker date must be valid for glib::DateTime");
     calendar.select_day(&date_time);
