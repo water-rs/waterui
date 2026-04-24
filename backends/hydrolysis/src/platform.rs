@@ -275,6 +275,30 @@ fn should_force_fallback_adapter() -> bool {
     std::env::var_os("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER").is_some()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AdapterSelection {
+    allow_software_adapter: bool,
+}
+
+impl AdapterSelection {
+    const PRODUCTION: Self = Self {
+        allow_software_adapter: false,
+    };
+
+    #[cfg(test)]
+    const TEST: Self = Self {
+        allow_software_adapter: true,
+    };
+
+    fn force_fallback_adapter(self) -> bool {
+        should_force_fallback_adapter()
+    }
+
+    fn allow_software_adapter(self) -> bool {
+        self.allow_software_adapter || self.force_fallback_adapter()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct AdapterPreference {
     backend_rank: u8,
@@ -344,6 +368,7 @@ async fn request_hydrolysis_adapter(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
     context: &str,
+    selection: AdapterSelection,
 ) -> wgpu::Adapter {
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     {
@@ -351,7 +376,7 @@ async fn request_hydrolysis_adapter(
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface,
-                force_fallback_adapter: should_force_fallback_adapter(),
+                force_fallback_adapter: selection.force_fallback_adapter(),
             })
             .await
             .expect("hydrolysis adapter selection: failed to find web adapter");
@@ -361,7 +386,7 @@ async fn request_hydrolysis_adapter(
 
     #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
     {
-        if should_force_fallback_adapter() {
+        if selection.force_fallback_adapter() {
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
@@ -409,7 +434,10 @@ async fn request_hydrolysis_adapter(
                 limits.max_compute_workgroups_per_dimension
             ));
 
-            if info.device_type == wgpu::DeviceType::Cpu || info.backend == wgpu::Backend::Noop {
+            if info.backend == wgpu::Backend::Noop
+                || (info.device_type == wgpu::DeviceType::Cpu
+                    && !selection.allow_software_adapter())
+            {
                 tracing::info!(
                     target: "hydrolysis::gpu",
                     context,
@@ -475,9 +503,28 @@ impl core::fmt::Debug for OffscreenSurface {
 
 impl OffscreenSurface {
     pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self::new_with_adapter_selection(width, height, format, AdapterSelection::PRODUCTION).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn new_for_tests(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self::new_with_adapter_selection(width, height, format, AdapterSelection::TEST).await
+    }
+
+    async fn new_with_adapter_selection(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        selection: AdapterSelection,
+    ) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter =
-            request_hydrolysis_adapter(&instance, None, "hydrolysis offscreen surface").await;
+            request_hydrolysis_adapter(&instance, None, "hydrolysis offscreen surface", selection)
+                .await;
 
         ensure_compute_capable_adapter(
             &adapter,
@@ -521,13 +568,12 @@ impl OffscreenSurface {
 fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let adapter_limits = adapter.limits();
     let downlevel_caps = adapter.get_downlevel_capabilities();
-    let base_limits = if downlevel_caps.is_webgpu_compliant() {
-        wgpu::Limits::default()
-    } else if downlevel_caps
-        .flags
-        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    let base_limits = if downlevel_caps.is_webgpu_compliant()
+        || downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
     {
-        wgpu::Limits::downlevel_defaults()
+        wgpu::Limits::default()
     } else {
         wgpu::Limits::downlevel_webgl2_defaults()
     };
@@ -638,6 +684,15 @@ impl OffscreenWindow {
         }
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            surface: pollster::block_on(OffscreenSurface::new_for_tests(width, height, format)),
+            scale_factor: 1.0,
+        }
+    }
+
     #[must_use]
     pub fn surface_ref(&self) -> &OffscreenSurface {
         &self.surface
@@ -728,6 +783,7 @@ mod winit_impl {
                 &instance,
                 Some(&surface),
                 "hydrolysis winit surface",
+                super::AdapterSelection::PRODUCTION,
             )
             .await;
 

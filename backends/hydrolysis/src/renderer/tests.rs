@@ -17,7 +17,7 @@ use hydrolysis_m3::{
 
 fn test_renderer() -> HydrolysisRenderer {
     let mut platform =
-        crate::platform::OffscreenWindow::new(160, 160, wgpu::TextureFormat::Rgba8Unorm);
+        crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
     let surface = platform.surface();
     let mut renderer = HydrolysisRenderer::new(surface.device());
     renderer.set_frame_resources(surface.device(), surface.queue());
@@ -149,7 +149,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     };
 
     let mut platform =
-        crate::platform::OffscreenWindow::new(160, 160, wgpu::TextureFormat::Rgba8Unorm);
+        crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer = {
         let surface = platform.surface();
         HydrolysisRenderer::new(surface.device())
