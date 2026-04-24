@@ -101,7 +101,7 @@ impl SubView for GtkSubView {
             .measure(gtk4::Orientation::Horizontal, for_height);
 
         // Measure vertical (height)
-        let (_min_height, natural_height, _min_baseline, nat_baseline) =
+        let (_min_height, natural_height, min_baseline, nat_baseline) =
             self.widget.measure(gtk4::Orientation::Vertical, for_width);
 
         // Default behavior: intrinsic size clamped by proposal.
