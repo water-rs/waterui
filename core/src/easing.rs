@@ -190,10 +190,7 @@ fn bezier_derivative(t: f32, p1: f32, p2: f32) -> f32 {
     let t2 = t * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    (3.0 * mt2).mul_add(
-        p1,
-        (6.0 * mt * t).mul_add(p2 - p1, 3.0 * t2 * (1.0 - p2)),
-    )
+    (3.0 * mt2).mul_add(p1, (6.0 * mt * t).mul_add(p2 - p1, 3.0 * t2 * (1.0 - p2)))
 }
 
 /// Spring easing implementation using damped harmonic oscillator.

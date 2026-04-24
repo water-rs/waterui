@@ -949,7 +949,10 @@ where
 
             let colors_changed = self.last_colors.as_ref().is_none_or(|last| {
                 last.len() != colors.len()
-                    || last.iter().zip(&colors).any(|(a, b)| !resolved_color_eq(a, b))
+                    || last
+                        .iter()
+                        .zip(&colors)
+                        .any(|(a, b)| !resolved_color_eq(a, b))
             });
 
             if colors_changed {

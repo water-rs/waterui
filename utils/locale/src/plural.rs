@@ -61,8 +61,10 @@ pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralC
     }
 
     let operand_str = float_value.abs().to_string();
-    PluralOperands::from_str(&operand_str)
-        .map_or_else(|_| rules.category_for(0_u8), |operands| rules.category_for(operands))
+    PluralOperands::from_str(&operand_str).map_or_else(
+        |_| rules.category_for(0_u8),
+        |operands| rules.category_for(operands),
+    )
 }
 
 /// Get all valid plural categories for a locale.

@@ -60,8 +60,8 @@ impl GridLayout {
             |width| {
                 let total_spacing =
                     self.spacing.width * usize_to_f32(num_columns.saturating_sub(1));
-                let width_per_column = ((width - total_spacing) / usize_to_f32(num_columns))
-                    .max(0.0);
+                let width_per_column =
+                    ((width - total_spacing) / usize_to_f32(num_columns)).max(0.0);
                 vec![width_per_column; num_columns]
             },
         );
