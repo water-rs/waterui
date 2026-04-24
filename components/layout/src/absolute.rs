@@ -383,12 +383,22 @@ impl Layout for PositionedLayout {
                         }
 
                         let x = leading.map_or_else(
-                            || trailing.map_or_else(|| bounds.x(), |trailing| bounds.max_x() - trailing - width),
+                            || {
+                                trailing.map_or_else(
+                                    || bounds.x(),
+                                    |trailing| bounds.max_x() - trailing - width,
+                                )
+                            },
                             |leading| bounds.x() + leading,
                         );
 
                         let y = top.map_or_else(
-                            || bottom.map_or_else(|| bounds.y(), |bottom| bounds.max_y() - bottom - height),
+                            || {
+                                bottom.map_or_else(
+                                    || bounds.y(),
+                                    |bottom| bounds.max_y() - bottom - height,
+                                )
+                            },
                             |top| bounds.y() + top,
                         );
 

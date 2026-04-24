@@ -536,9 +536,12 @@ where
                                 point.y - drag_event.translation.y,
                             );
                             if cartesian_selection.tracks_x_range() {
-                                if let Some(start) = cartesian_x_from_point(geometry, start_point, true) {
+                                if let Some(start) =
+                                    cartesian_x_from_point(geometry, start_point, true)
+                                {
                                     x_range_start.set(Some(start));
-                                    if let Some(end) = cartesian_x_from_point(geometry, point, true) {
+                                    if let Some(end) = cartesian_x_from_point(geometry, point, true)
+                                    {
                                         cartesian_selection
                                             .set_x_range(Some(normalized_scalar_range(start, end)));
                                     }
@@ -548,9 +551,12 @@ where
                                     .set_x_value(cartesian_x_from_point(geometry, point, true));
                             }
                             if cartesian_selection.tracks_y_range() {
-                                if let Some(start) = cartesian_y_from_point(geometry, start_point, true) {
+                                if let Some(start) =
+                                    cartesian_y_from_point(geometry, start_point, true)
+                                {
                                     y_range_start.set(Some(start));
-                                    if let Some(end) = cartesian_y_from_point(geometry, point, true) {
+                                    if let Some(end) = cartesian_y_from_point(geometry, point, true)
+                                    {
                                         cartesian_selection
                                             .set_y_range(Some(normalized_scalar_range(start, end)));
                                     }
@@ -648,9 +654,11 @@ where
                         if cartesian_viewport.allows_horizontal_drag() {
                             if let Some(start) = x_range_start.get() {
                                 let visible_width = geometry.bounds.width();
-                                let max_start = (base_bounds.max_x - visible_width).max(base_bounds.min_x);
-                                let candidate =
-                                    start - drag_event.translation.x / plot_viewport.width * visible_width;
+                                let max_start =
+                                    (base_bounds.max_x - visible_width).max(base_bounds.min_x);
+                                let candidate = start
+                                    - drag_event.translation.x / plot_viewport.width
+                                        * visible_width;
                                 let clamped = if max_start <= base_bounds.min_x {
                                     base_bounds.min_x
                                 } else {
@@ -665,9 +673,11 @@ where
                         if cartesian_viewport.allows_vertical_drag() {
                             if let Some(start) = y_range_start.get() {
                                 let visible_height = geometry.bounds.height();
-                                let max_start = (base_bounds.max_y - visible_height).max(base_bounds.min_y);
-                                let candidate =
-                                    start - drag_event.translation.y / plot_viewport.height * visible_height;
+                                let max_start =
+                                    (base_bounds.max_y - visible_height).max(base_bounds.min_y);
+                                let candidate = start
+                                    - drag_event.translation.y / plot_viewport.height
+                                        * visible_height;
                                 let clamped = if max_start <= base_bounds.min_y {
                                     base_bounds.min_y
                                 } else {

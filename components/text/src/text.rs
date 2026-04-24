@@ -52,9 +52,7 @@ configurable!(RawText, TextConfig);
 #[derive(Clone)]
 enum TextKind {
     Raw(TextConfig),
-    Signal {
-        resolver: Rc<ConfigResolver>,
-    },
+    Signal { resolver: Rc<ConfigResolver> },
 }
 
 /// Semantic text view with integrated localization support.
