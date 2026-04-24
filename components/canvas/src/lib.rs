@@ -278,7 +278,10 @@ impl DrawingContext<'_> {
         let signal = value.into_signal_f32();
         self.track_signal(&signal);
         let resolved = signal.get();
-        assert!(resolved.is_finite(), "Canvas f32 signal resolved to a non-finite value");
+        assert!(
+            resolved.is_finite(),
+            "Canvas f32 signal resolved to a non-finite value"
+        );
         resolved
     }
 
@@ -1173,10 +1176,7 @@ fn build_text_layout_with_engine(
     max_width: Option<f32>,
 ) -> parley::Layout<[u8; 4]> {
     let family = font.family.trim().to_owned();
-    let mut layout_cx = text_engine
-        .layout_cx
-        .take()
-        .unwrap_or_default();
+    let mut layout_cx = text_engine.layout_cx.take().unwrap_or_default();
     let mut builder = layout_cx.ranged_builder(text_engine.font_cx(), text, 1.0, true);
     builder.push_default(parley::StyleProperty::Brush([0, 0, 0, 255]));
     builder.push_default(parley::StyleProperty::FontSize(font.size));
