@@ -17,6 +17,7 @@ pub fn protocol_info(waterui_core_fingerprint: impl Into<String>) -> PreviewProt
     PreviewProtocolInfo {
         build_commit: PREVIEW_PROTOCOL_COMMIT.to_string(),
         waterui_core_fingerprint: waterui_core_fingerprint.into(),
+        platform: PreviewRuntimePlatform::current(),
     }
 }
 
@@ -27,6 +28,41 @@ pub struct PreviewProtocolInfo {
     pub build_commit: String,
     /// Fingerprint of the `waterui-core` package used by this preview app build.
     pub waterui_core_fingerprint: String,
+    /// Runtime platform of the preview support app.
+    pub platform: PreviewRuntimePlatform,
+}
+
+/// Runtime platform that owns the preview support app process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreviewRuntimePlatform {
+    /// macOS preview support app.
+    Macos,
+    /// iOS Simulator preview support app.
+    IosSimulator,
+    /// Physical iOS preview support app.
+    Ios,
+    /// Android preview support app.
+    Android,
+    /// Other platform.
+    Other,
+}
+
+impl PreviewRuntimePlatform {
+    /// Return the current preview support app runtime platform.
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Macos
+        } else if cfg!(target_os = "ios") && cfg!(target_abi = "sim") {
+            Self::IosSimulator
+        } else if cfg!(target_os = "ios") {
+            Self::Ios
+        } else if cfg!(target_os = "android") {
+            Self::Android
+        } else {
+            Self::Other
+        }
+    }
 }
 
 pub mod registry {

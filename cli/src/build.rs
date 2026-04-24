@@ -12,9 +12,14 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 #[must_use]
 pub const fn lib_extension_for_triple(triple: &Triple) -> &'static str {
     match triple.operating_system {
-        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX { .. } => "dylib",
+        OperatingSystem::Darwin(_)
+        | OperatingSystem::MacOSX { .. }
+        | OperatingSystem::IOS(_)
+        | OperatingSystem::TvOS(_)
+        | OperatingSystem::WatchOS(_)
+        | OperatingSystem::VisionOS(_) => "dylib",
         OperatingSystem::Windows => "dll",
-        // Linux, Android, iOS, and most others use .so for cdylib
+        // Linux, Android, and most other Unix-like targets use .so.
         _ => "so",
     }
 }
@@ -555,4 +560,47 @@ async fn ensure_meson_installed_for_build() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 async fn ensure_meson_installed_for_build() -> Result<(), String> {
     Err("automatic meson installation is only supported on macOS".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use target_lexicon::Triple;
+
+    use super::lib_extension_for_triple;
+
+    fn triple(value: &str) -> Triple {
+        value.parse().expect("test target triple must parse")
+    }
+
+    #[test]
+    fn apple_platform_dylibs_use_macho_extension() {
+        assert_eq!(
+            lib_extension_for_triple(&triple("aarch64-apple-darwin")),
+            "dylib"
+        );
+        assert_eq!(
+            lib_extension_for_triple(&triple("aarch64-apple-ios-sim")),
+            "dylib"
+        );
+        assert_eq!(
+            lib_extension_for_triple(&triple("aarch64-apple-ios")),
+            "dylib"
+        );
+    }
+
+    #[test]
+    fn non_apple_platform_dylibs_keep_platform_extensions() {
+        assert_eq!(
+            lib_extension_for_triple(&triple("aarch64-linux-android")),
+            "so"
+        );
+        assert_eq!(
+            lib_extension_for_triple(&triple("x86_64-unknown-linux-gnu")),
+            "so"
+        );
+        assert_eq!(
+            lib_extension_for_triple(&triple("x86_64-pc-windows-msvc")),
+            "dll"
+        );
+    }
 }

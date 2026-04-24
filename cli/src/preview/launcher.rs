@@ -19,6 +19,7 @@ use tracing::{error, info};
 use super::app_client::PreviewAppClient;
 use super::protocol::DylibId;
 use super::protocol::PreviewPlatform;
+use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
 use super::watcher::ProjectWatcher;
 
@@ -486,9 +487,13 @@ async fn try_connect_existing_preview_app(
     let client = match platform {
         PreviewPlatform::Macos => connect_existing_macos_preview_app(expected_fingerprint).await?,
         PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
-            PreviewAppClient::connect(tcp_config, expected_fingerprint)
-                .await
-                .ok()
+            PreviewAppClient::connect(
+                tcp_config,
+                expected_fingerprint,
+                preview_runtime_platform(platform),
+            )
+            .await
+            .ok()
         }
     };
     let Some(client) = client else {
@@ -511,9 +516,20 @@ async fn try_connect_existing_preview_app(
 async fn connect_existing_macos_preview_app(
     expected_fingerprint: &str,
 ) -> Result<Option<PreviewAppClient>> {
-    Ok(PreviewAppClient::connect_registered(expected_fingerprint)
-        .await
-        .ok())
+    Ok(
+        PreviewAppClient::connect_registered(expected_fingerprint, PreviewRuntimePlatform::Macos)
+            .await
+            .ok(),
+    )
+}
+
+const fn preview_runtime_platform(platform: PreviewPlatform) -> PreviewRuntimePlatform {
+    match platform {
+        PreviewPlatform::Macos => PreviewRuntimePlatform::Macos,
+        PreviewPlatform::IosSimulator => PreviewRuntimePlatform::IosSimulator,
+        PreviewPlatform::Ios => PreviewRuntimePlatform::Ios,
+        PreviewPlatform::Android => PreviewRuntimePlatform::Android,
+    }
 }
 
 async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
@@ -648,20 +664,21 @@ async fn build_preview_session_from_launch(
             let client = match client {
                 Some(client) => client,
                 None => match platform {
-                    PreviewPlatform::Macos => {
-                        PreviewAppClient::connect_registered(&expected_fingerprint)
-                            .await
-                            .wrap_err(
-                                "Preview app became ready but registry connection still failed",
-                            )?
-                    }
+                    PreviewPlatform::Macos => PreviewAppClient::connect_registered(
+                        &expected_fingerprint,
+                        PreviewRuntimePlatform::Macos,
+                    )
+                    .await
+                    .wrap_err("Preview app became ready but registry connection still failed")?,
                     PreviewPlatform::IosSimulator
                     | PreviewPlatform::Ios
-                    | PreviewPlatform::Android => {
-                        PreviewAppClient::connect(tcp_config, &expected_fingerprint)
-                            .await
-                            .wrap_err("Preview app became ready but TCP connection still failed")?
-                    }
+                    | PreviewPlatform::Android => PreviewAppClient::connect(
+                        tcp_config,
+                        &expected_fingerprint,
+                        preview_runtime_platform(platform),
+                    )
+                    .await
+                    .wrap_err("Preview app became ready but TCP connection still failed")?,
                 },
             };
             Ok(PreviewSession {
@@ -738,6 +755,7 @@ async fn wait_for_connection_or_crash(
                 running,
                 tcp_config,
                 expected_fingerprint,
+                preview_runtime_platform(platform),
                 start,
                 STARTUP_TIMEOUT,
                 NON_MACOS_POLL_INTERVAL,
@@ -760,7 +778,9 @@ async fn wait_for_registered_preview_ready(
 ) -> ConnectionWaitResult {
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-    if try_connect_registered_preview(expected_fingerprint, start).await {
+    if try_connect_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
+        .await
+    {
         return ConnectionWaitResult::Ready(None);
     }
 
@@ -787,7 +807,13 @@ async fn wait_for_registered_preview_ready(
     }
 
     loop {
-        if try_connect_registered_preview(expected_fingerprint, start).await {
+        if try_connect_registered_preview(
+            expected_fingerprint,
+            PreviewRuntimePlatform::Macos,
+            start,
+        )
+        .await
+        {
             return ConnectionWaitResult::Ready(None);
         }
 
@@ -805,7 +831,14 @@ async fn wait_for_registered_preview_ready(
 
         select! {
             event = running_event => {
-                if let Some(result) = preview_connection_result_from_device_event(event, expected_fingerprint, start).await {
+                if let Some(result) = preview_connection_result_from_device_event(
+                    event,
+                    expected_fingerprint,
+                    PreviewRuntimePlatform::Macos,
+                    start,
+                )
+                .await
+                {
                     return result;
                 }
             },
@@ -827,12 +860,15 @@ async fn wait_for_polled_preview_ready(
     running: &mut Pin<Box<Running>>,
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
+    expected_platform: PreviewRuntimePlatform,
     start: Instant,
     timeout: Duration,
     poll_interval: Duration,
 ) -> ConnectionWaitResult {
     loop {
-        if try_connect_polled_preview(tcp_config, expected_fingerprint, start).await {
+        if try_connect_polled_preview(tcp_config, expected_fingerprint, expected_platform, start)
+            .await
+        {
             return ConnectionWaitResult::Ready(None);
         }
 
@@ -848,7 +884,14 @@ async fn wait_for_polled_preview_ready(
 
         select! {
             event = running_event => {
-                if let Some(result) = preview_connection_result_from_device_event(event, expected_fingerprint, start).await {
+                if let Some(result) = preview_connection_result_from_device_event(
+                    event,
+                    expected_fingerprint,
+                    expected_platform,
+                    start,
+                )
+                .await
+                {
                     return result;
                 }
             },
@@ -857,8 +900,12 @@ async fn wait_for_polled_preview_ready(
     }
 }
 
-async fn try_connect_registered_preview(expected_fingerprint: &str, start: Instant) -> bool {
-    match PreviewAppClient::connect_registered(expected_fingerprint).await {
+async fn try_connect_registered_preview(
+    expected_fingerprint: &str,
+    expected_platform: PreviewRuntimePlatform,
+    start: Instant,
+) -> bool {
+    match PreviewAppClient::connect_registered(expected_fingerprint, expected_platform).await {
         Ok(_) => {
             info!(
                 "Connected to preview app after {}ms",
@@ -873,9 +920,10 @@ async fn try_connect_registered_preview(expected_fingerprint: &str, start: Insta
 async fn try_connect_polled_preview(
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
+    expected_platform: PreviewRuntimePlatform,
     start: Instant,
 ) -> bool {
-    match PreviewAppClient::connect(tcp_config, expected_fingerprint).await {
+    match PreviewAppClient::connect(tcp_config, expected_fingerprint, expected_platform).await {
         Ok(_) => {
             info!(
                 "Connected to preview app after {}ms",
@@ -890,6 +938,7 @@ async fn try_connect_polled_preview(
 async fn preview_connection_result_from_device_event(
     event: Option<DeviceEvent>,
     expected_fingerprint: &str,
+    expected_platform: PreviewRuntimePlatform,
     start: Instant,
 ) -> Option<ConnectionWaitResult> {
     match event? {
@@ -907,7 +956,9 @@ async fn preview_connection_result_from_device_event(
                 error!("{message}");
             }
             if let Some(addr) = parse_preview_listening_addr(&message)
-                && let Ok(client) = PreviewAppClient::connect_addr(addr, expected_fingerprint).await
+                && let Ok(client) =
+                    PreviewAppClient::connect_addr(addr, expected_fingerprint, expected_platform)
+                        .await
             {
                 info!(
                     "Connected to preview app after {}ms",
