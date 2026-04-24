@@ -25,11 +25,11 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
-use zenwave::{Client, Method, redirect::FollowRedirect};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::{AnyView, Binding, Environment, Metadata, View};
 use waterui_image::Image;
+use zenwave::{Client, Method, redirect::FollowRedirect};
 
 /// A photo component that displays an image from a URL.
 ///

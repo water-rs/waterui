@@ -5,8 +5,8 @@ use core::str::FromStr;
 use std::collections::BTreeSet;
 
 use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
-use icu_locid_transform::fallback::LocaleFallbackConfig;
 use icu_locid_transform::LocaleFallbacker;
+use icu_locid_transform::fallback::LocaleFallbackConfig;
 use icu_provider::DataLocale;
 use nami::impl_constant;
 use waterui_core::Environment;
