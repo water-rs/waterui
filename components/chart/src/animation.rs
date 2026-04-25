@@ -28,13 +28,13 @@ impl EasingType {
             Self::EaseIn => t * t * t,
             Self::EaseOut => {
                 let inv = 1.0 - t;
-                1.0 - inv * inv * inv
+                (inv * inv).mul_add(-inv, 1.0)
             }
             Self::EaseInOut => {
                 if t < 0.5 {
                     4.0 * t * t * t
                 } else {
-                    let inv = -2.0 * t + 2.0;
+                    let inv = (-2.0f32).mul_add(t, 2.0);
                     1.0 - inv * inv * inv / 2.0
                 }
             }
@@ -111,7 +111,7 @@ impl Default for ChartAnimator {
 impl ChartAnimator {
     /// Creates a new animator.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             start_time: None,
             duration: Duration::from_millis(300),
@@ -200,18 +200,18 @@ impl ChartAnimator {
 
     /// Returns true if an animation is in progress.
     #[must_use]
-    pub fn is_animating(&self) -> bool {
+    pub const fn is_animating(&self) -> bool {
         self.start_time.is_some()
     }
 
     /// Returns the current animation state (without updating).
     #[must_use]
-    pub fn current(&self) -> ChartAnimation {
+    pub const fn current(&self) -> ChartAnimation {
         self.current
     }
 
     /// Skips to end of animation.
-    pub fn finish(&mut self) {
+    pub const fn finish(&mut self) {
         self.start_time = None;
         self.current.progress = 1.0;
         self.current.entry_active = 0;

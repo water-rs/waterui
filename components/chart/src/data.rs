@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use nami::impl_constant;
+use num_traits::ToPrimitive as _;
 use waterui_graphics::color::Srgb;
 
 /// Error returned when chart data violates structural constraints.
@@ -25,6 +26,13 @@ pub enum ChartDataError {
     AxisCountTooSmall {
         /// Provided axis count.
         axis_count: u32,
+    },
+    /// A collection dimension is too large for the chart data format.
+    DimensionTooLarge {
+        /// Dimension name.
+        dimension: &'static str,
+        /// Provided value.
+        value: usize,
     },
 }
 
@@ -63,7 +71,7 @@ pub struct Candle {
     /// Trading volume.
     pub volume: f32,
     /// Padding for 32-byte alignment.
-    pub _pad: [f32; 2],
+    pub pad: [f32; 2],
 }
 
 impl Candle {
@@ -84,7 +92,7 @@ impl Candle {
             low,
             close,
             volume,
-            _pad: [0.0; 2],
+            pad: [0.0; 2],
         }
     }
 
@@ -131,7 +139,7 @@ pub struct DepthData {
 impl DepthData {
     /// Creates new depth data.
     #[must_use]
-    pub fn new(bids: Vec<DepthLevel>, asks: Vec<DepthLevel>) -> Self {
+    pub const fn new(bids: Vec<DepthLevel>, asks: Vec<DepthLevel>) -> Self {
         Self { bids, asks }
     }
 
@@ -140,7 +148,7 @@ impl DepthData {
     pub fn mid_price(&self) -> Option<f32> {
         let best_bid = self.bids.first().map(|l| l.price)?;
         let best_ask = self.asks.first().map(|l| l.price)?;
-        Some((best_bid + best_ask) / 2.0)
+        Some(f32::midpoint(best_bid, best_ask))
     }
 
     /// Computes data bounds for axis scaling.
@@ -181,7 +189,7 @@ pub struct HeatmapCell {
     /// Cell value.
     pub value: f32,
     /// Padding for 16-byte alignment.
-    pub _pad: f32,
+    pub pad: f32,
 }
 
 impl HeatmapCell {
@@ -192,7 +200,7 @@ impl HeatmapCell {
             row,
             col,
             value,
-            _pad: 0.0,
+            pad: 0.0,
         }
     }
 }
@@ -233,26 +241,49 @@ impl HeatmapData {
     }
 
     /// Creates a new heatmap from a 2D matrix.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the matrix is empty, ragged, or too large for the chart data format.
     #[must_use]
     pub fn from_matrix(matrix: &[&[f32]]) -> Self {
         Self::try_from_matrix(matrix).expect("Invalid heatmap matrix")
     }
 
     /// Creates a new heatmap from a 2D matrix with validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartDataError`] when the matrix is empty, ragged, or too large for the chart data format.
     pub fn try_from_matrix(matrix: &[&[f32]]) -> Result<Self, ChartDataError> {
         if matrix.is_empty() || matrix[0].is_empty() {
             return Err(ChartDataError::ZeroDimension);
         }
 
-        let rows = matrix.len() as u32;
-        let cols = matrix[0].len() as u32;
+        let rows = u32::try_from(matrix.len()).map_err(|_| ChartDataError::DimensionTooLarge {
+            dimension: "rows",
+            value: matrix.len(),
+        })?;
+        let cols =
+            u32::try_from(matrix[0].len()).map_err(|_| ChartDataError::DimensionTooLarge {
+                dimension: "cols",
+                value: matrix[0].len(),
+            })?;
+        let cols_len = usize::try_from(cols).map_err(|_| ChartDataError::DimensionTooLarge {
+            dimension: "cols",
+            value: matrix[0].len(),
+        })?;
         for row in matrix {
-            if row.len() != cols as usize {
+            if row.len() != cols_len {
                 return Err(ChartDataError::RaggedMatrix);
             }
         }
 
-        let mut values = Vec::with_capacity((rows * cols) as usize);
+        let rows_len = usize::try_from(rows).map_err(|_| ChartDataError::DimensionTooLarge {
+            dimension: "rows",
+            value: matrix.len(),
+        })?;
+        let mut values = Vec::with_capacity(rows_len * cols_len);
         let mut min_value = f32::MAX;
         let mut max_value = f32::MIN;
 
@@ -275,12 +306,20 @@ impl HeatmapData {
     }
 
     /// Creates a new heatmap from row-major values.
+    ///
+    /// # Panics
+    ///
+    /// Panics when dimensions are zero or do not match the number of values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>) -> Self {
         Self::try_new(rows, cols, values).expect("Invalid heatmap dimensions or value count")
     }
 
     /// Creates a new heatmap from row-major values with validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartDataError`] when dimensions are zero or do not match the number of values.
     pub fn try_new(rows: u32, cols: u32, values: Vec<f32>) -> Result<Self, ChartDataError> {
         let (rows, cols) = Self::validate_grid(rows, cols, values.len())?;
         let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
@@ -307,7 +346,7 @@ impl HeatmapData {
 
     /// Returns the total number of cells.
     #[must_use]
-    pub fn cell_count(&self) -> usize {
+    pub const fn cell_count(&self) -> usize {
         (self.rows * self.cols) as usize
     }
 }
@@ -353,6 +392,10 @@ impl ContourData {
     /// Creates contour data from a grid with auto-computed levels.
     ///
     /// Generates evenly-spaced contour levels between min and max values.
+    ///
+    /// # Panics
+    ///
+    /// Panics when dimensions are zero or do not match the number of values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>, num_levels: usize) -> Self {
         Self::try_new(rows, cols, values, num_levels)
@@ -360,6 +403,10 @@ impl ContourData {
     }
 
     /// Creates contour data from a grid with validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartDataError`] when dimensions are zero or do not match the number of values.
     pub fn try_new(
         rows: u32,
         cols: u32,
@@ -374,9 +421,22 @@ impl ContourData {
         // Generate evenly-spaced levels
         let range = max_value - min_value;
         let levels = if range > 0.0 && num_levels > 0 {
+            let denominator =
+                (num_levels + 1)
+                    .to_f32()
+                    .ok_or(ChartDataError::DimensionTooLarge {
+                        dimension: "levels",
+                        value: num_levels + 1,
+                    })?;
             (1..=num_levels)
-                .map(|i| min_value + range * (i as f32 / (num_levels + 1) as f32))
-                .collect()
+                .map(|i| {
+                    let numerator = i.to_f32().ok_or(ChartDataError::DimensionTooLarge {
+                        dimension: "levels",
+                        value: i,
+                    })?;
+                    Ok(range.mul_add(numerator / denominator, min_value))
+                })
+                .collect::<Result<Vec<_>, ChartDataError>>()?
         } else {
             Vec::new()
         };
@@ -392,6 +452,10 @@ impl ContourData {
     }
 
     /// Creates contour data with explicit contour levels.
+    ///
+    /// # Panics
+    ///
+    /// Panics when dimensions are zero or do not match the number of values.
     #[must_use]
     pub fn with_levels(rows: u32, cols: u32, values: Vec<f32>, levels: Vec<f32>) -> Self {
         Self::try_with_levels(rows, cols, values, levels)
@@ -399,6 +463,10 @@ impl ContourData {
     }
 
     /// Creates contour data with explicit contour levels and validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartDataError`] when dimensions are zero or do not match the number of values.
     pub fn try_with_levels(
         rows: u32,
         cols: u32,
@@ -431,13 +499,13 @@ impl ContourData {
 
     /// Returns the total number of cells.
     #[must_use]
-    pub fn cell_count(&self) -> usize {
+    pub const fn cell_count(&self) -> usize {
         (self.rows * self.cols) as usize
     }
 
     /// Returns the number of contour levels.
     #[must_use]
-    pub fn level_count(&self) -> usize {
+    pub const fn level_count(&self) -> usize {
         self.levels.len()
     }
 }
@@ -525,7 +593,7 @@ impl RadarSeries {
 
     /// Sets the series color.
     #[must_use]
-    pub fn color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+    pub const fn color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
         self.color = [r, g, b, a];
         self
     }
@@ -535,16 +603,17 @@ impl RadarSeries {
     pub fn color_hex(mut self, hex: &str) -> Self {
         // Parse hex color directly
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
-            1
-        } else {
-            0
-        };
+        let offset = usize::from(!bytes.is_empty() && bytes[0] == b'#');
         if bytes.len() - offset >= 6 {
             let r = parse_hex_byte(bytes, offset);
             let g = parse_hex_byte(bytes, offset + 2);
             let b = parse_hex_byte(bytes, offset + 4);
-            self.color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
+            self.color = [
+                f32::from(r) / 255.0,
+                f32::from(g) / 255.0,
+                f32::from(b) / 255.0,
+                1.0,
+            ];
         }
         self
     }
@@ -569,13 +638,21 @@ pub struct RadarData {
 
 impl RadarData {
     /// Creates radar data with the specified number of axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `axis_count < 3`.
     #[must_use]
     pub fn new(axis_count: u32) -> Self {
         Self::try_new(axis_count).expect("Radar charts require axis_count >= 3")
     }
 
     /// Creates radar data with validation.
-    pub fn try_new(axis_count: u32) -> Result<Self, ChartDataError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartDataError`] when `axis_count < 3`.
+    pub const fn try_new(axis_count: u32) -> Result<Self, ChartDataError> {
         if axis_count < 3 {
             return Err(ChartDataError::AxisCountTooSmall { axis_count });
         }
@@ -589,6 +666,10 @@ impl RadarData {
     }
 
     /// Creates radar data from a compile-time validated non-zero axis count.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `axis_count < 3`.
     #[must_use]
     pub fn from_non_zero_axis_count(axis_count: NonZeroU32) -> Self {
         Self::try_new(axis_count.get()).expect("Radar charts require axis_count >= 3")
@@ -616,20 +697,20 @@ impl RadarData {
 
     /// Sets the maximum value for scaling.
     #[must_use]
-    pub fn max_value(mut self, max: f32) -> Self {
+    pub const fn max_value(mut self, max: f32) -> Self {
         self.max_value = max;
         self
     }
 
     /// Returns the number of series.
     #[must_use]
-    pub fn series_count(&self) -> usize {
+    pub const fn series_count(&self) -> usize {
         self.series.len()
     }
 
     /// Returns total vertex count for all series (for GPU instancing).
     #[must_use]
-    pub fn total_vertices(&self) -> usize {
+    pub const fn total_vertices(&self) -> usize {
         self.series.len() * self.axis_count as usize
     }
 }
@@ -649,6 +730,10 @@ pub struct GeoPolygon {
 
 impl GeoPolygon {
     /// Creates a new polygon from vertices (auto-tessellates).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the polygon has more vertices than fit in `u32` indices.
     #[must_use]
     pub fn new(id: u32, value: f32, vertices: Vec<[f32; 2]>) -> Self {
         // Simple fan triangulation for convex polygons
@@ -657,8 +742,8 @@ impl GeoPolygon {
             let mut idx = Vec::with_capacity((vertices.len() - 2) * 3);
             for i in 1..(vertices.len() - 1) {
                 idx.push(0);
-                idx.push(i as u32);
-                idx.push((i + 1) as u32);
+                idx.push(u32::try_from(i).expect("polygon vertex index should fit u32"));
+                idx.push(u32::try_from(i + 1).expect("polygon vertex index should fit u32"));
             }
             idx
         } else {
@@ -674,7 +759,12 @@ impl GeoPolygon {
 
     /// Creates a polygon with pre-computed triangle indices.
     #[must_use]
-    pub fn with_indices(id: u32, value: f32, vertices: Vec<[f32; 2]>, indices: Vec<u32>) -> Self {
+    pub const fn with_indices(
+        id: u32,
+        value: f32,
+        vertices: Vec<[f32; 2]>,
+        indices: Vec<u32>,
+    ) -> Self {
         Self {
             id,
             value,
@@ -683,7 +773,7 @@ impl GeoPolygon {
         }
     }
 
-    /// Returns the bounding box [min_x, min_y, max_x, max_y].
+    /// Returns the bounding box [`min_x`, `min_y`, `max_x`, `max_y`].
     #[must_use]
     pub fn bounds(&self) -> [f32; 4] {
         let mut min_x = f32::MAX;
@@ -740,7 +830,7 @@ impl ChoroplethData {
 
     /// Sets explicit value range.
     #[must_use]
-    pub fn range(mut self, min: f32, max: f32) -> Self {
+    pub const fn range(mut self, min: f32, max: f32) -> Self {
         self.min_value = min;
         self.max_value = max;
         self
@@ -758,7 +848,7 @@ impl ChoroplethData {
         self.polygons.iter().map(|p| p.indices.len() / 3).sum()
     }
 
-    /// Computes geographic bounds [min_lon, min_lat, max_lon, max_lat].
+    /// Computes geographic bounds [`min_lon`, `min_lat`, `max_lon`, `max_lat`].
     #[must_use]
     pub fn bounds(&self) -> [f32; 4] {
         let mut min_x = f32::MAX;
@@ -860,7 +950,7 @@ impl<T> Series<T> {
 
     /// Sets the style.
     #[must_use]
-    pub fn style(mut self, style: SeriesStyle) -> Self {
+    pub const fn style(mut self, style: SeriesStyle) -> Self {
         self.style = style;
         self
     }
@@ -869,8 +959,8 @@ impl<T> Series<T> {
 /// Color scale for continuous data mapping.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorScale {
-    /// Color stops as (value_ratio, srgb_color) pairs.
-    /// value_ratio is 0.0 to 1.0 representing min to max.
+    /// Color stops as (`value_ratio`, `srgb_color`) pairs.
+    /// `value_ratio` is 0.0 to 1.0 representing min to max.
     pub stops: Vec<(f32, Srgb)>,
 }
 
@@ -948,7 +1038,7 @@ impl AreaSeries {
 
     /// Sets the series color.
     #[must_use]
-    pub fn color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+    pub const fn color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
         self.color = [r, g, b, a];
         self
     }
@@ -957,16 +1047,17 @@ impl AreaSeries {
     #[must_use]
     pub fn color_hex(mut self, hex: &str) -> Self {
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
-            1
-        } else {
-            0
-        };
+        let offset = usize::from(!bytes.is_empty() && bytes[0] == b'#');
         if bytes.len() - offset >= 6 {
             let r = parse_hex_byte(bytes, offset);
             let g = parse_hex_byte(bytes, offset + 2);
             let b = parse_hex_byte(bytes, offset + 4);
-            self.color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.7];
+            self.color = [
+                f32::from(r) / 255.0,
+                f32::from(g) / 255.0,
+                f32::from(b) / 255.0,
+                0.7,
+            ];
         }
         self
     }
@@ -989,7 +1080,7 @@ pub struct AreaData {
 impl AreaData {
     /// Creates new area data with the given X values.
     #[must_use]
-    pub fn new(x_values: Vec<f32>) -> Self {
+    pub const fn new(x_values: Vec<f32>) -> Self {
         Self {
             x_values,
             series: Vec::new(),
@@ -1013,13 +1104,13 @@ impl AreaData {
 
     /// Returns the number of data points.
     #[must_use]
-    pub fn point_count(&self) -> usize {
+    pub const fn point_count(&self) -> usize {
         self.x_values.len()
     }
 
     /// Returns the number of series.
     #[must_use]
-    pub fn series_count(&self) -> usize {
+    pub const fn series_count(&self) -> usize {
         self.series.len()
     }
 
@@ -1169,7 +1260,7 @@ pub struct GaugeRegion {
 impl GaugeRegion {
     /// Creates a new gauge region.
     #[must_use]
-    pub fn new(threshold: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
+    pub const fn new(threshold: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
             threshold,
             color: [r, g, b, a],
@@ -1180,16 +1271,12 @@ impl GaugeRegion {
     #[must_use]
     pub fn hex(threshold: f32, hex: &str) -> Self {
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
-            1
-        } else {
-            0
-        };
+        let offset = usize::from(!bytes.is_empty() && bytes[0] == b'#');
         let (r, g, b) = if bytes.len() - offset >= 6 {
             (
-                parse_hex_byte(bytes, offset) as f32 / 255.0,
-                parse_hex_byte(bytes, offset + 2) as f32 / 255.0,
-                parse_hex_byte(bytes, offset + 4) as f32 / 255.0,
+                f32::from(parse_hex_byte(bytes, offset)) / 255.0,
+                f32::from(parse_hex_byte(bytes, offset + 2)) / 255.0,
+                f32::from(parse_hex_byte(bytes, offset + 4)) / 255.0,
             )
         } else {
             (0.5, 0.5, 0.5)
@@ -1221,6 +1308,10 @@ pub struct GaugeData {
 
 impl GaugeData {
     /// Creates a new gauge with value and range.
+    ///
+    /// # Panics
+    ///
+    /// Panics when any value is non-finite or `max <= min`.
     #[must_use]
     pub fn new(value: f32, min: f32, max: f32) -> Self {
         assert!(
@@ -1283,7 +1374,7 @@ pub struct BarData {
 impl BarData {
     /// Creates new bar data from points.
     #[must_use]
-    pub fn new(points: Vec<DataPoint>) -> Self {
+    pub const fn new(points: Vec<DataPoint>) -> Self {
         Self { points }
     }
 
@@ -1313,7 +1404,7 @@ pub struct LineData {
 impl LineData {
     /// Creates new line data from points.
     #[must_use]
-    pub fn new(points: Vec<DataPoint>) -> Self {
+    pub const fn new(points: Vec<DataPoint>) -> Self {
         Self { points }
     }
 
@@ -1343,7 +1434,7 @@ pub struct PieData {
 impl PieData {
     /// Creates new pie data from points.
     #[must_use]
-    pub fn new(points: Vec<DataPoint>) -> Self {
+    pub const fn new(points: Vec<DataPoint>) -> Self {
         Self { points }
     }
 
@@ -1373,7 +1464,7 @@ pub struct ScatterData {
 impl ScatterData {
     /// Creates new scatter data from points.
     #[must_use]
-    pub fn new(points: Vec<DataPoint>) -> Self {
+    pub const fn new(points: Vec<DataPoint>) -> Self {
         Self { points }
     }
 
@@ -1402,7 +1493,7 @@ pub struct CandlestickData {
 impl CandlestickData {
     /// Creates new candlestick data from candles.
     #[must_use]
-    pub fn new(candles: Vec<Candle>) -> Self {
+    pub const fn new(candles: Vec<Candle>) -> Self {
         Self { candles }
     }
 
@@ -1431,7 +1522,7 @@ pub struct BubbleData {
 impl BubbleData {
     /// Creates new bubble data from points.
     #[must_use]
-    pub fn new(points: Vec<BubblePoint>) -> Self {
+    pub const fn new(points: Vec<BubblePoint>) -> Self {
         Self { points }
     }
 

@@ -24,7 +24,7 @@ use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 ///
 /// **Recommendation**: Use `LargeFile` on a **background thread**, not the main UI thread.
 ///
-/// # Creating LargeFile
+/// # Creating `LargeFile`
 ///
 /// `LargeFile` **always requires `.await`**, even for local files:
 ///
