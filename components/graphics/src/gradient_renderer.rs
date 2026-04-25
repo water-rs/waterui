@@ -481,7 +481,10 @@ impl View for Gradient {
 }
 
 mod shader_types {
-    #![allow(dead_code)]
+    #![expect(
+        dead_code,
+        reason = "encase ShaderType derive emits layout check helpers"
+    )]
 
     use encase::ShaderType;
 

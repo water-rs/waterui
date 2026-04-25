@@ -168,11 +168,11 @@ use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
 
 // Create highlighter
-let highlighter = DefaultHighlighter::new();
+let mut highlighter = DefaultHighlighter::new();
 
-// Highlight code asynchronously
+// Highlight code
 let code = Str::from("fn main() { println!(\"Hello\"); }");
-let highlighted = highlight_text(Language::Rust, code, highlighter).await;
+let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 ```
 
 ## API Overview
@@ -212,7 +212,7 @@ let highlighted = highlight_text(Language::Rust, code, highlighter).await;
 
 - `Language` - Enum of supported languages (Rust, Swift, Python, Javascript, etc.)
 - `DefaultHighlighter` - Syntect-based highlighter with 40+ languages
-- `highlight_text(lang, text, highlighter)` - Async highlighting function
+- `highlight_text(lang, text, highlighter)` - Highlight code into styled text chunks
 
 ### Localization
 

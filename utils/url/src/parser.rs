@@ -5,11 +5,25 @@
 
 // URLs longer than 65535 bytes are not supported to keep Span compact (uses u16).
 // This is intentional and a reasonable limit for most use cases.
-#![allow(clippy::cast_possible_truncation)]
-
 use crate::{
     BlobComponents, DataComponents, LocalComponents, ParsedComponents, Span, WebComponents,
 };
+
+const fn span_index(index: usize) -> u16 {
+    assert!(
+        index <= u16::MAX as usize,
+        "URL strings longer than 65535 bytes are not supported"
+    );
+    let bytes = index.to_le_bytes();
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+const fn span(start: usize, end: usize) -> Span {
+    Span {
+        start: span_index(start),
+        end: span_index(end),
+    }
+}
 
 // ============================================================================
 // Public API
@@ -96,10 +110,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
     let len = bytes.len();
 
     // Extract scheme: [0..scheme_end]
-    let scheme = Span {
-        start: 0,
-        end: scheme_end as u16,
-    };
+    let scheme = span(0, scheme_end);
 
     // Skip "://"
     let mut pos = scheme_end + 3;
@@ -121,10 +132,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
     let authority_end = find_char_or_end(bytes, pos, b"/?#");
 
     let authority = if authority_end > authority_start {
-        Span {
-            start: authority_start as u16,
-            end: authority_end as u16,
-        }
+        span(authority_start, authority_end)
     } else {
         Span::NONE
     };
@@ -140,10 +148,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
         let path_end = find_char_or_end(bytes, pos, b"?#");
         pos = path_end;
 
-        Span {
-            start: path_start as u16,
-            end: path_end as u16,
-        }
+        span(path_start, path_end)
     } else {
         Span::NONE
     };
@@ -155,10 +160,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
         let query_end = find_char_or_end(bytes, pos, b"#");
         pos = query_end;
 
-        Span {
-            start: query_start as u16,
-            end: query_end as u16,
-        }
+        span(query_start, query_end)
     } else {
         Span::NONE
     };
@@ -166,10 +168,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
     // Parse fragment
     let fragment = if pos < len && bytes[pos] == b'#' {
         pos += 1; // Skip '#'
-        Span {
-            start: pos as u16,
-            end: len as u16,
-        }
+        span(pos, len)
     } else {
         Span::NONE
     };
@@ -218,24 +217,9 @@ const fn parse_host_port(bytes: &[u8], start: usize, end: usize) -> (Span, Span)
     }
 
     if let Some(colon) = colon_pos {
-        (
-            Span {
-                start: host_start as u16,
-                end: colon as u16,
-            },
-            Span {
-                start: (colon + 1) as u16,
-                end: end as u16,
-            },
-        )
+        (span(host_start, colon), span(colon + 1, end))
     } else {
-        (
-            Span {
-                start: host_start as u16,
-                end: end as u16,
-            },
-            Span::NONE,
-        )
+        (span(host_start, end), Span::NONE)
     }
 }
 
@@ -261,18 +245,12 @@ const fn parse_data_url(bytes: &[u8]) -> DataComponents {
         if let Some(semi) = semicolon_pos {
             // Has encoding
             let mime = if semi > pos {
-                Span {
-                    start: pos as u16,
-                    end: semi as u16,
-                }
+                span(pos, semi)
             } else {
                 Span::NONE
             };
             let enc = if metadata_end > semi + 1 {
-                Span {
-                    start: (semi + 1) as u16,
-                    end: metadata_end as u16,
-                }
+                span(semi + 1, metadata_end)
             } else {
                 Span::NONE
             };
@@ -280,10 +258,7 @@ const fn parse_data_url(bytes: &[u8]) -> DataComponents {
         } else {
             // No encoding, just mime type
             let mime = if metadata_end > pos {
-                Span {
-                    start: pos as u16,
-                    end: metadata_end as u16,
-                }
+                span(pos, metadata_end)
             } else {
                 Span::NONE
             };
@@ -295,10 +270,7 @@ const fn parse_data_url(bytes: &[u8]) -> DataComponents {
     };
 
     let data = if data_start < len {
-        Span {
-            start: data_start as u16,
-            end: len as u16,
-        }
+        span(data_start, len)
     } else {
         Span::NONE
     };
@@ -320,10 +292,7 @@ const fn parse_blob_url(bytes: &[u8]) -> BlobComponents {
 
     BlobComponents {
         identifier: if start < len {
-            Span {
-                start: start as u16,
-                end: len as u16,
-            }
+            span(start, len)
         } else {
             Span::NONE
         },
@@ -357,10 +326,7 @@ const fn parse_local_path(bytes: &[u8]) -> LocalComponents {
     };
 
     LocalComponents {
-        path: Span {
-            start: 0,
-            end: len as u16,
-        },
+        path: span(0, len),
         is_absolute,
         is_windows,
     }

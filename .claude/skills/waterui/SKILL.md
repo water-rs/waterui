@@ -11,6 +11,7 @@ Build views with reactive state. When unsure, use Explore agent to search `examp
 
 - WaterUI is fine-grained reactive with reconstruction semantics. If parent-driven control flow rebuilds a component instance, that instance's local state resetting is expected and correct.
 - Do not "fix" rebuild-driven resets by caching hidden state across rebuilds. If state must survive, lift it into explicit reactive ownership at the right level.
+- Lints are quality feedback, not obstacles. Do not add crate-level, file-level, or module-level `allow` attributes during cleanup; fix the code, docs, API shape, or type invariant instead. When a lint is a genuine false positive or conflicts with intended architecture/readability, use the narrowest item-level `allow`/`expect` with a concrete reason instead of distorting the code; WaterUI's main-thread `spawn_local` UI futures may intentionally capture non-`Send` view state.
 - `waterui-testing` uses the Hydrolysis accessibility tree, not native platform accessibility. Use it to validate both interaction logic and accessibility correctness.
 - Every UI component is expected to expose a meaningful accessibility tree. If Hydrolysis coverage is missing, fix the component or renderer rather than falling back to weak tests.
 - "Visual test" means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden: no pixel counters, threshold diffs, non-uniform checks, dominant-color checks, bbox approximations, or similar proxy code.

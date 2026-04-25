@@ -23,8 +23,6 @@
 //!     .gravity(0.0, 2.5);
 //! ```
 
-#![allow(clippy::multiple_crate_versions)]
-
 mod config;
 mod gpu;
 mod renderer;

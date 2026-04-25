@@ -85,17 +85,18 @@ impl Tabs {
     ///
     /// * `selection` - Binding to the currently selected tab identifier
     /// * `tabs` - Collection of tabs to display
-    pub fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
+    #[must_use]
+    pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
         Self {
             selection,
             tabs,
-            position: TabPosition::default(),
+            position: TabPosition::Bottom,
         }
     }
 
     /// Sets the position of the tab bar.
     #[must_use]
-    pub fn position(mut self, position: TabPosition) -> Self {
+    pub const fn position(mut self, position: TabPosition) -> Self {
         self.position = position;
         self
     }

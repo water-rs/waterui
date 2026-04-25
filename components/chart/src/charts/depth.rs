@@ -24,7 +24,10 @@ pub struct DepthChart<S: Signal<Output = DepthData>> {
     composition: ChartComposition<DepthDatum>,
 }
 
+crate::charts::impl_chart_debug!(DepthChart, S, DepthData);
+
 impl<S: Signal<Output = DepthData>> DepthChart<S> {
+    /// Creates a depth chart from reactive order-book data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -42,31 +45,36 @@ impl<S: Signal<Output = DepthData>> DepthChart<S> {
 
     crate::composition::chart_composition_methods!(DepthDatum);
 
+    /// Sets the bid-side fill color.
     #[must_use]
-    pub fn bid_color(mut self, color: Srgb) -> Self {
+    pub const fn bid_color(mut self, color: Srgb) -> Self {
         self.bid_color = color;
         self
     }
 
+    /// Sets the ask-side fill color.
     #[must_use]
-    pub fn ask_color(mut self, color: Srgb) -> Self {
+    pub const fn ask_color(mut self, color: Srgb) -> Self {
         self.ask_color = color;
         self
     }
 
+    /// Sets both bid and ask colors.
     #[must_use]
-    pub fn colors(mut self, bid: Srgb, ask: Srgb) -> Self {
+    pub const fn colors(mut self, bid: Srgb, ask: Srgb) -> Self {
         self.bid_color = bid;
         self.ask_color = ask;
         self
     }
 
+    /// Tracks the currently focused depth level in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<DepthDatum>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected depth level in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<DepthDatum>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -75,14 +83,14 @@ impl<S: Signal<Output = DepthData>> DepthChart<S> {
 }
 
 impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let bid_color = self.bid_color;
         let ask_color = self.ask_color;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             depth_bounds,
-            move |ctx, data, bounds| depth_geometry(ctx, data, bounds),
+            depth_geometry,
             move |ctx, data, geometry| {
                 draw_depth(ctx, data, geometry.bounds, bid_color, ask_color);
             },
