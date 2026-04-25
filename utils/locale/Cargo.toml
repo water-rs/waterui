@@ -14,7 +14,6 @@ categories = ["internationalization", "localization"]
 # Core dependencies
 waterui-core.workspace = true
 waterui-str.workspace = true
-waterkit-regional.workspace = true
 nami.workspace = true
 anyhow = "1.0"
 
@@ -36,6 +35,8 @@ num = "0.4"
 serde = { workspace = true, features = ["derive"] }
 toml = "0.8"
 tracing.workspace = true
+sys-locale.workspace = true
+iana-time-zone.workspace = true
 
 [features]
 default = []

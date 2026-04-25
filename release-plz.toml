@@ -53,6 +53,10 @@ name = "waterui-url"
 git_tag_name = "url-v{{ version }}"
 
 [[package]]
+name = "waterui-locale"
+git_tag_name = "locale-v{{ version }}"
+
+[[package]]
 name = "waterui-macros"
 git_tag_name = "macros-v{{ version }}"
 
