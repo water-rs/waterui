@@ -27,7 +27,10 @@ pub struct BubbleChart<S: Signal<Output = Vec<BubblePoint>>> {
     composition: ChartComposition<BubblePoint>,
 }
 
+crate::charts::impl_chart_debug!(BubbleChart, S, Vec<BubblePoint>);
+
 impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
+    /// Creates a bubble chart from reactive bubble data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -47,18 +50,25 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
 
     crate::composition::chart_composition_methods!(BubblePoint);
 
+    /// Sets the bubble fill color.
     #[must_use]
-    pub fn color(mut self, color: Srgb) -> Self {
+    pub const fn color(mut self, color: Srgb) -> Self {
         self.color = color;
         self
     }
 
+    /// Sets the minimum bubble radius and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `radius` is not finite or is not strictly positive.
     #[must_use]
     pub fn min_radius(self, radius: f32) -> Self {
         self.try_min_radius(radius)
             .expect("BubbleChart::min_radius(radius) requires finite radius > 0")
     }
 
+    /// Sets the minimum bubble radius using an already-validated positive value.
     #[must_use]
     pub fn with_min_radius(mut self, radius: PositiveF32) -> Self {
         self.min_radius = radius.get();
@@ -68,16 +78,27 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
         self
     }
 
+    /// Attempts to set the minimum bubble radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
     pub fn try_min_radius(self, radius: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_min_radius(PositiveF32::try_new(radius)?))
     }
 
+    /// Sets the maximum bubble radius and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `radius` is not finite or is not strictly positive.
     #[must_use]
     pub fn max_radius(self, radius: f32) -> Self {
         self.try_max_radius(radius)
             .expect("BubbleChart::max_radius(radius) requires finite radius > 0")
     }
 
+    /// Sets the maximum bubble radius using an already-validated positive value.
     #[must_use]
     pub fn with_max_radius(mut self, radius: PositiveF32) -> Self {
         self.max_radius = radius.get();
@@ -87,32 +108,50 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
         self
     }
 
+    /// Attempts to set the maximum bubble radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
     pub fn try_max_radius(self, radius: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_max_radius(PositiveF32::try_new(radius)?))
     }
 
+    /// Sets bubble opacity and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `opacity` is not finite or is outside `0.0..=1.0`.
     #[must_use]
     pub fn opacity(self, opacity: f32) -> Self {
         self.try_opacity(opacity)
             .expect("BubbleChart::opacity(opacity) requires finite 0.0 <= opacity <= 1.0")
     }
 
+    /// Sets bubble opacity using an already-validated unit interval.
     #[must_use]
-    pub fn with_opacity(mut self, opacity: UnitInterval) -> Self {
+    pub const fn with_opacity(mut self, opacity: UnitInterval) -> Self {
         self.opacity = opacity.get();
         self
     }
 
+    /// Attempts to set bubble opacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `opacity` is not finite or is outside `0.0..=1.0`.
     pub fn try_opacity(self, opacity: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_opacity(UnitInterval::try_new(opacity)?))
     }
 
+    /// Tracks the currently focused bubble in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<BubblePoint>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected bubble in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<BubblePoint>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -121,13 +160,13 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
 }
 
 impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let color = self.color;
         let min_radius = self.min_radius;
         let max_radius = self.max_radius;
         let opacity = self.opacity;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             |data: &Vec<BubblePoint>| bubble_bounds(data),
             move |ctx, data, bounds| bubble_geometry(ctx, data, bounds, min_radius, max_radius),

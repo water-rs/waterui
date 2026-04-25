@@ -13,7 +13,7 @@ fn local_scope(env: &Environment) -> LocalStateScope {
         .clone()
 }
 
-pub(crate) fn local_binding<T: Clone + 'static>(
+pub fn local_binding<T: Clone + 'static>(
     env: &Environment,
     init: impl FnOnce() -> T + 'static,
 ) -> Binding<T> {
@@ -25,10 +25,7 @@ pub(crate) fn local_binding<T: Clone + 'static>(
         .binding(&scope, init)
 }
 
-pub(crate) fn local_shared<T: 'static>(
-    env: &Environment,
-    init: impl FnOnce() -> T + 'static,
-) -> Rc<T> {
+pub fn local_shared<T: 'static>(env: &Environment, init: impl FnOnce() -> T + 'static) -> Rc<T> {
     let scope = local_scope(env);
     env.get::<LocalStateStore>()
         .unwrap_or_else(|| {

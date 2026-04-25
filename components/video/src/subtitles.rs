@@ -1,19 +1,19 @@
 use std::{path::Path, time::Duration};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SubtitleCue {
+pub struct SubtitleCue {
     pub(crate) start: Duration,
     pub(crate) end: Duration,
     pub(crate) text: String,
 }
 
-pub(crate) fn parse_subtitles_from_path(path: &Path) -> Result<Vec<SubtitleCue>, String> {
+pub fn parse_subtitles_from_path(path: &Path) -> Result<Vec<SubtitleCue>, String> {
     let document = std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read subtitle file {}: {error}", path.display()))?;
     parse_subtitle_document(path, &document)
 }
 
-pub(crate) fn active_subtitle_text(cues: &[SubtitleCue], position: Duration) -> Option<&str> {
+pub fn active_subtitle_text(cues: &[SubtitleCue], position: Duration) -> Option<&str> {
     cues.iter()
         .rev()
         .find(|cue| cue.start <= position && position < cue.end)

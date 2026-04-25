@@ -99,6 +99,7 @@ pub struct PlaybackPolicy {
 
 impl PlaybackPolicy {
     /// Default VOD policy.
+    #[must_use]
     pub const fn vod_default() -> Self {
         Self {
             realtime: false,
@@ -110,6 +111,7 @@ impl PlaybackPolicy {
     }
 
     /// Default realtime/live policy.
+    #[must_use]
     pub const fn live_default() -> Self {
         Self {
             realtime: true,

@@ -189,7 +189,10 @@ impl Default for AnimatedMeshGradientConfig {
 }
 
 mod shader_types {
-    #![allow(dead_code)]
+    #![expect(
+        dead_code,
+        reason = "encase ShaderType derive emits layout check helpers"
+    )]
 
     use super::ANIMATED_MESH_PALETTE_LEN;
     use encase::ShaderType;

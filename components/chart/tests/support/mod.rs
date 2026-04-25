@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityRole;
@@ -23,12 +21,12 @@ const PIE_PADDING_RATIO: f32 = 0.06;
 const SEMANTIC_CHART_SHELL_SPACING: f32 = 4.0;
 
 pub fn horizontal_drag_domain_delta(visible_length: f32, from_x: f32, to_x: f32) -> f32 {
-    (from_x - to_x) * CHART_WIDTH / (CHART_WIDTH * (1.0 - CHART_PADDING_RATIO * 2.0))
+    (from_x - to_x) * CHART_WIDTH / (CHART_WIDTH * CHART_PADDING_RATIO.mul_add(-2.0, 1.0))
         * visible_length
 }
 
 pub fn vertical_drag_domain_delta(visible_length: f32, from_y: f32, to_y: f32) -> f32 {
-    (from_y - to_y) * CHART_HEIGHT / (CHART_HEIGHT * (1.0 - CHART_PADDING_RATIO * 2.0))
+    (from_y - to_y) * CHART_HEIGHT / (CHART_HEIGHT * CHART_PADDING_RATIO.mul_add(-2.0, 1.0))
         * visible_length
 }
 
@@ -36,7 +34,9 @@ pub fn point_series() -> Vec<DataPoint> {
     (0..24)
         .map(|index| {
             let x = index as f32;
-            let y = 24.0 + (x * 0.42).sin() * 9.0 + (x * 0.17).cos() * 5.0;
+            let y = (x * 0.17)
+                .cos()
+                .mul_add(5.0, (x * 0.42).sin().mul_add(9.0, 24.0));
             DataPoint::new(x, y)
         })
         .collect()
@@ -46,8 +46,10 @@ pub fn bubble_series() -> Vec<BubblePoint> {
     (0..32)
         .map(|index| {
             let x = index as f32 * 0.75;
-            let y = 18.0 + (x * 0.28).sin() * 10.0 + (x * 0.09).cos() * 4.0;
-            let size = 4.0 + (index % 7) as f32 * 2.25;
+            let y = (x * 0.09)
+                .cos()
+                .mul_add(4.0, (x * 0.28).sin().mul_add(10.0, 18.0));
+            let size = ((index % 7) as f32).mul_add(2.25, 4.0);
             BubblePoint::new(x, y, size)
         })
         .collect()
@@ -61,9 +63,9 @@ pub fn candle_series() -> Vec<Candle> {
         let drift = (index as f32 * 0.31).sin() * 4.5;
         let open = price;
         let close = open + drift;
-        let high = open.max(close) + 1.4 + (index % 4) as f32 * 0.25;
-        let low = open.min(close) - 1.1 - (index % 5) as f32 * 0.2;
-        let volume = 20_000.0 + index as f32 * 350.0;
+        let high = ((index % 4) as f32).mul_add(0.25, open.max(close) + 1.4);
+        let low = ((index % 5) as f32).mul_add(-0.2, open.min(close) - 1.1);
+        let volume = (index as f32).mul_add(350.0, 20_000.0);
         candles.push(Candle::new(timestamp, open, high, low, close, volume));
         price = close;
     }
@@ -76,12 +78,12 @@ pub fn depth_data() -> DepthData {
     let mut bid_cumulative = 0.0_f32;
     let mut ask_cumulative = 0.0_f32;
     for index in 0..24 {
-        let bid_price = 99.8 - index as f32 * 0.08;
-        bid_cumulative += 6.0 + (index % 5) as f32 * 1.2;
+        let bid_price = (index as f32).mul_add(-0.08, 99.8);
+        bid_cumulative += ((index % 5) as f32).mul_add(1.2, 6.0);
         bids.push(DepthLevel::new(bid_price, bid_cumulative));
 
-        let ask_price = 100.2 + index as f32 * 0.08;
-        ask_cumulative += 6.5 + (index % 4) as f32 * 1.1;
+        let ask_price = (index as f32).mul_add(0.08, 100.2);
+        ask_cumulative += ((index % 4) as f32).mul_add(1.1, 6.5);
         asks.push(DepthLevel::new(ask_price, ask_cumulative));
     }
     DepthData::new(bids, asks)
@@ -183,7 +185,7 @@ pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> Str
         app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
         "{name}: accessibility image element did not appear"
     );
-    app.assert_exists(selector.clone());
+    app.assert_exists(selector);
     let element = app
         .query()
         .role(Role::IMAGE)
@@ -304,8 +306,8 @@ fn normalized_plot_point(bounds: DataBounds, x: f32, y: f32) -> (f32, f32) {
     let nx = (x - bounds.min_x) / (bounds.max_x - bounds.min_x);
     let ny = (y - bounds.min_y) / (bounds.max_y - bounds.min_y);
     (
-        CHART_PADDING_RATIO + nx * (1.0 - CHART_PADDING_RATIO * 2.0),
-        CHART_PADDING_RATIO + (1.0 - ny) * (1.0 - CHART_PADDING_RATIO * 2.0),
+        nx.mul_add(CHART_PADDING_RATIO.mul_add(-2.0, 1.0), CHART_PADDING_RATIO),
+        (1.0 - ny).mul_add(CHART_PADDING_RATIO.mul_add(-2.0, 1.0), CHART_PADDING_RATIO),
     )
 }
 
@@ -367,8 +369,8 @@ pub fn area_hit_location(data: &AreaData, series: usize, index: usize) -> (f32, 
 
 pub fn pie_hit_location(data: &[DataPoint], index: usize, inner_radius: f32) -> (f32, f32) {
     let total: f32 = data.iter().map(|point| point.y.max(0.0)).sum();
-    let plot_width = CHART_WIDTH * (1.0 - PIE_PADDING_RATIO * 2.0);
-    let plot_height = CHART_HEIGHT * (1.0 - PIE_PADDING_RATIO * 2.0);
+    let plot_width = CHART_WIDTH * PIE_PADDING_RATIO.mul_add(-2.0, 1.0);
+    let plot_height = CHART_HEIGHT * PIE_PADDING_RATIO.mul_add(-2.0, 1.0);
     let outer_radius = plot_width.min(plot_height) * 0.45;
     let inner_radius = outer_radius * inner_radius;
     let mid_radius = (inner_radius + outer_radius) * 0.5;
@@ -382,8 +384,8 @@ pub fn pie_hit_location(data: &[DataPoint], index: usize, inner_radius: f32) -> 
         let end_angle = start_angle + sweep;
         if current_index == index {
             let mid_angle = start_angle + sweep * 0.5;
-            let x = center_x + mid_angle.cos() * mid_radius;
-            let y = center_y + mid_angle.sin() * mid_radius;
+            let x = mid_angle.cos().mul_add(mid_radius, center_x);
+            let y = mid_angle.sin().mul_add(mid_radius, center_y);
             return (x / CHART_WIDTH, y / CHART_HEIGHT);
         }
         start_angle = end_angle;

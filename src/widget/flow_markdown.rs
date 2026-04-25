@@ -55,7 +55,7 @@ impl FlowMarkdown {
 
     /// Sets the animation preset.
     #[must_use]
-    pub fn preset(mut self, preset: FlowAnimationPreset) -> Self {
+    pub const fn preset(mut self, preset: FlowAnimationPreset) -> Self {
         self.config.preset = preset;
         self
     }
@@ -73,7 +73,7 @@ impl FlowMarkdown {
 
     /// Sets stream mode.
     #[must_use]
-    pub fn stream(mut self, mode: FlowStreamMode) -> Self {
+    pub const fn stream(mut self, mode: FlowStreamMode) -> Self {
         self.config.stream_mode = mode;
         self
     }
@@ -87,7 +87,7 @@ impl FlowMarkdown {
 
     /// Sets table rendering policy for incomplete streamed tables.
     #[must_use]
-    pub fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
+    pub const fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
         self.config.table_policy = policy;
         self
     }
@@ -96,7 +96,7 @@ impl FlowMarkdown {
     ///
     /// Use `None` to disable token fade-in.
     #[must_use]
-    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+    pub const fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
         self.config.typewriter_token_fade_in = animation;
         self
     }
@@ -241,7 +241,7 @@ const INCOMPLETE_LINK_SENTINEL: &str = "flowmarkdown:incomplete-link";
 pub enum FlowAnimationPolicy {
     /// No animation.
     None,
-    /// Fade/cross-dissolve using WaterUI animation metadata.
+    /// Fade/cross-dissolve using `WaterUI` animation metadata.
     Fade(Animation),
     /// Typewriter-style progressive reveal for text-like content.
     Typewriter {
@@ -317,6 +317,10 @@ impl FlowMarkdownState {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Streaming markdown reconciliation keeps the parser state transition in one readable pass"
+    )]
     fn recompute(&mut self, markdown: &str, upstream_metadata: WatcherMetadata) -> FlowUpdate {
         let previous_len = self.source.len();
         let is_append_only = markdown.starts_with(&self.source);
@@ -588,7 +592,7 @@ fn collect_changed_ranges(
         }
     }
 
-    vec![0..text_len]
+    core::iter::once(0..text_len).collect()
 }
 
 fn collect_block_ranges(tree: &Tree, text_len: usize) -> Vec<BlockRange> {
@@ -656,32 +660,28 @@ fn parse_block(
         slice.truncate(utf8_boundary_at_or_before(&slice, max_pending_bytes));
     }
 
-    let elements = match () {
-        _ if block.kind == FlowElementKind::Table && is_incomplete_table(&slice) => {
-            match table_policy {
-                FlowTablePolicy::NoAnimationReadablePending => {
-                    vec![RichTextElement::Text(StyledStr::plain(
-                        "Streaming table...".to_string(),
-                    ))]
-                }
-            }
-        }
-        _ if block.kind == FlowElementKind::Image && is_incomplete_image_fragment(&slice) => {
-            vec![RichTextElement::Text(StyledStr::plain(
-                extract_image_alt_or_placeholder(&slice),
-            ))]
-        }
-        _ => {
-            let completed = complete_incomplete_markdown_fragment(&slice);
-            let rich = RichText::from_markdown(&completed);
-            let parsed = normalize_incomplete_link_elements(rich.elements().to_vec());
-            if parsed.is_empty() {
+    let elements = if block.kind == FlowElementKind::Table && is_incomplete_table(&slice) {
+        match table_policy {
+            FlowTablePolicy::NoAnimationReadablePending => {
                 vec![RichTextElement::Text(StyledStr::plain(
-                    sanitize_pending_text_fragment(&slice),
+                    "Streaming table...".to_string(),
                 ))]
-            } else {
-                parsed
             }
+        }
+    } else if block.kind == FlowElementKind::Image && is_incomplete_image_fragment(&slice) {
+        vec![RichTextElement::Text(StyledStr::plain(
+            extract_image_alt_or_placeholder(&slice),
+        ))]
+    } else {
+        let completed = complete_incomplete_markdown_fragment(&slice);
+        let rich = RichText::from_markdown(&completed);
+        let parsed = normalize_incomplete_link_elements(rich.elements().to_vec());
+        if parsed.is_empty() {
+            vec![RichTextElement::Text(StyledStr::plain(
+                sanitize_pending_text_fragment(&slice),
+            ))]
+        } else {
+            parsed
         }
     };
 
@@ -694,7 +694,7 @@ fn parse_block(
     }
 }
 
-fn utf8_boundary_at_or_before(value: &str, max_len: usize) -> usize {
+const fn utf8_boundary_at_or_before(value: &str, max_len: usize) -> usize {
     if max_len >= value.len() {
         return value.len();
     }
@@ -1098,11 +1098,9 @@ fn byte_in_ranges(index: usize, ranges: &[Range<usize>], cursor: &mut usize) -> 
     while *cursor < ranges.len() && index >= ranges[*cursor].end {
         *cursor += 1;
     }
-    if let Some(range) = ranges.get(*cursor) {
-        index >= range.start && index < range.end
-    } else {
-        false
-    }
+    ranges
+        .get(*cursor)
+        .is_some_and(|range| index >= range.start && index < range.end)
 }
 
 fn infer_block_kind(
@@ -1224,7 +1222,7 @@ fn build_flow_view(
 fn push_rich_text_element_view(views: &mut Vec<AnyView>, element: RichTextElement) {
     match element {
         RichTextElement::Code { code, language } => {
-            views.push(AnyView::new(flow_code_view(language, code.as_str())));
+            views.push(AnyView::new(flow_code_view(&language, code.as_str())));
         }
         _ => views.push(AnyView::new(element)),
     }
@@ -1387,7 +1385,7 @@ fn truncate_styled(styled: &StyledStr, max_chars: usize) -> StyledStr {
     out
 }
 
-fn flow_code_view(language: Language, code: &str) -> impl View {
+fn flow_code_view(language: &Language, code: &str) -> impl View {
     let highlighted = highlight_code_with_tree_sitter(language, code);
     VStack::new(
         HorizontalAlignment::Leading,
@@ -1398,7 +1396,7 @@ fn flow_code_view(language: Language, code: &str) -> impl View {
     .background(Srgb::new_u8(23, 26, 30))
 }
 
-fn highlight_code_with_tree_sitter(language: Language, code: &str) -> StyledStr {
+fn highlight_code_with_tree_sitter(language: &Language, code: &str) -> StyledStr {
     let Some(ts_language) = language_to_tree_sitter(language) else {
         return code_monospace_plain(code);
     };
@@ -1427,7 +1425,7 @@ fn highlight_code_with_tree_sitter(language: Language, code: &str) -> StyledStr 
         if end > start
             && let Some(fragment) = code.get(start..end)
         {
-            styled.push(fragment.to_string(), style_for_token_kind(kind));
+            styled.push(fragment.to_string(), style_for_token_kind(&kind));
             cursor = end;
         }
     }
@@ -1471,7 +1469,7 @@ fn code_base_style() -> Style {
         .foreground(Srgb::new_u8(224, 232, 240))
 }
 
-fn style_for_token_kind(kind: String) -> Style {
+fn style_for_token_kind(kind: &str) -> Style {
     let base = code_base_style();
     if kind.contains("comment") {
         base.foreground(Srgb::new_u8(141, 153, 168))
@@ -1490,7 +1488,7 @@ fn style_for_token_kind(kind: String) -> Style {
     }
 }
 
-fn language_to_tree_sitter(language: Language) -> Option<tree_sitter::Language> {
+fn language_to_tree_sitter(language: &Language) -> Option<tree_sitter::Language> {
     match language {
         Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
         Language::Javascript => Some(tree_sitter_javascript::LANGUAGE.into()),
@@ -1622,7 +1620,7 @@ fn advance_point(mut point: Point, text: &str) -> Point {
     point
 }
 
-fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
+const fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 

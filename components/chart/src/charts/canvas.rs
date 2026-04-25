@@ -8,6 +8,7 @@ use core::time::Duration;
 use std::time::Instant;
 
 use nami::{Signal, SignalExt as _};
+use num_traits::ToPrimitive as _;
 use waterui_canvas::{Canvas, DrawingContext, Path};
 use waterui_core::{
     Environment, Metadata,
@@ -54,6 +55,20 @@ const VIRIDIS_STOPS: [(f32, Srgb); 5] = [
     (1.0, Srgb::from_hex("#FDE725")),
 ];
 
+fn usize_to_f32(value: usize) -> f32 {
+    value
+        .to_f32()
+        .expect("chart collection length should fit f32")
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value.to_f32().expect("chart dimension should fit f32")
+}
+
+fn u32_to_usize(value: u32) -> usize {
+    usize::try_from(value).expect("chart dimension should fit usize")
+}
+
 #[derive(Debug)]
 struct ChartTransitionState<D> {
     epoch: Instant,
@@ -90,7 +105,7 @@ impl<D> ChartTransitionState<D> {
         self.animator.update(now).progress
     }
 
-    fn is_animating(&self) -> bool {
+    const fn is_animating(&self) -> bool {
         self.animator.is_animating()
     }
 }
@@ -165,7 +180,7 @@ pub(crate) struct HitTargets<T> {
 }
 
 impl<T> HitTargets<T> {
-    fn new(viewport: ChartViewport) -> Self {
+    const fn new(viewport: ChartViewport) -> Self {
         Self {
             viewport,
             targets: Vec::new(),
@@ -248,7 +263,7 @@ pub(crate) struct CartesianGeometry<T> {
 }
 
 impl<T> CartesianGeometry<T> {
-    fn new(bounds: DataBounds, viewport: ChartViewport, targets: HitTargets<T>) -> Self {
+    const fn new(bounds: DataBounds, viewport: ChartViewport, targets: HitTargets<T>) -> Self {
         Self {
             bounds,
             viewport,
@@ -267,14 +282,14 @@ impl<T: Clone + 'static> HitGeometry<T> for CartesianGeometry<T> {
     }
 }
 
-fn gesture_point_to_point(point: GesturePoint) -> Point {
+const fn gesture_point_to_point(point: GesturePoint) -> Point {
     Point::new(point.x, point.y)
 }
 
 fn distance_squared(a: Point, b: Point) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
-    dx * dx + dy * dy
+    dx.mul_add(dx, dy * dy)
 }
 
 fn rect_contains(rect: Rect, point: Point) -> bool {
@@ -309,7 +324,7 @@ fn sector_contains(
 ) -> bool {
     let dx = point.x - center.x;
     let dy = point.y - center.y;
-    let distance = (dx * dx + dy * dy).sqrt();
+    let distance = dx.hypot(dy);
     if distance < inner_radius || distance > outer_radius {
         return false;
     }
@@ -357,7 +372,12 @@ fn cartesian_x_from_point<T>(
         return None;
     };
     let normalized_x = ((x - viewport.x) / viewport.width).clamp(0.0, 1.0);
-    Some(geometry.bounds.min_x + geometry.bounds.width() * normalized_x)
+    Some(
+        geometry
+            .bounds
+            .width()
+            .mul_add(normalized_x, geometry.bounds.min_x),
+    )
 }
 
 fn cartesian_y_from_point<T>(
@@ -377,7 +397,12 @@ fn cartesian_y_from_point<T>(
         return None;
     };
     let normalized_y = ((y - viewport.y) / viewport.height).clamp(0.0, 1.0);
-    Some(geometry.bounds.max_y - geometry.bounds.height() * normalized_y)
+    Some(
+        geometry
+            .bounds
+            .height()
+            .mul_add(-normalized_y, geometry.bounds.max_y),
+    )
 }
 
 #[inline]
@@ -389,6 +414,12 @@ fn normalized_scalar_range(start: f32, end: f32) -> core::ops::RangeInclusive<f3
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    reason = "This internal adapter owns generic callbacks and bindings so they can move into Canvas' static event closures without extra type erasure"
+)]
 pub(crate) fn interactive_cartesian_signal_canvas<S, D, T, B, G, F>(
     env: &Environment,
     signal: S,
@@ -501,10 +532,10 @@ where
             let geometry = Rc::clone(&geometry);
             let base_bounds = Rc::clone(&base_bounds);
             let selection = selection.clone();
-            let cartesian_selection = cartesian_selection.clone();
-            let cartesian_viewport = cartesian_viewport.clone();
-            let x_range_start = x_range_start.clone();
-            let y_range_start = y_range_start.clone();
+            let cartesian_selection = cartesian_selection;
+            let cartesian_viewport = cartesian_viewport;
+            let x_range_start = x_range_start;
+            let y_range_start = y_range_start;
             move |env: Environment| {
                 let handles_selection_drag = selection.is_active()
                     || cartesian_selection.is_active()
@@ -530,7 +561,7 @@ where
                     match drag_event.phase {
                         GesturePhase::Started => {
                             let hit = geometry.hit_test(point);
-                            selection.set_focus(hit.clone());
+                            selection.set_focus(hit);
                             let start_point = Point::new(
                                 point.x - drag_event.translation.x,
                                 point.y - drag_event.translation.y,
@@ -656,9 +687,8 @@ where
                                 let visible_width = geometry.bounds.width();
                                 let max_start =
                                     (base_bounds.max_x - visible_width).max(base_bounds.min_x);
-                                let candidate = start
-                                    - drag_event.translation.x / plot_viewport.width
-                                        * visible_width;
+                                let candidate = (drag_event.translation.x / plot_viewport.width)
+                                    .mul_add(-visible_width, start);
                                 let clamped = if max_start <= base_bounds.min_x {
                                     base_bounds.min_x
                                 } else {
@@ -675,9 +705,8 @@ where
                                 let visible_height = geometry.bounds.height();
                                 let max_start =
                                     (base_bounds.max_y - visible_height).max(base_bounds.min_y);
-                                let candidate = start
-                                    - drag_event.translation.y / plot_viewport.height
-                                        * visible_height;
+                                let candidate = (drag_event.translation.y / plot_viewport.height)
+                                    .mul_add(-visible_height, start);
                                 let clamped = if max_start <= base_bounds.min_y {
                                     base_bounds.min_y
                                 } else {
@@ -733,6 +762,11 @@ where
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    reason = "This internal adapter keeps Canvas drawing and event wiring together while moving callback ownership into static closures"
+)]
 pub(crate) fn interactive_signal_canvas<S, D, G, T, B, F>(
     env: &Environment,
     signal: S,
@@ -883,19 +917,19 @@ where
 fn srgb_lerp(a: Srgb, b: Srgb, t: f32) -> Srgb {
     let t = t.clamp(0.0, 1.0);
     Srgb::new(
-        a.red + (b.red - a.red) * t,
-        a.green + (b.green - a.green) * t,
-        a.blue + (b.blue - a.blue) * t,
+        (b.red - a.red).mul_add(t, a.red),
+        (b.green - a.green).mul_add(t, a.green),
+        (b.blue - a.blue).mul_add(t, a.blue),
     )
 }
 
 #[inline]
-fn from_rgba(color: [f32; 4]) -> Srgb {
+const fn from_rgba(color: [f32; 4]) -> Srgb {
     Srgb::new(color[0], color[1], color[2])
 }
 
 #[inline]
-fn alpha(color: [f32; 4]) -> f32 {
+const fn alpha(color: [f32; 4]) -> f32 {
     color[3].clamp(0.0, 1.0)
 }
 
@@ -968,14 +1002,14 @@ fn plot_rect(ctx: &DrawingContext<'_>, padding_ratio: f32) -> Rect {
     Rect::new(
         Point::new(inset_x, inset_y),
         Size::new(
-            (width - inset_x * 2.0).max(1.0),
-            (height - inset_y * 2.0).max(1.0),
+            inset_x.mul_add(-2.0, width).max(1.0),
+            inset_y.mul_add(-2.0, height).max(1.0),
         ),
     )
 }
 
 #[inline]
-fn chart_viewport_from_rect(rect: Rect) -> ChartViewport {
+const fn chart_viewport_from_rect(rect: Rect) -> ChartViewport {
     ChartViewport::new(rect.min_x(), rect.min_y(), rect.width(), rect.height())
 }
 
@@ -984,8 +1018,8 @@ fn map_xy(plot: Rect, bounds: DataBounds, x: f32, y: f32) -> Point {
     let nx = (x - bounds.min_x) / (bounds.max_x - bounds.min_x);
     let ny = (y - bounds.min_y) / (bounds.max_y - bounds.min_y);
     Point::new(
-        plot.min_x() + nx * plot.width(),
-        plot.max_y() - ny * plot.height(),
+        nx.mul_add(plot.width(), plot.min_x()),
+        ny.mul_add(-plot.height(), plot.max_y()),
     )
 }
 
@@ -1013,7 +1047,7 @@ pub(crate) fn bar_geometry(
     let bar_width = if data.is_empty() {
         1.0
     } else {
-        (plot.width() / data.len() as f32 * 0.7).max(1.0)
+        (plot.width() / usize_to_f32(data.len()) * 0.7).max(1.0)
     };
     let baseline_y = map_xy(plot, bounds, bounds.min_x, 0.0).y;
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
@@ -1050,7 +1084,7 @@ pub(crate) fn bubble_geometry(
     for (index, point) in data.iter().enumerate() {
         let anchor = map_xy(plot, bounds, point.x, point.y);
         let t = (point.size - min_size) / size_span;
-        let radius = min_radius + (max_radius - min_radius) * t;
+        let radius = (max_radius - min_radius).mul_add(t, min_radius);
         targets.push_circle(
             HitResult::new(0, index, *point, anchor),
             anchor,
@@ -1069,7 +1103,7 @@ pub(crate) fn candlestick_geometry(
     let candle_width = if data.is_empty() {
         1.0
     } else {
-        (plot.width() / data.len() as f32 * 0.65).max(1.0)
+        (plot.width() / usize_to_f32(data.len()) * 0.65).max(1.0)
     };
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, candle) in data.iter().enumerate() {
@@ -1126,21 +1160,26 @@ pub(crate) fn area_geometry(
         if series.values.is_empty() {
             continue;
         }
-        for index in 0..point_count.min(series.values.len()) {
+        for (index, ((cumulative_y, series_y), x)) in cumulative
+            .iter_mut()
+            .zip(&series.values)
+            .zip(&data.x_values)
+            .enumerate()
+        {
             let y = if data.stacked {
-                cumulative[index] + series.values[index]
+                *cumulative_y + *series_y
             } else {
-                series.values[index]
+                *series_y
             };
-            let anchor = map_xy(plot, bounds, data.x_values[index], y);
-            let value = AreaDatum::new(series_index, data.x_values[index], y);
+            let anchor = map_xy(plot, bounds, *x, y);
+            let value = AreaDatum::new(series_index, *x, y);
             targets.push_circle(
                 HitResult::new(series_index, index, value, anchor),
                 anchor,
                 10.0,
             );
             if data.stacked {
-                cumulative[index] = y;
+                *cumulative_y = y;
             }
         }
     }
@@ -1171,7 +1210,10 @@ pub(crate) fn pie_geometry(
         let sweep = TAU * (value / total);
         let end = angle + sweep;
         let mid = angle + sweep * 0.5;
-        let anchor = Point::new(center.x + mid.cos() * mid_r, center.y + mid.sin() * mid_r);
+        let anchor = Point::new(
+            mid.cos().mul_add(mid_r, center.x),
+            mid.sin().mul_add(mid_r, center.y),
+        );
         let datum = SliceDatum::new(index, point.y, angle, end);
         targets.push_sector(
             HitResult::new(0, index, datum, anchor),
@@ -1200,11 +1242,11 @@ pub(crate) fn gauge_geometry(
     let outer_r = (min_dim * outer_radius).max(1.0);
     let inner_r = (min_dim * inner_radius).max(0.5);
     let normalized = data.normalized_value();
-    let value_end = start_angle + (end_angle - start_angle) * normalized;
-    let mid = start_angle + (value_end - start_angle) * 0.5;
+    let value_end = (end_angle - start_angle).mul_add(normalized, start_angle);
+    let mid = (value_end - start_angle).mul_add(0.5, start_angle);
     let anchor = Point::new(
-        center.x + mid.cos() * ((inner_r + outer_r) * 0.5),
-        center.y + mid.sin() * ((inner_r + outer_r) * 0.5),
+        mid.cos().mul_add((inner_r + outer_r) * 0.5, center.x),
+        mid.sin().mul_add((inner_r + outer_r) * 0.5, center.y),
     );
     let mut targets = HitTargets::new(chart_viewport_from_rect(area));
     let datum = SliceDatum::new(0, data.value, start_angle, value_end);
@@ -1223,7 +1265,7 @@ pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitT
     let plot = plot_rect(ctx, 0.08);
     let center = plot.center();
     let radius = plot.width().min(plot.height()) * 0.45;
-    let axis_count = data.axis_count as usize;
+    let axis_count = u32_to_usize(data.axis_count);
     let max_value = data.max_value.max(1.0);
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (series_index, series) in data.series.iter().enumerate() {
@@ -1232,10 +1274,10 @@ pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitT
         }
         for axis in 0..axis_count {
             let ratio = (series.values[axis] / max_value).clamp(0.0, 1.0);
-            let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
+            let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
             let anchor = Point::new(
-                center.x + angle.cos() * radius * ratio,
-                center.y + angle.sin() * radius * ratio,
+                (angle.cos() * radius).mul_add(ratio, center.x),
+                (angle.sin() * radius).mul_add(ratio, center.y),
             );
             let label = data.labels.as_slice().get(axis).cloned();
             let datum = RadarDatum::new(axis, label, series.values[axis]);
@@ -1254,16 +1296,18 @@ pub(crate) fn heatmap_geometry(
     data: &HeatmapData,
 ) -> HitTargets<GridDatum> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let cell_w = plot.width() / data.cols.max(1) as f32;
-    let cell_h = plot.height() / data.rows.max(1) as f32;
+    let cell_w = plot.width() / u32_to_f32(data.cols.max(1));
+    let cell_h = plot.height() / u32_to_f32(data.rows.max(1));
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
-    for row in 0..data.rows as usize {
-        for col in 0..data.cols as usize {
-            let idx = row * data.cols as usize + col;
+    let rows = u32_to_usize(data.rows);
+    let cols = u32_to_usize(data.cols);
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row * cols + col;
             let rect = Rect::new(
                 Point::new(
-                    plot.min_x() + col as f32 * cell_w,
-                    plot.min_y() + row as f32 * cell_h,
+                    usize_to_f32(col).mul_add(cell_w, plot.min_x()),
+                    usize_to_f32(row).mul_add(cell_h, plot.min_y()),
                 ),
                 Size::new(cell_w.max(1.0), cell_h.max(1.0)),
             );
@@ -1279,24 +1323,26 @@ pub(crate) fn contour_geometry(
     data: &ContourData,
 ) -> HitTargets<GridDatum> {
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let cell_w = plot.width() / (data.cols.saturating_sub(1)).max(1) as f32;
-    let cell_h = plot.height() / (data.rows.saturating_sub(1)).max(1) as f32;
+    let cell_w = plot.width() / u32_to_f32((data.cols.saturating_sub(1)).max(1));
+    let cell_h = plot.height() / u32_to_f32((data.rows.saturating_sub(1)).max(1));
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     if data.rows < 2 || data.cols < 2 {
         return targets;
     }
-    for row in 0..(data.rows as usize - 1) {
-        for col in 0..(data.cols as usize - 1) {
-            let i00 = row * data.cols as usize + col;
+    let rows = u32_to_usize(data.rows);
+    let cols = u32_to_usize(data.cols);
+    for row in 0..(rows - 1) {
+        for col in 0..(cols - 1) {
+            let i00 = row * cols + col;
             let i10 = i00 + 1;
-            let i01 = (row + 1) * data.cols as usize + col;
+            let i01 = (row + 1) * cols + col;
             let i11 = i01 + 1;
             let average =
                 (data.values[i00] + data.values[i10] + data.values[i01] + data.values[i11]) * 0.25;
             let rect = Rect::new(
                 Point::new(
-                    plot.min_x() + col as f32 * cell_w,
-                    plot.min_y() + row as f32 * cell_h,
+                    usize_to_f32(col).mul_add(cell_w, plot.min_x()),
+                    usize_to_f32(row).mul_add(cell_h, plot.min_y()),
                 ),
                 Size::new(cell_w.max(1.0), cell_h.max(1.0)),
             );
@@ -1318,8 +1364,8 @@ pub(crate) fn choropleth_geometry(
     let scale = (plot.width() / width).min(plot.height() / height);
     let content_w = width * scale;
     let content_h = height * scale;
-    let offset_x = plot.min_x() + (plot.width() - content_w) * 0.5;
-    let offset_y = plot.min_y() + (plot.height() - content_h) * 0.5;
+    let offset_x = (plot.width() - content_w).mul_add(0.5, plot.min_x());
+    let offset_y = (plot.height() - content_h).mul_add(0.5, plot.min_y());
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
     for (index, polygon) in data.polygons.iter().enumerate() {
         if polygon.vertices.len() < 3 {
@@ -1329,15 +1375,19 @@ pub(crate) fn choropleth_geometry(
             .vertices
             .iter()
             .map(|vertex| {
-                let x = offset_x + (vertex[0] - min_x) * scale;
-                let y = offset_y + (max_y - vertex[1]) * scale;
+                let x = (vertex[0] - min_x).mul_add(scale, offset_x);
+                let y = (max_y - vertex[1]).mul_add(scale, offset_y);
                 Point::new(x, y)
             })
             .collect();
         let [polygon_min_x, polygon_min_y, polygon_max_x, polygon_max_y] = polygon.bounds();
         let anchor = Point::new(
-            offset_x + ((polygon_min_x + polygon_max_x) * 0.5 - min_x) * scale,
-            offset_y + (max_y - (polygon_min_y + polygon_max_y) * 0.5) * scale,
+            (polygon_min_x + polygon_max_x)
+                .mul_add(0.5, -min_x)
+                .mul_add(scale, offset_x),
+            (polygon_min_y + polygon_max_y)
+                .mul_add(-0.5, max_y)
+                .mul_add(scale, offset_y),
         );
         let datum = RegionDatum::new(index, polygon.id, polygon.value);
         targets.push_polygon(HitResult::new(0, index, datum, anchor), vertices);
@@ -1461,7 +1511,7 @@ pub(crate) fn draw_bar(
 
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
 
-    let bar_width = (plot.width() / data.len() as f32) * 0.7;
+    let bar_width = (plot.width() / usize_to_f32(data.len())) * 0.7;
     let baseline_y = map_xy(plot, bounds, bounds.min_x, 0.0).y;
 
     ctx.set_fill_style(color);
@@ -1525,7 +1575,7 @@ pub(crate) fn draw_bubble(
     for point in data {
         let center = map_xy(plot, bounds, point.x, point.y);
         let t = (point.size - min_size) / size_span;
-        let radius = min_radius + (max_radius - min_radius) * t;
+        let radius = (max_radius - min_radius).mul_add(t, min_radius);
 
         let (bubble_color, bubble_alpha) = if point.color[3] > 0.0 {
             (from_rgba(point.color), alpha(point.color))
@@ -1553,7 +1603,7 @@ pub(crate) fn draw_candlestick(
     }
 
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let candle_width = (plot.width() / data.len() as f32 * 0.65).max(1.0);
+    let candle_width = (plot.width() / usize_to_f32(data.len()) * 0.65).max(1.0);
 
     for candle in data {
         let color = if candle.close >= candle.open {
@@ -1649,18 +1699,18 @@ pub(crate) fn draw_heatmap(ctx: &mut DrawingContext<'_>, data: &HeatmapData) {
     }
 
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let cell_w = plot.width() / data.cols as f32;
-    let cell_h = plot.height() / data.rows as f32;
+    let cell_w = plot.width() / u32_to_f32(data.cols);
+    let cell_h = plot.height() / u32_to_f32(data.rows);
 
     for row in 0..data.rows {
         for col in 0..data.cols {
-            let idx = (row * data.cols + col) as usize;
+            let idx = u32_to_usize(row * data.cols + col);
             let value = data.values[idx];
             let color = viridis(value, data.min_value, data.max_value);
             let rect = Rect::new(
                 Point::new(
-                    plot.min_x() + col as f32 * cell_w,
-                    plot.min_y() + row as f32 * cell_h,
+                    u32_to_f32(col).mul_add(cell_w, plot.min_x()),
+                    u32_to_f32(row).mul_add(cell_h, plot.min_y()),
                 ),
                 Size::new(cell_w.max(1.0), cell_h.max(1.0)),
             );
@@ -1679,7 +1729,10 @@ fn contour_interpolate(p1: Point, p2: Point, v1: f32, v2: f32, level: f32) -> Po
     }
     .clamp(0.0, 1.0);
 
-    Point::new(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t)
+    Point::new(
+        (p2.x - p1.x).mul_add(t, p1.x),
+        (p2.y - p1.y).mul_add(t, p1.y),
+    )
 }
 
 pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, line_width: f32) {
@@ -1688,8 +1741,8 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
     }
 
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
-    let step_x = plot.width() / (data.cols - 1) as f32;
-    let step_y = plot.height() / (data.rows - 1) as f32;
+    let step_x = plot.width() / u32_to_f32(data.cols - 1);
+    let step_y = plot.height() / u32_to_f32(data.rows - 1);
 
     for (level_index, &level) in data.levels.iter().enumerate() {
         let color = viridis(level, data.min_value, data.max_value);
@@ -1698,9 +1751,9 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
 
         for row in 0..(data.rows - 1) {
             for col in 0..(data.cols - 1) {
-                let i00 = (row * data.cols + col) as usize;
+                let i00 = u32_to_usize(row * data.cols + col);
                 let i10 = i00 + 1;
-                let i01 = ((row + 1) * data.cols + col) as usize;
+                let i01 = u32_to_usize((row + 1) * data.cols + col);
                 let i11 = i01 + 1;
 
                 let v00 = data.values[i00];
@@ -1709,8 +1762,8 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
                 let v11 = data.values[i11];
 
                 let p00 = Point::new(
-                    plot.min_x() + col as f32 * step_x,
-                    plot.min_y() + row as f32 * step_y,
+                    u32_to_f32(col).mul_add(step_x, plot.min_x()),
+                    u32_to_f32(row).mul_add(step_y, plot.min_y()),
                 );
                 let p10 = Point::new(p00.x + step_x, p00.y);
                 let p01 = Point::new(p00.x, p00.y + step_y);
@@ -1769,6 +1822,10 @@ pub(crate) fn draw_contour(ctx: &mut DrawingContext<'_>, data: &ContourData, lin
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Gauge rendering consumes independent geometric and color parameters from the public builder state without allocating an intermediate style object"
+)]
 pub(crate) fn draw_gauge(
     ctx: &mut DrawingContext<'_>,
     data: &GaugeData,
@@ -1795,7 +1852,7 @@ pub(crate) fn draw_gauge(
     ctx.stroke_path(&background);
 
     let normalized = data.normalized_value();
-    let value_end = start_angle + (end_angle - start_angle) * normalized;
+    let value_end = (end_angle - start_angle).mul_add(normalized, start_angle);
     let value_span = data.max_value - data.min_value;
 
     if data.regions.is_empty() {
@@ -1813,8 +1870,8 @@ pub(crate) fn draw_gauge(
         for region in &data.regions {
             let start_t = ((last_threshold - data.min_value) / value_span).clamp(0.0, 1.0);
             let end_t = ((region.threshold - data.min_value) / value_span).clamp(0.0, 1.0);
-            let seg_start = start_angle + (end_angle - start_angle) * start_t;
-            let seg_end = start_angle + (end_angle - start_angle) * end_t;
+            let seg_start = (end_angle - start_angle).mul_add(start_t, start_angle);
+            let seg_end = (end_angle - start_angle).mul_add(end_t, start_angle);
             let mut segment = Path::new();
             segment.arc(center, ring_r, seg_start, seg_end, false);
             ctx.set_line_width(stroke_w);
@@ -1827,8 +1884,8 @@ pub(crate) fn draw_gauge(
     if data.show_needle {
         let needle_len = outer_r * 0.95;
         let tip = Point::new(
-            center.x + value_end.cos() * needle_len,
-            center.y + value_end.sin() * needle_len,
+            value_end.cos().mul_add(needle_len, center.x),
+            value_end.sin().mul_add(needle_len, center.y),
         );
         ctx.set_line_width((stroke_w * 0.12).max(2.0));
         ctx.set_stroke_style(needle_color);
@@ -1853,19 +1910,22 @@ pub(crate) fn draw_radar(
     let plot = plot_rect(ctx, 0.08);
     let center = plot.center();
     let radius = plot.width().min(plot.height()) * 0.45;
-    let axis_count = data.axis_count as usize;
+    let axis_count = u32_to_usize(data.axis_count);
     let max_value = data.max_value.max(1.0);
 
     ctx.set_line_width(1.0);
     ctx.set_stroke_style(Srgb::new(0.5, 0.5, 0.5));
 
     for ring in 1..=ring_count.max(1) {
-        let t = ring as f32 / ring_count.max(1) as f32;
+        let t = u32_to_f32(ring) / u32_to_f32(ring_count.max(1));
         let r = radius * t;
         let mut path = Path::new();
         for axis in 0..axis_count {
-            let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
-            let p = Point::new(center.x + angle.cos() * r, center.y + angle.sin() * r);
+            let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
+            let p = Point::new(
+                angle.cos().mul_add(r, center.x),
+                angle.sin().mul_add(r, center.y),
+            );
             if axis == 0 {
                 path.move_to(p);
             } else {
@@ -1877,10 +1937,10 @@ pub(crate) fn draw_radar(
     }
 
     for axis in 0..axis_count {
-        let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
+        let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
         let end = Point::new(
-            center.x + angle.cos() * radius,
-            center.y + angle.sin() * radius,
+            angle.cos().mul_add(radius, center.x),
+            angle.sin().mul_add(radius, center.y),
         );
         ctx.stroke_line(center, end);
     }
@@ -1893,10 +1953,10 @@ pub(crate) fn draw_radar(
         let mut poly = Path::new();
         for axis in 0..axis_count {
             let ratio = (series.values[axis] / max_value).clamp(0.0, 1.0);
-            let angle = -FRAC_PI_2 + axis as f32 * TAU / axis_count as f32;
+            let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
             let p = Point::new(
-                center.x + angle.cos() * radius * ratio,
-                center.y + angle.sin() * radius * ratio,
+                (angle.cos() * radius).mul_add(ratio, center.x),
+                (angle.sin() * radius).mul_add(ratio, center.y),
             );
             if axis == 0 {
                 poly.move_to(p);
@@ -1950,21 +2010,20 @@ pub(crate) fn draw_pie(
         let sweep = TAU * (value / total);
         let end = angle + sweep;
 
-        let color = if let Some(custom) = colors.get(index) {
-            *custom
-        } else {
-            Srgb::from_u32(PIE_DEFAULT_COLORS[index % PIE_DEFAULT_COLORS.len()])
-        };
+        let color = colors.get(index).map_or_else(
+            || Srgb::from_u32(PIE_DEFAULT_COLORS[index % PIE_DEFAULT_COLORS.len()]),
+            |custom| *custom,
+        );
 
         let mut path = Path::new();
         if inner_r > 0.0 {
             let outer_start = Point::new(
-                center.x + angle.cos() * outer_r,
-                center.y + angle.sin() * outer_r,
+                angle.cos().mul_add(outer_r, center.x),
+                angle.sin().mul_add(outer_r, center.y),
             );
             let inner_end = Point::new(
-                center.x + end.cos() * inner_r,
-                center.y + end.sin() * inner_r,
+                end.cos().mul_add(inner_r, center.x),
+                end.sin().mul_add(inner_r, center.y),
             );
             path.move_to(outer_start);
             path.arc(center, outer_r, angle, end, false);
@@ -1974,8 +2033,8 @@ pub(crate) fn draw_pie(
         } else {
             path.move_to(center);
             path.line_to(Point::new(
-                center.x + angle.cos() * outer_r,
-                center.y + angle.sin() * outer_r,
+                angle.cos().mul_add(outer_r, center.x),
+                angle.sin().mul_add(outer_r, center.y),
             ));
             path.arc(center, outer_r, angle, end, false);
         }
@@ -2007,8 +2066,8 @@ pub(crate) fn draw_choropleth(
     let scale = (plot.width() / width).min(plot.height() / height);
     let content_w = width * scale;
     let content_h = height * scale;
-    let offset_x = plot.min_x() + (plot.width() - content_w) * 0.5;
-    let offset_y = plot.min_y() + (plot.height() - content_h) * 0.5;
+    let offset_x = (plot.width() - content_w).mul_add(0.5, plot.min_x());
+    let offset_y = (plot.height() - content_h).mul_add(0.5, plot.min_y());
 
     for polygon in &data.polygons {
         if polygon.vertices.len() < 3 {
@@ -2017,8 +2076,8 @@ pub(crate) fn draw_choropleth(
 
         let mut path = Path::new();
         for (index, vertex) in polygon.vertices.iter().enumerate() {
-            let x = offset_x + (vertex[0] - min_x) * scale;
-            let y = offset_y + (max_y - vertex[1]) * scale;
+            let x = (vertex[0] - min_x).mul_add(scale, offset_x);
+            let y = (max_y - vertex[1]).mul_add(scale, offset_y);
             let point = Point::new(x, y);
             if index == 0 {
                 path.move_to(point);
@@ -2069,19 +2128,24 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: D
             path.move_to(map_xy(plot, bounds, data.x_values[0], cumulative[0]));
             path.line_to(map_xy(plot, bounds, data.x_values[0], first_top));
 
-            for index in 1..point_count.min(series.values.len()) {
-                let top = cumulative[index] + series.values[index];
-                path.line_to(map_xy(plot, bounds, data.x_values[index], top));
+            for ((cumulative_y, series_y), x) in cumulative
+                .iter()
+                .zip(&series.values)
+                .zip(&data.x_values)
+                .skip(1)
+            {
+                let top = *cumulative_y + *series_y;
+                path.line_to(map_xy(plot, bounds, *x, top));
             }
 
-            for index in (0..point_count.min(series.values.len())).rev() {
-                path.line_to(map_xy(
-                    plot,
-                    bounds,
-                    data.x_values[index],
-                    cumulative[index],
-                ));
-                cumulative[index] += series.values[index];
+            for ((cumulative_y, series_y), x) in cumulative
+                .iter_mut()
+                .zip(&series.values)
+                .zip(&data.x_values)
+                .rev()
+            {
+                path.line_to(map_xy(plot, bounds, *x, *cumulative_y));
+                *cumulative_y += *series_y;
             }
         } else {
             path.move_to(map_xy(plot, bounds, data.x_values[0], 0.0));
@@ -2120,13 +2184,18 @@ pub(crate) fn draw_area(ctx: &mut DrawingContext<'_>, data: &AreaData, bounds: D
                 series.values[0]
             },
         ));
-        for index in 1..point_count.min(series.values.len()) {
+        for ((cumulative_y, series_y), x) in cumulative
+            .iter()
+            .zip(&series.values)
+            .zip(&data.x_values)
+            .skip(1)
+        {
             let y = if data.stacked {
-                cumulative[index]
+                *cumulative_y
             } else {
-                series.values[index]
+                *series_y
             };
-            top_line.line_to(map_xy(plot, bounds, data.x_values[index], y));
+            top_line.line_to(map_xy(plot, bounds, *x, y));
         }
         ctx.set_line_width(1.5);
         ctx.set_stroke_style(color);

@@ -56,14 +56,14 @@ impl ColorPicker {
 
     /// Enables or disables alpha channel support.
     #[must_use]
-    pub fn support_alpha(mut self, enable: bool) -> Self {
+    pub const fn support_alpha(mut self, enable: bool) -> Self {
         self.0.support_alpha = enable;
         self
     }
 
     /// Enables or disables HDR color support.
     #[must_use]
-    pub fn support_hdr(mut self, enable: bool) -> Self {
+    pub const fn support_hdr(mut self, enable: bool) -> Self {
         self.0.support_hdr = enable;
         self
     }

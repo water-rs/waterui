@@ -1,3 +1,5 @@
+//! Split-view navigation primitives.
+
 use alloc::rc::Rc;
 
 use waterui_core::handler::AnyViewBuilder;
@@ -7,8 +9,9 @@ use waterui_core::{AnyView, Binding, View, raw_view};
 
 use crate::NavigationView;
 
-fn empty_placeholder() {}
+const fn empty_placeholder() {}
 
+/// Type-erased detail builder used by native split navigation backends.
 #[derive(Clone)]
 pub struct NavigationSplitDetailBuilder(Rc<dyn Fn(Id) -> NavigationView>);
 
@@ -32,7 +35,7 @@ impl NavigationSplitDetailBuilder {
         }))
     }
 
-    #[must_use]
+    /// Builds the detail view for a selected sidebar identifier.
     pub fn build(&self, selected: Id) -> NavigationView {
         (self.0)(selected)
     }
@@ -101,25 +104,25 @@ impl NavigationSplitLayout {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn sidebar(&self) -> &AnyViewBuilder<AnyView> {
+    pub const fn sidebar(&self) -> &AnyViewBuilder<AnyView> {
         &self.sidebar
     }
 
     #[doc(hidden)]
     #[must_use]
-    pub fn placeholder(&self) -> &AnyViewBuilder<AnyView> {
+    pub const fn placeholder(&self) -> &AnyViewBuilder<AnyView> {
         &self.placeholder
     }
 
     #[doc(hidden)]
     #[must_use]
-    pub fn selection(&self) -> &Binding<Option<Id>> {
+    pub const fn selection(&self) -> &Binding<Option<Id>> {
         &self.selection
     }
 
     #[doc(hidden)]
     #[must_use]
-    pub fn detail_builder(&self) -> &NavigationSplitDetailBuilder {
+    pub const fn detail_builder(&self) -> &NavigationSplitDetailBuilder {
         &self.detail
     }
 
@@ -143,6 +146,16 @@ pub struct NavigationSplitView<T: 'static, Sidebar, Detail, Placeholder = fn() -
     sidebar_width: f32,
 }
 
+impl<T, Sidebar, Detail, Placeholder> core::fmt::Debug
+    for NavigationSplitView<T, Sidebar, Detail, Placeholder>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationSplitView")
+            .field("sidebar_width", &self.sidebar_width)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T, Sidebar, Detail> NavigationSplitView<T, Sidebar, Detail, fn() -> ()> {
     /// Creates a split view driven by a caller-owned optional selection binding.
     pub fn new(selection: &Binding<Option<T>>, sidebar: Sidebar, detail: Detail) -> Self {
@@ -158,7 +171,6 @@ impl<T, Sidebar, Detail> NavigationSplitView<T, Sidebar, Detail, fn() -> ()> {
 
 impl<T, Sidebar, Detail, Placeholder> NavigationSplitView<T, Sidebar, Detail, Placeholder> {
     /// Sets the placeholder displayed on regular-width layouts with no selection.
-    #[must_use]
     pub fn placeholder<NewPlaceholder>(
         self,
         placeholder: NewPlaceholder,
@@ -173,7 +185,10 @@ impl<T, Sidebar, Detail, Placeholder> NavigationSplitView<T, Sidebar, Detail, Pl
     }
 
     /// Sets the preferred sidebar width for regular-width layouts.
-    #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sidebar_width` is not finite and positive.
     pub fn sidebar_width(mut self, sidebar_width: f32) -> Self {
         assert!(
             sidebar_width.is_finite() && sidebar_width > 0.0,

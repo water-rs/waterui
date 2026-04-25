@@ -163,18 +163,17 @@ impl View for Photo {
                         AnyView::new(image)
                     }
                 }
-                Err(error) => {
-                    if let Some(on_event) = on_event {
+                Err(error) => on_event.map_or_else(
+                    || AnyView::new(()),
+                    |on_event| {
                         AnyView::new(Metadata::new(
                             (),
                             LifeCycleHook::new(LifeCycle::Appear, move || {
                                 on_event(Event::Error(error.clone()));
                             }),
                         ))
-                    } else {
-                        AnyView::new(())
-                    }
-                }
+                    },
+                ),
             };
         }
         let on_event = RefCell::new(on_event);
@@ -202,7 +201,8 @@ fn spawn_load_task(
     handler: DynamicHandler,
 ) {
     spawn_local(async move {
-        match fetch_and_decode_streaming(url, |image| publish_decoded_frame(&handler, image)).await
+        match fetch_and_decode_streaming(url, move |image| publish_decoded_frame(&handler, image))
+            .await
         {
             Ok(()) => {
                 if let Some(on_event) = on_event {
@@ -223,12 +223,18 @@ fn spawn_load_task(
 /// Fetch and decode an image from a URL with streaming/progressive updates.
 ///
 /// The callback is invoked for every published frame, including the final full-quality frame.
+#[allow(
+    clippy::future_not_send,
+    reason = "WaterUI drives Photo loading on the main-thread executor; decoded frames update UI-local DynamicHandler state"
+)]
 async fn fetch_and_decode_streaming(
     url: Url,
     mut on_decoded_frame: impl FnMut(Image),
 ) -> Result<(), String> {
-    if url.is_local() {
-        let path = url.as_str().to_string();
+    let is_local = url.is_local();
+    let url = url.as_str().to_string();
+    if is_local {
+        let path = url;
         #[cfg(target_arch = "wasm32")]
         let bytes = WaterFs::read(Path::new(&path))
             .await
@@ -244,7 +250,7 @@ async fn fetch_and_decode_streaming(
 
     let mut client = FollowRedirect::new(zenwave::client());
     let response = client
-        .method(Method::GET, url.as_str())
+        .method(Method::GET, &url)
         .await
         .map_err(|e| e.to_string())?;
 

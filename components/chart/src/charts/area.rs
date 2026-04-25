@@ -21,7 +21,10 @@ pub struct AreaChart<S: Signal<Output = AreaData>> {
     composition: ChartComposition<AreaDatum>,
 }
 
+crate::charts::impl_chart_debug!(AreaChart, S, AreaData);
+
 impl<S: Signal<Output = AreaData>> AreaChart<S> {
+    /// Creates an area chart from reactive area-series data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -37,12 +40,14 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 
     crate::composition::chart_composition_methods!(AreaDatum);
 
+    /// Tracks the currently focused area datum in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<AreaDatum>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected area datum in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<AreaDatum>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -51,12 +56,12 @@ impl<S: Signal<Output = AreaData>> AreaChart<S> {
 }
 
 impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             area_bounds,
-            move |ctx, data, bounds| area_geometry(ctx, data, bounds),
+            area_geometry,
             move |ctx, data, geometry| {
                 draw_area(ctx, data, geometry.bounds);
             },

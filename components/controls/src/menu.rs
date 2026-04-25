@@ -24,14 +24,43 @@ use crate::{
 /// Keyboard shortcut modifiers used by commands and system menus.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShortcutModifiers {
-    /// Command modifier on Apple platforms.
-    pub command: bool,
-    /// Shift modifier.
-    pub shift: bool,
-    /// Option/Alt modifier.
-    pub option: bool,
-    /// Control modifier.
-    pub control: bool,
+    flags: u8,
+}
+
+impl ShortcutModifiers {
+    const COMMAND: u8 = 1 << 0;
+    const SHIFT: u8 = 1 << 1;
+    const OPTION: u8 = 1 << 2;
+    const CONTROL: u8 = 1 << 3;
+
+    /// Returns whether the command modifier is active.
+    #[must_use]
+    pub const fn command(self) -> bool {
+        self.flags & Self::COMMAND != 0
+    }
+
+    /// Returns whether the shift modifier is active.
+    #[must_use]
+    pub const fn shift(self) -> bool {
+        self.flags & Self::SHIFT != 0
+    }
+
+    /// Returns whether the option/alt modifier is active.
+    #[must_use]
+    pub const fn option(self) -> bool {
+        self.flags & Self::OPTION != 0
+    }
+
+    /// Returns whether the control modifier is active.
+    #[must_use]
+    pub const fn control(self) -> bool {
+        self.flags & Self::CONTROL != 0
+    }
+
+    const fn inserting(mut self, flag: u8) -> Self {
+        self.flags |= flag;
+        self
+    }
 }
 
 /// Keyboard shortcut metadata attached to a command.
@@ -56,28 +85,28 @@ impl Shortcut {
     /// Adds the command modifier.
     #[must_use]
     pub const fn command(mut self) -> Self {
-        self.modifiers.command = true;
+        self.modifiers = self.modifiers.inserting(ShortcutModifiers::COMMAND);
         self
     }
 
     /// Adds the shift modifier.
     #[must_use]
     pub const fn shift(mut self) -> Self {
-        self.modifiers.shift = true;
+        self.modifiers = self.modifiers.inserting(ShortcutModifiers::SHIFT);
         self
     }
 
     /// Adds the option/alt modifier.
     #[must_use]
     pub const fn option(mut self) -> Self {
-        self.modifiers.option = true;
+        self.modifiers = self.modifiers.inserting(ShortcutModifiers::OPTION);
         self
     }
 
     /// Adds the control modifier.
     #[must_use]
     pub const fn control(mut self) -> Self {
-        self.modifiers.control = true;
+        self.modifiers = self.modifiers.inserting(ShortcutModifiers::CONTROL);
         self
     }
 }
@@ -111,7 +140,7 @@ impl Menu {
             label: resolved_label,
             semantic_label: label,
             icon,
-            items: resolve_menu_items(self.items, env),
+            items: resolve_menu_items(&self.items, env),
         }
     }
 }
@@ -122,7 +151,7 @@ impl View for Menu {
         let accessibility_label = label.semantic_text().resolve(env).content;
         AnyView::new(ResolvedMenu {
             label: AnyView::new(label),
-            items: resolve_menu_items(self.items, env),
+            items: resolve_menu_items(&self.items, env),
             accessibility_label,
         })
     }
@@ -155,7 +184,7 @@ impl_constant!(Command);
 impl Command {
     /// Creates a command builder with the given label.
     #[must_use]
-    pub fn new(label: impl IntoLabel) -> CommandBuilder {
+    pub fn builder(label: impl IntoLabel) -> CommandBuilder {
         CommandBuilder {
             label: label.into_label(),
         }
@@ -173,7 +202,7 @@ impl Command {
             semantic_label: label,
             icon,
             action: shared_action(move |env: Environment| {
-                let _ = action.call(&captured_env.layered_on(&env));
+                () = action.call(&captured_env.layered_on(&env));
             }),
             disabled: self.disabled,
             selected: self.selected,
@@ -215,7 +244,7 @@ pub trait CommandExt: IntoLabel + Sized {
     /// Starts building a command from this label.
     #[must_use]
     fn command(self) -> CommandBuilder {
-        Command::new(self)
+        Command::builder(self)
     }
 
     /// Creates a command with an action and no captured state.
@@ -517,7 +546,7 @@ fn resolve_menu_items_now(items: Vec<MenuItem>, env: &Environment) -> Vec<Resolv
 #[doc(hidden)]
 #[must_use]
 pub fn resolve_menu_items(
-    items: Computed<Vec<MenuItem>>,
+    items: &Computed<Vec<MenuItem>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let locale = locale_binding(env);
@@ -531,7 +560,7 @@ pub fn resolve_menu_items(
 #[doc(hidden)]
 #[must_use]
 pub fn resolve_menu_bar_items(
-    menus: Computed<Vec<Menu>>,
+    menus: &Computed<Vec<Menu>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let locale = locale_binding(env);
@@ -661,8 +690,8 @@ mod tests {
     fn resolve_menu_items_preserves_nested_labels_and_selected_state() {
         let env = Environment::default();
         let items = vec![
-            Command::new("Refresh").action(|| {}).into(),
-            Command::new("Pinned")
+            Command::builder("Refresh").action(|| {}).into(),
+            Command::builder("Pinned")
                 .action(|| {})
                 .selected(Computed::constant(true))
                 .into(),

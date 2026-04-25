@@ -4,14 +4,6 @@
 //! macros and type-safe form building capabilities.
 
 #![no_std]
-#![allow(
-    missing_docs,
-    clippy::doc_markdown,
-    clippy::missing_const_for_fn,
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    clippy::redundant_clone
-)]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
@@ -22,7 +14,9 @@ use waterui_graphics::color::Color;
 /// Picker form component module.
 pub mod calendar;
 pub use calendar::Calendar;
+/// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
+/// Validation helpers for form fields.
 pub mod valid;
 
 use waterui_controls::IntoLabel;

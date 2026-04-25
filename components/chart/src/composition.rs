@@ -17,7 +17,7 @@ struct ChartLayerAccessibilityBoundary {
 }
 
 impl ChartLayerAccessibilityBoundary {
-    fn new(content: AnyView) -> Self {
+    const fn new(content: AnyView) -> Self {
         Self { content }
     }
 }
@@ -38,6 +38,12 @@ pub struct ChartProxy<T: Clone + PartialEq + 'static> {
     plot_area_frame: Computed<ChartViewport>,
     focused: Computed<Option<HitResult<T>>>,
     selected: Computed<Option<HitResult<T>>>,
+}
+
+impl<T: Clone + PartialEq + 'static> core::fmt::Debug for ChartProxy<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChartProxy").finish_non_exhaustive()
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> ChartProxy<T> {
@@ -93,9 +99,18 @@ impl<T: Clone + PartialEq + 'static> ChartProxy<T> {
 }
 
 #[derive(Clone)]
-pub(crate) struct ChartComposition<T: Clone + PartialEq + 'static> {
+pub struct ChartComposition<T: Clone + PartialEq + 'static> {
     background: alloc::vec::Vec<ChartLayerBuilder<T>>,
     overlay: alloc::vec::Vec<ChartLayerBuilder<T>>,
+}
+
+impl<T: Clone + PartialEq + 'static> core::fmt::Debug for ChartComposition<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChartComposition")
+            .field("background_layers", &self.background.len())
+            .field("overlay_layers", &self.overlay.len())
+            .finish()
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> Default for ChartComposition<T> {
@@ -125,7 +140,6 @@ impl<T: Clone + PartialEq + 'static> ChartComposition<T> {
         self
     }
 
-    #[must_use]
     pub fn apply<C: View + 'static>(
         &self,
         chart: C,

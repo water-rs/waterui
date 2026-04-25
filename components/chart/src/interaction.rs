@@ -21,7 +21,7 @@ impl ChartAnchor {
         Self { x, y }
     }
 
-    /// Returns this anchor as a WaterUI layout point.
+    /// Returns this anchor as a `WaterUI` layout point.
     #[must_use]
     pub const fn as_point(self) -> Point {
         Point::new(self.x, self.y)
@@ -151,7 +151,7 @@ pub struct RadarDatum {
 impl RadarDatum {
     /// Creates a new radar-chart interaction payload.
     #[must_use]
-    pub fn new(axis: usize, label: Option<String>, value: f32) -> Self {
+    pub const fn new(axis: usize, label: Option<String>, value: f32) -> Self {
         Self { axis, label, value }
     }
 }
@@ -243,7 +243,10 @@ impl ChartViewport {
     /// Converts normalized coordinates to screen coordinates.
     #[must_use]
     pub fn normalized_to_screen(&self, x: f32, y: f32) -> Point {
-        Point::new(self.x + x * self.width, self.y + y * self.height)
+        Point::new(
+            x.mul_add(self.width, self.x),
+            y.mul_add(self.height, self.y),
+        )
     }
 
     /// Converts data coordinates to screen coordinates.
@@ -267,8 +270,8 @@ impl ChartViewport {
         bounds: &crate::data::DataBounds,
     ) -> Option<(f32, f32)> {
         let (norm_x, norm_y) = self.screen_to_normalized(point)?;
-        let data_x = bounds.min_x + norm_x * bounds.width();
-        let data_y = bounds.min_y + (1.0 - norm_y) * bounds.height();
+        let data_x = norm_x.mul_add(bounds.width(), bounds.min_x);
+        let data_y = (1.0 - norm_y).mul_add(bounds.height(), bounds.min_y);
         Some((data_x, data_y))
     }
 }
@@ -341,6 +344,12 @@ pub(crate) struct CartesianViewportState {
     y_position: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct AxisViewportBindingFlags {
+    visible_length: bool,
+    external_position: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct CartesianViewportBindings {
     scrollable_axes: ChartScrollableAxes,
@@ -348,10 +357,8 @@ pub(crate) struct CartesianViewportBindings {
     y_visible_length: Computed<Option<f32>>,
     x_position: Binding<f32>,
     y_position: Binding<f32>,
-    track_x_visible_length: bool,
-    track_y_visible_length: bool,
-    external_x_position: bool,
-    external_y_position: bool,
+    x_flags: AxisViewportBindingFlags,
+    y_flags: AxisViewportBindingFlags,
 }
 
 impl Default for CartesianViewportBindings {
@@ -362,56 +369,54 @@ impl Default for CartesianViewportBindings {
             y_visible_length: Computed::constant(None),
             x_position: Binding::f32(0.0),
             y_position: Binding::f32(0.0),
-            track_x_visible_length: false,
-            track_y_visible_length: false,
-            external_x_position: false,
-            external_y_position: false,
+            x_flags: AxisViewportBindingFlags::default(),
+            y_flags: AxisViewportBindingFlags::default(),
         }
     }
 }
 
 impl CartesianViewportBindings {
     pub fn validate(&self) {
-        if self.track_x_visible_length {
+        if self.x_flags.visible_length {
             assert!(
-                self.external_x_position,
+                self.x_flags.external_position,
                 "chart_x_visible_domain requires chart_x_scroll_position"
             );
         }
-        if self.track_y_visible_length {
+        if self.y_flags.visible_length {
             assert!(
-                self.external_y_position,
+                self.y_flags.external_position,
                 "chart_y_visible_domain requires chart_y_scroll_position"
             );
         }
-        if self.external_x_position {
+        if self.x_flags.external_position {
             assert!(
-                self.track_x_visible_length,
+                self.x_flags.visible_length,
                 "chart_x_scroll_position requires chart_x_visible_domain"
             );
         }
-        if self.external_y_position {
+        if self.y_flags.external_position {
             assert!(
-                self.track_y_visible_length,
+                self.y_flags.visible_length,
                 "chart_y_scroll_position requires chart_y_visible_domain"
             );
         }
         if self.scrollable_axes.allows_horizontal() {
             assert!(
-                self.external_x_position,
+                self.x_flags.external_position,
                 "chart_scrollable_axes(horizontal) requires chart_x_scroll_position"
             );
         }
         if self.scrollable_axes.allows_vertical() {
             assert!(
-                self.external_y_position,
+                self.y_flags.external_position,
                 "chart_scrollable_axes(vertical) requires chart_y_scroll_position"
             );
         }
     }
 
     #[must_use]
-    pub fn with_scrollable_axes(mut self, axes: ChartScrollableAxes) -> Self {
+    pub const fn with_scrollable_axes(mut self, axes: ChartScrollableAxes) -> Self {
         self.scrollable_axes = axes;
         self
     }
@@ -419,28 +424,28 @@ impl CartesianViewportBindings {
     #[must_use]
     pub fn with_x_visible_length(mut self, length: impl IntoSignalF32) -> Self {
         self.x_visible_length = length.into_signal_f32().map(Some).computed();
-        self.track_x_visible_length = true;
+        self.x_flags.visible_length = true;
         self
     }
 
     #[must_use]
     pub fn with_y_visible_length(mut self, length: impl IntoSignalF32) -> Self {
         self.y_visible_length = length.into_signal_f32().map(Some).computed();
-        self.track_y_visible_length = true;
+        self.y_flags.visible_length = true;
         self
     }
 
     #[must_use]
     pub fn with_x_position(mut self, binding: &Binding<f32>) -> Self {
         self.x_position = binding.clone();
-        self.external_x_position = true;
+        self.x_flags.external_position = true;
         self
     }
 
     #[must_use]
     pub fn with_y_position(mut self, binding: &Binding<f32>) -> Self {
         self.y_position = binding.clone();
-        self.external_y_position = true;
+        self.y_flags.external_position = true;
         self
     }
 
@@ -499,16 +504,20 @@ impl CartesianViewportBindings {
     }
 
     pub fn set_x_position(&self, value: f32) {
-        if self.x_position.get() != value {
+        if f32_binding_needs_update(&self.x_position, value) {
             self.x_position.set(value);
         }
     }
 
     pub fn set_y_position(&self, value: f32) {
-        if self.y_position.get() != value {
+        if f32_binding_needs_update(&self.y_position, value) {
             self.y_position.set(value);
         }
     }
+}
+
+fn f32_binding_needs_update(binding: &Binding<f32>, value: f32) -> bool {
+    binding.get().to_bits() != value.to_bits()
 }
 
 fn resolve_axis_window(
@@ -521,14 +530,14 @@ fn resolve_axis_window(
 ) -> (f32, f32) {
     let total_length = base_max - base_min;
     if total_length <= 0.0 {
-        if binding.get() != base_min {
+        if f32_binding_needs_update(binding, base_min) {
             binding.set(base_min);
         }
         return (base_min, base_max);
     }
 
     let Some(raw_length) = requested_length else {
-        if binding.get() != base_min {
+        if f32_binding_needs_update(binding, base_min) {
             binding.set(base_min);
         }
         return (base_min, base_max);
@@ -545,7 +554,7 @@ fn resolve_axis_window(
     } else {
         requested_position.clamp(base_min, max_start)
     };
-    if binding.get() != start {
+    if f32_binding_needs_update(binding, start) {
         binding.set(start);
     }
     (start, start + visible_length)
@@ -734,14 +743,18 @@ macro_rules! chart_x_selection_methods {
 
 pub(crate) use chart_x_selection_methods;
 
+#[derive(Debug, Clone, Copy, Default)]
+struct SelectionBindingFlags {
+    track: bool,
+    external: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct SelectionBindings<T: Clone + PartialEq + 'static> {
     focused: Binding<Option<HitResult<T>>>,
     selected: Binding<Option<HitResult<T>>>,
-    track_focus: bool,
-    track_selected: bool,
-    external_focus: bool,
-    external_selected: bool,
+    focused_flags: SelectionBindingFlags,
+    selected_flags: SelectionBindingFlags,
 }
 
 impl<T: Clone + PartialEq + 'static> Default for SelectionBindings<T> {
@@ -756,31 +769,29 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
         Self {
             focused: Binding::container(None),
             selected: Binding::container(None),
-            track_focus: false,
-            track_selected: false,
-            external_focus: false,
-            external_selected: false,
+            focused_flags: SelectionBindingFlags::default(),
+            selected_flags: SelectionBindingFlags::default(),
         }
     }
 
     #[must_use]
     pub const fn is_active(&self) -> bool {
-        self.track_focus || self.track_selected
+        self.focused_flags.track || self.selected_flags.track
     }
 
     #[must_use]
-    pub fn activate_proxy(mut self) -> Self {
-        self.track_focus = true;
-        self.track_selected = true;
+    pub const fn activate_proxy(mut self) -> Self {
+        self.focused_flags.track = true;
+        self.selected_flags.track = true;
         self
     }
 
     #[must_use]
     pub fn persist_internal(mut self, env: &Environment) -> Self {
-        if !self.external_focus {
+        if !self.focused_flags.external {
             self.focused = crate::local_state::local_binding(env, || None::<HitResult<T>>);
         }
-        if !self.external_selected {
+        if !self.selected_flags.external {
             self.selected = crate::local_state::local_binding(env, || None::<HitResult<T>>);
         }
         self
@@ -789,16 +800,16 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     #[must_use]
     pub fn with_focused(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
         self.focused = binding.clone();
-        self.track_focus = true;
-        self.external_focus = true;
+        self.focused_flags.track = true;
+        self.focused_flags.external = true;
         self
     }
 
     #[must_use]
     pub fn with_selected(mut self, binding: &Binding<Option<HitResult<T>>>) -> Self {
         self.selected = binding.clone();
-        self.track_selected = true;
-        self.external_selected = true;
+        self.selected_flags.track = true;
+        self.selected_flags.external = true;
         self
     }
 
@@ -813,19 +824,19 @@ impl<T: Clone + PartialEq + 'static> SelectionBindings<T> {
     }
 
     pub fn set_focus(&self, value: Option<HitResult<T>>) {
-        if self.track_focus && self.focused.get() != value {
+        if self.focused_flags.track && self.focused.get() != value {
             self.focused.set(value);
         }
     }
 
     pub fn clear_focus(&self) {
-        if self.track_focus && self.focused.get().is_some() {
+        if self.focused_flags.track && self.focused.get().is_some() {
             self.focused.set(None);
         }
     }
 
     pub fn set_selected(&self, value: Option<HitResult<T>>) {
-        if self.track_selected && self.selected.get() != value {
+        if self.selected_flags.track && self.selected.get() != value {
             self.selected.set(value);
         }
     }

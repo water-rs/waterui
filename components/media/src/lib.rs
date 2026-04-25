@@ -54,18 +54,6 @@
 //! assert!(matches!(live_photo, Media::LivePhoto(_)));
 //! ```
 
-#![allow(clippy::future_not_send)]
-#![allow(
-    missing_docs,
-    clippy::doc_markdown,
-    clippy::items_after_statements,
-    clippy::option_if_let_else,
-    clippy::semicolon_if_nothing_returned,
-    clippy::unused_async,
-    clippy::use_self
-)]
-#![allow(rustdoc::invalid_rust_codeblocks)]
-
 extern crate alloc;
 
 /// Live Photo components and types.

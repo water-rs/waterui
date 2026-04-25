@@ -1060,7 +1060,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use smol::{fs::read_to_string, process::Command, unblock};
-use waterui_assets_plan::ThemeConfig;
+use waterui_assets_planner::ThemeConfig;
 
 use crate::{
     android::{backend::AndroidBackend, device::AndroidAbiProvider, platform::AndroidPlatform},

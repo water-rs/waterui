@@ -23,6 +23,7 @@ waterui-text.workspace = true
 nami.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 tracing.workspace = true
+num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 waterui-testing.workspace = true

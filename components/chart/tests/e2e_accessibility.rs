@@ -178,7 +178,7 @@ fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
         .cloned()
         .expect("reactive axes test requires an updated-only tick label");
     let chart_data = Binding::container(initial_data.clone());
-    let chart_data_for_view = chart_data.clone();
+    let chart_data_for_view = chart_data;
     let bounds = Binding::container(DataBounds::from_points(&initial_data));
     let bounds_for_view = bounds.clone();
 
