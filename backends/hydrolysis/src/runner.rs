@@ -839,6 +839,15 @@ impl HeadlessPlatformWindow {
         }
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            inner: OffscreenWindow::new_for_tests(width, height, format),
+            pending_events: VecDeque::new(),
+            redraw_requested: Cell::new(false),
+        }
+    }
+
     fn push_event(&mut self, event: InputEvent) {
         self.pending_events.push_back(event);
     }
@@ -955,6 +964,38 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
     ) -> Self {
+        Self::new_with_platform_window(env, content, width, height, HeadlessPlatformWindow::new)
+    }
+
+    /// Creates a headless runtime for WaterUI test hosts.
+    ///
+    /// This constructor allows compute-capable software adapters for CI-only
+    /// semantic testing while keeping [`Self::new`] on production adapter
+    /// selection.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests(
+        env: Environment,
+        content: AnyViewBuilder<AnyView>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self::new_with_platform_window(
+            env,
+            content,
+            width,
+            height,
+            HeadlessPlatformWindow::new_for_tests,
+        )
+    }
+
+    fn new_with_platform_window(
+        env: Environment,
+        content: AnyViewBuilder<AnyView>,
+        width: u32,
+        height: u32,
+        create_platform: impl FnOnce(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+    ) -> Self {
         init_main_thread_executors();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         install_native_component_hooks(&mut env);
@@ -977,11 +1018,8 @@ impl HeadlessRuntime {
             waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
         ));
 
-        let mut platform = HeadlessPlatformWindow::new(
-            width.max(1),
-            height.max(1),
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let mut platform =
+            create_platform(width.max(1), height.max(1), wgpu::TextureFormat::Rgba8Unorm);
         platform.apply_properties(&window);
         let renderer = {
             let surface = platform.surface();
