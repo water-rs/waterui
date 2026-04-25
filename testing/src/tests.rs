@@ -370,7 +370,7 @@ fn scene_view_body_merges_to_native_when_marker_is_present() {
 #[test]
 fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let build_called = Rc::new(Cell::new(false));
-    let mut platform = OffscreenWindow::new(96, 72, wgpu::TextureFormat::Rgba8Unorm);
+    let mut platform = OffscreenWindow::new_for_tests(96, 72, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer = {
         let surface = platform.surface();
         HydrolysisRenderer::new(surface.device())

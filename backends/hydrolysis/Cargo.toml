@@ -72,6 +72,7 @@ web-sys = { version = "0.3", optional = true, features = [
 [features]
 default = []
 accessibility = ["dep:accesskit"]
+testing = []
 winit = ["accessibility", "dep:winit", "dep:accesskit_winit"]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 [package.metadata.cargo-machete]

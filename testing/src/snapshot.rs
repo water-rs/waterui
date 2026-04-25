@@ -47,7 +47,7 @@ impl TestHost {
 
     /// Renders a view and returns the captured RGBA8 snapshot.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
-        let mut platform = OffscreenWindow::new(
+        let mut platform = OffscreenWindow::new_for_tests(
             self.width.max(1),
             self.height.max(1),
             wgpu::TextureFormat::Rgba8Unorm,
