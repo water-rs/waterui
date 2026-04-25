@@ -215,11 +215,10 @@ pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
     fn body(self, env: &Environment) -> impl View {
-        if let Some(builder) = env.get::<DefaultLoadingView>() {
-            AnyView::new(builder.0.build())
-        } else {
-            AnyView::new(())
-        }
+        env.get::<DefaultLoadingView>().map_or_else(
+            || AnyView::new(()),
+            |builder| AnyView::new(builder.0.build()),
+        )
     }
 }
 

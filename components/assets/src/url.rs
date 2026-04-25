@@ -4,6 +4,7 @@ use crate::AssetError;
 use waterui_url::Url;
 
 #[must_use]
+/// Returns whether a path string is an HTTP or HTTPS URL.
 pub fn is_remote_url(path: &str) -> bool {
     Url::parse(path)
         .and_then(|parsed| {
@@ -14,6 +15,11 @@ pub fn is_remote_url(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Rejects non-loopback plain HTTP URLs.
+///
+/// # Errors
+///
+/// Returns [`AssetError`] for non-loopback `http://` URLs.
 pub fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
     if has_http_scheme(url) && !is_loopback_http_url(url) {
         return Err(AssetError::http_not_allowed(url));
@@ -23,6 +29,7 @@ pub fn ensure_http_allowed(url: &str) -> Result<(), AssetError> {
 }
 
 #[must_use]
+/// Returns whether a URL is plain HTTP and targets a loopback host.
 pub fn is_loopback_http_url(url: &str) -> bool {
     let Some(parsed) = Url::parse(url) else {
         return false;

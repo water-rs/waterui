@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+//! Build metadata injection for the `WaterUI` inspector protocol crate.
 
 use std::{env, process::Command};
 

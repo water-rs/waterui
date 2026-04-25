@@ -20,8 +20,6 @@
 //!     .glow(true)
 //! ```
 
-#![allow(clippy::multiple_crate_versions)]
-
 mod audio;
 mod theme;
 mod waveform;
