@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility"] }
+hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility", "testing"] }
 waterui-canvas.workspace = true
 waterui-core.workspace = true
 waterui.workspace = true
