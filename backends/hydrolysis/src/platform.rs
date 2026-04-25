@@ -285,7 +285,7 @@ impl AdapterSelection {
         allow_software_adapter: false,
     };
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     const TEST: Self = Self {
         allow_software_adapter: true,
     };
@@ -506,12 +506,13 @@ impl OffscreenSurface {
         Self::new_with_adapter_selection(width, height, format, AdapterSelection::PRODUCTION).await
     }
 
-    #[cfg(test)]
-    pub(crate) async fn new_for_tests(
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> Self {
+    /// Creates an offscreen surface for WaterUI test hosts.
+    ///
+    /// Unlike production surfaces, this constructor allows compute-capable
+    /// software adapters so CI can run Hydrolysis accessibility tests on
+    /// llvmpipe without opting the runtime path into fallback adapters.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self::new_with_adapter_selection(width, height, format, AdapterSelection::TEST).await
     }
 
@@ -684,9 +685,13 @@ impl OffscreenWindow {
         }
     }
 
-    #[cfg(test)]
+    /// Creates an offscreen window for WaterUI test hosts.
+    ///
+    /// This keeps production adapter selection strict while allowing
+    /// `waterui-testing` to run on compute-capable software adapters in CI.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub(crate) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+    pub fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self {
             surface: pollster::block_on(OffscreenSurface::new_for_tests(width, height, format)),
             scale_factor: 1.0,
