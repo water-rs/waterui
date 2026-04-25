@@ -135,7 +135,7 @@ pub async fn check_apple(sdk: AppleSdk) -> Result<()> {
 }
 
 pub async fn check_android_build_or_package() -> Result<()> {
-    check_android_build_or_package_for_abis(&ALL_ABIS).await
+    check_android_build_or_package_for_abis(ALL_ABIS).await
 }
 
 pub async fn check_android_build_or_package_for_abis(required_abis: &[AndroidAbi]) -> Result<()> {
