@@ -171,6 +171,7 @@ minstant = "0.1"
 cpu-time = "1.0"
 sys-locale = "0.3"
 iana-time-zone = "0.1"
+dirs = "6"
 
 
 [dependencies]

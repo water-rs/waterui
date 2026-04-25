@@ -30,7 +30,7 @@ hex = "0.4"
 # Async filesystem
 smol = "2.0"
 tempfile = "3.26"
-waterkit-fs.workspace = true
+dirs.workspace = true
 
 [features]
 default = ["std"]

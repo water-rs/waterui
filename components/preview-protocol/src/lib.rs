@@ -6,8 +6,6 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use waterkit_fs::WaterFs;
-
 /// Build commit hash for protocol compatibility checks.
 pub const PREVIEW_PROTOCOL_COMMIT: &str = env!("WATERUI_PREVIEW_PROTOCOL_COMMIT");
 
@@ -73,7 +71,7 @@ pub mod registry {
 
     use serde::{Deserialize, Serialize};
 
-    use super::{SystemTime, UNIX_EPOCH, WaterFs};
+    use super::{SystemTime, UNIX_EPOCH};
 
     /// A registered local preview support app instance.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +115,7 @@ pub mod registry {
             return PathBuf::from(cache_dir);
         }
 
-        if let Some(cache_dir) = WaterFs::cache_dir() {
+        if let Some(cache_dir) = dirs::cache_dir() {
             return cache_dir.join("waterui");
         }
 

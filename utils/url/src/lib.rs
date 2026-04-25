@@ -61,7 +61,6 @@ use {
     executor_core::spawn_local,
     nami::Binding,
     nami_core::Signal,
-    waterkit_fs::WaterFs,
     zenwave::{Client, Method, redirect::FollowRedirect},
 };
 
@@ -937,7 +936,7 @@ impl Error for FetchError {}
 
 #[cfg(feature = "std")]
 fn fetch_cache_root() -> Option<PathBuf> {
-    WaterFs::cache_dir()
+    dirs::cache_dir()
         .map(|root| root.join("waterui").join("url-fetch"))
         .or_else(|| {
             let temp_root = std::env::temp_dir();
