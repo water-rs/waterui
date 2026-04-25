@@ -20,6 +20,7 @@ pub const SNAPSHOT_SUITE: &str = "semantic-selection";
 
 pub const CHART_PADDING_RATIO: f32 = 0.1;
 const PIE_PADDING_RATIO: f32 = 0.06;
+const SEMANTIC_CHART_SHELL_SPACING: f32 = 4.0;
 
 pub fn horizontal_drag_domain_delta(visible_length: f32, from_x: f32, to_x: f32) -> f32 {
     (from_x - to_x) * CHART_WIDTH / (CHART_WIDTH * (1.0 - CHART_PADDING_RATIO * 2.0))
@@ -146,7 +147,7 @@ pub fn semantic_chart_shell<V: View, F: View, S: View>(
         focused_readout.foreground(Srgb::WHITE).padding_with(6.0),
         selected_readout.foreground(Srgb::WHITE).padding_with(6.0),
     ))
-    .spacing(6.0)
+    .spacing(SEMANTIC_CHART_SHELL_SPACING)
     .background(Srgb::BLACK)
 }
 
