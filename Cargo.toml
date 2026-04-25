@@ -118,7 +118,6 @@ waterkit-fs = { version = "0.1.0", path = "kit/fs" }
 waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
 waterkit-codec = { version = "0.1.0", path = "kit/codec", default-features = false }
 waterkit-video = { version = "0.1.0", path = "kit/video" }
-waterkit-regional = { version = "0.1.0", path = "kit/regional" }
 waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
@@ -131,7 +130,7 @@ waterui-assets-plan = { version = "0.1.0", path = "components/assets-plan" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets-macros" }
 waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
-waterui-testing = { version = "0.2.1", path = "testing" }
+waterui-testing = { path = "testing" }
 waterui = { version = "0.2.1", path = "." }
 waterui-build-support = { version = "0.1.0", path = "utils/build-support" }
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis-m3" }
@@ -170,6 +169,8 @@ windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
 minstant = "0.1"
 cpu-time = "1.0"
+sys-locale = "0.3"
+iana-time-zone = "0.1"
 
 
 [dependencies]
