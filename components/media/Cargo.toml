@@ -48,7 +48,7 @@ std = ["waterui-core/std", "dep:waterkit-dialog"]
 waterui.workspace = true
 waterui-testing.workspace = true
 waterui-graphics.workspace = true
-waterkit-codec = { workspace = true, features = ["software-fallback"] }
+waterkit-codec = { path = "../../kit/codec", features = ["software-fallback"] }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 wgpu.workspace = true
 
