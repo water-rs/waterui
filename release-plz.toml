@@ -85,8 +85,8 @@ name = "waterui-assets"
 git_tag_name = "assets-v{{ version }}"
 
 [[package]]
-name = "waterui-assets-plan"
-git_tag_name = "assets-plan-v{{ version }}"
+name = "waterui-assets-planner"
+git_tag_name = "assets-planner-v{{ version }}"
 
 [[package]]
 name = "waterui-inspector-protocol"

@@ -5,8 +5,6 @@
 //!
 //! SVG rendering is backed by Vello for direct GPU vector rendering.
 
-#![allow(clippy::multiple_crate_versions)]
-
 extern crate alloc;
 
 mod scene_renderer;

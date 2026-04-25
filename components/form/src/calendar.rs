@@ -58,7 +58,7 @@ impl Calendar {
 
     /// Sets the valid date range.
     #[must_use]
-    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
+    pub const fn range(mut self, range: RangeInclusive<Date>) -> Self {
         self.range = range;
         self
     }
@@ -132,7 +132,7 @@ impl VisibleMonth {
             .expect("visible month must always be a valid calendar month")
     }
 
-    pub(crate) fn previous(self) -> Self {
+    pub(crate) const fn previous(self) -> Self {
         if self.month == 1 {
             Self {
                 year: self.year.checked_sub(1).expect("calendar year underflow"),
@@ -146,7 +146,7 @@ impl VisibleMonth {
         }
     }
 
-    pub(crate) fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         if self.month == 12 {
             Self {
                 year: self.year.checked_add(1).expect("calendar year overflow"),
@@ -180,7 +180,7 @@ pub(crate) struct CalendarBody<Content> {
 }
 
 impl<Content> CalendarBody<Content> {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         locale: Locale,
         month: VisibleMonth,
         range: RangeInclusive<Date>,
@@ -361,7 +361,7 @@ fn single_day_cell_content(
         let accessibility_label = day_cell_accessibility_label(cell.date);
         let button = if is_selected {
             button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label.clone())
+                .accessibility_label(accessibility_label)
                 .bordered_prominent()
         } else {
             button(day_cell_label(cell.date, decorated))
@@ -401,7 +401,7 @@ pub(crate) fn multi_day_cell_content(
         let accessibility_label = day_cell_accessibility_label(cell.date);
         let button = if is_selected {
             button(day_cell_label(cell.date, decorated))
-                .accessibility_label(accessibility_label.clone())
+                .accessibility_label(accessibility_label)
                 .bordered_prominent()
         } else {
             button(day_cell_label(cell.date, decorated))

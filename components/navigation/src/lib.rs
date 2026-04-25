@@ -1,14 +1,4 @@
 #![no_std]
-#![allow(
-    missing_docs,
-    missing_debug_implementations,
-    clippy::doc_markdown,
-    clippy::double_must_use,
-    clippy::missing_const_for_fn,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    clippy::semicolon_if_nothing_returned
-)]
 
 //! Navigation module for `WaterUI` framework.
 //!
@@ -18,7 +8,9 @@ extern crate alloc;
 
 /// Provides search functionality for navigation.
 pub mod search;
+/// Split-view navigation containers.
 pub mod split;
+/// Tab navigation containers.
 pub mod tab;
 
 use alloc::{rc::Rc, vec::Vec};
@@ -155,7 +147,7 @@ raw_view!(NavigationView, StretchAxis::Both);
 
 /// The display mode for the navigation bar title.
 ///
-/// Controls how the navigation bar title is displayed, similar to SwiftUI's
+/// Controls how the navigation bar title is displayed, similar to `SwiftUI`'s
 /// `navigationBarTitleDisplayMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -261,7 +253,7 @@ where
 
 impl NavigationLink<(), ()> {
     /// Creates a typed value link for a path-backed navigation stack.
-    pub fn value<Label, T>(label: Label, value: T) -> NavigationValueLink<Label, T>
+    pub const fn value<Label, T>(label: Label, value: T) -> NavigationValueLink<Label, T>
     where
         Label: View,
         T: 'static + Clone,
@@ -308,7 +300,6 @@ impl<T, F> NavigationStack<T, F> {
     }
 
     /// Sets the transition style for push/pop operations.
-    #[must_use]
     pub const fn transition(mut self, transition: NavigationTransition) -> Self {
         self.transition = transition;
         self
@@ -486,7 +477,7 @@ where
 
         let destination = AnyViewBuilder::new(self.content);
         button(self.label).action(move |receiver: NavigationController| {
-            receiver.push_builder(destination.clone())
+            receiver.push_builder(destination.clone());
         })
     }
 }
@@ -540,40 +531,37 @@ impl NavigationView {
     ///     .title("Settings")
     ///     .navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large)
     /// ```
-    #[must_use]
-    pub fn navigation_bar_title_display_mode(mut self, mode: NavigationTitleDisplayMode) -> Self {
+    pub const fn navigation_bar_title_display_mode(
+        mut self,
+        mode: NavigationTitleDisplayMode,
+    ) -> Self {
         self.bar.display_mode = mode;
         self
     }
 
     /// Sets the display mode to inline (small title).
-    #[must_use]
-    pub fn inline_title(self) -> Self {
+    pub const fn inline_title(self) -> Self {
         self.navigation_bar_title_display_mode(NavigationTitleDisplayMode::Inline)
     }
 
     /// Sets the display mode to large title.
-    #[must_use]
-    pub fn large_title(self) -> Self {
+    pub const fn large_title(self) -> Self {
         self.navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large)
     }
 
     /// Sets leading navigation bar content.
-    #[must_use]
     pub fn navigation_bar_leading(mut self, leading: impl View) -> Self {
         self.bar.leading = AnyView::new(leading);
         self
     }
 
     /// Sets trailing navigation bar content.
-    #[must_use]
     pub fn navigation_bar_trailing(mut self, trailing: impl View) -> Self {
         self.bar.trailing = AnyView::new(trailing);
         self
     }
 
     /// Installs a navigation-scoped search field in the bar chrome.
-    #[must_use]
     pub fn searchable(mut self, text: &Binding<Str>, prompt: impl IntoText) -> Self {
         self.bar.search = Some(NavigationSearch::new(text, prompt));
         self

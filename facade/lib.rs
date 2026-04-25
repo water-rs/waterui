@@ -1,7 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![allow(clippy::multiple_crate_versions)]
-#![allow(clippy::future_not_send)]
-#![allow(clippy::doc_markdown)]
 
 extern crate self as waterui;
 

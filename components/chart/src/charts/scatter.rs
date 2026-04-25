@@ -29,7 +29,10 @@ pub struct ScatterChart<S: Signal<Output = Vec<DataPoint>>> {
     composition: ChartComposition<DataPoint>,
 }
 
+crate::charts::impl_chart_debug!(ScatterChart, S, Vec<DataPoint>);
+
 impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
+    /// Creates a scatter chart from reactive point data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -47,34 +50,48 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
 
     crate::composition::chart_composition_methods!(DataPoint);
 
+    /// Sets the point color.
     #[must_use]
-    pub fn color(mut self, color: Srgb) -> Self {
+    pub const fn color(mut self, color: Srgb) -> Self {
         self.color = color;
         self
     }
 
+    /// Sets the point radius and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `radius` is not finite or is not strictly positive.
     #[must_use]
     pub fn radius(self, radius: f32) -> Self {
         self.try_radius(radius)
             .expect("ScatterChart::radius(radius) requires finite radius > 0")
     }
 
+    /// Sets the point radius using an already-validated positive value.
     #[must_use]
-    pub fn with_radius(mut self, radius: PositiveF32) -> Self {
+    pub const fn with_radius(mut self, radius: PositiveF32) -> Self {
         self.radius = radius.get();
         self
     }
 
+    /// Attempts to set the point radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
     pub fn try_radius(self, radius: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_radius(PositiveF32::try_new(radius)?))
     }
 
+    /// Tracks the currently focused point in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected point in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -83,11 +100,11 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
 }
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let color = self.color;
         let radius = self.radius;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             |data: &Vec<DataPoint>| point_bounds(data),
             move |ctx, data, bounds| point_geometry(ctx, data, bounds, radius.max(8.0)),

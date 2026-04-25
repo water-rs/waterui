@@ -53,6 +53,7 @@ pub struct ResolvedTextFieldConfig {
 }
 
 configurable!(
+    /// Resolved text field view passed to native backends.
     ResolvedTextField,
     ResolvedTextFieldConfig,
     StretchAxis::Horizontal
@@ -123,7 +124,7 @@ impl TextField {
 
     /// Disables the line limit.
     #[must_use]
-    pub fn disable_line_limit(mut self) -> Self {
+    pub const fn disable_line_limit(mut self) -> Self {
         self.0.line_limit = None;
         self
     }
@@ -145,7 +146,7 @@ impl TextField {
 
 impl View for TextField {
     fn body(self, env: &Environment) -> impl View {
-        let selection_menu = resolve_menu_items(self.0.selection_menu, env);
+        let selection_menu = resolve_menu_items(&self.0.selection_menu, env);
 
         AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
             label: self.0.label,
@@ -168,17 +169,13 @@ pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
 }
 
 fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
-    Binding::mapping(
-        value,
-        |plain| StyledStr::plain(plain.clone()),
-        |plain_binding, styled| {
-            assert!(
-                styled.is_plain(),
-                "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
-            );
-            plain_binding.set(styled.to_plain());
-        },
-    )
+    Binding::mapping(value, StyledStr::plain, |plain_binding, styled| {
+        assert!(
+            styled.is_plain(),
+            "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
+        );
+        plain_binding.set(styled.to_plain());
+    })
 }
 
 #[cfg(test)]

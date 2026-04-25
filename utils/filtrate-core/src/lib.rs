@@ -41,8 +41,6 @@
 //! assert!(!WithBlur::COLOR_ONLY); // false - needs multiple passes
 //! ```
 
-#![allow(clippy::multiple_crate_versions)]
-
 mod filter;
 mod fragments;
 mod params;

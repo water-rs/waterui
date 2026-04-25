@@ -44,7 +44,7 @@ impl View for AxisAccessibilityBoundary {
 }
 
 /// Axis padding configuration (in points).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct AxisPadding {
     left: f32,
     bottom: f32,
@@ -85,6 +85,17 @@ pub struct ChartAxes<C> {
     y_axis: Option<AxisConfig>,
     bounds: DataBounds,
     padding: AxisPadding,
+}
+
+impl<C> core::fmt::Debug for ChartAxes<C> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChartAxes")
+            .field("x_axis", &self.x_axis)
+            .field("y_axis", &self.y_axis)
+            .field("bounds", &self.bounds)
+            .field("padding", &self.padding)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<C> ChartAxes<C> {
@@ -129,7 +140,7 @@ impl<C> ChartAxes<C> {
 
     /// Sets padding for axis labels.
     #[must_use]
-    pub fn padding(mut self, left: f32, bottom: f32) -> Self {
+    pub const fn padding(mut self, left: f32, bottom: f32) -> Self {
         self.padding.left = left;
         self.padding.bottom = bottom;
         self
@@ -137,7 +148,7 @@ impl<C> ChartAxes<C> {
 
     /// Sets all four padding values.
     #[must_use]
-    pub fn padding_all(mut self, left: f32, bottom: f32, top: f32, right: f32) -> Self {
+    pub const fn padding_all(mut self, left: f32, bottom: f32, top: f32, right: f32) -> Self {
         self.padding.left = left;
         self.padding.bottom = bottom;
         self.padding.top = top;
@@ -147,7 +158,7 @@ impl<C> ChartAxes<C> {
 
     /// Sets inner plot padding as a fraction of the plot area.
     #[must_use]
-    pub fn plot_padding(mut self, padding: f32) -> Self {
+    pub const fn plot_padding(mut self, padding: f32) -> Self {
         self.padding.plot = padding;
         self
     }
@@ -155,8 +166,14 @@ impl<C> ChartAxes<C> {
 
 impl<C: View + 'static> View for ChartAxes<C> {
     fn body(self, _env: &Environment) -> impl View {
-        let y_show_grid = self.y_axis.as_ref().is_some_and(|a| a.has_grid());
-        let x_show_grid = self.x_axis.as_ref().is_some_and(|a| a.has_grid());
+        let y_show_grid = self
+            .y_axis
+            .as_ref()
+            .is_some_and(super::axis::AxisConfig::has_grid);
+        let x_show_grid = self
+            .x_axis
+            .as_ref()
+            .is_some_and(super::axis::AxisConfig::has_grid);
 
         let y_ticks: Vec<Tick> = self
             .y_axis
@@ -219,8 +236,16 @@ struct GridLines {
 
 impl View for GridLines {
     fn body(self, _env: &Environment) -> impl View {
-        let y_positions: Vec<f32> = self.y_ticks.iter().map(|tick| tick.position()).collect();
-        let x_positions: Vec<f32> = self.x_ticks.iter().map(|tick| tick.position()).collect();
+        let y_positions: Vec<f32> = self
+            .y_ticks
+            .iter()
+            .map(super::axis::Tick::position)
+            .collect();
+        let x_positions: Vec<f32> = self
+            .x_ticks
+            .iter()
+            .map(super::axis::Tick::position)
+            .collect();
 
         let mut lines = Vec::with_capacity(y_positions.len() + x_positions.len());
 
@@ -291,7 +316,7 @@ impl Layout for GridLinesLayout {
 
         for pos in &self.y_positions {
             let clamped = pos.clamp(0.0, 1.0);
-            let y = chart_top + (1.0 - clamped) * chart_height;
+            let y = (1.0 - clamped).mul_add(chart_height, chart_top);
             rects.push(Rect::new(
                 Point::new(chart_left, y - 0.5),
                 Size::new(chart_width, 1.0),
@@ -420,7 +445,7 @@ struct AxisLabels {
 
 impl View for AxisLabels {
     fn body(self, _env: &Environment) -> impl View {
-        let positions: Vec<f32> = self.ticks.iter().map(|tick| tick.position()).collect();
+        let positions: Vec<f32> = self.ticks.iter().map(super::axis::Tick::position).collect();
 
         let labels: Vec<_> = self
             .ticks
@@ -486,7 +511,9 @@ impl Layout for AxisLabelsLayout {
                     .clamp(0.0, 1.0);
                 let size = child.measure(ProposalSize::UNSPECIFIED).size;
                 let x = bounds.x() + self.offset - size.width;
-                let y = chart_top + (1.0 - pos) * chart_height - size.height * 0.5;
+                let y = size
+                    .height
+                    .mul_add(-0.5, (1.0 - pos).mul_add(chart_height, chart_top));
                 rects.push(Rect::new(Point::new(x, y), size));
             }
         } else {
@@ -507,7 +534,7 @@ impl Layout for AxisLabelsLayout {
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0);
                 let size = child.measure(ProposalSize::UNSPECIFIED).size;
-                let x = chart_left + pos * chart_width - size.width * 0.5;
+                let x = size.width.mul_add(-0.5, chart_left + pos * chart_width);
                 // Align labels by their bottom edge so they don't collide with the axis title label.
                 rects.push(Rect::new(Point::new(x, y - size.height), size));
             }
@@ -543,6 +570,16 @@ pub struct ChartAxesReactive<C, B> {
     x_axis: Option<AxisConfig>,
     y_axis: Option<AxisConfig>,
     padding: AxisPadding,
+}
+
+impl<C, B> core::fmt::Debug for ChartAxesReactive<C, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChartAxesReactive")
+            .field("x_axis", &self.x_axis)
+            .field("y_axis", &self.y_axis)
+            .field("padding", &self.padding)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<C, B> ChartAxesReactive<C, B> {
@@ -587,7 +624,7 @@ impl<C, B> ChartAxesReactive<C, B> {
 
     /// Sets padding for axis labels.
     #[must_use]
-    pub fn padding(mut self, left: f32, bottom: f32) -> Self {
+    pub const fn padding(mut self, left: f32, bottom: f32) -> Self {
         self.padding.left = left;
         self.padding.bottom = bottom;
         self
@@ -595,7 +632,7 @@ impl<C, B> ChartAxesReactive<C, B> {
 
     /// Sets all four padding values.
     #[must_use]
-    pub fn padding_all(mut self, left: f32, bottom: f32, top: f32, right: f32) -> Self {
+    pub const fn padding_all(mut self, left: f32, bottom: f32, top: f32, right: f32) -> Self {
         self.padding.left = left;
         self.padding.bottom = bottom;
         self.padding.top = top;
@@ -605,7 +642,7 @@ impl<C, B> ChartAxesReactive<C, B> {
 
     /// Sets inner plot padding as a fraction of the plot area.
     #[must_use]
-    pub fn plot_padding(mut self, padding: f32) -> Self {
+    pub const fn plot_padding(mut self, padding: f32) -> Self {
         self.padding.plot = padding;
         self
     }
@@ -634,8 +671,12 @@ where
         let reactive_axes = self
             .bounds
             .map(move |bounds: DataBounds| {
-                let y_show_grid = y_axis.as_ref().is_some_and(|axis| axis.has_grid());
-                let x_show_grid = x_axis.as_ref().is_some_and(|axis| axis.has_grid());
+                let y_show_grid = y_axis
+                    .as_ref()
+                    .is_some_and(super::axis::AxisConfig::has_grid);
+                let x_show_grid = x_axis
+                    .as_ref()
+                    .is_some_and(super::axis::AxisConfig::has_grid);
                 let y_ticks = y_axis
                     .as_ref()
                     .map(|axis| axis.compute_ticks(bounds.min_y, bounds.max_y))

@@ -16,6 +16,7 @@ pub mod code;
 #[macro_use]
 pub mod rich_text;
 #[cfg(feature = "flow-markdown")]
+/// Streaming Markdown renderer with incremental flow animations.
 pub mod flow_markdown;
 pub use code::{Code, code};
 #[cfg(feature = "flow-markdown")]

@@ -273,7 +273,6 @@ impl SnackbarManager {
     /// # Returns
     ///
     /// A tuple containing the manager and the overlay view.
-    #[must_use]
     pub fn new() -> (Self, impl View + Clone) {
         let (handler, dynamic) = Dynamic::new();
         handler.set(()); // Initially empty
@@ -360,7 +359,7 @@ impl SnackbarManager {
         let manager = self.clone();
 
         // Build content: Label (icon + message) + optional action button
-        let content = self.build_content(snackbar, manager);
+        let content = Self::build_content(snackbar, manager);
 
         // Animation bindings
         let opacity = Binding::f32(0.0);
@@ -388,7 +387,7 @@ impl SnackbarManager {
         })
     }
 
-    fn build_content(&self, snackbar: Snackbar, manager: Self) -> AnyView {
+    fn build_content(snackbar: Snackbar, manager: Self) -> AnyView {
         // Message with optional icon using Label component
         let label_view = if let Some(icon) = snackbar.icon {
             Label::new(snackbar.message).icon(icon)
@@ -409,7 +408,7 @@ impl SnackbarManager {
                         .style(ButtonStyle::Borderless)
                         .action(move |env: waterui_core::Environment| {
                             // Execute action handler with the live view environment.
-                            let _ = action.handler.call(&captured_env.layered_on(&env));
+                            let () = action.handler.call(&captured_env.layered_on(&env));
                             manager.dismiss();
                         }),
                 ))
