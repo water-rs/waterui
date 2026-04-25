@@ -54,7 +54,7 @@ impl HydrolysisA11yDriver {
         env: &Environment,
     ) -> &mut HeadlessRuntime {
         self.runtime.get_or_insert_with(|| {
-            HeadlessRuntime::new(env.clone(), content.clone(), self.width, self.height)
+            HeadlessRuntime::new_for_tests(env.clone(), content.clone(), self.width, self.height)
         })
     }
 }
