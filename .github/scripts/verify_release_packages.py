@@ -18,6 +18,7 @@ class ReleasePackage:
     name: str
     version: str
     has_dependency_target: bool
+    manifest_dir: Path
 
 
 def run(command: list[str], cwd: Path) -> None:
@@ -52,6 +53,7 @@ def load_workspace_packages(repo_root: Path) -> dict[str, ReleasePackage]:
             name=package["name"],
             version=package["version"],
             has_dependency_target=has_dependency_target,
+            manifest_dir=Path(package["manifest_path"]).parent,
         )
     return packages
 
@@ -104,8 +106,37 @@ def create_consumer(
     return consumer_dir
 
 
-def package_crate(repo_root: Path, package: ReleasePackage) -> None:
-    run(["cargo", "package", "--no-verify", "-p", package.name], cwd=repo_root)
+def release_package_patch_config(
+    repo_root: Path, package: ReleasePackage, packages: list[ReleasePackage]
+) -> list[str]:
+    config: list[str] = []
+    for dependency in packages:
+        if dependency.name == package.name:
+            continue
+        dependency_path = dependency.manifest_dir.relative_to(repo_root).as_posix()
+        config.extend(
+            [
+                "--config",
+                f'patch.crates-io."{dependency.name}".path="{dependency_path}"',
+            ]
+        )
+    return config
+
+
+def package_crate(
+    repo_root: Path, package: ReleasePackage, packages: list[ReleasePackage]
+) -> None:
+    run(
+        [
+            "cargo",
+            "package",
+            "--no-verify",
+            "-p",
+            package.name,
+            *release_package_patch_config(repo_root, package, packages),
+        ],
+        cwd=repo_root,
+    )
 
 
 def unpack_selected_packages(
@@ -172,7 +203,7 @@ def main() -> None:
         release_packages.append(package)
 
     for package in release_packages:
-        package_crate(repo_root, package)
+        package_crate(repo_root, package, release_packages)
 
     unpack_root = Path(tempfile.mkdtemp(prefix="release-packages-"))
     try:
