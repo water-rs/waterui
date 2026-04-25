@@ -1,8 +1,5 @@
 //! Demo of `WaterUI` URL functionality
 
-#![allow(clippy::uninlined_format_args)]
-#![allow(missing_docs)]
-
 use waterui_url::Url;
 
 fn main() {

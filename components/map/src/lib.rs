@@ -22,8 +22,6 @@
 //!     .shows_user_location(true);
 //! ```
 
-#![allow(clippy::module_name_repetitions)]
-
 extern crate alloc;
 
 use alloc::vec::Vec;

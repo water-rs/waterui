@@ -222,6 +222,12 @@ pub struct WhenChain<Prev, Condition, Then> {
     then: Then,
 }
 
+impl<Prev, Condition, Then> core::fmt::Debug for WhenChain<Prev, Condition, Then> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WhenChain").finish_non_exhaustive()
+    }
+}
+
 impl<Prev, Condition, Then> WhenChain<Prev, Condition, Then>
 where
     Condition: IntoComputed<bool>,
@@ -273,6 +279,12 @@ where
 pub struct WhenComplete<Chain, Otherwise> {
     chain: Chain,
     otherwise: Otherwise,
+}
+
+impl<Chain, Otherwise> core::fmt::Debug for WhenComplete<Chain, Otherwise> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WhenComplete").finish_non_exhaustive()
+    }
 }
 
 /// Helper trait to evaluate a condition chain.
@@ -411,7 +423,7 @@ where
     Otherwise: ViewBuilder,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let WhenComplete { chain, otherwise } = self;
+        let Self { chain, otherwise } = self;
 
         // Check if all conditions are static bools for compile-time optimization
         if chain.all_static() {
@@ -427,9 +439,8 @@ where
 
         chain
             .make_combined()
-            .map(move |index| match index {
-                Some(i) => chain.build_branch(i),
-                None => otherwise.build().anyview(),
+            .map(move |index| {
+                index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
             })
             .computed()
             .anyview()

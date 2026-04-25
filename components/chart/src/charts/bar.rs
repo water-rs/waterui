@@ -27,7 +27,10 @@ pub struct BarChart<S: Signal<Output = Vec<DataPoint>>> {
     composition: ChartComposition<DataPoint>,
 }
 
+crate::charts::impl_chart_debug!(BarChart, S, Vec<DataPoint>);
+
 impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
+    /// Creates a bar chart from reactive point data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -44,18 +47,21 @@ impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
 
     crate::composition::chart_composition_methods!(DataPoint);
 
+    /// Sets the fill color used for all bars.
     #[must_use]
-    pub fn color(mut self, color: Srgb) -> Self {
+    pub const fn color(mut self, color: Srgb) -> Self {
         self.color = color;
         self
     }
 
+    /// Tracks the currently focused bar datum in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected bar datum in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -64,10 +70,10 @@ impl<S: Signal<Output = Vec<DataPoint>>> BarChart<S> {
 }
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let color = self.color;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             |data: &Vec<DataPoint>| bar_bounds(data),
             move |ctx, data, bounds| bar_geometry(ctx, data, bounds),

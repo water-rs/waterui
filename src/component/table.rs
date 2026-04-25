@@ -134,7 +134,6 @@ impl TableColumn {
     }
 
     /// Returns the label of this column.
-    #[must_use]
     pub fn label(&self) -> Text {
         self.label.clone()
     }
@@ -217,7 +216,7 @@ impl Signal for TableRowCountSignal {
             let columns = self.columns.clone();
             let watcher = watcher.clone();
             let guard = column.rows().len().watch(move |ctx| {
-                let max_rows = TableRowCountSignal::max_rows(&columns);
+                let max_rows = Self::max_rows(&columns);
                 watcher(Context::new(max_rows, ctx.metadata().clone()));
             });
             guards.push(guard);
@@ -261,7 +260,7 @@ struct TableRowsView {
 }
 
 impl TableRowsView {
-    fn new(columns: Vec<TableColumn>) -> Self {
+    const fn new(columns: Vec<TableColumn>) -> Self {
         Self { columns }
     }
 }
@@ -281,7 +280,7 @@ struct TableColumnsView {
 }
 
 impl TableColumnsView {
-    fn new(columns: Vec<TableColumn>) -> Self {
+    const fn new(columns: Vec<TableColumn>) -> Self {
         Self { columns }
     }
 }

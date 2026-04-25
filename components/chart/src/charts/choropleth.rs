@@ -20,7 +20,10 @@ pub struct ChoroplethChart<S: Signal<Output = ChoroplethData>> {
     composition: ChartComposition<RegionDatum>,
 }
 
+crate::charts::impl_chart_debug!(ChoroplethChart, S, ChoroplethData);
+
 impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
+    /// Creates a choropleth chart from reactive geographic data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -35,40 +38,55 @@ impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
 
     crate::composition::chart_composition_methods!(RegionDatum);
 
+    /// Sets the polygon stroke width and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `width` is not finite or is not strictly positive.
     #[must_use]
     pub fn stroke_width(self, width: f32) -> Self {
         self.try_stroke_width(width)
             .expect("ChoroplethChart::stroke_width(width) requires finite width > 0")
     }
 
+    /// Sets the polygon stroke width using an already-validated positive value.
     #[must_use]
-    pub fn with_stroke_width(mut self, width: PositiveF32) -> Self {
+    pub const fn with_stroke_width(mut self, width: PositiveF32) -> Self {
         self.stroke_width = width.get();
         self
     }
 
+    /// Attempts to set the polygon stroke width.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `width` is not finite or is not strictly positive.
     pub fn try_stroke_width(self, width: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_stroke_width(PositiveF32::try_new(width)?))
     }
 
+    /// Sets the polygon stroke color.
     #[must_use]
-    pub fn stroke_color(mut self, color: Srgb) -> Self {
+    pub const fn stroke_color(mut self, color: Srgb) -> Self {
         self.stroke_color = color;
         self
     }
 
+    /// Enables or disables polygon stroke rendering.
     #[must_use]
     pub const fn show_stroke(mut self, show: bool) -> Self {
         self.show_stroke = show;
         self
     }
 
+    /// Tracks the currently focused region in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<RegionDatum>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected region in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<RegionDatum>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -77,14 +95,14 @@ impl<S: Signal<Output = ChoroplethData>> ChoroplethChart<S> {
 }
 
 impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let stroke_width = self.stroke_width;
         let stroke_color = self.stroke_color;
         let show_stroke = self.show_stroke;
         interactive_signal_canvas(
-            _env,
+            env,
             self.data,
-            move |ctx, data| choropleth_geometry(ctx, data),
+            choropleth_geometry,
             move |ctx, data, _geometry| {
                 draw_choropleth(ctx, data, stroke_width, stroke_color, show_stroke);
             },

@@ -25,6 +25,7 @@ futures.workspace = true
 native-executor.workspace = true
 executor-core.workspace = true
 nami.workspace = true
+num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
 uuid = { version = "1.21.0", features = ["v4"] }
 

@@ -423,9 +423,9 @@ fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
     let data = point_series();
     let x_value = Binding::container(None::<f32>);
     let x_range = Binding::container(None::<RangeInclusive<f32>>);
-    let data_for_view = data.clone();
-    let x_value_for_view = x_value.clone();
-    let x_range_for_view = x_range.clone();
+    let data_for_view = data;
+    let x_value_for_view = x_value;
+    let x_range_for_view = x_range;
 
     let _app = mount_view(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
@@ -443,9 +443,9 @@ fn line_chart_rejects_simultaneous_y_value_and_range_selection() {
     let data = point_series();
     let y_value = Binding::container(None::<f32>);
     let y_range = Binding::container(None::<RangeInclusive<f32>>);
-    let data_for_view = data.clone();
-    let y_value_for_view = y_value.clone();
-    let y_range_for_view = y_range.clone();
+    let data_for_view = data;
+    let y_value_for_view = y_value;
+    let y_range_for_view = y_range;
 
     let _app = mount_view(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))

@@ -2,8 +2,6 @@
 //!
 //! Provides `asset!`, `assets!`, and `include_bundle!`.
 
-#![allow(missing_docs)]
-
 use std::collections::BTreeMap;
 
 use proc_macro::TokenStream;
@@ -15,7 +13,7 @@ use syn::{
     parse_macro_input,
 };
 use waterui_assets::{AssetKind, is_loopback_http_url, is_remote_url};
-use waterui_assets_plan::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
+use waterui_assets_planner::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
 
 /// Input to the `asset!` macro.
 struct AssetInput {
@@ -104,7 +102,7 @@ fn syn_ident(name: &str) -> syn::Ident {
 fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
     let mut current = node;
     let mount_ident =
-        (!asset.mount.is_empty()).then(|| waterui_assets_plan::rust_identifier(&asset.mount));
+        (!asset.mount.is_empty()).then(|| waterui_assets_planner::rust_identifier(&asset.mount));
     for segment in asset.module_segments() {
         let is_mount_root = mount_ident
             .as_deref()
@@ -193,6 +191,7 @@ fn emit_module(
 }
 
 #[proc_macro]
+/// Generates the `assets` module for the current crate.
 pub fn assets(input: TokenStream) -> TokenStream {
     if !proc_macro2::TokenStream::from(input).is_empty() {
         return compile_error("assets!() does not accept arguments", Span::call_site());
@@ -215,6 +214,7 @@ pub fn assets(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
+/// Registers an additional bundle mount for generated asset planning.
 pub fn include_bundle(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as IncludeBundleInput);
     let _ = input.path;
@@ -223,6 +223,7 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
+/// Expands a single asset path into its inferred `WaterUI` asset handle.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let path_str = input.path.value();
