@@ -32,7 +32,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::{Mutex, RwLock};
-use waterkit_fs::WaterFs;
 use wgpu;
 
 /// Error type for shared context operations.
@@ -392,7 +391,7 @@ pub fn clear_pipeline_cache() {
 }
 
 fn cache_root_dir() -> Option<PathBuf> {
-    WaterFs::cache_dir().map(|root| root.join("waterui"))
+    dirs::cache_dir().map(|root| root.join("waterui"))
 }
 
 fn sanitize_cache_token(value: &str) -> String {

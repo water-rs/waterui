@@ -33,7 +33,7 @@ png = "0.18"
 parking_lot = "0.12"
 pollster = "0.4"
 inventory = "0.3"
-waterkit-fs.workspace = true
+dirs.workspace = true
 rayon = "1.11"
 mp4parse = "0.17"
 num-traits = { version = "0.2", default-features = false }
