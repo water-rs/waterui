@@ -53,8 +53,48 @@ name = "waterui-url"
 git_tag_name = "url-v{{ version }}"
 
 [[package]]
+name = "filtrate-core"
+git_tag_name = "filtrate-core-v{{ version }}"
+
+[[package]]
+name = "filtrate"
+git_tag_name = "filtrate-v{{ version }}"
+
+[[package]]
 name = "waterui-locale"
 git_tag_name = "locale-v{{ version }}"
+
+[[package]]
+name = "waterui-svg"
+git_tag_name = "svg-v{{ version }}"
+
+[[package]]
+name = "waterui-icon"
+git_tag_name = "icon-v{{ version }}"
+
+[[package]]
+name = "waterui-image"
+git_tag_name = "image-v{{ version }}"
+
+[[package]]
+name = "waterui-video"
+git_tag_name = "video-v{{ version }}"
+
+[[package]]
+name = "waterui-assets"
+git_tag_name = "assets-v{{ version }}"
+
+[[package]]
+name = "waterui-assets-plan"
+git_tag_name = "assets-plan-v{{ version }}"
+
+[[package]]
+name = "waterui-inspector-protocol"
+git_tag_name = "inspector-protocol-v{{ version }}"
+
+[[package]]
+name = "waterui-preview-protocol"
+git_tag_name = "preview-protocol-v{{ version }}"
 
 [[package]]
 name = "waterui-macros"
