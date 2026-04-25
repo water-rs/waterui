@@ -10,8 +10,6 @@ use std::path::Path;
 use crate::AssetError;
 #[cfg(feature = "std")]
 use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
-#[cfg(feature = "std")]
-use waterkit_fs::WaterFs;
 
 /// Large file, memory-mapped for efficient access.
 ///
@@ -206,7 +204,7 @@ async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> 
     hasher.update(url.as_bytes());
     let hash = hex::encode(hasher.finalize());
 
-    let cache_dir = WaterFs::cache_dir()
+    let cache_dir = dirs::cache_dir()
         .map(|root| root.join("waterui").join("assets"))
         .ok_or_else(|| AssetError::io("Could not determine cache directory"))?;
 
