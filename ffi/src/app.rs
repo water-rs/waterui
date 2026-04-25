@@ -25,7 +25,7 @@ impl IntoFFI for App {
 
     fn into_ffi(self) -> Self::FFI {
         let (windows, menu_bar, env) = self.into_parts();
-        let menu_bar = resolve_menu_bar_items(menu_bar, &env).into_ffi();
+        let menu_bar = resolve_menu_bar_items(&menu_bar, &env).into_ffi();
         WuiApp {
             windows: windows.into_ffi(),
             menu_bar,
