@@ -69,7 +69,7 @@ pub mod context_menu {
 
     impl<Content: View> View for ContextMenuView<Content> {
         fn body(self, env: &Environment) -> impl View {
-            let items = resolve_menu_items(self.items, env);
+            let items = resolve_menu_items(&self.items, env);
 
             Metadata::new(self.content, ResolvedContextMenu { items })
         }

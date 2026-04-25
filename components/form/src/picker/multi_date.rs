@@ -81,7 +81,7 @@ impl MultiDatePicker {
 
     /// Sets the valid date range for the picker.
     #[must_use]
-    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
+    pub const fn range(mut self, range: RangeInclusive<Date>) -> Self {
         self.0.range = range;
         self
     }

@@ -269,7 +269,6 @@ impl Window {
     }
 
     /// Builds the current window content tree.
-    #[must_use]
     pub fn build_content(&self) -> AnyView {
         self.content.build()
     }
