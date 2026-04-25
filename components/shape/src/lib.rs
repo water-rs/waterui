@@ -19,8 +19,6 @@
 //! Circle.fill(Color::red().with_headroom(0.5))
 //! ```
 
-#![allow(clippy::multiple_crate_versions)]
-
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};

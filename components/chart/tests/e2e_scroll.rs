@@ -50,7 +50,7 @@ fn line_chart_horizontal_drag_updates_scroll_position_binding() {
     let expected = (start + horizontal_drag_domain_delta(visible_length, from.0, to.0))
         .clamp(bounds.min_x, bounds.max_x - visible_length);
     let scroll_position = Binding::f32(0.0);
-    let data_for_view = data.clone();
+    let data_for_view = data;
     let scroll_for_view = scroll_position.clone();
 
     let mut app = mount_view(move || {
@@ -92,7 +92,7 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
     let expected = (bounds.min_y + vertical_drag_domain_delta(visible_length, from.1, to.1))
         .clamp(bounds.min_y, bounds.max_y - visible_length);
     let scroll_position = Binding::f32(0.0);
-    let data_for_view = data.clone();
+    let data_for_view = data;
     let scroll_for_view = scroll_position.clone();
 
     let mut app = mount_view(move || {
@@ -133,7 +133,7 @@ fn line_chart_vertical_drag_updates_scroll_position_binding() {
 #[should_panic(expected = "chart_x_visible_domain requires chart_x_scroll_position")]
 fn line_chart_visible_domain_requires_scroll_position() {
     let data = point_series();
-    let data_for_view = data.clone();
+    let data_for_view = data;
     let _app = mount_view(move || {
         chart_surface(
             "line-visible-domain-invalid",
@@ -147,7 +147,7 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
     let data = point_series();
     let visible_length = Binding::f32(8.0);
     let x_position = Binding::f32(0.0);
-    let data_for_view = data.clone();
+    let data_for_view = data;
     let visible_length_for_view = visible_length.clone();
     let x_position_for_view = x_position.clone();
 
@@ -182,7 +182,7 @@ fn line_chart_reactive_visible_domain_length_triggers_redraw() {
 #[should_panic(expected = "chart_scrollable_axes(horizontal) requires chart_x_scroll_position")]
 fn line_chart_scrollable_axes_require_visible_domain() {
     let data = point_series();
-    let data_for_view = data.clone();
+    let data_for_view = data;
     let _app = mount_view(move || {
         chart_surface(
             "line-scroll-invalid",

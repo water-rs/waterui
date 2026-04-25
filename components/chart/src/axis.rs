@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use num_traits::ToPrimitive as _;
 use waterui_core::Str;
 use waterui_text::{IntoText, Text};
 
@@ -33,10 +34,21 @@ pub struct AxisConfig {
     label: Option<Text>,
 }
 
+impl core::fmt::Debug for AxisConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AxisConfig")
+            .field("tick_count", &self.tick_count)
+            .field("format", &self.format)
+            .field("show_grid", &self.show_grid)
+            .field("label", &self.label.as_ref().map(|_| "Text"))
+            .finish()
+    }
+}
+
 impl AxisConfig {
     /// Creates a new axis config with defaults.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             tick_count: 5,
             format: TickFormat::Auto,
@@ -47,7 +59,7 @@ impl AxisConfig {
 
     /// Sets approximate number of ticks (algorithm may adjust for nice values).
     #[must_use]
-    pub fn tick_count(mut self, count: usize) -> Self {
+    pub const fn tick_count(mut self, count: usize) -> Self {
         self.tick_count = count;
         self
     }
@@ -61,7 +73,7 @@ impl AxisConfig {
 
     /// Enables grid lines at tick positions.
     #[must_use]
-    pub fn show_grid(mut self) -> Self {
+    pub const fn show_grid(mut self) -> Self {
         self.show_grid = true;
         self
     }
@@ -75,13 +87,13 @@ impl AxisConfig {
 
     /// Returns true if grid lines should be shown.
     #[must_use]
-    pub fn has_grid(&self) -> bool {
+    pub const fn has_grid(&self) -> bool {
         self.show_grid
     }
 
     /// Returns the axis label, if set.
     #[must_use]
-    pub fn axis_label(&self) -> Option<&Text> {
+    pub const fn axis_label(&self) -> Option<&Text> {
         self.label.as_ref()
     }
 
@@ -95,7 +107,10 @@ impl AxisConfig {
 
         // Use nice numbers algorithm
         let range = nice_number(max - min, false);
-        let step = nice_number(range / (self.tick_count.max(2) - 1) as f32, true);
+        let Some(intervals) = (self.tick_count.max(2) - 1).to_f32() else {
+            return Vec::new();
+        };
+        let step = nice_number(range / intervals, true);
 
         // Avoid division by zero
         if step <= 0.0 || !step.is_finite() {
@@ -111,12 +126,12 @@ impl AxisConfig {
         // Safety limit to prevent infinite loops
         let max_ticks = 100;
 
-        while value <= nice_max + step * 0.5 && ticks.len() < max_ticks {
+        while value <= step.mul_add(0.5, nice_max) && ticks.len() < max_ticks {
             // Normalize position to [0, 1] range
             let position = (value - min) / (max - min);
 
             // Only include ticks that are within or near the visible range
-            if position >= -0.01 && position <= 1.01 {
+            if (-0.01..=1.01).contains(&position) {
                 ticks.push(Tick {
                     value,
                     label: self.format_tick(value, step),
@@ -163,8 +178,20 @@ pub enum TickFormat {
     Custom(Arc<dyn Fn(f32) -> Str + Send + Sync>),
 }
 
+impl core::fmt::Debug for TickFormat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("Auto"),
+            Self::Fixed(decimals) => f.debug_tuple("Fixed").field(decimals).finish(),
+            Self::SI => f.write_str("SI"),
+            Self::Percent => f.write_str("Percent"),
+            Self::Custom(_) => f.write_str("Custom(..)"),
+        }
+    }
+}
+
 /// A computed tick mark.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Tick {
     value: f32,
     label: Str,
@@ -175,7 +202,7 @@ pub struct Tick {
 impl Tick {
     /// Returns the tick value.
     #[must_use]
-    pub fn value(&self) -> f32 {
+    pub const fn value(&self) -> f32 {
         self.value
     }
 
@@ -187,7 +214,7 @@ impl Tick {
 
     /// Returns the normalized position (0.0 to 1.0).
     #[must_use]
-    pub fn position(&self) -> f32 {
+    pub const fn position(&self) -> f32 {
         self.position
     }
 }
@@ -233,7 +260,10 @@ fn format_auto(value: f32, step: f32) -> Str {
     let decimals = if step >= 1.0 {
         0
     } else {
-        let log = (-step.log10()).ceil() as usize;
+        let log = (-step.log10())
+            .ceil()
+            .to_usize()
+            .expect("finite positive step logarithm should fit in usize");
         log.min(6) // Cap at 6 decimal places
     };
 
@@ -241,9 +271,9 @@ fn format_auto(value: f32, step: f32) -> Str {
     let rounded = (value / step).round() * step;
 
     if decimals == 0 {
-        format!("{:.0}", rounded).into()
+        format!("{rounded:.0}").into()
     } else {
-        format!("{:.1$}", rounded, decimals).into()
+        format!("{rounded:.decimals$}").into()
     }
 }
 
@@ -260,9 +290,9 @@ fn format_si(value: f32) -> Str {
     } else if abs >= 1_000.0 {
         format!("{:.1}K", value / 1_000.0).into()
     } else if abs >= 1.0 {
-        format!("{:.0}", value).into()
+        format!("{value:.0}").into()
     } else {
-        format!("{:.2}", value).into()
+        format!("{value:.2}").into()
     }
 }
 

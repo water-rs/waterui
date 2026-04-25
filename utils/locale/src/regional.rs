@@ -138,7 +138,7 @@ impl RegionalContext {
 
     /// Returns a copy with locale replaced while preserving other regional settings.
     #[must_use]
-    pub fn with_locale(&self, locale: Locale) -> Self {
+    pub fn with_locale(&self, locale: &Locale) -> Self {
         Self::new(
             locale.canonical_tag(),
             self.preferred_languages.clone(),
@@ -197,6 +197,10 @@ impl fmt::Display for InvalidLocaleTag {
 impl Error for InvalidLocaleTag {}
 
 /// Returns the current shared runtime locale settings.
+///
+/// # Panics
+///
+/// Panics if the regional runtime mutex is poisoned.
 #[must_use]
 pub fn current_settings() -> RegionalContext {
     runtime()
@@ -220,13 +224,17 @@ pub fn set_locale_tag(tag: impl AsRef<str>) -> Result<(), InvalidLocaleTag> {
     let locale = Locale::from_str(locale_tag).map_err(|_| InvalidLocaleTag {
         tag: locale_tag.to_string(),
     })?;
-    let _ = set_settings(current_settings().with_locale(locale));
+    let _ = set_settings(current_settings().with_locale(&locale));
     Ok(())
 }
 
 /// Registers a listener that will be invoked whenever the runtime locale changes.
 ///
 /// The returned handle must be kept alive; dropping it unsubscribes the listener.
+///
+/// # Panics
+///
+/// Panics if the regional runtime mutex is poisoned.
 #[must_use]
 pub fn register_listener(
     listener: impl Fn(&RegionalContext) + Send + Sync + 'static,
@@ -424,7 +432,7 @@ impl Extractor for RegionalContext {
         }
 
         if let Some(locale) = env.get::<Locale>().cloned() {
-            return Ok(current_settings().with_locale(locale));
+            return Ok(current_settings().with_locale(&locale));
         }
 
         Ok(current_settings())

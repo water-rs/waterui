@@ -3,8 +3,6 @@
 //! These types provide a more ergonomic and safer API surface than raw `f32`
 //! by validating invariants once at construction time.
 
-use core::f32::consts::PI;
-
 /// Error returned when chart style/config values are invalid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChartParamError {
@@ -74,6 +72,10 @@ pub struct PositiveF32(f32);
 
 impl PositiveF32 {
     /// Validates and creates a positive scalar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `value` is non-finite or is not strictly positive.
     pub fn try_new(value: f32) -> Result<Self, ChartParamError> {
         if !value.is_finite() {
             return Err(ChartParamError::NonFinite {
@@ -91,6 +93,10 @@ impl PositiveF32 {
     }
 
     /// Creates a positive scalar and panics on invalid input.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `value` is non-finite or is not strictly positive.
     #[must_use]
     pub fn new(value: f32) -> Self {
         Self::try_new(value).expect("PositiveF32 requires finite value > 0")
@@ -117,6 +123,10 @@ pub struct UnitInterval(f32);
 
 impl UnitInterval {
     /// Validates and creates a unit-interval scalar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `value` is non-finite or is outside `0.0..=1.0`.
     pub fn try_new(value: f32) -> Result<Self, ChartParamError> {
         if !value.is_finite() {
             return Err(ChartParamError::NonFinite {
@@ -136,6 +146,10 @@ impl UnitInterval {
     }
 
     /// Creates a unit-interval scalar and panics on invalid input.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `value` is non-finite or is outside `0.0..=1.0`.
     #[must_use]
     pub fn new(value: f32) -> Self {
         Self::try_new(value).expect("UnitInterval requires finite value in [0, 1]")
@@ -164,6 +178,10 @@ pub struct DonutInnerRadius(f32);
 
 impl DonutInnerRadius {
     /// Validates and creates a donut inner-radius ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `value` is non-finite or is outside `0.0..=0.95`.
     pub fn try_new(value: f32) -> Result<Self, ChartParamError> {
         if !value.is_finite() {
             return Err(ChartParamError::NonFinite {
@@ -206,6 +224,10 @@ pub struct ArcAngles {
 
 impl ArcAngles {
     /// Creates arc angles from radians.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when either angle is non-finite or `end <= start`.
     pub fn try_radians(start: f32, end: f32) -> Result<Self, ChartParamError> {
         if !start.is_finite() {
             return Err(ChartParamError::NonFinite {
@@ -229,8 +251,12 @@ impl ArcAngles {
     }
 
     /// Creates arc angles from degrees.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when either angle is non-finite or `end <= start`.
     pub fn try_degrees(start: f32, end: f32) -> Result<Self, ChartParamError> {
-        Self::try_radians(start * PI / 180.0, end * PI / 180.0)
+        Self::try_radians(start.to_radians(), end.to_radians())
     }
 
     /// Arc start angle in radians.
@@ -255,6 +281,11 @@ pub struct GaugeRadii {
 
 impl GaugeRadii {
     /// Creates validated gauge radii.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when either radius is non-finite or the
+    /// radii do not satisfy `0.0 <= inner < outer <= 0.5`.
     pub fn try_new(inner: f32, outer: f32) -> Result<Self, ChartParamError> {
         if !inner.is_finite() {
             return Err(ChartParamError::NonFinite {

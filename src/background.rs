@@ -67,8 +67,8 @@ impl MetadataKey for MaterialBackground {}
 /// A trait for types that can be applied as backgrounds.
 ///
 /// This enables a unified `.background()` API that accepts:
-/// - `Material` - Creates a native blur effect (MaterialBackground metadata)
-/// - Any `View` - Creates a standard background view
+/// - `Material` - Creates a native blur effect (`MaterialBackground` metadata)
+/// - Any [`View`] - Creates a standard background view
 pub trait IntoBackground {
     /// The output view type after applying the background.
     type Output<Content: View>: View;

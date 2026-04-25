@@ -3,8 +3,6 @@
 //! These tests define the expected behavior of the layout system for various
 //! edge cases and ensure consistency across all layout containers.
 
-#![allow(clippy::float_cmp)]
-
 use alloc::{format, vec, vec::Vec};
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};

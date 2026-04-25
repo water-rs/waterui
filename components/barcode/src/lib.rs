@@ -22,8 +22,6 @@
 //! Barcode::code128("HELLO-WATERUI")
 //! ```
 
-#![allow(clippy::multiple_crate_versions)]
-
 mod effect;
 mod qr;
 mod renderer;

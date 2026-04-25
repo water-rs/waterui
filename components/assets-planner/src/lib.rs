@@ -1,12 +1,5 @@
 //! Shared asset discovery and planning for `WaterUI` applications.
 
-#![allow(
-    missing_docs,
-    clippy::missing_const_for_fn,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc
-)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -20,29 +13,39 @@ use thiserror::Error;
 use walkdir::WalkDir;
 use waterui_assets::AssetKind;
 
+/// Theme color overrides discovered from asset metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeConfig {
+    /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+    /// Main surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
+    /// Secondary surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_variant: Option<String>,
+    /// Border color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<String>,
+    /// Primary foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<String>,
+    /// Muted foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted_foreground: Option<String>,
+    /// Accent color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+    /// Foreground color used on accent surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent_foreground: Option<String>,
 }
 
 impl ThemeConfig {
+    /// Returns whether no theme colors are configured.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.background.is_none()
             && self.surface.is_none()
             && self.surface_variant.is_none()
@@ -54,29 +57,43 @@ impl ThemeConfig {
     }
 }
 
+/// Asset bundle mounted from an application or included bundle root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleMount {
+    /// Logical mount name.
     pub name: String,
+    /// Filesystem root for this mount.
     pub root: PathBuf,
 }
 
+/// Semantic role assigned to a planned asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetRole {
+    /// Normal asset exposed through generated asset modules.
     Regular,
+    /// Root-level application icon asset.
     AppIcon,
 }
 
+/// Asset discovered during bundle planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedAsset {
+    /// Mount name, empty for the main application asset root.
     pub mount: String,
+    /// Absolute source path on disk.
     pub source_path: PathBuf,
+    /// Path relative to the asset mount.
     pub relative_path: PathBuf,
+    /// Logical path exposed to generated code.
     pub logical_path: PathBuf,
+    /// Inferred asset kind.
     pub kind: AssetKind,
+    /// Inferred semantic role.
     pub role: AssetRole,
 }
 
 impl PlannedAsset {
+    /// Returns Rust module path segments for this asset.
     #[must_use]
     pub fn module_segments(&self) -> Vec<String> {
         self.logical_path
@@ -91,6 +108,11 @@ impl PlannedAsset {
             .collect()
     }
 
+    /// Returns the generated Rust item name for this asset.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the planned asset has no UTF-8 file stem.
     #[must_use]
     pub fn item_name(&self) -> String {
         let stem = self
@@ -102,57 +124,110 @@ impl PlannedAsset {
     }
 }
 
+/// Complete manifest describing assets discovered for a crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleManifest {
+    /// Root directory of the application crate.
     pub crate_root: PathBuf,
+    /// Main application assets directory.
     pub assets_root: PathBuf,
+    /// Additional bundle mounts discovered from `include_bundle!`.
     pub mounts: Vec<BundleMount>,
+    /// Planned assets across the main root and all mounts.
     pub assets: Vec<PlannedAsset>,
 }
 
+/// Errors produced while discovering and planning asset bundles.
 #[derive(Debug, Error)]
 pub enum PlannerError {
+    /// Failed to read `Water.toml`.
     #[error("Failed to read Water.toml at '{path}': {source}")]
     ReadWaterToml {
+        /// Path to `Water.toml`.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// Failed to parse `Water.toml`.
     #[error("Invalid Water.toml at '{path}': {source}")]
     InvalidWaterToml {
+        /// Path to `Water.toml`.
         path: PathBuf,
+        /// Underlying TOML parse error.
         source: toml::de::Error,
     },
+    /// Failed to read a Rust source file.
     #[error("Failed to read Rust source '{path}': {source}")]
     ReadSource {
+        /// Source file path.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// Failed to parse a Rust source file.
     #[error("Failed to parse Rust source '{path}': {source}")]
-    ParseSource { path: PathBuf, source: syn::Error },
+    ParseSource {
+        /// Source file path.
+        path: PathBuf,
+        /// Underlying Rust parser error.
+        source: syn::Error,
+    },
+    /// Duplicate `include_bundle!` mount name.
     #[error("include_bundle mount '{name}' already exists")]
-    DuplicateMount { name: String },
+    DuplicateMount {
+        /// Duplicate mount name.
+        name: String,
+    },
+    /// Included bundle namespace conflicts with the application asset namespace.
     #[error("include_bundle mount '{name}' conflicts with app assets namespace")]
-    MountNamespaceConflict { name: String },
+    MountNamespaceConflict {
+        /// Conflicting mount name.
+        name: String,
+    },
+    /// Included bundle root does not exist.
     #[error("include_bundle mount '{name}' points to missing directory '{path}'")]
-    MissingMountRoot { name: String, path: PathBuf },
+    MissingMountRoot {
+        /// Mount name.
+        name: String,
+        /// Missing mount root path.
+        path: PathBuf,
+    },
+    /// Two assets resolve to the same logical path.
     #[error("Asset path collision at '{logical_path}' between '{first}' and '{second}'")]
     AssetCollision {
+        /// Colliding logical asset path.
         logical_path: String,
+        /// First source path seen.
         first: PathBuf,
+        /// Second source path seen.
         second: PathBuf,
     },
+    /// Two assets resolve to the same generated Rust module path.
     #[error(
         "Generated Rust asset path collision at '{module_path}' between '{first}' and '{second}'"
     )]
     ModuleCollision {
+        /// Colliding generated module path.
         module_path: String,
+        /// First source path seen.
         first: PathBuf,
+        /// Second source path seen.
         second: PathBuf,
     },
+    /// Root-level icon asset is not a supported image.
     #[error("App icon source '{path}' must be a square raster image or SVG")]
-    InvalidIconSource { path: PathBuf },
+    InvalidIconSource {
+        /// Invalid icon source path.
+        path: PathBuf,
+    },
+    /// More than one root-level icon asset was found.
     #[error("Only one root-level Icon.* asset is allowed, found '{first}' and '{second}'")]
-    DuplicateIcon { first: PathBuf, second: PathBuf },
+    DuplicateIcon {
+        /// First icon path seen.
+        first: PathBuf,
+        /// Second icon path seen.
+        second: PathBuf,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +247,7 @@ fn default_assets_path() -> String {
 }
 
 #[must_use]
+/// Converts an arbitrary path segment into a Rust identifier.
 pub fn rust_identifier(segment: &str) -> String {
     let mut ident = segment.to_snake_case();
     ident.retain(|ch| ch.is_ascii_alphanumeric() || ch == '_');
@@ -193,6 +269,11 @@ pub fn rust_identifier(segment: &str) -> String {
     }
 }
 
+/// Reads the configured assets path from `Water.toml`.
+///
+/// # Errors
+///
+/// Returns [`PlannerError`] when `Water.toml` cannot be read or parsed.
 pub fn read_assets_path(crate_root: &Path) -> Result<String, PlannerError> {
     let path = crate_root.join("Water.toml");
     let text = fs::read_to_string(&path).map_err(|source| PlannerError::ReadWaterToml {
@@ -204,6 +285,12 @@ pub fn read_assets_path(crate_root: &Path) -> Result<String, PlannerError> {
     Ok(water.package.assets_path)
 }
 
+/// Discovers `include_bundle!` mounts from Rust source files under `src`.
+///
+/// # Errors
+///
+/// Returns [`PlannerError`] when source files cannot be read or parsed, a mount
+/// is duplicated, or a referenced mount directory is missing.
 pub fn discover_bundle_mounts(crate_root: &Path) -> Result<Vec<BundleMount>, PlannerError> {
     let mut mounts = Vec::new();
     let src_root = crate_root.join("src");
@@ -246,6 +333,12 @@ pub fn discover_bundle_mounts(crate_root: &Path) -> Result<Vec<BundleMount>, Pla
     Ok(mounts)
 }
 
+/// Plans all assets for a crate and its included bundles.
+///
+/// # Errors
+///
+/// Returns [`PlannerError`] when bundle discovery fails or assets collide by
+/// logical path, generated module path, or app-icon role.
 pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifest, PlannerError> {
     let assets_root = crate_root.join(assets_path);
     let mounts = discover_bundle_mounts(crate_root)?;
