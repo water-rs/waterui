@@ -1,12 +1,8 @@
-use executor_core::spawn;
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Metadata, SignalExt, View,
     reactive::signal::IntoComputed,
 };
-
-#[cfg(feature = "std")]
-use waterkit_haptic::{Haptic, Intensity};
 
 use crate::{
     Url,
@@ -89,7 +85,6 @@ fn live_photo_still(
     Metadata::new(
         Photo::new(source.image),
         GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
-            trigger_live_photo_feedback();
             is_playing.set(true);
         }),
     )
@@ -106,14 +101,4 @@ fn live_photo_video(source: LivePhotoSource, is_playing: &Binding<bool>) -> Vide
                 is_playing.set(false);
             }
         })
-}
-
-fn trigger_live_photo_feedback() {
-    #[cfg(feature = "std")]
-    {
-        spawn(async move {
-            let _ = Haptic::impact(Intensity::MEDIUM).await;
-        })
-        .detach();
-    }
 }
