@@ -1537,11 +1537,28 @@ impl Installation for AndroidPlatformToolsInstallation {
             .await
             .map_err(FailToInstallAndroidPlatformTools::InstallFailed)?;
 
-        if AndroidSdk::adb_path().is_some() {
-            Ok(())
-        } else {
-            Err(FailToInstallAndroidPlatformTools::StillMissing)
+        verify_android_platform_tools_after_install().await
+    }
+}
+
+async fn verify_android_platform_tools_after_install()
+-> Result<(), FailToInstallAndroidPlatformTools> {
+    let adb_path = AndroidSdk::adb_path().ok_or(FailToInstallAndroidPlatformTools::StillMissing)?;
+    match verify_android_platform_tools_executable(&adb_path).await {
+        Ok(()) => Ok(()),
+        Err(ToolchainError::Fixable(
+            AndroidPlatformToolsInstallation::LinuxX86_64HostToolsCompat,
+        )) => {
+            install_android_linux_x86_64_host_tools_compat()
+                .await
+                .map_err(FailToInstallAndroidPlatformTools::HostToolsCompatFailed)?;
+            verify_android_platform_tools_executable(&adb_path)
+                .await
+                .map_err(|error| FailToInstallAndroidPlatformTools::InstallFailed(error.into()))
         }
+        Err(error) => Err(FailToInstallAndroidPlatformTools::InstallFailed(
+            error.into(),
+        )),
     }
 }
 
@@ -2580,10 +2597,25 @@ impl Installation for AndroidNdkInstallation {
             return Err(FailToInstallAndroidNdk::StillMissing);
         }
 
-        if ndk_layout_is_complete(&ndk_path) {
-            Ok(())
-        } else {
-            Err(FailToInstallAndroidNdk::Incomplete)
+        if !ndk_layout_is_complete(&ndk_path) {
+            return Err(FailToInstallAndroidNdk::Incomplete);
         }
+
+        verify_android_ndk_after_install(&ndk_path).await
+    }
+}
+
+async fn verify_android_ndk_after_install(ndk_path: &Path) -> Result<(), FailToInstallAndroidNdk> {
+    match verify_ndk_host_toolchain_executable(ndk_path).await {
+        Ok(()) => Ok(()),
+        Err(ToolchainError::Fixable(AndroidNdkInstallation::LinuxX86_64HostToolsCompat)) => {
+            install_android_linux_x86_64_host_tools_compat()
+                .await
+                .map_err(FailToInstallAndroidNdk::HostToolsCompatFailed)?;
+            verify_ndk_host_toolchain_executable(ndk_path)
+                .await
+                .map_err(|error| FailToInstallAndroidNdk::InstallFailed(error.into()))
+        }
+        Err(error) => Err(FailToInstallAndroidNdk::InstallFailed(error.into())),
     }
 }
