@@ -1320,10 +1320,10 @@ impl IntoFFI for ShortcutModifiers {
 
     fn into_ffi(self) -> Self::FFI {
         WuiShortcutModifiers {
-            command: self.command,
-            shift: self.shift,
-            option: self.option,
-            control: self.control,
+            command: self.command(),
+            shift: self.shift(),
+            option: self.option(),
+            control: self.control(),
         }
     }
 }
