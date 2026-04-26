@@ -1,3 +1,5 @@
+//! Semantic coverage for secure form fields.
+
 use std::time::Duration;
 
 use waterui::layout::stack::vstack;
@@ -21,7 +23,7 @@ fn secure_field_set_text_updates_value(app: &mut MountedApp) {
     let selector = Selector::default()
         .role(Role::PASSWORD_INPUT)
         .label("Password");
-    app.assert_exists(selector.clone());
+    app.assert_exists(&selector);
     assert!(
         app.query()
             .role(Role::PASSWORD_INPUT)
