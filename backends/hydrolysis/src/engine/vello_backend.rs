@@ -7,13 +7,6 @@ pub struct VelloDrawContext<'a> {
 }
 
 impl<'a> VelloDrawContext<'a> {
-    pub fn new(scene: &'a mut vello::Scene) -> Self {
-        Self {
-            scene,
-            transform_stack: vec![Affine::IDENTITY],
-        }
-    }
-
     pub fn with_root_transform(scene: &'a mut vello::Scene, transform: Affine) -> Self {
         Self {
             scene,
@@ -28,7 +21,7 @@ impl<'a> VelloDrawContext<'a> {
             .expect("vello draw context transform stack is empty")
     }
 
-    fn brush<'b>(brush: &'b Brush) -> &'b vello::peniko::Color {
+    fn brush(brush: &Brush) -> &vello::peniko::Color {
         match brush {
             Brush::Solid(color) => color,
         }

@@ -16,6 +16,7 @@ mod text_editing;
 mod view_helpers;
 
 use accessibility::*;
+pub use compositor::HydrolysisRenderTarget;
 use compositor::*;
 use core::any::Any;
 use core::f64::consts::TAU;
@@ -27,7 +28,6 @@ pub(crate) use lifecycle::local_shared;
 use lifecycle::*;
 pub(crate) use measurement::*;
 use navigation_state::*;
-pub(crate) use navigation_transition::*;
 use popup_menu::*;
 pub(crate) use render_context::WidgetRenderContext;
 use std::borrow::Cow;
@@ -43,7 +43,6 @@ pub(crate) use view_helpers::{
     transformed_rect,
 };
 
-use crate::platform::PlatformWindow as _;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
@@ -65,7 +64,7 @@ use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::focus::Focused;
-use waterui::component::list::{ListConfig, ListItem, Move};
+use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
@@ -77,8 +76,8 @@ use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
-    NavigationTransition, NavigationView,
+    CustomNavigationController, NavigationSplitLayout, NavigationStack, NavigationTransition,
+    NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
@@ -91,7 +90,7 @@ use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
-use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
+use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
@@ -106,8 +105,8 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, LocalStateScope, LocalStateStore, Metadata, Native,
     Retain, Str, View, impl_extractor,
 };
+use waterui_form::picker::PickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
-use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor, Srgb};
 use waterui_graphics::gpu_surface::GestureState;
@@ -123,7 +122,7 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_layout::stack::{Axis as StackAxis, HStackLayout, VStackLayout};
+use waterui_layout::stack::{HStackLayout, VStackLayout};
 use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
 use waterui_text::font::FontWeight as TextFontWeight;
@@ -134,17 +133,13 @@ use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
 use crate::engine::vello_backend::VelloDrawContext;
-use crate::engine::{Brush, DrawContext};
 use crate::gesture::{GestureEngine, GestureTarget};
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
 };
-use crate::scroll::{ScrollController, ScrollHandle, ScrollMetrics};
+use crate::scroll::{ScrollController, ScrollHandle};
 use crate::time::Instant;
-use crate::widgets::{
-    CONTROL_SPRING_DAMPING, CONTROL_SPRING_STIFFNESS, STEPPER_BUTTON_SPACING,
-    STEPPER_LABEL_SPACING, TOGGLE_LABEL_SPACING, inset_rect, render_divider, widget_theme,
-};
+use crate::widgets::{CONTROL_SPRING_DAMPING, CONTROL_SPRING_STIFFNESS, inset_rect, widget_theme};
 
 #[cfg(feature = "accessibility")]
 pub(crate) use accessibility::{
@@ -152,7 +147,9 @@ pub(crate) use accessibility::{
     collapsed_accessibility_text_selection, register_accessibility_text_run_node,
     slider_step_for_range,
 };
-pub(crate) use text_editing::{TextInputModel, TextSelectionSlot, clamp_to_char_boundary};
+pub(crate) use text_editing::{
+    TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
+};
 
 type HydroRawHandlerFn =
     Box<dyn Fn(&mut HydrolysisRenderer, RenderContext, &mut dyn Any, &Environment)>;
@@ -212,15 +209,6 @@ impl HydroDispatcher {
                 }),
             },
         );
-    }
-
-    fn register_state<V: View>(
-        &mut self,
-        handler: impl 'static + Clone + Fn(&mut HydroState, RenderContext, V, &Environment),
-    ) {
-        self.register(move |renderer, ctx, view, env| {
-            handler(&mut renderer.state, ctx, view, env);
-        });
     }
 
     fn register_renderer<V: View>(
@@ -479,21 +467,6 @@ pub(crate) const LIST_ESTIMATED_ROW_HEIGHT: f64 =
     LIST_ROW_CONTENT_MIN_HEIGHT as f64 + LIST_ROW_VERTICAL_PADDING * 2.0;
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
-const SLIDER_HORIZONTAL_INSET: f64 = 12.0;
-const SLIDER_HORIZONTAL_SPACING: f64 = 8.0;
-const SLIDER_VERTICAL_SPACING: f64 = 6.0;
-const SLIDER_MIN_TRACK_WIDTH: f64 = 72.0;
-const SLIDER_TRACK_HEIGHT: f64 = 6.0;
-const SLIDER_THUMB_RADIUS: f64 = 9.0;
-
-const PROGRESS_LINEAR_LABEL_HEIGHT: f64 = 18.0;
-const PROGRESS_LINEAR_BAR_TOP_OFFSET: f64 = 10.0;
-const PROGRESS_LINEAR_BAR_HEIGHT: f64 = 8.0;
-const PROGRESS_LINEAR_BAR_HORIZONTAL_INSET: f64 = 8.0;
-const PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING: f64 = 6.0;
-const PROGRESS_LINEAR_MIN_TRACK_WIDTH: f64 = 72.0;
-const PROGRESS_CIRCULAR_DIAMETER: f64 = 32.0;
-
 const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
 const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(530);
 const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
@@ -511,6 +484,13 @@ const TEXT_CONTEXT_MENU_CORNER_RADIUS: f64 = 6.0;
 
 pub(crate) fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
+}
+
+pub(super) fn call_action_discarding_result<T: 'static>(
+    action: &SharedAction<T>,
+    env: &Environment,
+) {
+    let _ = action.call(env);
 }
 
 pub(crate) fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
@@ -845,7 +825,6 @@ impl HydrolysisRenderer {
             renderer.push_accessibility_suppression();
             renderer.dispatch_with_render_depth(content, env, ctx);
             renderer.pop_accessibility_suppression();
-            return;
         }
         #[cfg(not(feature = "accessibility"))]
         Self::dispatch_any(renderer, ctx, env, content);
@@ -2331,87 +2310,6 @@ impl HydrolysisRenderer {
         &self.state
     }
 
-    pub(crate) fn draw_scroll_indicators(
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        viewport: vello::kurbo::Rect,
-        metrics: ScrollMetrics,
-        axis: ScrollAxis,
-    ) {
-        let indicator_color = vello::peniko::Color::new([0.4, 0.4, 0.4, 0.55]);
-        match axis {
-            ScrollAxis::Vertical | ScrollAxis::All => {
-                if metrics.max_y > 0.0 {
-                    let track_height = viewport.height();
-                    let min_thumb_height = track_height.min(12.0);
-                    let thumb_height = (track_height
-                        * (metrics.viewport_height / metrics.content_height))
-                        .clamp(min_thumb_height, track_height);
-                    let travel = track_height - thumb_height;
-                    let progress = if metrics.max_y > 0.0 {
-                        metrics.offset_y / metrics.max_y
-                    } else {
-                        0.0
-                    };
-                    let thumb_y = viewport.y0 + travel * progress;
-                    let thumb = vello::kurbo::RoundedRect::from_rect(
-                        vello::kurbo::Rect::new(
-                            viewport.x1 - 4.0,
-                            thumb_y,
-                            viewport.x1 - 1.5,
-                            thumb_y + thumb_height,
-                        ),
-                        1.25,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        indicator_color,
-                        None,
-                        &thumb,
-                    );
-                }
-            }
-            _ => {}
-        }
-
-        match axis {
-            ScrollAxis::Horizontal | ScrollAxis::All => {
-                if metrics.max_x > 0.0 {
-                    let track_width = viewport.width();
-                    let min_thumb_width = track_width.min(12.0);
-                    let thumb_width = (track_width
-                        * (metrics.viewport_width / metrics.content_width))
-                        .clamp(min_thumb_width, track_width);
-                    let travel = track_width - thumb_width;
-                    let progress = if metrics.max_x > 0.0 {
-                        metrics.offset_x / metrics.max_x
-                    } else {
-                        0.0
-                    };
-                    let thumb_x = viewport.x0 + travel * progress;
-                    let thumb = vello::kurbo::RoundedRect::from_rect(
-                        vello::kurbo::Rect::new(
-                            thumb_x,
-                            viewport.y1 - 4.0,
-                            thumb_x + thumb_width,
-                            viewport.y1 - 1.5,
-                        ),
-                        1.25,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        indicator_color,
-                        None,
-                        &thumb,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
     pub fn state_mut(&mut self) -> &mut HydroState {
         &mut self.state
     }
@@ -2872,63 +2770,36 @@ impl HydrolysisRenderer {
         group_id
     }
 
-    pub(crate) fn register_text_input_target(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        cursor_area: vello::kurbo::Rect,
-        text_bounds: vello::kurbo::Rect,
-        layout: parley::Layout<[u8; 4]>,
-        purpose: TextInputPurpose,
-        model: TextInputModel,
-        selection: Rc<RefCell<TextSelectionSlot>>,
-    ) {
+    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
-        self.register_text_input_target_data(
-            bounds,
-            cursor_area,
-            text_bounds,
-            layout,
-            purpose,
-            model,
-            selection,
-            self.render_depth,
-            None,
+        self.register_text_input_target_data(text_editing::TextInputTargetData {
+            target,
+            depth: self.render_depth,
+            focus_binding: None,
             #[cfg(feature = "accessibility")]
             accessibility_node_id,
-        );
+        });
     }
 
-    fn register_text_input_target_data(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        cursor_area: vello::kurbo::Rect,
-        text_bounds: vello::kurbo::Rect,
-        layout: parley::Layout<[u8; 4]>,
-        purpose: TextInputPurpose,
-        model: TextInputModel,
-        selection: Rc<RefCell<TextSelectionSlot>>,
-        depth: usize,
-        focus_binding: Option<Binding<bool>>,
-        #[cfg(feature = "accessibility")] accessibility_node_id: Option<AccessibilityNodeId>,
-    ) {
+    fn register_text_input_target_data(&mut self, data: text_editing::TextInputTargetData) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
         let order = self.next_hit_test_order();
         self.text_editing.text_input_targets.push(TextInputTarget {
-            bounds,
-            cursor_area,
-            text_bounds,
-            layout,
-            purpose,
-            depth,
+            bounds: data.target.bounds,
+            cursor_area: data.target.cursor_area,
+            text_bounds: data.target.text_bounds,
+            layout: data.target.layout,
+            purpose: data.target.purpose,
+            depth: data.depth,
             order,
-            model,
-            selection,
-            focus_binding,
+            model: data.target.model,
+            selection: data.target.selection,
+            focus_binding: data.focus_binding,
             #[cfg(feature = "accessibility")]
-            accessibility_node_id,
+            accessibility_node_id: data.accessibility_node_id,
         });
     }
 }

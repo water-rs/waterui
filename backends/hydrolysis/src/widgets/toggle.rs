@@ -9,7 +9,6 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use nami::Signal;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{Environment, Native};

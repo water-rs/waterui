@@ -1,44 +1,67 @@
 use super::*;
 
-pub(crate) fn draw_navigation_transition(
-    scene: &mut vello::Scene,
-    transform: vello::kurbo::Affine,
-    bounds: vello::kurbo::Rect,
-    style: NavigationTransition,
-    direction: NavigationTransitionDirection,
-    progress: f64,
-    from_scene: &vello::Scene,
-    to_scene: &vello::Scene,
-) {
-    let width = bounds.width();
-    match style {
+pub(crate) struct NavigationTransitionFrame<'a> {
+    pub(crate) scene: &'a mut vello::Scene,
+    pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) style: NavigationTransition,
+    pub(crate) direction: NavigationTransitionDirection,
+    pub(crate) progress: f64,
+    pub(crate) from_scene: &'a vello::Scene,
+    pub(crate) to_scene: &'a vello::Scene,
+}
+
+pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
+    let width = frame.bounds.width();
+    match frame.style {
         NavigationTransition::PushPop => {
-            let (from_x, to_x) = match direction {
+            let (from_x, to_x) = match frame.direction {
                 NavigationTransitionDirection::Push => (
-                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * progress,
-                    width * (1.0 - progress),
+                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * frame.progress,
+                    width * (1.0 - frame.progress),
                 ),
                 NavigationTransitionDirection::Pop => (
-                    width * progress,
-                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * (1.0 - progress),
+                    width * frame.progress,
+                    -width * NAVIGATION_PUSHPOP_PARALLAX_FACTOR * (1.0 - frame.progress),
                 ),
             };
-            append_scene_with_alpha(scene, transform, bounds, from_scene, from_x, 1.0);
-            append_scene_with_alpha(scene, transform, bounds, to_scene, to_x, 1.0);
+            append_scene_with_alpha(
+                frame.scene,
+                frame.transform,
+                frame.bounds,
+                frame.from_scene,
+                from_x,
+                1.0,
+            );
+            append_scene_with_alpha(
+                frame.scene,
+                frame.transform,
+                frame.bounds,
+                frame.to_scene,
+                to_x,
+                1.0,
+            );
         }
         NavigationTransition::Fade => {
             append_scene_with_alpha(
-                scene,
-                transform,
-                bounds,
-                from_scene,
+                frame.scene,
+                frame.transform,
+                frame.bounds,
+                frame.from_scene,
                 0.0,
-                1.0f32 - progress as f32,
+                1.0f32 - frame.progress as f32,
             );
-            append_scene_with_alpha(scene, transform, bounds, to_scene, 0.0, progress as f32);
+            append_scene_with_alpha(
+                frame.scene,
+                frame.transform,
+                frame.bounds,
+                frame.to_scene,
+                0.0,
+                frame.progress as f32,
+            );
         }
         NavigationTransition::None => {
-            scene.append(to_scene, Some(transform));
+            frame.scene.append(frame.to_scene, Some(frame.transform));
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::dimensions::{TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITC
 use crate::{Brush, DrawContext, ToggleMetrics, lerp_color};
 use waterui_controls::toggle::ToggleStyle;
 
-pub(crate) fn metrics(style: ToggleStyle) -> ToggleMetrics {
+pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
     match style {
         ToggleStyle::Automatic | ToggleStyle::Switch => {
             ToggleMetrics::new(TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT)
@@ -15,7 +15,7 @@ pub(crate) fn metrics(style: ToggleStyle) -> ToggleMetrics {
     }
 }
 
-pub(crate) fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
+pub fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
     let track_color = lerp_color(ACCENT_TRACK_OFF, ACCENT, progress);
     let thumb_center_x = crate::lerp_f64(bounds.x0 + 15.0, bounds.x1 - 15.0, progress);
     let thumb_center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
@@ -29,7 +29,7 @@ pub(crate) fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect
     draw.stroke_circle(thumb_center, 13.0, &Brush::from(THUMB_OUTLINE_SOFT), 1.0);
 }
 
-pub(crate) fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
+pub fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
     draw.fill_rounded_rect(
         bounds,
         4.0.into(),
@@ -46,16 +46,16 @@ pub(crate) fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Re
     }
     let check = vello::kurbo::BezPath::from_vec(vec![
         vello::kurbo::PathEl::MoveTo(vello::kurbo::Point::new(
-            bounds.x0 + bounds.width() * 0.25,
-            bounds.y0 + bounds.height() * 0.55,
+            bounds.width().mul_add(0.25, bounds.x0),
+            bounds.height().mul_add(0.55, bounds.y0),
         )),
         vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
-            bounds.x0 + bounds.width() * 0.45,
-            bounds.y0 + bounds.height() * 0.75,
+            bounds.width().mul_add(0.45, bounds.x0),
+            bounds.height().mul_add(0.75, bounds.y0),
         )),
         vello::kurbo::PathEl::LineTo(vello::kurbo::Point::new(
-            bounds.x0 + bounds.width() * 0.78,
-            bounds.y0 + bounds.height() * 0.3,
+            bounds.width().mul_add(0.78, bounds.x0),
+            bounds.height().mul_add(0.3, bounds.y0),
         )),
     ]);
     draw.stroke_path(

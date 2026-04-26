@@ -57,6 +57,24 @@ pub(super) struct TextInputTarget {
     pub(super) accessibility_node_id: Option<AccessibilityNodeId>,
 }
 
+pub(crate) struct TextInputTargetRegistration {
+    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) cursor_area: vello::kurbo::Rect,
+    pub(crate) text_bounds: vello::kurbo::Rect,
+    pub(crate) layout: parley::Layout<[u8; 4]>,
+    pub(crate) purpose: TextInputPurpose,
+    pub(crate) model: TextInputModel,
+    pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
+}
+
+pub(super) struct TextInputTargetData {
+    pub(super) target: TextInputTargetRegistration,
+    pub(super) depth: usize,
+    pub(super) focus_binding: Option<Binding<bool>>,
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_node_id: Option<AccessibilityNodeId>,
+}
+
 #[derive(Clone)]
 pub(super) enum TextContextMenuAction {
     Copy,
@@ -70,7 +88,7 @@ pub(super) enum TextContextMenuAction {
 pub(super) enum TextContextMenuEntry {
     Command {
         label: String,
-        action: TextContextMenuAction,
+        action: Box<TextContextMenuAction>,
     },
     Divider,
 }
@@ -201,10 +219,6 @@ pub(super) fn apply_text_insert(
         return false;
     }
     true
-}
-
-pub(super) fn apply_backspace(buffer: &mut String) -> bool {
-    buffer.pop().is_some()
 }
 
 pub(crate) fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
@@ -391,8 +405,8 @@ pub(super) fn replace_model_selection(
 
 pub(super) fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
     let mut text = model.plain_text();
-    let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
-    let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
+    let anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
+    let focus = clamp_to_char_boundary(text.as_str(), slot.focus);
     let range = normalized_selection_range(anchor, focus);
     if range.is_empty() {
         return false;
@@ -480,29 +494,27 @@ pub(super) fn move_model_caret_horizontal(
     set_model_caret_position(model, slot, next)
 }
 
-pub(super) fn read_clipboard_text_async() -> impl core::future::Future<Output = Option<String>> {
-    async {
-        let clipboard = match Clipboard::new() {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(
-                    target: "waterui::hydrolysis::input",
-                    error = %error,
-                    "failed to initialize clipboard for paste"
-                );
-                return None;
-            }
-        };
-        match clipboard.text().await {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(
-                    target: "waterui::hydrolysis::input",
-                    error = %error,
-                    "failed to read clipboard text"
-                );
-                None
-            }
+pub(super) async fn read_clipboard_text_async() -> Option<String> {
+    let clipboard = match Clipboard::new() {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::input",
+                error = %error,
+                "failed to initialize clipboard for paste"
+            );
+            return None;
+        }
+    };
+    match clipboard.text().await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::input",
+                error = %error,
+                "failed to read clipboard text"
+            );
+            None
         }
     }
 }
@@ -657,7 +669,7 @@ pub(super) fn execute_text_context_menu_action(
             select_all_model_text(model, &mut slot)
         }
         TextContextMenuAction::Custom(command) => {
-            command.action.call(env);
+            call_action_discarding_result(&command.action, env);
             true
         }
     }
@@ -710,7 +722,7 @@ impl HydrolysisRenderer {
         let elapsed = now.saturating_duration_since(started);
         let cycle_secs = INPUT_CARET_FADE_CYCLE_DURATION.as_secs_f32();
         assert!(
-            !(cycle_secs <= 0.0),
+            cycle_secs > 0.0,
             "hydrolysis text caret fade cycle duration must be > 0"
         );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
@@ -755,10 +767,10 @@ impl HydrolysisRenderer {
     }
 
     pub(super) fn dismiss_active_text_context_menu(&mut self) {
-        if let Some(menu) = self.text_editing.active_text_context_menu.take() {
-            if let ActiveTextContextMenu::NativeWindow { state, .. } = menu {
-                state.set(WindowState::Closed);
-            }
+        if let Some(menu) = self.text_editing.active_text_context_menu.take()
+            && let ActiveTextContextMenu::NativeWindow { state, .. } = menu
+        {
+            state.set(WindowState::Closed);
         }
     }
 
@@ -1131,21 +1143,21 @@ impl HydrolysisRenderer {
         if has_selection && !target.model.is_secure() {
             entries.push(TextContextMenuEntry::Command {
                 label: "Copy".to_owned(),
-                action: TextContextMenuAction::Copy,
+                action: Box::new(TextContextMenuAction::Copy),
             });
             entries.push(TextContextMenuEntry::Command {
                 label: "Cut".to_owned(),
-                action: TextContextMenuAction::Cut,
+                action: Box::new(TextContextMenuAction::Cut),
             });
         }
         entries.push(TextContextMenuEntry::Command {
             label: "Paste".to_owned(),
-            action: TextContextMenuAction::Paste,
+            action: Box::new(TextContextMenuAction::Paste),
         });
         if has_text {
             entries.push(TextContextMenuEntry::Command {
                 label: "Select All".to_owned(),
-                action: TextContextMenuAction::SelectAll,
+                action: Box::new(TextContextMenuAction::SelectAll),
             });
         }
         if has_selection {
@@ -1154,7 +1166,7 @@ impl HydrolysisRenderer {
                     ResolvedMenuItem::Command(command) => {
                         entries.push(TextContextMenuEntry::Command {
                             label: command.label.content.get().to_plain().to_string(),
-                            action: TextContextMenuAction::Custom(command),
+                            action: Box::new(TextContextMenuAction::Custom(command)),
                         });
                     }
                     ResolvedMenuItem::Divider => entries.push(TextContextMenuEntry::Divider),
