@@ -42,6 +42,9 @@ winit = { version = "0.30", optional = true }
 accesskit = { version = "0.24", optional = true }
 accesskit_winit = { version = "0.32.1", optional = true }
 
+[build-dependencies]
+cfg_aliases = "0.2.1"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 fontique = "0.7"
 js-sys = "0.3"
