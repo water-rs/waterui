@@ -96,7 +96,7 @@ impl TooltipContent {
 
     /// Returns true if the tooltip has content to display.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.title.is_none() && self.values.is_empty()
     }
 }
@@ -130,7 +130,7 @@ pub struct Tooltip {
 impl Tooltip {
     /// Creates a new tooltip with the given content.
     #[must_use]
-    pub fn new(content: TooltipContent) -> Self {
+    pub const fn new(content: TooltipContent) -> Self {
         Self {
             content,
             background: Srgb::from_hex("#1F2937"),
@@ -184,23 +184,27 @@ impl View for Tooltip {
 
             // Add values with optional color indicators
             for val in &self.content.values {
-                let value_view = if let Some(color) = val.color {
-                    let indicator = Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
-                        .width(8.0)
-                        .height(8.0);
-                    let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                        .color(text_color.clone());
-                    AnyView::new(HStack::new(
-                        VerticalAlignment::Center,
-                        6.0,
-                        (indicator, line),
-                    ))
-                } else {
-                    AnyView::new(
-                        (val.label.clone() + Text::verbatim(": ") + val.value.clone())
-                            .color(text_color.clone()),
-                    )
-                };
+                let value_view = val.color.map_or_else(
+                    || {
+                        AnyView::new(
+                            (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                                .color(text_color.clone()),
+                        )
+                    },
+                    |color| {
+                        let indicator =
+                            Frame::new(RoundedRectangle::new(0.5).fill(Color::from(color)))
+                                .width(8.0)
+                                .height(8.0);
+                        let line = (val.label.clone() + Text::verbatim(": ") + val.value.clone())
+                            .color(text_color.clone());
+                        AnyView::new(HStack::new(
+                            VerticalAlignment::Center,
+                            6.0,
+                            (indicator, line),
+                        ))
+                    },
+                );
                 views.push(value_view);
             }
 
@@ -259,7 +263,7 @@ where
     F: Fn(HitResult<T>) -> AnyView + Clone + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let TooltipOverlay {
+        let Self {
             hit,
             chart_frame,
             build,

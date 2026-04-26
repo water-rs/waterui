@@ -52,7 +52,7 @@ impl HydroNativeView for Native<StepperConfig> {
             let start = *stepper.range.start();
             let end = *stepper.range.end();
             assert!(
-                !(start > end),
+                (start <= end),
                 "hydrolysis stepper requires an ordered range"
             );
             let current = stepper.value.get().clamp(start, end);
@@ -60,7 +60,7 @@ impl HydroNativeView for Native<StepperConfig> {
             node.set_min_numeric_value(f64::from(start));
             node.set_max_numeric_value(f64::from(end));
             let step = stepper.step.get();
-            assert!(!(step <= 0), "hydrolysis stepper requires positive step");
+            assert!((step > 0), "hydrolysis stepper requires positive step");
             node.set_numeric_value_step(f64::from(step));
             node.add_action(AccessibilityAction::Focus);
             node.add_action(AccessibilityAction::Increment);
@@ -143,7 +143,7 @@ pub(crate) fn render_stepper(
     let range_start = *stepper.range.start();
     let range_end = *stepper.range.end();
     assert!(
-        !(range_start > range_end),
+        (range_start <= range_end),
         "hydrolysis stepper requires an ordered range"
     );
 
@@ -157,7 +157,7 @@ pub(crate) fn render_stepper(
         transformed_rect(hit_transform, minus_bounds),
         move |_renderer, _point, _env| {
             let step = step_signal_minus.get();
-            assert!(!(step <= 0), "hydrolysis stepper requires positive step");
+            assert!((step > 0), "hydrolysis stepper requires positive step");
             let current = value_binding_minus.get();
             let next = current.saturating_sub(step).clamp(range_start, range_end);
             value_binding_minus.set(next);
@@ -169,7 +169,7 @@ pub(crate) fn render_stepper(
         transformed_rect(hit_transform, plus_bounds),
         move |_renderer, _point, _env| {
             let step = step_signal_plus.get();
-            assert!(!(step <= 0), "hydrolysis stepper requires positive step");
+            assert!((step > 0), "hydrolysis stepper requires positive step");
             let current = value_binding_plus.get();
             let next = current.saturating_add(step).clamp(range_start, range_end);
             value_binding_plus.set(next);

@@ -24,7 +24,10 @@ pub struct CandlestickChart<S: Signal<Output = Vec<Candle>>> {
     composition: ChartComposition<Candle>,
 }
 
+crate::charts::impl_chart_debug!(CandlestickChart, S, Vec<Candle>);
+
 impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
+    /// Creates a candlestick chart from reactive OHLC candle data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -42,24 +45,28 @@ impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
 
     crate::composition::chart_composition_methods!(Candle);
 
+    /// Sets the color used for bullish candles.
     #[must_use]
-    pub fn bullish_color(mut self, color: Srgb) -> Self {
+    pub const fn bullish_color(mut self, color: Srgb) -> Self {
         self.bullish_color = color;
         self
     }
 
+    /// Sets the color used for bearish candles.
     #[must_use]
-    pub fn bearish_color(mut self, color: Srgb) -> Self {
+    pub const fn bearish_color(mut self, color: Srgb) -> Self {
         self.bearish_color = color;
         self
     }
 
+    /// Tracks the currently focused candle in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<Candle>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected candle in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<Candle>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -68,11 +75,11 @@ impl<S: Signal<Output = Vec<Candle>>> CandlestickChart<S> {
 }
 
 impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let bullish_color = self.bullish_color;
         let bearish_color = self.bearish_color;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             |data: &Vec<Candle>| candlestick_bounds(data),
             move |ctx, data, bounds| candlestick_geometry(ctx, data, bounds),

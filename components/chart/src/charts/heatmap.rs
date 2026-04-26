@@ -15,7 +15,10 @@ pub struct HeatmapChart<S: Signal<Output = HeatmapData>> {
     composition: ChartComposition<GridDatum>,
 }
 
+crate::charts::impl_chart_debug!(HeatmapChart, S, HeatmapData);
+
 impl<S: Signal<Output = HeatmapData>> HeatmapChart<S> {
+    /// Creates a heatmap chart from reactive grid data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -27,12 +30,14 @@ impl<S: Signal<Output = HeatmapData>> HeatmapChart<S> {
 
     crate::composition::chart_composition_methods!(GridDatum);
 
+    /// Tracks the currently focused heatmap cell in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<GridDatum>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected heatmap cell in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<GridDatum>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -41,11 +46,11 @@ impl<S: Signal<Output = HeatmapData>> HeatmapChart<S> {
 }
 
 impl<S: Signal<Output = HeatmapData> + Clone + 'static> View for HeatmapChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         interactive_signal_canvas(
-            _env,
+            env,
             self.data,
-            move |ctx, data| heatmap_geometry(ctx, data),
+            heatmap_geometry,
             move |ctx, data, _geometry| {
                 draw_heatmap(ctx, data);
             },

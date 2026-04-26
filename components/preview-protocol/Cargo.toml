@@ -20,7 +20,7 @@ thiserror.workspace = true
 futures-lite = "2.6"
 hex = "0.4"
 sha2 = "0.10"
-waterkit-fs.workspace = true
+dirs.workspace = true
 
 [lints]
 workspace = true

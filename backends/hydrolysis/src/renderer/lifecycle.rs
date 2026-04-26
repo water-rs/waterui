@@ -217,45 +217,6 @@ pub(super) fn local_state_body_env(env: &Environment) -> Environment {
         .map_or_else(|| env.clone(), |scope| env.extending(scope.reset()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_local_state_env_preserves_existing_scope() {
-        let lifecycle = LifecycleState::default();
-        let root_env = lifecycle.install_local_state_env(&Environment::new());
-        let root_scope = root_env
-            .get::<LocalStateScope>()
-            .expect("root local state scope should exist")
-            .clone();
-        let root_store = root_env
-            .get::<LocalStateStore>()
-            .expect("root local state store should exist")
-            .clone();
-        let root_binding = root_store.binding(&root_scope, || 1_i32);
-        assert_eq!(root_binding.get(), 1);
-
-        let child_input_env = local_state_child_env(&root_env, 7);
-        let child_env = lifecycle.install_local_state_env(&child_input_env);
-        let child_scope = child_env
-            .get::<LocalStateScope>()
-            .expect("child local state scope should exist")
-            .clone();
-        let child_store = child_env
-            .get::<LocalStateStore>()
-            .expect("child local state store should exist")
-            .clone();
-        let child_binding = child_store.binding(&child_scope, || 2_i32);
-
-        assert_eq!(
-            child_binding.get(),
-            2,
-            "install_local_state_env must preserve child scopes instead of rebasing them to root"
-        );
-    }
-}
-
 pub(super) fn local_state_body_content_env(env: &Environment) -> Environment {
     env.get::<LocalStateScope>()
         .map_or_else(|| env.clone(), |scope| env.extending(scope.child(0)))
@@ -466,19 +427,21 @@ impl HydrolysisRenderer {
                     )
                 })
             });
-            self.register_text_input_target_data(
-                transformed_rect(ctx.hit_transform, target.bounds),
-                transformed_rect(ctx.hit_transform, target.cursor_area),
-                transformed_rect(ctx.hit_transform, target.text_bounds),
-                target.layout.clone(),
-                target.purpose,
-                target.model.clone(),
-                Rc::clone(&target.selection),
+            self.register_text_input_target_data(text_editing::TextInputTargetData {
+                target: TextInputTargetRegistration {
+                    bounds: transformed_rect(ctx.hit_transform, target.bounds),
+                    cursor_area: transformed_rect(ctx.hit_transform, target.cursor_area),
+                    text_bounds: transformed_rect(ctx.hit_transform, target.text_bounds),
+                    layout: target.layout.clone(),
+                    purpose: target.purpose,
+                    model: target.model.clone(),
+                    selection: Rc::clone(&target.selection),
+                },
                 depth,
-                target.focus_binding.clone(),
+                focus_binding: target.focus_binding.clone(),
                 #[cfg(feature = "accessibility")]
                 accessibility_node_id,
-            );
+            });
         }
         for target in &subtree.scroll_targets {
             self.register_scroll_target_action(
@@ -516,5 +479,44 @@ impl HydrolysisRenderer {
         f: impl FnOnce(&Environment) -> R,
     ) -> R {
         self.lifecycle.with_local_state_env(env, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_local_state_env_preserves_existing_scope() {
+        let lifecycle = LifecycleState::default();
+        let root_env = lifecycle.install_local_state_env(&Environment::new());
+        let root_scope = root_env
+            .get::<LocalStateScope>()
+            .expect("root local state scope should exist")
+            .clone();
+        let root_store = root_env
+            .get::<LocalStateStore>()
+            .expect("root local state store should exist")
+            .clone();
+        let root_binding = root_store.binding(&root_scope, || 1_i32);
+        assert_eq!(root_binding.get(), 1);
+
+        let child_input_env = local_state_child_env(&root_env, 7);
+        let child_env = lifecycle.install_local_state_env(&child_input_env);
+        let child_scope = child_env
+            .get::<LocalStateScope>()
+            .expect("child local state scope should exist")
+            .clone();
+        let child_store = child_env
+            .get::<LocalStateStore>()
+            .expect("child local state store should exist")
+            .clone();
+        let child_binding = child_store.binding(&child_scope, || 2_i32);
+
+        assert_eq!(
+            child_binding.get(),
+            2,
+            "install_local_state_env must preserve child scopes instead of rebasing them to root"
+        );
     }
 }

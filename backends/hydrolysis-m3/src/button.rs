@@ -7,9 +7,11 @@ use crate::dimensions::{
 use crate::{Brush, ButtonMetrics, DrawContext};
 use waterui_controls::button::ButtonStyle;
 
-pub(crate) fn metrics(style: ButtonStyle) -> ButtonMetrics {
+pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
     match style {
-        ButtonStyle::Automatic => ButtonMetrics::new(8.0, 4.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT),
+        ButtonStyle::Automatic | ButtonStyle::Bordered => {
+            ButtonMetrics::new(8.0, 4.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+        }
         ButtonStyle::Plain => ButtonMetrics::new(0.0, 0.0, 0.0, 0.0),
         ButtonStyle::Link => ButtonMetrics::new(
             BUTTON_LINK_HORIZONTAL_PADDING,
@@ -18,7 +20,6 @@ pub(crate) fn metrics(style: ButtonStyle) -> ButtonMetrics {
             0.0,
         ),
         ButtonStyle::Borderless => ButtonMetrics::new(4.0, 2.0, 0.0, 0.0),
-        ButtonStyle::Bordered => ButtonMetrics::new(8.0, 4.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT),
         ButtonStyle::BorderedProminent => {
             ButtonMetrics::new(10.0, 5.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         }
@@ -26,11 +27,7 @@ pub(crate) fn metrics(style: ButtonStyle) -> ButtonMetrics {
     }
 }
 
-pub(crate) fn draw_chrome(
-    draw: &mut dyn DrawContext,
-    bounds: vello::kurbo::Rect,
-    style: ButtonStyle,
-) {
+pub fn draw_chrome(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, style: ButtonStyle) {
     match style {
         ButtonStyle::Automatic => {
             draw.fill_rounded_rect(bounds, 6.0.into(), &Brush::from(SURFACE_SUBTLE));
