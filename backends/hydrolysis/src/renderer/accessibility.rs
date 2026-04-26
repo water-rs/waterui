@@ -460,7 +460,7 @@ impl HydrolysisRenderer {
         remaining: usize,
     ) -> Option<String> {
         assert!(
-            !(remaining == 0),
+            (remaining != 0),
             "hydrolysis accessibility label extraction exceeded recursion budget for {}",
             view.name()
         );
@@ -642,7 +642,7 @@ fn transform_accessibility_action_target(
         }
         AccessibilityActionTarget::Scroll { handle, axis } => AccessibilityActionTarget::Scroll {
             handle: handle.clone(),
-            axis: axis.clone(),
+            axis: *axis,
         },
     }
 }
@@ -750,7 +750,7 @@ pub(crate) fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let end = *range.end();
     let span = end - start;
     assert!(
-        !(span <= 0.0),
+        span > 0.0,
         "hydrolysis accessibility slider requires range start < end"
     );
     span / 100.0
@@ -769,7 +769,7 @@ fn handle_accessibility_slider_action(
         return true;
     }
     assert!(
-        !(step <= 0.0),
+        step > 0.0,
         "hydrolysis accessibility slider requires positive step"
     );
     let previous = value.get().clamp(start, end);
@@ -808,7 +808,7 @@ fn handle_accessibility_stepper_action(
     }
     let step_value = step.get();
     assert!(
-        !(step_value <= 0),
+        (step_value > 0),
         "hydrolysis accessibility stepper requires positive step"
     );
     let previous = value.get().clamp(start, end);
@@ -911,7 +911,7 @@ fn handle_accessibility_text_field_action(
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             let mut plain = value.get().to_plain().to_string();
             assert!(
-                !(!apply_text_insert(&mut plain, normalized.as_str(), line_limit)),
+                apply_text_insert(&mut plain, normalized.as_str(), line_limit),
                 "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
                 line_limit
             );
@@ -955,7 +955,7 @@ fn handle_accessibility_secure_field_action(
             };
             let mut plain = value.get().expose().to_owned();
             assert!(
-                !(!apply_text_insert(&mut plain, text.as_ref(), Some(1))),
+                apply_text_insert(&mut plain, text.as_ref(), Some(1)),
                 "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
             );
             let mut next = FormSecure::default();

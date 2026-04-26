@@ -7,10 +7,9 @@
 
 use alloc::boxed::Box;
 use nami::collection::Collection;
-use nami::{Computed, Signal};
+use nami::{Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
-use nami::SignalExt;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View,
@@ -97,10 +96,10 @@ where
     ///
     /// When edit mode is enabled, delete buttons and drag handles are shown.
     #[must_use]
-    pub fn editing(self, editing: impl Signal<Output = bool> + 'static) -> ListBuilder<V> {
+    pub fn editing(self, editing: impl IntoComputed<bool>) -> ListBuilder<V> {
         ListBuilder {
             contents: self.0,
-            editing: editing.computed(),
+            editing: editing.into_computed(),
             on_delete: None,
             on_move: None,
         }
@@ -220,8 +219,8 @@ where
 {
     /// Enables edit mode with the given reactive signal.
     #[must_use]
-    pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {
-        self.editing = editing.computed();
+    pub fn editing(mut self, editing: impl IntoComputed<bool>) -> Self {
+        self.editing = editing.into_computed();
         self
     }
 
@@ -276,9 +275,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, index| {
-        let _ = action.call(&env.extending(ListDelete(index)));
-    })
+    Box::new(move |env, index| action.call(&env.extending(ListDelete(index))))
 }
 
 fn list_move_action<H, Args>(handler: H) -> OnMove
@@ -286,9 +283,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, movement| {
-        let _ = action.call(&env.extending(ListMove(movement)));
-    })
+    Box::new(move |env, movement| action.call(&env.extending(ListMove(movement))))
 }
 
 // ============================================================================
@@ -316,7 +311,7 @@ impl_debug!(ListItem);
 impl ListItem {
     /// Creates a new list item with the given content.
     ///
-    /// By default, the item is deletable (if the list has on_delete).
+    /// By default, the item is deletable when the list has `on_delete`.
     pub fn new(content: impl View) -> Self {
         Self {
             content: AnyView::new(content),
@@ -328,8 +323,8 @@ impl ListItem {
     ///
     /// When false, swipe-to-delete and delete button are disabled for this item.
     #[must_use]
-    pub fn deletable(mut self, deletable: impl Signal<Output = bool> + 'static) -> Self {
-        self.deletable = deletable.computed();
+    pub fn deletable(mut self, deletable: impl IntoComputed<bool>) -> Self {
+        self.deletable = deletable.into_computed();
         self
     }
 }

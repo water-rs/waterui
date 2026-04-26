@@ -13,7 +13,7 @@
 
 ## Overview
 
-WaterUI combines declarative, component-based architecture with fine-grained reactivity to deliver truly native user interfaces across platforms. Unlike traditional Rust UI frameworks that implement custom rendering, WaterUI translates your Rust view tree into platform-native UI components through an FFI bridge, ensuring your apps look and feel native on every platform.
+`WaterUI` combines declarative, component-based architecture with fine-grained reactivity to deliver truly native user interfaces across platforms. Unlike traditional Rust UI frameworks that implement custom rendering, `WaterUI` translates your Rust view tree into platform-native UI components through an FFI bridge, ensuring your apps look and feel native on every platform.
 
 The framework is built on three core principles:
 
@@ -21,11 +21,11 @@ The framework is built on three core principles:
 - **Fine-grained reactivity**: Powered by the `nami` crate, UI updates are surgical and automatic—only affected components re-render when state changes.
 - **Instant previews**: Render individual view functions to PNG without running the full app, enabling rapid iteration during development.
 
-WaterUI is ideal for building production mobile apps, cross-platform tools, and native desktop applications where performance and platform integration matter.
+`WaterUI` is ideal for building production mobile apps, cross-platform tools, and native desktop applications where performance and platform integration matter.
 
 ## Installation
 
-Add WaterUI to your `Cargo.toml`:
+Add `WaterUI` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -42,7 +42,7 @@ waterui = { version = "0.2", features = ["graphics"] }
 
 ## Quick Start
 
-The fastest way to experience WaterUI is through the CLI's playground mode, which handles native backend setup automatically:
+The fastest way to experience `WaterUI` is through the CLI's playground mode, which handles native backend setup automatically:
 
 ### 1. Install the CLI
 
@@ -100,7 +100,7 @@ Views compose recursively—complex interfaces are built from simple building bl
 
 ### Reactive State
 
-WaterUI uses `Binding<T>` for mutable state and `Computed<T>` for derived values. Views automatically update when reactive values change:
+`WaterUI` uses `Binding<T>` for mutable state and `Computed<T>` for derived values. Views automatically update when reactive values change:
 
 ```rust
 use waterui::prelude::*;
@@ -140,7 +140,7 @@ pub fn app(mut env: Environment) -> App {
 
 ### View Modifiers
 
-WaterUI provides a fluent API for styling and layout through the `ViewExt` trait:
+`WaterUI` provides a fluent API for styling and layout through the `ViewExt` trait:
 
 ```rust
 use waterui::prelude::*;
@@ -314,7 +314,7 @@ The base `waterui` crate includes layout, controls, text, media, navigation, and
 
 ## Application Entry Point
 
-Every WaterUI app follows this pattern:
+Every `WaterUI` app follows this pattern:
 
 ```rust,ignore
 use waterui::prelude::*;

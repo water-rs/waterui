@@ -29,7 +29,7 @@ pub use platform::{
     PointerButton, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
     TouchPhase,
 };
-pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
+pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 pub use runner::run;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};

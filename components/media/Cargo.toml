@@ -20,7 +20,6 @@ waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-video.workspace = true
 waterkit-dialog = { workspace = true, optional = true }
-waterkit-haptic = { workspace = true, optional = true }
 filtrate.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
@@ -43,13 +42,13 @@ zenwave = { workspace = true, features = ["rustls"] }
 
 [features]
 default = ["std"]
-std = ["waterui-core/std", "dep:waterkit-dialog", "dep:waterkit-haptic"]
+std = ["waterui-core/std", "dep:waterkit-dialog"]
 
 [dev-dependencies]
 waterui.workspace = true
 waterui-testing.workspace = true
 waterui-graphics.workspace = true
-waterkit-codec = { workspace = true, features = ["software-fallback"] }
+waterkit-codec = { path = "../../kit/codec", features = ["software-fallback"] }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 wgpu.workspace = true
 

@@ -74,6 +74,31 @@ pub(super) struct PreparedGpuSurfaceLayer {
     pub(super) needs_redraw: bool,
 }
 
+pub struct HydrolysisRenderTarget<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub view: &'a wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub base_color: vello::peniko::Color,
+}
+
+pub(super) struct EmbeddedLayerTarget {
+    pub(super) format: wgpu::TextureFormat,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) transform: vello::kurbo::Affine,
+    pub(super) bounds: vello::kurbo::Rect,
+}
+
+struct TextureLayerComposite<'a> {
+    layer_view: &'a wgpu::TextureView,
+    mask_view: &'a wgpu::TextureView,
+    uniform_bytes: &'a [u8; 80],
+    load_op: wgpu::LoadOp<wgpu::Color>,
+}
+
 impl ActiveSceneLayer {
     pub(super) fn push_to_scene(&self, scene: &mut vello::Scene) {
         match &self.shape {
@@ -304,23 +329,23 @@ impl EmbeddedGpuSurfaceRuntime {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-        target_width: u32,
-        target_height: u32,
-        transform: vello::kurbo::Affine,
-        bounds: vello::kurbo::Rect,
+        target: EmbeddedLayerTarget,
     ) -> PreparedGpuSurfaceLayer {
-        let top_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y0);
-        let top_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y0);
-        let bottom_right = transform * vello::kurbo::Point::new(bounds.x1, bounds.y1);
-        let bottom_left = transform * vello::kurbo::Point::new(bounds.x0, bounds.y1);
+        let top_left =
+            target.transform * vello::kurbo::Point::new(target.bounds.x0, target.bounds.y0);
+        let top_right =
+            target.transform * vello::kurbo::Point::new(target.bounds.x1, target.bounds.y0);
+        let bottom_right =
+            target.transform * vello::kurbo::Point::new(target.bounds.x1, target.bounds.y1);
+        let bottom_left =
+            target.transform * vello::kurbo::Point::new(target.bounds.x0, target.bounds.y1);
 
         let layer_width =
-            edge_length_in_pixels(top_left, top_right, target_width, target_height).max(1);
+            edge_length_in_pixels(top_left, top_right, target.width, target.height).max(1);
         let layer_height =
-            edge_length_in_pixels(top_left, bottom_left, target_width, target_height).max(1);
+            edge_length_in_pixels(top_left, bottom_left, target.width, target.height).max(1);
         let output_format =
-            select_embedded_surface_format(target_format, self.surface.get_surface_prefers_hdr());
+            select_embedded_surface_format(target.format, self.surface.get_surface_prefers_hdr());
         self.ensure_setup(device, queue, output_format);
         self.ensure_output_target(device, layer_width, layer_height, output_format);
 
@@ -355,10 +380,10 @@ impl EmbeddedGpuSurfaceRuntime {
         self.surface.render(&mut frame);
         let needs_redraw = frame.was_redraw_requested() || self.redraw_handle.take_dirty();
         let corners = [
-            point_to_clip(top_left, target_width, target_height),
-            point_to_clip(top_right, target_width, target_height),
-            point_to_clip(bottom_right, target_width, target_height),
-            point_to_clip(bottom_left, target_width, target_height),
+            point_to_clip(top_left, target.width, target.height),
+            point_to_clip(top_right, target.width, target.height),
+            point_to_clip(bottom_right, target.width, target.height),
+            point_to_clip(bottom_left, target.width, target.height),
         ];
 
         PreparedGpuSurfaceLayer {
@@ -489,25 +514,8 @@ fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
 }
 
 impl HydrolysisRenderer {
-    pub fn render_scene_to_texture(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
-        target_format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-        base_color: vello::peniko::Color,
-    ) {
-        self.render_scene_to_surface(
-            device,
-            queue,
-            target,
-            target_format,
-            width,
-            height,
-            base_color,
-        );
+    pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
+        self.render_scene_to_surface(target);
     }
 
     fn ensure_gpu_surface_compositor_state(
@@ -666,24 +674,20 @@ impl HydrolysisRenderer {
 
     fn composite_texture_layer(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
-        target_format: wgpu::TextureFormat,
-        layer_view: &wgpu::TextureView,
-        mask_view: &wgpu::TextureView,
-        uniform_bytes: &[u8; 80],
-        load_op: wgpu::LoadOp<wgpu::Color>,
+        target: &HydrolysisRenderTarget<'_>,
+        layer: TextureLayerComposite<'_>,
     ) {
-        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
+        self.ensure_gpu_surface_compositor_state(target.device, target.queue, target.format);
         let compositor = self
             .compositor
             .gpu_surface_compositor
             .as_ref()
             .expect("hydrolysis renderer: missing gpu surface compositor state");
 
-        queue.write_buffer(&compositor.uniform_buffer, 0, uniform_bytes);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        target
+            .queue
+            .write_buffer(&compositor.uniform_buffer, 0, layer.uniform_bytes);
+        let bind_group = target.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
             layout: &compositor.bind_group_layout,
             entries: &[
@@ -697,26 +701,28 @@ impl HydrolysisRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(layer_view),
+                    resource: wgpu::BindingResource::TextureView(layer.layer_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(mask_view),
+                    resource: wgpu::BindingResource::TextureView(layer.mask_view),
                 },
             ],
         });
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_encoder"),
-        });
+        let mut encoder = target
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hydrolysis_gpu_surface_compositor_encoder"),
+            });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hydrolysis_gpu_surface_compositor_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: target.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: load_op,
+                    load: layer.load_op,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -728,28 +734,20 @@ impl HydrolysisRenderer {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..6, 0..1);
         drop(pass);
-        queue.submit(std::iter::once(encoder.finish()));
+        target.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    pub fn render_scene_to_surface(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
-        target_format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-        base_color: vello::peniko::Color,
-    ) {
+    pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
         assert!(
             matches!(
-                target_format.remove_srgb_suffix(),
+                target.format.remove_srgb_suffix(),
                 wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
             ) || matches!(
-                target_format,
+                target.format,
                 wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
             ),
-            "hydrolysis renderer: unsupported surface format {target_format:?}"
+            "hydrolysis renderer: unsupported surface format {:?}",
+            target.format
         );
 
         self.flush_vello_scene_layer();
@@ -757,7 +755,7 @@ impl HydrolysisRenderer {
             encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         if render_layers.is_empty() {
-            self.clear_target_surface(device, queue, target, base_color);
+            self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
             return;
         }
         let mut needs_redraw = false;
@@ -765,25 +763,33 @@ impl HydrolysisRenderer {
 
         for layer in &render_layers {
             let load_op = if is_first_layer {
-                wgpu::LoadOp::Clear(color_to_wgpu(base_color))
+                wgpu::LoadOp::Clear(color_to_wgpu(target.base_color))
             } else {
                 wgpu::LoadOp::Load
             };
             is_first_layer = false;
             match layer {
                 RenderLayer::Vello(scene) => {
-                    let view =
-                        self.render_vello_layer_to_texture(device, queue, scene, width, height);
-                    let mask_view = self.default_compositor_mask_view(device, queue, target_format);
+                    let view = self.render_vello_layer_to_texture(
+                        target.device,
+                        target.queue,
+                        scene,
+                        target.width,
+                        target.height,
+                    );
+                    let mask_view = self.default_compositor_mask_view(
+                        target.device,
+                        target.queue,
+                        target.format,
+                    );
                     self.composite_texture_layer(
-                        device,
-                        queue,
-                        target,
-                        target_format,
-                        &view,
-                        &mask_view,
-                        &fullscreen_uniform,
-                        load_op,
+                        &target,
+                        TextureLayerComposite {
+                            layer_view: &view,
+                            mask_view: &mask_view,
+                            uniform_bytes: &fullscreen_uniform,
+                            load_op,
+                        },
                     );
                 }
                 RenderLayer::GpuSurface(layer) => {
@@ -795,37 +801,42 @@ impl HydrolysisRenderer {
                             panic!("hydrolysis gpu surface slot {} missing", layer.slot_index)
                         })
                         .prepare_layer(
-                            device,
-                            queue,
-                            target_format,
-                            width,
-                            height,
-                            layer.transform,
-                            layer.bounds,
+                            target.device,
+                            target.queue,
+                            EmbeddedLayerTarget {
+                                format: target.format,
+                                width: target.width,
+                                height: target.height,
+                                transform: layer.transform,
+                                bounds: layer.bounds,
+                            },
                         );
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }
                     let mask_view = if layer.active_layers.is_empty() {
-                        self.default_compositor_mask_view(device, queue, target_format)
+                        self.default_compositor_mask_view(
+                            target.device,
+                            target.queue,
+                            target.format,
+                        )
                     } else {
                         self.render_active_layers_mask_to_texture(
-                            device,
-                            queue,
-                            width,
-                            height,
+                            target.device,
+                            target.queue,
+                            target.width,
+                            target.height,
                             &layer.active_layers,
                         )
                     };
                     self.composite_texture_layer(
-                        device,
-                        queue,
-                        target,
-                        target_format,
-                        &prepared.view,
-                        &mask_view,
-                        &prepared.uniform_bytes,
-                        load_op,
+                        &target,
+                        TextureLayerComposite {
+                            layer_view: &prepared.view,
+                            mask_view: &mask_view,
+                            uniform_bytes: &prepared.uniform_bytes,
+                            load_op,
+                        },
                     );
                 }
             }
