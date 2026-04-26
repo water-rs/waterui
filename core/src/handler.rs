@@ -139,7 +139,10 @@ impl<T: 'static> SharedAction<T> {
     }
 
     /// Calls the action with the given environment.
-    #[must_use]
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "actions are side-effectful and may intentionally return unit"
+    )]
     pub fn call(&self, env: &Environment) -> T {
         (self.0.borrow_mut())(env)
     }
