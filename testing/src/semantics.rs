@@ -14,19 +14,33 @@ use crate::selector::{ScopeRelation, Selector};
 pub struct Role(AccessibilityRole);
 
 impl Role {
+    /// Button role.
     pub const BUTTON: Self = Self(AccessibilityRole::Button);
+    /// Static label role.
     pub const LABEL: Self = Self(AccessibilityRole::Label);
+    /// Editable text input role.
     pub const TEXT_INPUT: Self = Self(AccessibilityRole::TextInput);
+    /// Secure text input role.
     pub const PASSWORD_INPUT: Self = Self(AccessibilityRole::PasswordInput);
+    /// Checkbox role.
     pub const CHECKBOX: Self = Self(AccessibilityRole::CheckBox);
+    /// Switch role.
     pub const SWITCH: Self = Self(AccessibilityRole::Switch);
+    /// Slider role.
     pub const SLIDER: Self = Self(AccessibilityRole::Slider);
+    /// Image role.
     pub const IMAGE: Self = Self(AccessibilityRole::Image);
+    /// List role.
     pub const LIST: Self = Self(AccessibilityRole::List);
+    /// List item role.
     pub const LIST_ITEM: Self = Self(AccessibilityRole::ListItem);
+    /// Tab role.
     pub const TAB: Self = Self(AccessibilityRole::Tab);
+    /// Tab list role.
     pub const TAB_LIST: Self = Self(AccessibilityRole::TabList);
+    /// Combo box role.
     pub const COMBOBOX: Self = Self(AccessibilityRole::ComboBox);
+    /// Selectable option role.
     pub const OPTION: Self = Self(AccessibilityRole::ListBoxOption);
 
     pub(crate) const fn as_accesskit(self) -> AccessibilityRole {
@@ -39,6 +53,7 @@ impl Role {
 pub struct NodeId(AccessibilityNodeId);
 
 impl NodeId {
+    /// Returns the numeric AccessKit node id.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0.0
@@ -65,6 +80,7 @@ pub struct NodeBounds {
 }
 
 impl NodeBounds {
+    /// Creates node bounds from x/y origin and width/height.
     #[must_use]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
@@ -75,32 +91,44 @@ impl NodeBounds {
         }
     }
 
+    /// Returns the x origin.
     #[must_use]
     pub const fn x(self) -> f32 {
         self.x
     }
 
+    /// Returns the y origin.
     #[must_use]
     pub const fn y(self) -> f32 {
         self.y
     }
 
+    /// Returns the width.
     #[must_use]
     pub const fn width(self) -> f32 {
         self.width
     }
 
+    /// Returns the height.
     #[must_use]
     pub const fn height(self) -> f32 {
         self.height
     }
 
+    /// Returns the center point.
     #[must_use]
     pub fn center(self) -> (f32, f32) {
-        (self.x + self.width * 0.5, self.y + self.height * 0.5)
+        (
+            self.width.mul_add(0.5, self.x),
+            self.height.mul_add(0.5, self.y),
+        )
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "waterui-testing exposes f32 logical coordinates for pointer synthesis"
+)]
 fn accesskit_rect_to_node_bounds(rect: AccessibilityRect) -> NodeBounds {
     NodeBounds::new(
         rect.x0 as f32,
@@ -127,56 +155,67 @@ pub struct NodeSnapshot {
 }
 
 impl NodeSnapshot {
+    /// Returns the node id.
     #[must_use]
     pub const fn id(&self) -> NodeId {
         self.id
     }
 
+    /// Returns the accessibility role.
     #[must_use]
     pub const fn role(&self) -> Role {
         self.role
     }
 
+    /// Returns the accessibility label, if any.
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
 
+    /// Returns the accessibility value, if any.
     #[must_use]
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
     }
 
+    /// Returns whether the node is enabled.
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Returns whether the node is selected.
     #[must_use]
     pub const fn selected(&self) -> bool {
         self.selected
     }
 
+    /// Returns the checked state, if applicable.
     #[must_use]
     pub const fn checked(&self) -> Option<bool> {
         self.checked
     }
 
+    /// Returns the expanded state, if applicable.
     #[must_use]
     pub const fn expanded(&self) -> Option<bool> {
         self.expanded
     }
 
+    /// Returns node bounds, if present.
     #[must_use]
-    pub fn bounds(&self) -> Option<NodeBounds> {
+    pub const fn bounds(&self) -> Option<NodeBounds> {
         self.bounds
     }
 
+    /// Returns whether the node is hidden.
     #[must_use]
     pub const fn hidden(&self) -> bool {
         self.hidden
     }
 
+    /// Returns child node ids.
     #[must_use]
     pub fn children(&self) -> &[NodeId] {
         &self.children
@@ -232,11 +271,10 @@ impl TreeSnapshot {
     }
 
     pub(crate) fn from_update(revision: u64, update: AccessibilityTreeUpdate) -> Self {
-        let root = update
-            .tree
-            .as_ref()
-            .map(|tree| NodeId::from(tree.root))
-            .unwrap_or_else(|| NodeId::from(AccessibilityNodeId(0)));
+        let root = update.tree.as_ref().map_or_else(
+            || NodeId::from(AccessibilityNodeId(0)),
+            |tree| NodeId::from(tree.root),
+        );
         let focus = NodeId::from(update.focus);
         let mut nodes = BTreeMap::new();
         for (id, node) in update.nodes {
@@ -252,26 +290,31 @@ impl TreeSnapshot {
         }
     }
 
+    /// Returns the monotonically increasing snapshot revision.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
     }
 
+    /// Returns the root node id.
     #[must_use]
     pub const fn root(&self) -> NodeId {
         self.root
     }
 
+    /// Returns the accessibility focus node id.
     #[must_use]
     pub const fn focus(&self) -> NodeId {
         self.focus
     }
 
+    /// Returns all nodes keyed by stable id.
     #[must_use]
-    pub fn nodes(&self) -> &BTreeMap<NodeId, NodeSnapshot> {
+    pub const fn nodes(&self) -> &BTreeMap<NodeId, NodeSnapshot> {
         &self.nodes
     }
 
+    /// Returns one node by id.
     #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&NodeSnapshot> {
         self.nodes.get(&id)
@@ -280,7 +323,7 @@ impl TreeSnapshot {
     pub(crate) fn matching(&self, selector: &Selector) -> Vec<NodeId> {
         self.scoped_ids(selector)
             .into_iter()
-            .filter_map(|id| selector.matches(&self[id]).then_some(id))
+            .filter(|id| selector.matches(&self[*id]))
             .collect()
     }
 
