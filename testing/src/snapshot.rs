@@ -19,6 +19,14 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Saves the snapshot to a PNG file.
+    ///
+    /// # Errors
+    ///
+    /// Returns image I/O or encoding errors from the underlying PNG writer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stored RGBA buffer length does not match the snapshot dimensions.
     pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -30,7 +38,7 @@ impl Snapshot {
     }
 }
 
-/// Headless host that renders WaterUI views into an offscreen texture.
+/// Headless host that renders `WaterUI` views into an offscreen texture.
 #[derive(Debug)]
 pub struct TestHost {
     env: Environment,
@@ -46,6 +54,10 @@ impl TestHost {
     }
 
     /// Renders a view and returns the captured RGBA8 snapshot.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the offscreen Hydrolysis surface cannot acquire a frame.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
         let mut platform = OffscreenWindow::new_for_tests(
             self.width.max(1),
@@ -74,15 +86,15 @@ impl TestHost {
         let frame = surface
             .acquire()
             .expect("waterui-testing failed to acquire offscreen frame");
-        renderer.render_scene_to_texture(
-            surface.device(),
-            surface.queue(),
-            frame.view(),
-            surface.format(),
-            self.width.max(1),
-            self.height.max(1),
-            vello::peniko::Color::TRANSPARENT,
-        );
+        renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+            device: surface.device(),
+            queue: surface.queue(),
+            view: frame.view(),
+            format: surface.format(),
+            width: self.width.max(1),
+            height: self.height.max(1),
+            base_color: vello::peniko::Color::TRANSPARENT,
+        });
         let rgba8 = readback_texture_rgba8(
             surface.device(),
             surface.queue(),
@@ -116,7 +128,7 @@ impl TestHost {
         TestArtifacts::new(suite.as_ref())
     }
 
-    /// Renders a view and stores the resulting snapshot in WaterUI's canonical artifact layout.
+    /// Renders a view and stores the resulting snapshot in `WaterUI`'s canonical artifact layout.
     pub fn capture_snapshot<V: View>(
         &self,
         view: V,
@@ -129,7 +141,7 @@ impl TestHost {
     }
 }
 
-pub(crate) fn readback_texture_rgba8(
+pub fn readback_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,

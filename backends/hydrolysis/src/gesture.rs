@@ -370,7 +370,7 @@ impl GestureEngine {
         at: Instant,
         env: &Environment,
     ) -> bool {
-        let mut changed = self.cancel_active_recognizers(at, env);
+        let changed = self.cancel_active_recognizers(at, env);
         self.active_recognizers = self.recognizers_at(point);
         changed
     }

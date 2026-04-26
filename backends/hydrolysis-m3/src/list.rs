@@ -3,12 +3,12 @@ use crate::dimensions::LIST_CONTROL_CORNER_RADIUS;
 use crate::{Brush, DrawContext};
 use vello::kurbo::{Point, Rect};
 
-pub(crate) fn draw_row_background(draw: &mut dyn DrawContext, bounds: Rect, alternate: bool) {
+pub fn draw_row_background(draw: &mut dyn DrawContext, bounds: Rect, alternate: bool) {
     let color = if alternate { ROW_ODD } else { ROW_EVEN };
     draw.fill_rect(bounds, &Brush::from(color));
 }
 
-pub(crate) fn draw_move_control(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_move_control(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rounded_rect(
         bounds,
         LIST_CONTROL_CORNER_RADIUS.into(),
@@ -29,7 +29,7 @@ pub(crate) fn draw_move_control(draw: &mut dyn DrawContext, bounds: Rect) {
     );
 }
 
-pub(crate) fn draw_delete_control(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_delete_control(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rounded_rect(
         bounds,
         LIST_CONTROL_CORNER_RADIUS.into(),
@@ -37,6 +37,6 @@ pub(crate) fn draw_delete_control(draw: &mut dyn DrawContext, bounds: Rect) {
     );
 }
 
-pub(crate) fn draw_separator(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_separator(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rect(bounds, &Brush::from(OUTLINE_SUBTLE));
 }
