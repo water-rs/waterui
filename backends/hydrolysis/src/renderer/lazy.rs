@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct LazyState {
-    pub(crate) lazy_stack_controller: LazyStackController,
+    pub(super) lazy_stack_controller: LazyStackController,
     pub(crate) lazy_list_controller: LazyListController,
     pub(crate) lazy_table_controller: LazyTableController,
     pub(crate) lazy_viewport_stack: Vec<vello::kurbo::Rect>,

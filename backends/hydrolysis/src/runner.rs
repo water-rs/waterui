@@ -1,4 +1,6 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -19,7 +21,9 @@ use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;
-use waterui::window::{Window, WindowBackground, WindowManager};
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+use waterui::window::WindowManager;
+use waterui::window::{Window, WindowBackground};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -30,8 +34,6 @@ use crate::engine::{MaterialTheme, WidgetTheme};
 use crate::env::{parse_bool_env, parse_positive_u64_env};
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-#[cfg(feature = "winit")]
-use crate::renderer::HydrolysisWindowOrigin;
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
 use crate::time::Instant;
 
@@ -50,6 +52,7 @@ fn install_widget_theme(env: &mut Environment) {
     env.insert(Box::new(MaterialTheme::new()) as Box<dyn WidgetTheme>);
 }
 
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 fn install_window_manager(env: &mut Environment, pending_windows: Rc<RefCell<Vec<Window>>>) {
     env.insert(WindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
@@ -397,7 +400,7 @@ fn schedule_redraw_or_rebuild<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>,
 
 fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
     assert!(
-        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis runner: invalid scale factor {scale_factor}"
     );
     vello::kurbo::Rect::new(
@@ -488,13 +491,13 @@ fn render_window_with_capture<P: PlatformWindow>(
                 .sync_active_interactions_after_layout(runtime.pointer_position);
             runtime.needs_rebuild = false;
             rebuilt = true;
-            if let Some((x, y)) = runtime.pointer_position {
-                if runtime.renderer.sync_pointer_hover_state(x, y, env) {
-                    if runtime.renderer.take_rebuild_request() {
-                        runtime.needs_rebuild = true;
-                    } else {
-                        runtime.renderer.request_redraw();
-                    }
+            if let Some((x, y)) = runtime.pointer_position
+                && runtime.renderer.sync_pointer_hover_state(x, y, env)
+            {
+                if runtime.renderer.take_rebuild_request() {
+                    runtime.needs_rebuild = true;
+                } else {
+                    runtime.renderer.request_redraw();
                 }
             }
         }
@@ -507,15 +510,17 @@ fn render_window_with_capture<P: PlatformWindow>(
             .expect("hydrolysis runner: failed to acquire frame");
         let acquire_duration = elapsed_or_zero(acquire_started_at);
         let render_started_at = diagnostics_enabled.then(Instant::now);
-        runtime.renderer.render_scene_to_surface(
-            surface.device(),
-            surface.queue(),
-            frame.view(),
-            format,
-            width,
-            height,
-            clear_color,
-        );
+        runtime
+            .renderer
+            .render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
+                device: surface.device(),
+                queue: surface.queue(),
+                view: frame.view(),
+                format,
+                width,
+                height,
+                base_color: clear_color,
+            });
         if capture_snapshot {
             snapshot = Some(HeadlessSnapshot {
                 width,
@@ -569,7 +574,7 @@ fn render_window_with_capture<P: PlatformWindow>(
 
 fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
     assert!(
-        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis runner: invalid scale factor {scale_factor}"
     );
     (f64::from(value) / scale_factor) as f32
@@ -933,7 +938,7 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
             let _ = runnable_tx.send(runnable);
         });
         runnable.schedule();
-        AsyncTask::from(task)
+        task
     }
 }
 
@@ -1465,15 +1470,15 @@ mod winit_runner {
     use waterui::app::App;
     use waterui::window::{Window, WindowState};
     use waterui_core::Environment;
-    use waterui_core::layout::{Point, Rect, Size};
+
     use winit::application::ApplicationHandler;
     use winit::event::WindowEvent;
     use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-    #[cfg(any(wayland_platform, docsrs))]
+    #[cfg(any(hydrolysis_wayland_platform, docsrs))]
     use winit::platform::wayland::EventLoopExtWayland;
     use winit::window::{Window as NativeWindow, WindowId};
 
-    use crate::platform::{InputEvent, KeyState, PlatformWindow, WinitWindow};
+    use crate::platform::{PlatformWindow, WinitWindow};
     use crate::renderer::{
         HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
     };
@@ -1539,7 +1544,7 @@ mod winit_runner {
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
         let text_context_menu_mode = {
-            #[cfg(any(wayland_platform, docsrs))]
+            #[cfg(any(hydrolysis_wayland_platform, docsrs))]
             {
                 if event_loop.is_wayland() {
                     HydrolysisTextContextMenuMode::Overlay
@@ -1547,7 +1552,7 @@ mod winit_runner {
                     HydrolysisTextContextMenuMode::NativeWindow
                 }
             }
-            #[cfg(not(any(wayland_platform, docsrs)))]
+            #[cfg(not(any(hydrolysis_wayland_platform, docsrs)))]
             {
                 HydrolysisTextContextMenuMode::NativeWindow
             }
@@ -1600,14 +1605,6 @@ mod winit_runner {
             while let Ok(runnable) = self.local_runnable_rx.try_recv() {
                 runnable.run();
             }
-        }
-
-        fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
-            assert!(
-                !(!scale_factor.is_finite() || scale_factor <= 0.0),
-                "hydrolysis runner: invalid scale factor {scale_factor}"
-            );
-            (f64::from(value) / scale_factor) as f32
         }
 
         fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {

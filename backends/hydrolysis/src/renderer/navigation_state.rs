@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) type NavigationEntries = Rc<RefCell<Vec<AnyViewBuilder<NavigationView>>>>;
 
+#[derive(Default)]
 pub(crate) struct NavigationState {
     pub(crate) slots: Vec<NavigationSlot>,
     pub(crate) pending_entries: Vec<(usize, NavigationEntries)>,
@@ -33,16 +34,6 @@ pub(crate) enum NavigationTransitionDirection {
 pub(crate) struct HydroNavigationController {
     pub(crate) entries: NavigationEntries,
     pub(crate) rebuild_requested: Rc<Cell<bool>>,
-}
-
-impl Default for NavigationState {
-    fn default() -> Self {
-        Self {
-            slots: Vec::new(),
-            pending_entries: Vec::new(),
-            cursor: 0,
-        }
-    }
 }
 
 impl NavigationState {

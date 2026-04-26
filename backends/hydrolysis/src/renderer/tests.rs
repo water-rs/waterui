@@ -9,6 +9,7 @@ use waterui_controls::toggle::ToggleStyle;
 use waterui_form::picker::PickerStyle;
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
+use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use hydrolysis_m3::{
     ButtonMetrics, InputFieldMetrics, PickerMetrics, ProgressMetrics, SliderMetrics,

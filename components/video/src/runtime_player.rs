@@ -1037,21 +1037,19 @@ fn subtitle_banner(subtitle_text: &Binding<String>) -> impl View + use<> {
         .computed()
 }
 
-fn picture_in_picture_button(request: Binding<u64>) -> impl View {
+fn picture_in_picture_button(request: &Binding<u64>) -> impl View + use<> {
     #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
     {
         With::new(
             button("PiP").action(|State(request): State<Binding<u64>>| {
                 request.set(request.get().wrapping_add(1));
             }),
-            State(request),
+            State(request.clone()),
         )
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
-    {
-        let _ = request;
-    }
+    {}
 }
 
 fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl View {
@@ -1195,7 +1193,7 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         play_pause_button(is_playing),
         mute_button(muted),
         slider(0.0..=1.0, &volume_level),
-        picture_in_picture_button(picture_in_picture_request),
+        picture_in_picture_button(&picture_in_picture_request),
         subtitle_toggle,
         seek_button("Forward 10s", progress, duration_seconds, 10.0),
         next_button,
@@ -4668,19 +4666,20 @@ mod tests {
     fn progress_for_position_clamps_to_duration() {
         let duration = Duration::from_secs(10);
 
-        assert_eq!(progress_for_position(duration, Duration::ZERO), 0.0);
-        assert_eq!(progress_for_position(duration, Duration::from_secs(5)), 0.5);
-        assert_eq!(
-            progress_for_position(duration, Duration::from_secs(15)),
-            1.0
+        assert!((progress_for_position(duration, Duration::ZERO) - 0.0).abs() <= f64::EPSILON);
+        assert!(
+            (progress_for_position(duration, Duration::from_secs(5)) - 0.5).abs() <= f64::EPSILON
+        );
+        assert!(
+            (progress_for_position(duration, Duration::from_secs(15)) - 1.0).abs() <= f64::EPSILON
         );
     }
 
     #[test]
     fn effective_audio_volume_respects_muted_and_ducked_states() {
-        assert_eq!(effective_audio_volume(0.8, false), 0.8);
+        assert!((effective_audio_volume(0.8, false) - 0.8).abs() <= f32::EPSILON);
         assert!((effective_audio_volume(0.8, true) - 0.16).abs() <= f32::EPSILON);
-        assert_eq!(effective_audio_volume(-0.8, false), 0.0);
-        assert_eq!(effective_audio_volume(-0.8, true), 0.0);
+        assert!((effective_audio_volume(-0.8, false) - 0.0).abs() <= f32::EPSILON);
+        assert!((effective_audio_volume(-0.8, true) - 0.0).abs() <= f32::EPSILON);
     }
 }

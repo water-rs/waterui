@@ -2,9 +2,9 @@ use crate::engine::{Brush, DrawContext};
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TEXT_SELECTION_FILL_COLOR,
-    TextInputModel, WidgetRenderContext, clamp_to_char_boundary, measure_secure_field_intrinsic,
-    measure_text_field_intrinsic, measure_view_intrinsic, normalize_view_for_render,
-    transformed_rect,
+    TextInputModel, TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
+    measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
+    normalize_view_for_render, transformed_rect,
 };
 use crate::time::Instant;
 use core::num::NonZeroUsize;
@@ -397,15 +397,16 @@ pub(crate) fn render_text_field(
         cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
         "register text field input region"
     );
-    ctx.renderer_mut().register_text_input_target(
-        transformed_rect(hit_transform, field_rect),
-        transformed_rect(hit_transform, cursor_area),
-        transformed_rect(hit_transform, text_bounds),
-        committed_layout,
-        TextInputPurpose::Normal,
-        input_model,
-        selection_slot,
-    );
+    ctx.renderer_mut()
+        .register_text_input_target(TextInputTargetRegistration {
+            bounds: transformed_rect(hit_transform, field_rect),
+            cursor_area: transformed_rect(hit_transform, cursor_area),
+            text_bounds: transformed_rect(hit_transform, text_bounds),
+            layout: committed_layout,
+            purpose: TextInputPurpose::Normal,
+            model: input_model,
+            selection: selection_slot,
+        });
 }
 
 pub(crate) fn render_secure_field(
@@ -617,13 +618,14 @@ pub(crate) fn render_secure_field(
         cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
         "register secure field input region"
     );
-    ctx.renderer_mut().register_text_input_target(
-        transformed_rect(hit_transform, field_rect),
-        transformed_rect(hit_transform, cursor_area),
-        transformed_rect(hit_transform, text_bounds),
-        committed_layout,
-        TextInputPurpose::Password,
-        input_model,
-        selection_slot,
-    );
+    ctx.renderer_mut()
+        .register_text_input_target(TextInputTargetRegistration {
+            bounds: transformed_rect(hit_transform, field_rect),
+            cursor_area: transformed_rect(hit_transform, cursor_area),
+            text_bounds: transformed_rect(hit_transform, text_bounds),
+            layout: committed_layout,
+            purpose: TextInputPurpose::Password,
+            model: input_model,
+            selection: selection_slot,
+        });
 }
