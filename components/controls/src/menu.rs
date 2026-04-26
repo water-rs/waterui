@@ -202,7 +202,7 @@ impl Command {
             semantic_label: label,
             icon,
             action: shared_action(move |env: Environment| {
-                () = action.call(&captured_env.layered_on(&env));
+                action.call(&captured_env.layered_on(&env));
             }),
             disabled: self.disabled,
             selected: self.selected,
