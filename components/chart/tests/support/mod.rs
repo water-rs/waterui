@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "integration tests include this shared support module independently and use different helper subsets"
+)]
+
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityRole;
@@ -31,9 +36,9 @@ pub fn vertical_drag_domain_delta(visible_length: f32, from_y: f32, to_y: f32) -
 }
 
 pub fn point_series() -> Vec<DataPoint> {
-    (0..24)
+    (0_u16..24)
         .map(|index| {
-            let x = index as f32;
+            let x = f32::from(index);
             let y = (x * 0.17)
                 .cos()
                 .mul_add(5.0, (x * 0.42).sin().mul_add(9.0, 24.0));
@@ -43,13 +48,13 @@ pub fn point_series() -> Vec<DataPoint> {
 }
 
 pub fn bubble_series() -> Vec<BubblePoint> {
-    (0..32)
+    (0_u16..32)
         .map(|index| {
-            let x = index as f32 * 0.75;
+            let x = f32::from(index) * 0.75;
             let y = (x * 0.09)
                 .cos()
                 .mul_add(4.0, (x * 0.28).sin().mul_add(10.0, 18.0));
-            let size = ((index % 7) as f32).mul_add(2.25, 4.0);
+            let size = f32::from(index % 7).mul_add(2.25, 4.0);
             BubblePoint::new(x, y, size)
         })
         .collect()
@@ -58,14 +63,14 @@ pub fn bubble_series() -> Vec<BubblePoint> {
 pub fn candle_series() -> Vec<Candle> {
     let mut candles = Vec::with_capacity(32);
     let mut price = 120.0_f32;
-    for index in 0..32 {
-        let timestamp = index as f32 * 60.0;
-        let drift = (index as f32 * 0.31).sin() * 4.5;
+    for index in 0_u16..32 {
+        let timestamp = f32::from(index) * 60.0;
+        let drift = (f32::from(index) * 0.31).sin() * 4.5;
         let open = price;
         let close = open + drift;
-        let high = ((index % 4) as f32).mul_add(0.25, open.max(close) + 1.4);
-        let low = ((index % 5) as f32).mul_add(-0.2, open.min(close) - 1.1);
-        let volume = (index as f32).mul_add(350.0, 20_000.0);
+        let high = f32::from(index % 4).mul_add(0.25, open.max(close) + 1.4);
+        let low = f32::from(index % 5).mul_add(-0.2, open.min(close) - 1.1);
+        let volume = f32::from(index).mul_add(350.0, 20_000.0);
         candles.push(Candle::new(timestamp, open, high, low, close, volume));
         price = close;
     }
@@ -77,13 +82,13 @@ pub fn depth_data() -> DepthData {
     let mut asks = Vec::with_capacity(24);
     let mut bid_cumulative = 0.0_f32;
     let mut ask_cumulative = 0.0_f32;
-    for index in 0..24 {
-        let bid_price = (index as f32).mul_add(-0.08, 99.8);
-        bid_cumulative += ((index % 5) as f32).mul_add(1.2, 6.0);
+    for index in 0_u16..24 {
+        let bid_price = f32::from(index).mul_add(-0.08, 99.8);
+        bid_cumulative += f32::from(index % 5).mul_add(1.2, 6.0);
         bids.push(DepthLevel::new(bid_price, bid_cumulative));
 
-        let ask_price = (index as f32).mul_add(0.08, 100.2);
-        ask_cumulative += ((index % 4) as f32).mul_add(1.1, 6.5);
+        let ask_price = f32::from(index).mul_add(0.08, 100.2);
+        ask_cumulative += f32::from(index % 4).mul_add(1.1, 6.5);
         asks.push(DepthLevel::new(ask_price, ask_cumulative));
     }
     DepthData::new(bids, asks)
@@ -154,6 +159,10 @@ pub fn semantic_chart_shell<V: View, F: View, S: View>(
 }
 
 /// Builds a compact readout label view from a chart interaction binding.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "SignalExt::map consumes signal-like values through the extension trait API"
+)]
 pub fn readout_view<T, S>(
     prefix: &'static str,
     signal: S,
@@ -182,10 +191,10 @@ pub fn image_selector(name: &str) -> Selector {
 pub fn assert_chart_accessibility_ready(app: &mut MountedApp, name: &str) -> String {
     let selector = image_selector(name);
     assert!(
-        app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
+        app.wait_for_existence(&selector, Duration::from_secs(1)),
         "{name}: accessibility image element did not appear"
     );
-    app.assert_exists(selector);
+    app.assert_exists(&selector);
     let element = app
         .query()
         .role(Role::IMAGE)
@@ -204,10 +213,10 @@ pub fn assert_label_exists(app: &mut MountedApp, label: &str) {
         .role(Role::LABEL)
         .label(label.to_owned());
     assert!(
-        app.wait_for_existence(selector.clone(), Duration::from_secs(1)),
+        app.wait_for_existence(&selector, Duration::from_secs(1)),
         "expected label to appear: {label}"
     );
-    app.assert_exists(selector);
+    app.assert_exists(&selector);
 }
 
 pub fn readout_text<T>(
@@ -215,10 +224,10 @@ pub fn readout_text<T>(
     hit: Option<HitResult<T>>,
     formatter: fn(&HitResult<T>) -> String,
 ) -> String {
-    match hit {
-        Some(hit) => format!("{prefix}:{}", formatter(&hit)),
-        None => format!("{prefix}:none"),
-    }
+    hit.map_or_else(
+        || format!("{prefix}:none"),
+        |hit| format!("{prefix}:{}", formatter(&hit)),
+    )
 }
 
 pub fn expected_readout<T: Clone>(
