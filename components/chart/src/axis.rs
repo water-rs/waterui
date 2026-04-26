@@ -300,14 +300,18 @@ fn format_si(value: f32) -> Str {
 mod tests {
     use super::*;
 
+    fn assert_close(actual: f32, expected: f32) {
+        assert!((actual - expected).abs() <= f32::EPSILON);
+    }
+
     #[test]
     fn test_nice_number() {
-        assert_eq!(nice_number(0.15, true), 0.2);
-        assert_eq!(nice_number(0.7, true), 1.0);
-        assert_eq!(nice_number(2.5, true), 2.0); // frac=2.5 < 3.0 -> 2.0
-        assert_eq!(nice_number(3.0, true), 5.0); // frac=3.0 >= 3.0, < 7.0 -> 5.0
-        assert_eq!(nice_number(7.0, true), 10.0);
-        assert_eq!(nice_number(150.0, true), 200.0);
+        assert_close(nice_number(0.15, true), 0.2);
+        assert_close(nice_number(0.7, true), 1.0);
+        assert_close(nice_number(2.5, true), 2.0); // frac=2.5 < 3.0 -> 2.0
+        assert_close(nice_number(3.0, true), 5.0); // frac=3.0 >= 3.0, < 7.0 -> 5.0
+        assert_close(nice_number(7.0, true), 10.0);
+        assert_close(nice_number(150.0, true), 200.0);
     }
 
     #[test]
@@ -317,11 +321,11 @@ mod tests {
 
         // Should have nice round numbers
         assert!(!ticks.is_empty());
-        assert!(
-            ticks
-                .iter()
-                .all(|t| t.value() % 20.0 == 0.0 || t.value() % 25.0 == 0.0)
-        );
+        assert!(ticks.iter().all(|t| {
+            let by_twenty = (t.value() % 20.0).abs() <= f32::EPSILON;
+            let by_twenty_five = (t.value() % 25.0).abs() <= f32::EPSILON;
+            by_twenty || by_twenty_five
+        }));
     }
 
     #[test]
