@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::Result;
-use sha2::Digest as _;
+use rand::{RngCore as _, rngs::OsRng};
 
 use crate::{header, note, success};
 use waterui_cli::inspector::{InspectorLaunchOptions, InspectorPlatform, launch_inspector_session};
@@ -81,18 +81,10 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 fn generate_session_token() -> String {
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(now_ns.to_le_bytes());
-    hasher.update(pid.to_le_bytes());
-    hasher.update(format!("{:?}", std::thread::current().id()).as_bytes());
-    let hash = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
     let mut token = String::with_capacity(32);
-    for b in &hash[..16] {
+    for b in bytes {
         use std::fmt::Write as _;
         let _ = write!(&mut token, "{b:02x}");
     }
