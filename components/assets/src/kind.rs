@@ -85,6 +85,7 @@ impl AssetKind {
         matches!(self, Self::Data)
     }
 
+    /// Returns true when this asset kind represents a font.
     #[must_use]
     pub const fn is_font(&self) -> bool {
         matches!(self, Self::Font)

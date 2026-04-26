@@ -1,6 +1,3 @@
-#![allow(clippy::double_must_use)]
-#![allow(missing_docs)]
-
 use alloc::{
     rc::Rc,
     string::{String, ToString},
@@ -47,7 +44,11 @@ impl TextConfig {
     }
 }
 
-configurable!(RawText, TextConfig);
+configurable!(
+    /// Raw styled text view.
+    RawText,
+    TextConfig
+);
 
 #[derive(Clone)]
 enum TextKind {
@@ -193,25 +194,21 @@ impl Default for Text {
 
 impl Text {
     /// Creates semantic text using the default conversion rules.
-    #[must_use]
     pub fn new(content: impl IntoText) -> Self {
         content.into_text()
     }
 
     /// Creates raw text from a computed styled string.
-    #[must_use]
     pub fn computed(content: impl IntoComputed<StyledStr>) -> Self {
         Self(TextKind::Raw(TextConfig::new(content)))
     }
 
     /// Creates verbatim text that never consults the translation catalog.
-    #[must_use]
     pub fn verbatim(content: impl Into<Str>) -> Self {
         Self::computed(StyledStr::plain(content.into()))
     }
 
     /// Creates localized text that resolves through the runtime translation catalog.
-    #[must_use]
     pub fn localized(key: &'static str) -> Self {
         Self::localized_with(move |env, locale| {
             let translated = env
@@ -223,7 +220,6 @@ impl Text {
     }
 
     /// Creates text from a locale-aware config resolver.
-    #[must_use]
     pub fn localized_with(
         resolver: impl Fn(&Environment, &Locale) -> TextConfig + 'static,
     ) -> Self {
@@ -296,7 +292,6 @@ impl Text {
     }
 
     /// Creates locale-formatted text.
-    #[must_use]
     pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T> + 'static) -> Self {
         Self::computed(
             value
@@ -349,7 +344,6 @@ impl Text {
     }
 
     /// Sets the font for this text component.
-    #[must_use]
     pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
         let font = font.into_signal();
         self.map_config(move |mut config| {
@@ -363,7 +357,6 @@ impl Text {
     }
 
     /// Sets the font size.
-    #[must_use]
     pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
         #[allow(clippy::cast_possible_truncation)]
         let size = size.into_signal().map(|s| s as f32);
@@ -378,7 +371,6 @@ impl Text {
     }
 
     /// Sets the font weight.
-    #[must_use]
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
         let weight = weight.into_signal();
         self.map_config(move |mut config| {
@@ -392,7 +384,6 @@ impl Text {
     }
 
     /// Applies an underline to the text.
-    #[must_use]
     pub fn underline(self, underline: impl IntoSignal<bool> + 'static) -> Self {
         let underline = underline.into_signal();
         self.map_config(move |mut config| {
@@ -406,7 +397,6 @@ impl Text {
     }
 
     /// Sets the text color.
-    #[must_use]
     pub fn color(self, color: impl Into<Color>) -> Self {
         let color = color.into();
         self.map_config(move |mut config| {
@@ -422,7 +412,6 @@ impl Text {
     }
 
     /// Sets the background color for the text.
-    #[must_use]
     pub fn background_color(self, color: impl Into<Color>) -> Self {
         let color = color.into();
         self.map_config(move |mut config| {
@@ -438,7 +427,6 @@ impl Text {
     }
 
     /// Sets the paragraph alignment for multiline text layout.
-    #[must_use]
     pub fn text_align(self, alignment: impl IntoSignal<HorizontalAlignment> + 'static) -> Self {
         let alignment = alignment.into_signal().computed();
         self.map_config(move |mut config| {
@@ -448,13 +436,11 @@ impl Text {
     }
 
     /// Sets the font to bold.
-    #[must_use]
     pub fn bold(self) -> Self {
         self.weight(FontWeight::Bold)
     }
 
     /// Sets the italic style.
-    #[must_use]
     pub fn italic(self, is_italic: impl Signal<Output = bool> + 'static) -> Self {
         self.map_config(move |mut config| {
             config.content = config
@@ -537,7 +523,6 @@ macro_rules! impl_text_font {
         $(
             impl Text {
                 #[doc = concat!("Applies the `", stringify!($name), "` text style preset.")]
-                #[must_use]
                 pub fn $name(self) -> Self {
                     self.font($value)
                 }
@@ -556,7 +541,6 @@ impl_text_font!(
 );
 
 /// Creates semantic text using the default conversion rules for the provided content.
-#[must_use]
 pub fn text(text: impl IntoText) -> Text {
     Text::new(text)
 }

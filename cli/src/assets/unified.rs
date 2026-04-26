@@ -9,7 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets::AssetKind;
-use waterui_assets_plan::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
+use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
 use crate::project::Project;
 

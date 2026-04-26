@@ -56,6 +56,10 @@ impl UiTest {
     }
 
     /// Mounts a no-arg view builder and returns a semantic testing session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis frame does not produce an accessibility tree.
     pub fn mount<V, F>(self, view_fn: F) -> MountedApp
     where
         V: View + 'static,
@@ -94,14 +98,18 @@ impl core::fmt::Debug for MountedApp {
         f.debug_struct("MountedApp")
             .field("revision", &self.tree.revision())
             .field("nodes", &self.tree.nodes().len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "assertion helpers intentionally panic with WaterUI-specific diagnostics"
+)]
 impl MountedApp {
     /// Returns the latest accessibility tree snapshot.
     #[must_use]
-    pub fn tree(&self) -> &TreeSnapshot {
+    pub const fn tree(&self) -> &TreeSnapshot {
         &self.tree
     }
 
@@ -114,10 +122,9 @@ impl MountedApp {
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     pub fn snapshot(&mut self) -> Snapshot {
         let outcome = self.driver.pump(&self.content, &self.env, true);
-        let snapshot = self
-            .apply_pump_result(outcome)
-            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"));
-        snapshot
+
+        self.apply_pump_result(outcome)
+            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
     }
 
     /// Creates a canonical artifact helper rooted at the provided suite.
@@ -126,7 +133,7 @@ impl MountedApp {
         TestArtifacts::new(suite.as_ref())
     }
 
-    /// Captures a snapshot and stores it in WaterUI's canonical artifact layout.
+    /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
     pub fn capture_snapshot(
         &mut self,
         suite: impl AsRef<str>,
@@ -147,11 +154,11 @@ impl MountedApp {
     }
 
     /// Convenience existence assertion.
-    pub fn assert_exists(&mut self, selector: Selector) {
-        let results = self.resolve_elements(&selector);
+    pub fn assert_exists(&mut self, selector: &Selector) {
+        let results = self.resolve_elements(selector);
         let count = results.len();
         assert!(
-            !(count == 0),
+            (count != 0),
             "waterui-testing assertion failed: selector {} expected to exist but matched 0 nodes on revision {}",
             selector.describe(),
             self.tree.revision()
@@ -159,11 +166,11 @@ impl MountedApp {
     }
 
     /// Convenience non-existence assertion.
-    pub fn assert_not_exists(&mut self, selector: Selector) {
-        let results = self.resolve_elements(&selector);
+    pub fn assert_not_exists(&mut self, selector: &Selector) {
+        let results = self.resolve_elements(selector);
         let count = results.len();
         assert!(
-            !(count != 0),
+            (count == 0),
             "waterui-testing assertion failed: selector {} expected to be absent but matched {count} nodes; candidates: {}",
             selector.describe(),
             results.debug_summary(3)
@@ -171,8 +178,8 @@ impl MountedApp {
     }
 
     /// Asserts that the selector resolves to the current UI-focused element.
-    pub fn assert_ui_focus(&mut self, selector: Selector) {
-        let element = self.resolve_single(&selector);
+    pub fn assert_ui_focus(&mut self, selector: &Selector) {
+        let element = self.resolve_single(selector);
         assert!(
             self.ui_focus == Some(element.id()),
             "waterui-testing assertion failed: selector was not the current UI-focused element"
@@ -180,21 +187,19 @@ impl MountedApp {
     }
 
     /// Asserts that the selector resolves to exactly one node with the expected value.
-    pub fn assert_value_eq(&mut self, selector: Selector, value: impl Into<String>) {
+    pub fn assert_value_eq(&mut self, selector: &Selector, value: impl Into<String>) {
         let expected = value.into();
-        let element = self.resolve_single(&selector);
+        let element = self.resolve_single(selector);
         let actual = element.node().value();
         assert!(
             actual == Some(expected.as_str()),
-            "waterui-testing assertion failed: selector value mismatch (expected {:?}, got {:?})",
-            expected,
-            actual
+            "waterui-testing assertion failed: selector value mismatch (expected {expected:?}, got {actual:?})"
         );
     }
 
     /// Creates an existence expectation.
     #[must_use]
-    pub fn expect_exists(&self, selector: Selector) -> Expectation {
+    pub const fn expect_exists(&self, selector: Selector) -> Expectation {
         Expectation {
             kind: ExpectationKind::Exists(selector),
             inverted: false,
@@ -203,7 +208,7 @@ impl MountedApp {
 
     /// Creates a non-existence expectation.
     #[must_use]
-    pub fn expect_not_exists(&self, selector: Selector) -> Expectation {
+    pub const fn expect_not_exists(&self, selector: Selector) -> Expectation {
         Expectation {
             kind: ExpectationKind::NotExists(selector),
             inverted: false,
@@ -317,38 +322,38 @@ impl MountedApp {
         }
     }
 
-    /// Convenience API mirroring XCTest `waitForExistence`.
-    pub fn wait_for_existence(&mut self, selector: Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_exists(selector);
+    /// Convenience API mirroring `XCTest` `waitForExistence`.
+    pub fn wait_for_existence(&mut self, selector: &Selector, timeout: Duration) -> bool {
+        let expectation = self.expect_exists(selector.clone());
         self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
     }
 
-    /// Convenience API mirroring XCTest `waitForNonexistence`.
-    pub fn wait_for_nonexistence(&mut self, selector: Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_not_exists(selector);
+    /// Convenience API mirroring `XCTest` `waitForNonexistence`.
+    pub fn wait_for_nonexistence(&mut self, selector: &Selector, timeout: Duration) -> bool {
+        let expectation = self.expect_not_exists(selector.clone());
         self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
     }
 
     /// Waits for one node's value to equal the expected value.
     pub fn wait_for_value_eq(
         &mut self,
-        selector: Selector,
+        selector: &Selector,
         value: impl Into<String>,
         timeout: Duration,
     ) -> bool {
-        let expectation = self.expect_value_eq(selector, value);
+        let expectation = self.expect_value_eq(selector.clone(), value);
         self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
     }
 
     /// Waits until the selector resolves to the current UI-focused element.
-    pub fn wait_for_ui_focus(&mut self, selector: Selector, timeout: Duration) -> bool {
+    pub fn wait_for_ui_focus(&mut self, selector: &Selector, timeout: Duration) -> bool {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
         const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
 
         let deadline = Instant::now() + timeout;
         let mut idle_backoff = Duration::ZERO;
         loop {
-            if self.matches_ui_focus(&selector) {
+            if self.matches_ui_focus(selector) {
                 return true;
             }
 
@@ -379,7 +384,7 @@ impl MountedApp {
         }
     }
 
-    fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {
+    fn evaluate_expectation(&self, expectation: &Expectation) -> bool {
         match &expectation.kind {
             ExpectationKind::Exists(selector) => !self.matching_ids(selector).is_empty(),
             ExpectationKind::NotExists(selector) => self.matching_ids(selector).is_empty(),
@@ -393,12 +398,12 @@ impl MountedApp {
         }
     }
 
-    fn matching_ids(&mut self, selector: &Selector) -> Vec<NodeId> {
+    fn matching_ids(&self, selector: &Selector) -> Vec<NodeId> {
         self.validate_selector_scope(selector);
         self.tree.matching(selector)
     }
 
-    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
+    pub(crate) fn resolve_elements(&self, selector: &Selector) -> ElementSet {
         let ids = self.matching_ids(selector);
         let elements = ids
             .into_iter()
@@ -411,7 +416,7 @@ impl MountedApp {
         ElementSet::new(elements, self.tree.revision())
     }
 
-    pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
+    pub(crate) fn resolve_single(&self, selector: &Selector) -> ElementRef {
         let results = self.resolve_elements(selector);
         match results.len() {
             1 => results[0].clone(),
@@ -462,13 +467,13 @@ impl MountedApp {
     }
 
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> bool {
-        const STEPS: usize = 6;
+        const STEPS: u16 = 6;
 
         let mut changed = self.driver.pointer_down(from_x, from_y, &self.env);
         for step in 1..=STEPS {
-            let t = step as f32 / STEPS as f32;
-            let x = from_x + (to_x - from_x) * t;
-            let y = from_y + (to_y - from_y) * t;
+            let t = f32::from(step) / f32::from(STEPS);
+            let x = (to_x - from_x).mul_add(t, from_x);
+            let y = (to_y - from_y).mul_add(t, from_y);
             changed |= self.driver.pointer_move(x, y, &self.env);
         }
         changed |= self.driver.pointer_up(to_x, to_y, &self.env);
@@ -547,7 +552,7 @@ impl MountedApp {
         rebuilt
     }
 
-    fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
+    fn matches_ui_focus(&self, selector: &Selector) -> bool {
         let ids = self.matching_ids(selector);
         ids.len() == 1 && self.ui_focus == Some(ids[0])
     }

@@ -3,7 +3,7 @@ use crate::dimensions::TABS_HIGHLIGHT_CORNER_RADIUS;
 use crate::{Brush, DrawContext};
 use vello::kurbo::Rect;
 
-pub(crate) fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool) {
+pub fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool) {
     draw.fill_rect(bounds, &Brush::from(SURFACE_MUTED));
     let separator = if top_edge {
         Rect::new(bounds.x0, bounds.y1 - 1.0, bounds.x1, bounds.y1)
@@ -13,7 +13,7 @@ pub(crate) fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool)
     draw.fill_rect(separator, &Brush::from(OUTLINE_SUBTLE));
 }
 
-pub(crate) fn draw_highlight(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_highlight(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rounded_rect(
         bounds,
         TABS_HIGHLIGHT_CORNER_RADIUS.into(),

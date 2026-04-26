@@ -34,6 +34,10 @@ fn assert_label_bounds(app: &mut MountedApp, label: &str) {
     );
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "chart proxy values are handed to composition callbacks by value"
+)]
 fn selected_visibility<T: Clone + PartialEq + 'static>(
     proxy: waterui_chart::ChartProxy<T>,
 ) -> impl waterui::Signal<Output = bool> + 'static {
@@ -43,6 +47,10 @@ fn selected_visibility<T: Clone + PartialEq + 'static>(
         .computed()
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the returned accessibility-state signal owns the composed visibility signal"
+)]
 fn hidden_accessibility_state(
     visible: impl waterui::Signal<Output = bool> + 'static,
 ) -> impl waterui::Signal<Output = AccessibilityState> + 'static {
@@ -238,11 +246,10 @@ fn selected_overlay_exposes_accessibility_labels() {
                     move |_proxy| {
                         let overlay_label = selected_for_overlay
                             .clone()
-                            .map(|selected| match selected {
-                                Some(hit) => {
+                            .map(|selected| {
+                                selected.map_or_else(String::new, |hit| {
                                     format!("Selected series={} index={}", hit.series, hit.index)
-                                }
-                                None => String::new(),
+                                })
                             })
                             .computed();
                         let visible = selected_for_overlay

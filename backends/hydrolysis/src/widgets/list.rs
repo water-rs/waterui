@@ -218,7 +218,7 @@ pub(crate) fn render_list(
         );
         let mut trailing_x = row_rect.x1 - 8.0;
 
-        if editing && move_action.is_some() {
+        if let (true, Some(move_action)) = (editing, move_action.as_ref()) {
             let control_width = LIST_MOVE_CONTROL_WIDTH;
             let control_height = (row_height - 12.0).max(12.0);
             let control_rect = vello::kurbo::Rect::new(
@@ -241,7 +241,7 @@ pub(crate) fn render_list(
                     control_rect.x1,
                     control_rect.y0 + control_rect.height() / 2.0,
                 );
-                let action = Rc::clone(move_action.as_ref().expect("move action missing"));
+                let action = Rc::clone(move_action);
                 let hit_transform = ctx.hit_transform;
                 ctx.renderer_mut().register_pointer_target(
                     transformed_rect(hit_transform, up_rect),
@@ -258,7 +258,7 @@ pub(crate) fn render_list(
                     control_rect.x1,
                     control_rect.y1,
                 );
-                let action = Rc::clone(move_action.as_ref().expect("move action missing"));
+                let action = Rc::clone(move_action);
                 let hit_transform = ctx.hit_transform;
                 ctx.renderer_mut().register_pointer_target(
                     transformed_rect(hit_transform, down_rect),
@@ -270,7 +270,7 @@ pub(crate) fn render_list(
             }
         }
 
-        if editing && deletable && delete_action.is_some() {
+        if let (true, true, Some(delete_action)) = (editing, deletable, delete_action.as_ref()) {
             let delete_rect = vello::kurbo::Rect::new(
                 trailing_x - LIST_DELETE_CONTROL_WIDTH,
                 row_rect.y0 + 6.0,
@@ -283,7 +283,7 @@ pub(crate) fn render_list(
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);
             }
-            let action = Rc::clone(delete_action.as_ref().expect("delete action missing"));
+            let action = Rc::clone(delete_action);
             let hit_transform = ctx.hit_transform;
             ctx.renderer_mut().register_pointer_target(
                 transformed_rect(hit_transform, delete_rect),

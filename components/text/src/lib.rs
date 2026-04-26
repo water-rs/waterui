@@ -6,7 +6,6 @@
 //! Note: The `Link` component has been moved to the main `waterui` crate
 //! where it can use `robius-open` for URL handling.
 
-#![allow(clippy::future_not_send)]
 #![no_std]
 
 extern crate alloc;

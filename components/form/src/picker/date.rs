@@ -52,7 +52,7 @@ impl DatePickerType {
         }
     }
 
-    /// Formats a picker value exactly as WaterUI presents it to the user.
+    /// Formats a picker value exactly as `WaterUI` presents it to the user.
     #[must_use]
     pub fn format_value(self, value: DateTime) -> String {
         match self {
@@ -67,6 +67,10 @@ impl DatePickerType {
     }
 
     /// Parses a user-provided picker value into the canonical internal datetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` does not match this picker's format.
     pub fn parse_value(self, value: &str) -> Result<DateTime, jiff::Error> {
         match self {
             Self::Date => Date::strptime(self.format_string(), value).map(start_of_day),
@@ -230,15 +234,15 @@ fn map_time_binding(time: &Binding<Time>) -> Binding<DateTime> {
     })
 }
 
-fn full_picker_range() -> RangeInclusive<DateTime> {
+const fn full_picker_range() -> RangeInclusive<DateTime> {
     start_of_day(Date::MIN)..=end_of_day(Date::MAX)
 }
 
-fn start_of_day(date: Date) -> DateTime {
+const fn start_of_day(date: Date) -> DateTime {
     date.at(0, 0, 0, 0)
 }
 
-fn end_of_day(date: Date) -> DateTime {
+const fn end_of_day(date: Date) -> DateTime {
     date.at(23, 59, 59, 0)
 }
 

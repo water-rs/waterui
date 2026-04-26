@@ -183,7 +183,7 @@ fn render_image(src: &Str) -> AnyView {
     {
         let url = Url::parse(src)
             .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
-        return AnyView::new(media_photo(url));
+        AnyView::new(media_photo(url))
     }
 
     #[cfg(not(feature = "media"))]
@@ -234,15 +234,39 @@ fn render_table(
         .max(rows.iter().map(Vec::len).max().unwrap_or_default());
     if col_count == 0 {
         return AnyView::new(());
-    } else {
-        let header_row: Vec<AnyView> = (0..col_count)
-            .map(|col_idx| {
-                let header = headers
+    }
+    let header_row: Vec<AnyView> = (0..col_count)
+        .map(|col_idx| {
+            let header = headers
+                .get(col_idx)
+                .map_or_else(|| Text::from(""), element_to_text)
+                .bold();
+            AnyView::new(table_cell(
+                header,
+                alignments
                     .get(col_idx)
-                    .map_or_else(|| Text::from(""), element_to_text)
-                    .bold();
+                    .copied()
+                    .unwrap_or(MarkdownTableAlignment::None),
+            ))
+        })
+        .collect();
+
+    let mut row_views = Vec::with_capacity(rows.len() + 2);
+    row_views.push(AnyView::new(
+        HStack::from_iter(header_row)
+            .spacing(12.0)
+            .alignment(waterui_layout::stack::VerticalAlignment::Top),
+    ));
+    row_views.push(AnyView::new(Divider));
+
+    for row in rows {
+        let cells: Vec<AnyView> = (0..col_count)
+            .map(|col_idx| {
+                let cell = row
+                    .get(col_idx)
+                    .map_or_else(|| Text::from(""), element_to_text);
                 AnyView::new(table_cell(
-                    header,
+                    cell,
                     alignments
                         .get(col_idx)
                         .copied()
@@ -250,43 +274,18 @@ fn render_table(
                 ))
             })
             .collect();
-
-        let mut row_views = Vec::with_capacity(rows.len() + 2);
         row_views.push(AnyView::new(
-            HStack::from_iter(header_row)
+            HStack::from_iter(cells)
                 .spacing(12.0)
                 .alignment(waterui_layout::stack::VerticalAlignment::Top),
         ));
-        row_views.push(AnyView::new(Divider));
-
-        for row in rows {
-            let cells: Vec<AnyView> = (0..col_count)
-                .map(|col_idx| {
-                    let cell = row
-                        .get(col_idx)
-                        .map_or_else(|| Text::from(""), element_to_text);
-                    AnyView::new(table_cell(
-                        cell,
-                        alignments
-                            .get(col_idx)
-                            .copied()
-                            .unwrap_or(MarkdownTableAlignment::None),
-                    ))
-                })
-                .collect();
-            row_views.push(AnyView::new(
-                HStack::from_iter(cells)
-                    .spacing(12.0)
-                    .alignment(waterui_layout::stack::VerticalAlignment::Top),
-            ));
-        }
-
-        AnyView::new(
-            VStack::from_iter(row_views)
-                .spacing(6.0)
-                .alignment(HorizontalAlignment::Leading),
-        )
     }
+
+    AnyView::new(
+        VStack::from_iter(row_views)
+            .spacing(6.0)
+            .alignment(HorizontalAlignment::Leading),
+    )
 }
 
 fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> impl View {

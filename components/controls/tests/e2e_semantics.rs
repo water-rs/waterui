@@ -1,3 +1,5 @@
+//! End-to-end semantics coverage for controls.
+
 mod support;
 
 use waterui::ViewExt as _;
@@ -272,7 +274,7 @@ fn text_field_focus_updates_ui_focus() {
         app.query().role(Role::TEXT_INPUT).label("Search").focus(),
         "text field focus should succeed"
     );
-    app.assert_ui_focus(selector);
+    app.assert_ui_focus(&selector);
 }
 
 #[test]
