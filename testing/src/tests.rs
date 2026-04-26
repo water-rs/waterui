@@ -68,10 +68,6 @@ impl A11yDriver for NoopDriver {
     fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
         false
     }
-
-    fn ui_focus(&self) -> Option<NodeId> {
-        None
-    }
 }
 
 fn node_id(raw: u64) -> NodeId {
@@ -162,7 +158,7 @@ fn mounted(tree: TreeSnapshot) -> MountedApp {
     }
 }
 
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<String>() {
         return message.clone();
     }
@@ -393,15 +389,15 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let frame = surface
         .acquire()
         .expect("waterui-testing failed to acquire offscreen frame");
-    renderer.render_scene_to_texture(
-        surface.device(),
-        surface.queue(),
-        frame.view(),
-        surface.format(),
-        96,
-        72,
-        vello::peniko::Color::TRANSPARENT,
-    );
+    renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+        device: surface.device(),
+        queue: surface.queue(),
+        view: frame.view(),
+        format: surface.format(),
+        width: 96,
+        height: 72,
+        base_color: vello::peniko::Color::TRANSPARENT,
+    });
     let rgba8 = readback_texture_rgba8(surface.device(), surface.queue(), frame.texture(), 96, 72);
     renderer.clear_frame_resources();
     surface.present(frame);
@@ -527,19 +523,11 @@ fn wait_for_existence_and_nonexistence_complete_immediately() {
         node(2, Role::LABEL, Some("status"), Some("ready"), true),
     ]));
 
-    assert!(app.wait_for_existence(
-        Selector::default().role(Role::LABEL).label("status"),
-        Duration::from_millis(50),
-    ));
-    assert!(app.wait_for_nonexistence(
-        Selector::default().role(Role::BUTTON).label("missing"),
-        Duration::from_millis(50),
-    ));
-    assert!(app.wait_for_value_eq(
-        Selector::default().role(Role::LABEL).label("status"),
-        "ready",
-        Duration::from_millis(50),
-    ));
+    let status_selector = Selector::default().role(Role::LABEL).label("status");
+    let missing_button_selector = Selector::default().role(Role::BUTTON).label("missing");
+    assert!(app.wait_for_existence(&status_selector, Duration::from_millis(50),));
+    assert!(app.wait_for_nonexistence(&missing_button_selector, Duration::from_millis(50),));
+    assert!(app.wait_for_value_eq(&status_selector, "ready", Duration::from_millis(50),));
 }
 
 #[test]
@@ -622,7 +610,8 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
     let interaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = edit.tap(&mut app);
     }));
-    let interaction_message = panic_message(interaction.expect_err("stale handle should panic"));
+    let interaction_payload = interaction.expect_err("stale handle should panic");
+    let interaction_message = panic_message(&*interaction_payload);
     assert!(
         interaction_message.contains("stale element handle"),
         "unexpected stale interaction panic: {interaction_message}"
@@ -636,8 +625,8 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
             .label("Edit")
             .single();
     }));
-    let scoped_query_message =
-        panic_message(scoped_query.expect_err("stale scoped query should panic"));
+    let scoped_query_payload = scoped_query.expect_err("stale scoped query should panic");
+    let scoped_query_message = panic_message(&*scoped_query_payload);
     assert!(
         scoped_query_message.contains("stale element handle"),
         "unexpected stale scoped query panic: {scoped_query_message}"
@@ -794,16 +783,12 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let username_for_view = username.clone();
-    let password_for_view = password.clone();
-
     let mut app = UiTest::new().mount(move || {
         vstack((
-            TextField::new(&username_for_view)
+            TextField::new(&username)
                 .label(text("Username"))
                 .focused(&focus_for_view, Field::Username),
-            SecureField::new(text("Password"), &password_for_view)
-                .focused(&focus_for_view, Field::Password),
+            SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
             button("Submit"),
         ))
     });
@@ -814,10 +799,10 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .label("Password");
 
     assert!(
-        app.wait_for_ui_focus(username_selector.clone(), Duration::from_millis(200)),
+        app.wait_for_ui_focus(&username_selector, Duration::from_millis(200)),
         "expected initial FocusState to focus the username field"
     );
-    app.assert_ui_focus(username_selector.clone());
+    app.assert_ui_focus(&username_selector);
     assert_eq!(focus.get(), Some(Field::Username));
 
     let username_id = app
@@ -841,7 +826,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .label("Password")
         .single()
         .id();
-    app.assert_ui_focus(password_selector.clone());
+    app.assert_ui_focus(&password_selector);
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));
 

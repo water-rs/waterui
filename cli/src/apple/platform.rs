@@ -583,8 +583,6 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use tempfile::tempdir;
 
     use super::{
@@ -657,10 +655,7 @@ mod tests {
         let link_inputs =
             collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
 
-        assert_eq!(
-            link_inputs.archives,
-            vec![PathBuf::from(out_dir.join("libHelper.a"))]
-        );
+        assert_eq!(link_inputs.archives, vec![out_dir.join("libHelper.a")]);
         assert_eq!(
             link_inputs.linker_flags,
             vec![

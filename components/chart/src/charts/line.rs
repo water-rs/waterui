@@ -34,7 +34,10 @@ pub struct LineChart<S: Signal<Output = Vec<DataPoint>>> {
     composition: ChartComposition<DataPoint>,
 }
 
+crate::charts::impl_chart_debug!(LineChart, S, Vec<DataPoint>);
+
 impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
+    /// Creates a line chart from reactive point data.
     #[must_use]
     pub fn new(data: S) -> Self {
         Self {
@@ -54,51 +57,76 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
 
     crate::composition::chart_composition_methods!(DataPoint);
 
+    /// Sets the line color.
     #[must_use]
-    pub fn color(mut self, color: Srgb) -> Self {
+    pub const fn color(mut self, color: Srgb) -> Self {
         self.color = color;
         self
     }
 
+    /// Sets the line width and panics if the value is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `width` is not finite or is not strictly positive.
     #[must_use]
     pub fn line_width(self, width: f32) -> Self {
         self.try_line_width(width)
             .expect("LineChart::line_width(width) requires finite width > 0")
     }
 
+    /// Sets the line width using an already-validated positive value.
     #[must_use]
-    pub fn with_line_width(mut self, width: PositiveF32) -> Self {
+    pub const fn with_line_width(mut self, width: PositiveF32) -> Self {
         self.line_width = width.get();
         self
     }
 
+    /// Attempts to set the line width.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `width` is not finite or is not strictly positive.
     pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_line_width(PositiveF32::try_new(width)?))
     }
 
+    /// Enables area fill under the line and panics if opacity is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `opacity` is not finite or is outside `0.0..=1.0`.
     #[must_use]
     pub fn fill(self, opacity: f32) -> Self {
         self.try_fill(opacity)
             .expect("LineChart::fill(opacity) requires finite 0.0 <= opacity <= 1.0")
     }
 
+    /// Enables area fill using an already-validated opacity.
     #[must_use]
-    pub fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
+    pub const fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
         self.show_fill = true;
         self.fill_opacity = opacity.get();
         self
     }
 
+    /// Attempts to enable area fill with the given opacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChartParamError`] when `opacity` is not finite or is outside `0.0..=1.0`.
     pub fn try_fill(self, opacity: f32) -> Result<Self, ChartParamError> {
         Ok(self.with_fill_opacity(UnitInterval::try_new(opacity)?))
     }
 
+    /// Tracks the currently focused point in an external binding.
     #[must_use]
     pub fn focused(mut self, focused: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_focused(focused);
         self
     }
 
+    /// Tracks the currently selected point in an external binding.
     #[must_use]
     pub fn selected(mut self, selected: &Binding<Option<HitResult<DataPoint>>>) -> Self {
         self.selection = self.selection.with_selected(selected);
@@ -107,13 +135,13 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
 }
 
 impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let color = self.color;
         let line_width = self.line_width;
         let show_fill = self.show_fill;
         let fill_opacity = self.fill_opacity;
         interactive_cartesian_signal_canvas(
-            _env,
+            env,
             self.data,
             |data: &Vec<DataPoint>| point_bounds(data),
             move |ctx, data, bounds| point_geometry(ctx, data, bounds, (line_width * 2.5).max(8.0)),

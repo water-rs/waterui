@@ -60,7 +60,7 @@ pub(crate) fn render_progress(
     let clamped = ctx
         .renderer_mut()
         .read_signal(&progress.value)
-        .clamp(0.0, 1.0) as f64;
+        .clamp(0.0, 1.0);
 
     match progress.style {
         ProgressStyle::Linear => {

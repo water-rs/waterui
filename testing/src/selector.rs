@@ -42,60 +42,70 @@ impl Default for Selector {
 }
 
 impl Selector {
+    /// Restricts matches to an accessibility role.
     #[must_use]
-    pub fn role(mut self, role: Role) -> Self {
+    pub const fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
         self
     }
 
+    /// Restricts matches to an exact label.
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label_exact = Some(label.into());
         self
     }
 
+    /// Restricts matches to labels containing text.
     #[must_use]
     pub fn label_contains(mut self, label: impl Into<String>) -> Self {
         self.label_contains = Some(label.into());
         self
     }
 
+    /// Restricts matches to an enabled state.
     #[must_use]
     pub const fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = Some(enabled);
         self
     }
 
+    /// Restricts matches to a selected state.
     #[must_use]
     pub const fn selected(mut self, selected: bool) -> Self {
         self.selected = Some(selected);
         self
     }
 
+    /// Restricts matches to a checked state.
     #[must_use]
     pub const fn checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self
     }
 
+    /// Restricts matches to an expanded state.
     #[must_use]
     pub const fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
         self
     }
 
+    /// Restricts matches to an exact value.
     #[must_use]
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.value_exact = Some(value.into());
         self
     }
 
+    /// Restricts matches to values containing text.
     #[must_use]
     pub fn value_contains(mut self, value: impl Into<String>) -> Self {
         self.value_contains = Some(value.into());
         self
     }
 
+    /// Includes or excludes hidden nodes.
     #[must_use]
     pub const fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = Some(hidden);
@@ -238,13 +248,15 @@ pub struct ElementRef {
 }
 
 impl ElementRef {
+    /// Returns the stable node id.
     #[must_use]
     pub const fn id(&self) -> NodeId {
         self.node_id
     }
 
+    /// Returns the node snapshot captured when this handle was resolved.
     #[must_use]
-    pub fn node(&self) -> &NodeSnapshot {
+    pub const fn node(&self) -> &NodeSnapshot {
         &self.node
     }
 
@@ -276,6 +288,11 @@ impl ElementRef {
         summary
     }
 
+    /// Returns node bounds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the accessibility node does not expose bounds.
     #[must_use]
     pub fn bounds(&self) -> NodeBounds {
         self.node.bounds().unwrap_or_else(|| {
@@ -286,11 +303,17 @@ impl ElementRef {
         })
     }
 
+    /// Returns the element center point.
     #[must_use]
     pub fn center(&self) -> (f32, f32) {
         self.bounds().center()
     }
 
+    /// Returns a point inside the element from normalized coordinates.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`.
     #[must_use]
     pub fn normalized_point(&self, normalized_x: f32, normalized_y: f32) -> (f32, f32) {
         assert!(
@@ -303,8 +326,8 @@ impl ElementRef {
         );
         let bounds = self.bounds();
         (
-            bounds.x() + bounds.width() * normalized_x,
-            bounds.y() + bounds.height() * normalized_y,
+            bounds.width().mul_add(normalized_x, bounds.x()),
+            bounds.height().mul_add(normalized_y, bounds.y()),
         )
     }
 
@@ -418,17 +441,19 @@ impl ElementSet {
         Self { elements, by_id }
     }
 
+    /// Returns the number of resolved elements.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.elements.len()
     }
 
+    /// Returns whether the set contains no elements.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
 
-    #[must_use]
+    /// Iterates over resolved elements.
     pub fn iter(&self) -> impl Iterator<Item = &ElementRef> {
         self.elements.iter()
     }
@@ -479,7 +504,7 @@ impl Index<NodeId> for ElementSet {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct QueryScope {
+pub struct QueryScope {
     relation: ScopeRelation,
     handle: ElementRef,
 }
@@ -517,7 +542,7 @@ impl QueryScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScopeRelation {
+pub enum ScopeRelation {
     Descendants,
     Children,
 }

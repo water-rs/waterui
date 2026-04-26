@@ -60,6 +60,10 @@ impl InspectorServerConfig {
     /// - `WATERUI_INSPECTOR_MAX_EVENTS` (default `4096`)
     /// - `WATERUI_INSPECTOR_WARN_RATIO` (default `0.90`)
     /// - `WATERUI_INSPECTOR_FLUSH_INTERVAL_MS` (default `50`)
+    ///
+    /// # Errors
+    ///
+    /// Returns a string error when an inspector environment variable contains an invalid value.
     pub fn from_env() -> Result<Option<Self>, String> {
         let Some(token) = std::env::var("WATERUI_INSPECTOR_TOKEN")
             .ok()
@@ -203,6 +207,10 @@ pub fn maybe_init_from_env() -> Option<InspectorEndpointInfo> {
 /// Initializes the inspector runtime endpoint.
 ///
 /// If already initialized, returns the existing endpoint.
+///
+/// # Errors
+///
+/// Returns an I/O error when the inspector server cannot bind or initialize.
 pub fn init_with_config(config: InspectorServerConfig) -> io::Result<InspectorEndpointInfo> {
     let init_lock = SERVER_INIT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = match init_lock.lock() {

@@ -27,8 +27,6 @@
 //!
 //! /// Drawing state management for Canvas.
 
-#![allow(clippy::multiple_crate_versions)]
-
 extern crate alloc;
 
 pub mod state;

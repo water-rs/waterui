@@ -37,6 +37,7 @@ impl FilePicker<Text> {
     }
 
     /// Select files and import them into the app's sandboxed storage.
+    #[must_use]
     pub fn import(value: &Binding<Vec<Url>>) -> Self {
         Self {
             label: Text::new("Import Files"),

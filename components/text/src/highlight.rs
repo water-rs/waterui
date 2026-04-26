@@ -12,7 +12,6 @@ use syntect::{
     parsing::{SyntaxReference, SyntaxSet},
 };
 use two_face::syntax::extra_newlines;
-use waterui_core::Str;
 use waterui_graphics::color::Srgb;
 
 use crate::styled::{Style, StyledStr};
@@ -23,16 +22,15 @@ pub trait Highlighter: Send + Sync {
     fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>>;
 }
 
-/// Highlights text asynchronously using the given highlighter.
-#[allow(clippy::unused_async)]
-pub async fn highlight_text(
+/// Highlights text using the given highlighter.
+pub fn highlight_text(
     language: Language,
-    text: Str,
-    mut highlighter: impl Highlighter,
+    text: &str,
+    highlighter: &mut impl Highlighter,
 ) -> StyledStr {
     // TODO: use async thread pool
     highlighter
-        .highlight(language, &text)
+        .highlight(language, text)
         .into_iter()
         .fold(StyledStr::empty(), |mut s, chunk| {
             s.push(

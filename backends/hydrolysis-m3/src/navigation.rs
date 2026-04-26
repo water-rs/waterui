@@ -3,15 +3,15 @@ use crate::dimensions::NAVIGATION_BAR_CORNER_RADIUS;
 use crate::{Brush, DrawContext};
 use vello::kurbo::{BezPath, Point, Rect};
 
-pub(crate) fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, background: &Brush) {
+pub fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, background: &Brush) {
     draw.fill_rect(bounds, background);
 }
 
-pub(crate) fn draw_bar_separator(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_bar_separator(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rect(bounds, &Brush::from(OUTLINE_SUBTLE));
 }
 
-pub(crate) fn draw_back_button(draw: &mut dyn DrawContext, bounds: Rect) {
+pub fn draw_back_button(draw: &mut dyn DrawContext, bounds: Rect) {
     draw.fill_rounded_rect(
         bounds,
         NAVIGATION_BAR_CORNER_RADIUS.into(),

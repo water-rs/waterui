@@ -5,7 +5,7 @@ use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::Gradient;
 use waterui_graphics::color::Srgb;
-use waterui_layout::stack::{VStack, vstack, zstack};
+use waterui_layout::stack::{vstack, zstack};
 use waterui_map::{Annotation, MapConfig, MapStyle, Region};
 use waterui_text::Text;
 

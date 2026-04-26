@@ -1,3 +1,5 @@
+//! Ignored real-sample tracing analysis for `WaterUI` video decoding behavior.
+
 use std::{
     collections::hash_map::DefaultHasher,
     fs::{self, File},
@@ -30,6 +32,10 @@ struct SampleCase {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "report field unit suffixes keep tracing output self-describing"
+)]
 struct CaseReport {
     name: &'static str,
     codec: CodecType,
@@ -77,6 +83,10 @@ struct LiveSyncReport {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "latency report field unit suffixes keep tracing output self-describing"
+)]
 struct SeekRecoveryReport {
     mean_ms: f64,
     p95_ms: f64,
@@ -136,6 +146,12 @@ fn cache_path_for(url: &str) -> PathBuf {
         .join(format!("{hash:016x}.mp4"))
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "bounded percentile rank is clamped before conversion to a slice index"
+)]
 fn percentile(values: &[f64], ratio: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -150,20 +166,24 @@ fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.iter().sum::<f64>() / values.len() as f64
+    values.iter().sum::<f64>() / usize_to_f64(values.len())
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).expect("video analysis sample count must fit in u32"))
 }
 
 fn signed_delta_ms(lhs: Duration, rhs: Duration) -> f64 {
     if lhs >= rhs {
-        (lhs - rhs).as_secs_f64() * 1000.0
+        lhs.checked_sub(rhs).unwrap().as_secs_f64() * 1000.0
     } else {
-        -((rhs - lhs).as_secs_f64() * 1000.0)
+        -(rhs.checked_sub(lhs).unwrap().as_secs_f64() * 1000.0)
     }
 }
 
 fn shift_duration_ms(base: Duration, delta_ms: i64) -> Duration {
     if delta_ms >= 0 {
-        return base.saturating_add(Duration::from_millis(delta_ms as u64));
+        return base.saturating_add(Duration::from_millis(delta_ms.cast_unsigned()));
     }
 
     let magnitude = Duration::from_millis(delta_ms.unsigned_abs());
@@ -171,9 +191,9 @@ fn shift_duration_ms(base: Duration, delta_ms: i64) -> Duration {
         .unwrap_or_else(|| panic!("network timeline underflow: base={base:?}, delta_ms={delta_ms}"))
 }
 
-fn deterministic_jitter_ms(index: usize, amplitude_ms: u64) -> i64 {
+const fn deterministic_jitter_ms(index: usize, amplitude_ms: u64) -> i64 {
     let cycle = (index as u64 * 37 + 11) % 13;
-    ((cycle * amplitude_ms) / 12) as i64
+    ((cycle * amplitude_ms) / 12).cast_signed()
 }
 
 fn build_arrival_timeline(
@@ -188,7 +208,7 @@ fn build_arrival_timeline(
         return Vec::new();
     }
     assert!(
-        !(!(throughput_ratio.is_finite() && throughput_ratio > 0.0)),
+        (throughput_ratio.is_finite() && throughput_ratio > 0.0),
         "throughput_ratio must be finite and positive"
     );
 
@@ -200,11 +220,11 @@ fn build_arrival_timeline(
         let prev = timeline[index - 1].pts;
         let current = timeline[index].pts;
         assert!(
-            !(current < prev),
+            (current >= prev),
             "timeline PTS must be monotonic: frame={index}, prev={prev:?}, current={current:?}"
         );
 
-        let delta_pts = current - prev;
+        let delta_pts = current.checked_sub(prev).unwrap();
         let transfer_time = delta_pts.mul_f64(1.0 / throughput_ratio);
         network_clock = network_clock.saturating_add(transfer_time);
 
@@ -216,7 +236,7 @@ fn build_arrival_timeline(
         }
 
         assert!(
-            !(network_clock < arrivals[index - 1]),
+            (network_clock >= arrivals[index - 1]),
             "network arrival timeline regressed at frame={index}: previous={:?}, current={:?}",
             arrivals[index - 1],
             network_clock
@@ -234,7 +254,7 @@ fn start_wall_with_buffer(
     startup_buffer: Duration,
 ) -> Duration {
     assert!(
-        !(timeline.len() != arrivals.len()),
+        (timeline.len() == arrivals.len()),
         "timeline/arrival length mismatch: timeline={}, arrivals={}",
         timeline.len(),
         arrivals.len()
@@ -272,7 +292,7 @@ fn analyze_vod_sync(
         let expected = anchor_wall.saturating_add(delta);
 
         if arrival > expected.saturating_add(PRESENT_TOLERANCE) {
-            let stall = arrival - expected;
+            let stall = arrival.checked_sub(expected).unwrap();
             buffering_total = buffering_total.saturating_add(stall);
             anchor_wall = anchor_wall.saturating_add(stall);
             if !late_streak {
@@ -433,6 +453,11 @@ fn collect_timeline(path: &Path, frame_budget: usize) -> Result<Vec<TimelineFram
     Ok(timeline)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "seek progress is clamped to a known positive sample range"
+)]
 fn measure_seek_recovery(
     path: &Path,
     codec: CodecType,
@@ -491,7 +516,9 @@ fn measure_seek_recovery(
 
         let started = Instant::now();
         let mut recovered = false;
-        for sample_index in 0..sample_count as usize {
+        for sample_index in 0..usize::try_from(sample_count)
+            .expect("video sample count must fit in usize for seek recovery")
+        {
             let Some((sample_data, sample_pts, _is_keyframe)) = decode_reader
                 .read_sample()
                 .map_err(|error| error.to_string())?
@@ -503,8 +530,8 @@ fn measure_seek_recovery(
             }
 
             let sample_pts_duration = pts_to_duration(sample_pts, timescale);
-            let mut stream = decoder.decode(&sample_data);
-            while let Some(frame_result) = stream.next() {
+            let stream = decoder.decode(&sample_data);
+            for frame_result in stream {
                 let frame = frame_result.map_err(|error| error.to_string())?;
                 let frame_pts = if frame.timestamp_ns() > 0 {
                     Duration::from_nanos(frame.timestamp_ns())
@@ -539,6 +566,10 @@ fn measure_seek_recovery(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ignored tracing test keeps the end-to-end analysis steps together for readability"
+)]
 fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
     let _span = tracing::info_span!(
         "real_sample_analysis_case",
@@ -594,8 +625,8 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
         };
 
         let sample_pts_duration = pts_to_duration(sample_pts, timescale);
-        let mut decode_stream = decoder.decode(&sample_data);
-        while let Some(frame_result) = decode_stream.next() {
+        let decode_stream = decoder.decode(&sample_data);
+        for frame_result in decode_stream {
             let frame = frame_result.map_err(|error| error.to_string())?;
 
             if first_frame_latency.is_none() {
@@ -633,7 +664,8 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
                 if frame_pts < previous_pts {
                     pts_regressions = pts_regressions.saturating_add(1);
                 } else {
-                    frame_delta_ms.push((frame_pts - previous_pts).as_secs_f64() * 1000.0);
+                    frame_delta_ms
+                        .push(frame_pts.checked_sub(previous_pts).unwrap().as_secs_f64() * 1000.0);
                 }
             }
             prev_pts = Some(frame_pts);
@@ -657,7 +689,7 @@ fn analyze_case(case: SampleCase) -> Result<CaseReport, String> {
         .ok_or_else(|| format!("No decoded frame produced for {}", case.name))?
         .as_secs_f64()
         * 1000.0;
-    let decode_fps = decoded_frames as f64 / decode_elapsed.as_secs_f64();
+    let decode_fps = usize_to_f64(decoded_frames) / decode_elapsed.as_secs_f64();
     let mean_frame_delta_ms = mean(&frame_delta_ms);
     let p95_frame_delta_ms = percentile(&frame_delta_ms, 0.95);
 
@@ -752,7 +784,11 @@ fn trace_real_samples_performance_and_correctness() {
             case.name
         );
         assert!(
-            report.first_frame_ms <= case.max_first_frame_ms as f64,
+            report.first_frame_ms
+                <= f64::from(
+                    u32::try_from(case.max_first_frame_ms)
+                        .expect("first-frame budget must fit in u32"),
+                ),
             "first frame too slow in {}: {:.2}ms > {}ms",
             case.name,
             report.first_frame_ms,

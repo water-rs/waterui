@@ -29,13 +29,14 @@ fn selection_shell<V: View, R: View>(name: &str, chart: V, readout: R) -> impl V
         .background(Srgb::BLACK)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(x) => format!("x:{x:.2}"),
-                None => String::from("x:none"),
-            })
+            .map(|value| value.map_or_else(|| String::from("x:none"), |x| format!("x:{x:.2}")))
             .computed(),
     )
     .caption()
@@ -44,12 +45,18 @@ fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(range) => format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
-                None => String::from("x-range:none"),
+            .map(|value| {
+                value.map_or_else(
+                    || String::from("x-range:none"),
+                    |range| format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                )
             })
             .computed(),
     )
@@ -59,13 +66,14 @@ fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(y) => format!("y:{y:.2}"),
-                None => String::from("y:none"),
-            })
+            .map(|value| value.map_or_else(|| String::from("y:none"), |y| format!("y:{y:.2}")))
             .computed(),
     )
     .caption()
@@ -74,12 +82,18 @@ fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn y_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(range) => format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
-                None => String::from("y-range:none"),
+            .map(|value| {
+                value.map_or_else(
+                    || String::from("y-range:none"),
+                    |range| format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                )
             })
             .computed(),
     )
@@ -423,9 +437,9 @@ fn line_chart_rejects_simultaneous_x_value_and_range_selection() {
     let data = point_series();
     let x_value = Binding::container(None::<f32>);
     let x_range = Binding::container(None::<RangeInclusive<f32>>);
-    let data_for_view = data.clone();
-    let x_value_for_view = x_value.clone();
-    let x_range_for_view = x_range.clone();
+    let data_for_view = data;
+    let x_value_for_view = x_value;
+    let x_range_for_view = x_range;
 
     let _app = mount_view(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))
@@ -443,9 +457,9 @@ fn line_chart_rejects_simultaneous_y_value_and_range_selection() {
     let data = point_series();
     let y_value = Binding::container(None::<f32>);
     let y_range = Binding::container(None::<RangeInclusive<f32>>);
-    let data_for_view = data.clone();
-    let y_value_for_view = y_value.clone();
-    let y_range_for_view = y_range.clone();
+    let data_for_view = data;
+    let y_value_for_view = y_value;
+    let y_range_for_view = y_range;
 
     let _app = mount_view(move || {
         let chart = LineChart::new(Binding::container(data_for_view.clone()))

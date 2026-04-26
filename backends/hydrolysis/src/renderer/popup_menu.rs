@@ -27,6 +27,7 @@ pub(crate) enum PopupMenuNode {
 #[derive(Clone)]
 pub(super) struct PopupMenuStateGroup(pub(super) Rc<RefCell<Vec<Binding<WindowState>>>>);
 
+#[derive(Default)]
 pub(super) struct PopupMenuState {
     pub(super) active_popup_menu_group: Option<PopupMenuStateGroup>,
     pub(super) picker_menu_slots: Vec<PickerMenuSlot>,
@@ -35,16 +36,6 @@ pub(super) struct PopupMenuState {
 
 pub(super) struct PickerMenuSlot {
     pub(super) open: Rc<Cell<bool>>,
-}
-
-impl Default for PopupMenuState {
-    fn default() -> Self {
-        Self {
-            active_popup_menu_group: None,
-            picker_menu_slots: Vec::new(),
-            picker_menu_cursor: 0,
-        }
-    }
 }
 
 impl PopupMenuState {
@@ -147,7 +138,7 @@ pub(super) fn popup_menu_window(
                                 return;
                             }
                             group.close_all();
-                            action.call(&env);
+                            call_action_discarding_result(&action, &env);
                         },
                     );
                     rows.push(AnyView::new(button));
