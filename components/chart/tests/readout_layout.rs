@@ -9,6 +9,10 @@ use waterui_testing::Role;
 
 use support::{VIEWPORT_HEIGHT, point_series, semantic_chart_shell};
 
+fn viewport_height() -> f32 {
+    num_traits::cast(VIEWPORT_HEIGHT).expect("viewport height must fit f32")
+}
+
 const FOCUSED_READOUT: &str =
     "focused:series=0 index=12 t=720.00 open=120.00 high=124.00 low=119.00 close=123.00";
 const SELECTED_READOUT: &str =
@@ -37,7 +41,7 @@ fn semantic_chart_shell_keeps_long_readouts_inside_viewport() {
         "focused readout height must be positive: {focused_bounds:?}"
     );
     assert!(
-        focused_bounds.y() + focused_bounds.height() <= VIEWPORT_HEIGHT as f32,
+        focused_bounds.y() + focused_bounds.height() <= viewport_height(),
         "focused readout must stay inside viewport: {focused_bounds:?}"
     );
 
@@ -52,7 +56,7 @@ fn semantic_chart_shell_keeps_long_readouts_inside_viewport() {
         "selected readout height must be positive: {selected_bounds:?}"
     );
     assert!(
-        selected_bounds.y() + selected_bounds.height() <= VIEWPORT_HEIGHT as f32,
+        selected_bounds.y() + selected_bounds.height() <= viewport_height(),
         "selected readout must stay inside viewport: {selected_bounds:?}"
     );
 }

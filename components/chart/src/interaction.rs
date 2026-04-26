@@ -242,6 +242,10 @@ impl ChartViewport {
 
     /// Converts normalized coordinates to screen coordinates.
     #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "f32::mul_add is not const-stable; keep fused arithmetic semantics"
+    )]
     pub fn normalized_to_screen(&self, x: f32, y: f32) -> Point {
         Point::new(
             x.mul_add(self.width, self.x),
