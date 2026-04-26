@@ -646,6 +646,8 @@ raw_view!(ResolvedMenu, StretchAxis::None);
 mod tests {
     use super::*;
     use crate::button::button;
+    use alloc::rc::Rc;
+    use core::cell::Cell;
     use nami::Signal;
     use waterui_icon::SystemIcon;
 
@@ -723,5 +725,19 @@ mod tests {
             panic!("nested menu should resolve its child command");
         };
         assert_eq!(archive.label.content.get().to_plain(), "Archive");
+    }
+
+    #[test]
+    fn resolved_command_action_uses_captured_state() {
+        let count = Rc::new(Cell::new(0));
+        let command = Command::builder("Increment")
+            .action(|State(count): State<Rc<Cell<i32>>>| count.set(count.get() + 1))
+            .state(&count);
+        let resolved = command.resolve(&Environment::default());
+
+        resolved.action.call(&Environment::default());
+        resolved.action.call(&Environment::default());
+
+        assert_eq!(count.get(), 2);
     }
 }
