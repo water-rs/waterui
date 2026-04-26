@@ -29,13 +29,14 @@ fn selection_shell<V: View, R: View>(name: &str, chart: V, readout: R) -> impl V
         .background(Srgb::BLACK)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(x) => format!("x:{x:.2}"),
-                None => String::from("x:none"),
-            })
+            .map(|value| value.map_or_else(|| String::from("x:none"), |x| format!("x:{x:.2}")))
             .computed(),
     )
     .caption()
@@ -44,12 +45,18 @@ fn x_value_readout(selection: Binding<Option<f32>>) -> impl View {
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(range) => format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
-                None => String::from("x-range:none"),
+            .map(|value| {
+                value.map_or_else(
+                    || String::from("x-range:none"),
+                    |range| format!("x-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                )
             })
             .computed(),
     )
@@ -59,13 +66,14 @@ fn x_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(y) => format!("y:{y:.2}"),
-                None => String::from("y:none"),
-            })
+            .map(|value| value.map_or_else(|| String::from("y:none"), |y| format!("y:{y:.2}")))
             .computed(),
     )
     .caption()
@@ -74,12 +82,18 @@ fn y_value_readout(selection: Binding<Option<f32>>) -> impl View {
     .padding_with(6.0)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn y_range_readout(selection: Binding<Option<RangeInclusive<f32>>>) -> impl View {
     text(
         selection
-            .map(|value| match value {
-                Some(range) => format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
-                None => String::from("y-range:none"),
+            .map(|value| {
+                value.map_or_else(
+                    || String::from("y-range:none"),
+                    |range| format!("y-range:{:.2}..={:.2}", *range.start(), *range.end()),
+                )
             })
             .computed(),
     )

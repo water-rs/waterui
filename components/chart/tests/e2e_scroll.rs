@@ -27,6 +27,10 @@ fn scroll_shell<V: View, R: View>(name: &str, chart: V, readout: R) -> impl View
         .background(Srgb::BLACK)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the readout owns a cloned Binding signal for the mounted view lifetime"
+)]
 fn scalar_readout(prefix: &'static str, binding: Binding<f32>) -> impl View {
     text(
         binding

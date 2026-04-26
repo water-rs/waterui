@@ -293,7 +293,7 @@ mod tests {
         let now = Duration::from_millis(100);
         animator.start_transition(now, Duration::ZERO, EasingType::EaseInOut);
         let state = animator.update(now);
-        assert_eq!(state.progress, 1.0);
+        assert!((state.progress - 1.0).abs() <= f32::EPSILON);
         assert!(!animator.is_animating());
     }
 }
