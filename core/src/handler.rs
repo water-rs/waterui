@@ -222,3 +222,29 @@ impl<V> fmt::Debug for AnyViewBuilder<V> {
         f.write_str("AnyViewBuilder")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    #[test]
+    fn shared_action_invokes_unit_handler_repeatedly() {
+        let count = Rc::new(Cell::new(0));
+        let captured_count = Rc::clone(&count);
+        let action = shared_action(move || captured_count.set(captured_count.get() + 1));
+
+        action.call(&Environment::default());
+        action.call(&Environment::default());
+
+        assert_eq!(count.get(), 2);
+    }
+
+    #[test]
+    fn shared_action_preserves_return_values() {
+        let action = shared_action(|| 7);
+
+        assert_eq!(action.call(&Environment::default()), 7);
+    }
+}
