@@ -75,6 +75,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.check.outputs.tag }}
+          submodules: recursive
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -112,7 +113,6 @@ jobs:
         shell: bash
         run: |
           dist build \
-            --allow-dirty \
             --tag "${{ needs.check.outputs.dist_tag }}" \
             --artifacts=local \
             --target "${{ matrix.target }}"

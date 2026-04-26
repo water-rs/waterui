@@ -11,6 +11,8 @@ Build views with reactive state. When unsure, use Explore agent to search `examp
 
 - WaterUI is fine-grained reactive with reconstruction semantics. If parent-driven control flow rebuilds a component instance, that instance's local state resetting is expected and correct.
 - Do not "fix" rebuild-driven resets by caching hidden state across rebuilds. If state must survive, lift it into explicit reactive ownership at the right level.
+- GitHub Actions workflows should stay minimal and declarative. Prefer maintained community actions and purpose-built tools over custom shell/Python scripts; release publishing belongs to `release-plz`, with only the CLI binary prebuild/release-asset handoff needing extra workflow glue.
+- Do not add workflow preflight scripts or CI workarounds to hide repository-state problems. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
 - Lints are quality feedback, not obstacles. Do not add crate-level, file-level, or module-level `allow` attributes during cleanup; fix the code, docs, API shape, or type invariant instead. When a lint is a genuine false positive or conflicts with intended architecture/readability, use the narrowest item-level `allow`/`expect` with a concrete reason instead of distorting the code; WaterUI's main-thread `spawn_local` UI futures may intentionally capture non-`Send` view state.
 - `waterui-testing` uses the Hydrolysis accessibility tree, not native platform accessibility. Use it to validate both interaction logic and accessibility correctness.
 - Every UI component is expected to expose a meaningful accessibility tree. If Hydrolysis coverage is missing, fix the component or renderer rather than falling back to weak tests.

@@ -135,20 +135,6 @@ jobs:
       - run: cargo hack check --each-feature --no-dev-deps
       - run: cargo hack check --feature-powerset --no-dev-deps
 
-  release-package-verification:
-    name: Release Package Verification
-    runs-on: ubuntu-latest
-    if: >-
-      github.ref == 'refs/heads/main' ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main')
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-      - run: python3 .github/scripts/verify_release_packages.py
-
   test:
     name: Test
     uses: ./.github/workflows/test.yml
