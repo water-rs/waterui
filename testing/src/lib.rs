@@ -1,4 +1,4 @@
-//! Headless rendering and accessibility-first test utilities for WaterUI.
+//! Headless rendering and accessibility-first test utilities for `WaterUI`.
 //!
 //! `waterui-testing` is designed to run inside ordinary `cargo test` targets.
 //! Use [`UiTest`] for interactive accessibility-first flows and [`TestHost`] for
@@ -50,7 +50,7 @@
 //! ```
 //!
 //! When `WATERUI_TEST_ARTIFACTS_DIR` is set, snapshots are written beneath that
-//! directory using WaterUI's canonical `<suite>/<case>/<stage>.png` layout. The
+//! directory using `WaterUI`'s canonical `<suite>/<case>/<stage>.png` layout. The
 //! repository's GitHub workflows already upload and summarize those snapshot images.
 
 mod app;
@@ -60,7 +60,7 @@ mod query;
 mod selector;
 mod semantics;
 mod snapshot;
-mod wait;
+pub(crate) mod wait;
 
 pub use app::{MountedApp, UiTest};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};

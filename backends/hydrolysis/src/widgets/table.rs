@@ -121,8 +121,12 @@ impl HydroNativeView for Native<TableConfig> {
             let origin_x = viewport.x0 - scroll_metrics.offset_x;
             let origin_y = viewport.y0 - scroll_metrics.offset_y;
             let mut x_offset = column_window.leading_offset;
-            for column_index in column_window.start..column_window.end {
-                let column = &columns[column_index];
+            for (column_index, column) in columns
+                .iter()
+                .enumerate()
+                .take(column_window.end)
+                .skip(column_window.start)
+            {
                 let width = renderer.lazy.lazy_table_controller.slots[slot_index].column_widths
                     [column_index];
                 let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
@@ -258,8 +262,12 @@ pub(crate) fn render_table(
     }
 
     let mut x_offset = column_window.leading_offset;
-    for column_index in column_window.start..column_window.end {
-        let column = &columns[column_index];
+    for (column_index, column) in columns
+        .iter()
+        .enumerate()
+        .take(column_window.end)
+        .skip(column_window.start)
+    {
         let width = table_metrics.column_widths[column_index];
         let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
         let header_view = AnyView::new(column.label());

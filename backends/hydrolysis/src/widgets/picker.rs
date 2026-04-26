@@ -9,7 +9,7 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use nami::{Binding, Signal};
+use nami::Binding;
 use std::rc::Rc;
 use waterui_core::Environment;
 use waterui_core::Native;

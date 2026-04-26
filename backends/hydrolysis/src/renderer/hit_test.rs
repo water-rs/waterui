@@ -165,7 +165,7 @@ impl HoverController {
 
     pub(super) fn rewind_to(&mut self, cursor: usize) {
         assert!(
-            !(cursor > self.cursor),
+            (cursor <= self.cursor),
             "hover controller rewind cursor exceeds current cursor"
         );
         self.cursor = cursor;
@@ -189,13 +189,13 @@ impl HydrolysisRenderer {
         if alive {
             return;
         }
-        if let Some((depth, order)) = self.hit_test.active_pointer_drag_signature {
-            if let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
+        if let Some((depth, order)) = self.hit_test.active_pointer_drag_signature
+            && let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
                 target.captures_drag && target.depth == depth && target.order == order
-            }) {
-                self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
-                return;
-            }
+            })
+        {
+            self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            return;
         }
         let Some(point) = pointer else {
             self.hit_test.active_pointer_drag_target = None;

@@ -2,7 +2,9 @@ use super::HydrolysisRenderer;
 use crate::engine::vello_backend::VelloDrawContext;
 use crate::renderer::HydroState;
 use crate::renderer::navigation_state::NavigationTransitionDirection;
-use crate::renderer::navigation_transition::draw_navigation_transition;
+use crate::renderer::navigation_transition::{
+    NavigationTransitionFrame, draw_navigation_transition,
+};
 use waterui::navigation::NavigationTransition;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{AnyView, Environment};
@@ -36,14 +38,6 @@ pub(crate) struct WidgetRenderContext<'a> {
 }
 
 impl RenderContext {
-    pub(crate) fn new(bounds: vello::kurbo::Rect) -> Self {
-        Self {
-            transform: vello::kurbo::Affine::IDENTITY,
-            hit_transform: vello::kurbo::Affine::IDENTITY,
-            bounds,
-        }
-    }
-
     pub(crate) fn with_transforms(
         bounds: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
@@ -164,16 +158,16 @@ impl<'a> WidgetRenderContext<'a> {
         from_scene: &vello::Scene,
         to_scene: &vello::Scene,
     ) {
-        draw_navigation_transition(
-            self.renderer.scene_mut(),
-            self.transform,
-            self.bounds,
+        draw_navigation_transition(NavigationTransitionFrame {
+            scene: self.renderer.scene_mut(),
+            transform: self.transform,
+            bounds: self.bounds,
             style,
             direction,
             progress,
             from_scene,
             to_scene,
-        );
+        });
     }
 
     pub(crate) fn dispatch_in_rect(

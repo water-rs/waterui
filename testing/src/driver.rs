@@ -8,7 +8,7 @@ use waterui_core::{AnyView, Environment};
 use crate::semantics::NodeId;
 use crate::snapshot::Snapshot;
 
-pub(crate) trait A11yDriver {
+pub trait A11yDriver {
     fn pump(
         &mut self,
         content: &AnyViewBuilder<AnyView>,
@@ -22,25 +22,24 @@ pub(crate) trait A11yDriver {
     fn pointer_up(&mut self, x: f32, y: f32, env: &Environment) -> bool;
     fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment) -> bool;
     fn clear_ui_focus(&mut self, env: &Environment) -> bool;
-    fn ui_focus(&self) -> Option<NodeId>;
 }
 
 #[derive(Debug)]
-pub(crate) struct DriverPumpResult {
+pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) ui_focus: Option<NodeId>,
 }
 
-pub(crate) struct HydrolysisA11yDriver {
+pub struct HydrolysisA11yDriver {
     width: u32,
     height: u32,
     runtime: Option<HeadlessRuntime>,
 }
 
 impl HydrolysisA11yDriver {
-    pub(crate) fn new(width: u32, height: u32) -> Self {
+    pub(crate) const fn new(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
@@ -163,12 +162,5 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing clear_ui_focus requested before runtime initialization")
             .clear_ui_focus()
-    }
-
-    fn ui_focus(&self) -> Option<NodeId> {
-        self.runtime
-            .as_ref()
-            .and_then(HeadlessRuntime::focused_ui_node)
-            .map(NodeId::from)
     }
 }
