@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![allow(clippy::cast_possible_wrap)]
 extern crate alloc;
 
 mod impls;
@@ -196,7 +195,7 @@ impl Str {
         unsafe {
             Self {
                 ptr: NonNull::new_unchecked(s.as_ptr().cast_mut().cast::<()>()),
-                len: s.len() as isize,
+                len: s.len().cast_signed(),
             }
         }
     }
@@ -212,7 +211,7 @@ impl Str {
             Self {
                 ptr: NonNull::new_unchecked(Box::into_raw(Box::new(Shared::new(string))))
                     .cast::<()>(),
-                len: -(len as isize),
+                len: -len.cast_signed(),
             }
         }
     }

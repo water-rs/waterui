@@ -33,6 +33,8 @@
 //! MeshGradient::new(3, 3, vec![/* vertices */]);
 //! ```
 
+use core::f32::consts::FRAC_1_SQRT_2;
+
 use nami::{SignalExt, constant, signal::IntoComputed};
 use waterui_core::Computed;
 use waterui_graphics::color::Color;
@@ -220,7 +222,7 @@ impl RadialGradient {
     /// Creates a centered radial gradient filling the view.
     #[must_use]
     pub fn centered(stops: Vec<ColorStop>) -> Self {
-        Self::new(stops, UnitPoint::CENTER, 0.0, 0.7071) // sqrt(2)/2 to reach corners
+        Self::new(stops, UnitPoint::CENTER, 0.0, FRAC_1_SQRT_2)
     }
 }
 
@@ -361,9 +363,9 @@ impl MeshVertex {
 /// The mesh is defined by width × height vertices, arranged in a grid.
 /// Colors are smoothly interpolated between adjacent vertices.
 ///
-/// # SwiftUI Equivalent
+/// # `SwiftUI` Equivalent
 ///
-/// This is similar to SwiftUI's `MeshGradient` introduced in iOS 18.
+/// This is similar to `SwiftUI`'s `MeshGradient` introduced in `iOS` 18.
 ///
 /// # Examples
 ///

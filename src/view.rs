@@ -471,12 +471,8 @@ pub trait ViewExt: View + Sized {
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
-        let accessibility_state = visible
-            .clone()
-            .map(|visible| AccessibilityState::new().hidden(!visible));
-        let opacity_value = visible
-            .clone()
-            .map(|visible| if visible { 1.0 } else { 0.0 });
+        let accessibility_state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+        let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
         self.a11y_state_signal(accessibility_state)
@@ -959,7 +955,7 @@ pub trait ViewExt: View + Sized {
         self.gesture(TapGesture::new(), action)
     }
 
-    /// Adds a tap gesture recognizer to this view (SwiftUI naming style).
+    /// Adds a tap gesture recognizer to this view (`SwiftUI` naming style).
     ///
     /// Equivalent to [`ViewExt::on_tap`].
     fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver>
@@ -993,7 +989,7 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a gesture intended to recognize alongside existing gestures.
     ///
-    /// This follows SwiftUI naming and currently maps to `gesture(...)`.
+    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
     fn simultaneous_gesture<H, Args>(
         self,
         gesture: impl Into<Gesture>,
@@ -1007,7 +1003,7 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a gesture intended to have higher recognition precedence.
     ///
-    /// This follows SwiftUI naming and currently maps to `gesture(...)`.
+    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
     fn high_priority_gesture<H, Args>(
         self,
         gesture: impl Into<Gesture>,
@@ -1021,7 +1017,6 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
-    #[must_use]
     fn on_tap_haptic<H, Args>(self, intensity: Intensity, action: H) -> Metadata<GestureObserver>
     where
         H: Handler<Args, ()>,
@@ -1035,7 +1030,6 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
-    #[must_use]
     fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver>
     where
         H: Handler<Args, ()>,
@@ -1045,7 +1039,6 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a long-press gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
-    #[must_use]
     fn on_long_press_haptic<H, Args>(
         self,
         minimum_duration_ms: u32,
@@ -1067,7 +1060,6 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a long-press gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
-    #[must_use]
     fn on_long_press_haptic_default<H, Args>(
         self,
         minimum_duration_ms: u32,
@@ -1485,10 +1477,9 @@ pub trait ViewExt: View + Sized {
         // Compose: opacity + hit testing
         // opacity: 0.5 when disabled, 1.0 when enabled
         // hittable: false when disabled, true when enabled
-        let accessibility_state = is_disabled
-            .clone()
-            .map(|disabled| AccessibilityState::new().disabled(disabled));
-        let opacity_value = is_disabled.clone().map(|d| if d { 0.5 } else { 1.0 });
+        let accessibility_state =
+            is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
+        let opacity_value = is_disabled.map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
 
         self.a11y_state_signal(accessibility_state)

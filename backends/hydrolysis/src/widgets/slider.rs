@@ -11,7 +11,6 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use nami::Signal;
 use waterui_controls::slider::SliderConfig;
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -47,10 +46,7 @@ impl HydroNativeView for Native<SliderConfig> {
             }
             let start = *slider.range.start();
             let end = *slider.range.end();
-            assert!(
-                !(start >= end),
-                "hydrolysis slider requires range start < end"
-            );
+            assert!(start < end, "hydrolysis slider requires range start < end");
             let current = renderer.read_signal(&slider.value).clamp(start, end);
             node.set_numeric_value(current);
             node.set_min_numeric_value(start);
@@ -127,10 +123,7 @@ pub(crate) fn render_slider(
     let range_start = *slider.range.start();
     let range_end = *slider.range.end();
     let span = range_end - range_start;
-    assert!(
-        !(span <= 0.0),
-        "hydrolysis slider requires range start < end"
-    );
+    assert!(span > 0.0, "hydrolysis slider requires range start < end");
 
     let track_left = if min_label_width > 0.0 {
         min_label_x1 + metrics.horizontal_spacing
@@ -184,7 +177,7 @@ pub(crate) fn render_slider(
     let value_binding = slider.value;
     let usable_track = track_right - track_left;
     assert!(
-        !(usable_track <= 0.0),
+        usable_track > 0.0,
         "hydrolysis slider resolved a non-positive track width"
     );
     let inverse_transform = ctx.hit_transform.inverse();

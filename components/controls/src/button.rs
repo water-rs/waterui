@@ -484,7 +484,7 @@ impl<Label: View, Action> Button<Label, Action> {
 }
 
 /// No-op action for buttons without a configured action.
-fn noop(_env: &Environment) {}
+const fn noop(_env: &Environment) {}
 
 fn semantic_menu_label<Label: View + 'static>(
     label: Label,

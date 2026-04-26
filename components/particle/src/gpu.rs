@@ -1,8 +1,11 @@
-#![allow(dead_code)]
-
 //! GPU buffer structs with correct alignment for wgpu.
 //!
 //! Uses encase for automatic WGSL-compatible alignment.
+
+#![expect(
+    dead_code,
+    reason = "encase ShaderType derive emits layout check helpers"
+)]
 
 use encase::ShaderType;
 
