@@ -33,7 +33,7 @@ fn assert_chart_semantic_flow<T, V, F>(
     hover_at: (f32, f32),
     expected_series: usize,
     expected_index: usize,
-    expected_value: T,
+    expected_value: &T,
     formatter: fn(&HitResult<T>) -> String,
     build_chart: F,
 ) where
@@ -82,7 +82,7 @@ fn assert_chart_semantic_flow<T, V, F>(
         "{name}: focused index mismatch"
     );
     assert_eq!(
-        focused_hit.value, expected_value,
+        &focused_hit.value, expected_value,
         "{name}: focused value mismatch"
     );
     app.query()
@@ -112,7 +112,7 @@ fn assert_chart_semantic_flow<T, V, F>(
         "{name}: selected index mismatch"
     );
     assert_eq!(
-        selected_hit.value, expected_value,
+        &selected_hit.value, expected_value,
         "{name}: selected value mismatch"
     );
     app.query()
@@ -129,12 +129,13 @@ fn assert_chart_semantic_flow<T, V, F>(
 fn line_chart_xctest_like_focus_and_selection_flow() {
     let data = point_series();
     let index = 10;
+    let expected = data[index];
     assert_chart_semantic_flow(
         "line",
         point_hit_location(&data, index),
         0,
         index,
-        data[index],
+        &expected,
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -223,12 +224,13 @@ fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change() {
 fn bar_chart_xctest_like_focus_and_selection_flow() {
     let data = point_series();
     let index = 8;
+    let expected = data[index];
     assert_chart_semantic_flow(
         "bar",
         bar_hit_location(&data, index),
         0,
         index,
-        data[index],
+        &expected,
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -247,12 +249,13 @@ fn bar_chart_xctest_like_focus_and_selection_flow() {
 fn scatter_chart_xctest_like_focus_and_selection_flow() {
     let data = point_series();
     let index = 14;
+    let expected = data[index];
     assert_chart_semantic_flow(
         "scatter",
         point_hit_location(&data, index),
         0,
         index,
-        data[index],
+        &expected,
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -272,12 +275,13 @@ fn scatter_chart_xctest_like_focus_and_selection_flow() {
 fn bubble_chart_xctest_like_focus_and_selection_flow() {
     let data = bubble_series();
     let index = 11;
+    let expected = data[index];
     assert_chart_semantic_flow(
         "bubble",
         bubble_hit_location(&data, index),
         0,
         index,
-        data[index],
+        &expected,
         |hit: &HitResult<BubblePoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2} size={:.2}",
@@ -298,12 +302,13 @@ fn bubble_chart_xctest_like_focus_and_selection_flow() {
 fn candlestick_chart_xctest_like_focus_and_selection_flow() {
     let data = candle_series();
     let index = 12;
+    let expected = data[index];
     assert_chart_semantic_flow(
         "candlestick",
         candlestick_hit_location(&data, index),
         0,
         index,
-        data[index],
+        &expected,
         |hit: &HitResult<Candle>| {
             format!(
                 "series={} index={} t={:.2} open={:.2} high={:.2} low={:.2} close={:.2}",
@@ -336,7 +341,7 @@ fn depth_chart_xctest_like_focus_and_selection_flow() {
         depth_hit_location(&data, side, index),
         0,
         index,
-        value,
+        &value,
         |hit: &HitResult<DepthDatum>| {
             let side = match hit.value.side {
                 DepthSide::Bid => "bid",
@@ -370,7 +375,7 @@ fn area_chart_xctest_like_focus_and_selection_flow() {
         area_hit_location(&data, series, index),
         series,
         index,
-        value,
+        &value,
         |hit: &HitResult<AreaDatum>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -395,7 +400,7 @@ fn pie_chart_xctest_like_focus_and_selection_flow() {
         pie_hit_location(&data, index, 0.0),
         0,
         index,
-        value,
+        &value,
         |hit: &HitResult<SliceDatum>| {
             format!(
                 "series={} index={} value={:.2} start={:.3} end={:.3}",
