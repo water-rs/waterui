@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Snapshot;
 
-/// Snapshot captured to WaterUI's canonical test artifact layout.
+/// Snapshot captured to `WaterUI`'s canonical test artifact layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedSnapshot {
     snapshot: Snapshot,
@@ -10,28 +10,32 @@ pub struct CapturedSnapshot {
 }
 
 impl CapturedSnapshot {
+    /// Creates a captured snapshot record from pixels and output path.
     #[must_use]
-    pub fn new(snapshot: Snapshot, path: PathBuf) -> Self {
+    pub const fn new(snapshot: Snapshot, path: PathBuf) -> Self {
         Self { snapshot, path }
     }
 
+    /// Returns the captured pixels.
     #[must_use]
-    pub fn snapshot(&self) -> &Snapshot {
+    pub const fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
 
+    /// Returns the path where the snapshot was written.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Splits the captured snapshot into pixels and output path.
     #[must_use]
     pub fn into_parts(self) -> (Snapshot, PathBuf) {
         (self.snapshot, self.path)
     }
 }
 
-/// Centralized artifact output helper for WaterUI tests.
+/// Centralized artifact output helper for `WaterUI` tests.
 #[derive(Debug, Clone)]
 pub struct TestArtifacts {
     root: PathBuf,
@@ -64,6 +68,10 @@ impl TestArtifacts {
     }
 
     /// Saves one snapshot and returns both the pixels and canonical artifact path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the PNG cannot be written to the artifact directory.
     pub fn capture_snapshot(
         &self,
         case: impl AsRef<str>,
@@ -77,7 +85,7 @@ impl TestArtifacts {
         CapturedSnapshot::new(snapshot, path)
     }
 
-    /// Saves one snapshot using WaterUI's canonical artifact layout.
+    /// Saves one snapshot using `WaterUI`'s canonical artifact layout.
     pub fn save_snapshot(
         &self,
         case: impl AsRef<str>,
@@ -90,10 +98,11 @@ impl TestArtifacts {
     }
 }
 
-/// Returns the global artifact root used by WaterUI tests.
+/// Returns the global artifact root used by `WaterUI` tests.
 #[must_use]
 pub fn artifact_root() -> PathBuf {
-    std::env::var_os("WATERUI_TEST_ARTIFACTS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("waterui-testing-artifacts"))
+    std::env::var_os("WATERUI_TEST_ARTIFACTS_DIR").map_or_else(
+        || std::env::temp_dir().join("waterui-testing-artifacts"),
+        PathBuf::from,
+    )
 }

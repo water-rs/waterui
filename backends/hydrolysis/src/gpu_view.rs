@@ -67,15 +67,15 @@ where
             self.needs_rebuild = false;
         }
 
-        renderer.render_scene_to_surface(
-            frame.device,
-            frame.queue,
-            &frame.view,
-            frame.format,
-            frame.width,
-            frame.height,
-            vello::peniko::Color::TRANSPARENT,
-        );
+        renderer.render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
+            device: frame.device,
+            queue: frame.queue,
+            view: &frame.view,
+            format: frame.format,
+            width: frame.width,
+            height: frame.height,
+            base_color: vello::peniko::Color::TRANSPARENT,
+        });
         let next_rebuild = renderer.take_rebuild_request();
         renderer.clear_frame_resources();
 

@@ -124,7 +124,7 @@ fn measure_view_dimensions_with_proposal_with_budget(
     remaining: usize,
 ) -> ViewDimensions {
     assert!(
-        !(remaining == 0),
+        (remaining != 0),
         "hydrolysis view measurement exceeded recursion budget for {}",
         view.name()
     );
@@ -918,8 +918,12 @@ pub(crate) fn update_table_slot_visible_cell_widths(
     state: &mut HydroState,
     env: &Environment,
 ) {
-    for column_index in col_window.start..col_window.end {
-        let column = &columns[column_index];
+    for (column_index, column) in columns
+        .iter()
+        .enumerate()
+        .take(col_window.end)
+        .skip(col_window.start)
+    {
         let rows = column.rows();
         for row_index in row_window.start..row_window.end {
             if let Some(cell) = rows.get_view(row_index) {

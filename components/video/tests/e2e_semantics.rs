@@ -1,3 +1,5 @@
+//! End-to-end semantic coverage for `WaterUI` video controls.
+
 use std::time::Duration;
 
 use waterui::ViewExt as _;

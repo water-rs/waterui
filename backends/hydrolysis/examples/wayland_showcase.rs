@@ -111,7 +111,7 @@ fn main_view() -> impl View {
 
 fn app() -> App {
     let env = Environment::new();
-    let mut window = Window::new("Hydrolysis Wayland Showcase", main_view)
+    let window = Window::new("Hydrolysis Wayland Showcase", main_view)
         .resizable(true)
         .background(Color::srgb_hex("#EEF2FF"));
     window
