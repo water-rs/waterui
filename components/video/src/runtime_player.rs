@@ -1049,7 +1049,9 @@ fn picture_in_picture_button(request: &Binding<u64>) -> impl View + use<> {
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
-    {}
+    {
+        let _ = request;
+    }
 }
 
 fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl View {
