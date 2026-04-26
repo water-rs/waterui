@@ -925,7 +925,7 @@ mod winit_impl {
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     assert!(
-                        !(!scale_factor.is_finite() || *scale_factor <= 0.0),
+                        scale_factor.is_finite() && *scale_factor > 0.0,
                         "hydrolysis winit backend received invalid scale factor {scale_factor}"
                     );
                     let size = self.window.inner_size();
@@ -1012,7 +1012,7 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::Rotation {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
-                        delta: *delta as f32,
+                        delta: *delta,
                         phase: (*phase).into(),
                     });
                 }
@@ -1020,16 +1020,16 @@ mod winit_impl {
                     self.modifiers = modifiers.state().into();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
-                    if event.state == ElementState::Pressed {
-                        if let Some(text) = keyboard_text_payload(event) {
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::input_raw",
-                                event = "keyboard_text",
-                                text = text.as_str(),
-                                "winit raw input event"
-                            );
-                            self.pending_events.push(InputEvent::TextInput { text });
-                        }
+                    if event.state == ElementState::Pressed
+                        && let Some(text) = keyboard_text_payload(event)
+                    {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "keyboard_text",
+                            text = text.as_str(),
+                            "winit raw input event"
+                        );
+                        self.pending_events.push(InputEvent::TextInput { text });
                     }
                     tracing::trace!(
                         target: "waterui::hydrolysis::input_raw",
@@ -1086,7 +1086,7 @@ mod winit_impl {
 
     fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
         assert!(
-            !(!scale_factor.is_finite() || scale_factor <= 0.0),
+            scale_factor.is_finite() && scale_factor > 0.0,
             "hydrolysis winit backend received invalid scale factor {scale_factor}"
         );
         let logical = position.to_logical::<f64>(scale_factor);
@@ -1095,7 +1095,7 @@ mod winit_impl {
 
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
         assert!(
-            !(!scale_factor.is_finite() || scale_factor <= 0.0),
+            scale_factor.is_finite() && scale_factor > 0.0,
             "hydrolysis winit backend received invalid scale factor {scale_factor}"
         );
         match delta {
@@ -1190,7 +1190,7 @@ mod winit_impl {
             self.window.set_ime_purpose(purpose);
             let scale_factor = self.window.scale_factor();
             assert!(
-                !(!scale_factor.is_finite() || scale_factor <= 0.0),
+                scale_factor.is_finite() && scale_factor > 0.0,
                 "hydrolysis winit backend received invalid scale factor {scale_factor}"
             );
             let cursor_origin =
@@ -1298,6 +1298,8 @@ mod winit_impl {
         }
     }
 
+    pub use WinitWindow as ExportedWinitWindow;
+
     #[cfg(test)]
     mod tests {
         use winit::dpi::PhysicalPosition;
@@ -1340,8 +1342,6 @@ mod winit_impl {
             assert!(result.is_err());
         }
     }
-
-    pub use WinitWindow as ExportedWinitWindow;
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]

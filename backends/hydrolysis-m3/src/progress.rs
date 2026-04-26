@@ -7,7 +7,7 @@ use crate::dimensions::{
 use crate::{Brush, DrawContext, ProgressMetrics};
 use waterui::component::progress::ProgressStyle;
 
-pub(crate) fn metrics(style: ProgressStyle) -> ProgressMetrics {
+pub fn metrics(style: ProgressStyle) -> ProgressMetrics {
     match style {
         ProgressStyle::Linear => ProgressMetrics::linear(
             PROGRESS_LINEAR_LABEL_HEIGHT,
@@ -22,15 +22,15 @@ pub(crate) fn metrics(style: ProgressStyle) -> ProgressMetrics {
     }
 }
 
-pub(crate) fn draw_linear_track(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
+pub fn draw_linear_track(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
     draw.fill_rounded_rect(bounds, 4.0.into(), &Brush::from(OUTLINE_SUBTLE));
 }
 
-pub(crate) fn draw_linear_fill(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
+pub fn draw_linear_fill(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
     draw.fill_rounded_rect(bounds, 4.0.into(), &Brush::from(ACCENT_FILL));
 }
 
-pub(crate) fn draw_circular_track(
+pub fn draw_circular_track(
     draw: &mut dyn DrawContext,
     center: vello::kurbo::Point,
     radius: f64,
@@ -39,10 +39,6 @@ pub(crate) fn draw_circular_track(
     draw.stroke_circle(center, radius, &Brush::from(OUTLINE_SUBTLE), width);
 }
 
-pub(crate) fn draw_circular_fill(
-    draw: &mut dyn DrawContext,
-    path: &vello::kurbo::BezPath,
-    width: f64,
-) {
+pub fn draw_circular_fill(draw: &mut dyn DrawContext, path: &vello::kurbo::BezPath, width: f64) {
     draw.stroke_path(path, &Brush::from(ACCENT_FILL), width);
 }

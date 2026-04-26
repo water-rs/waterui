@@ -8,7 +8,6 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use nami::Signal;
 use waterui::navigation::tab::{TabPosition, Tabs};
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};

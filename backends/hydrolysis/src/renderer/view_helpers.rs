@@ -33,7 +33,7 @@ pub(crate) fn flatten_environment_metadata_owned(
 
 fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
     assert!(
-        !(remaining == 0),
+        (remaining != 0),
         "hydrolysis gesture group identity extraction exceeded recursion budget for {}",
         view.name()
     );
@@ -46,7 +46,7 @@ fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize
     view.stable_ptr() as usize
 }
 
-pub(crate) fn passthrough_content<'a>(view: &'a AnyView) -> Option<&'a AnyView> {
+pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     macro_rules! passthrough_metadata_content {
         ($($ty:ty),+ $(,)?) => {
             $(
@@ -135,7 +135,7 @@ fn normalize_layout_view_with_budget(
     remaining: usize,
 ) -> AnyView {
     assert!(
-        !(remaining == 0),
+        (remaining != 0),
         "hydrolysis layout normalization exceeded recursion budget for {}",
         view.name()
     );
@@ -390,7 +390,7 @@ pub(crate) fn path_commands_to_path(
             }
             PathCommand::LineTo { x, y } => {
                 assert!(
-                    !(!has_current),
+                    has_current,
                     "PathCommand::LineTo requires an active current point"
                 );
                 path.line_to(vello::kurbo::Point::new(
@@ -400,7 +400,7 @@ pub(crate) fn path_commands_to_path(
             }
             PathCommand::QuadTo { cx, cy, x, y } => {
                 assert!(
-                    !(!has_current),
+                    has_current,
                     "PathCommand::QuadTo requires an active current point"
                 );
                 path.quad_to(
@@ -417,7 +417,7 @@ pub(crate) fn path_commands_to_path(
                 y,
             } => {
                 assert!(
-                    !(!has_current),
+                    has_current,
                     "PathCommand::CubicTo requires an active current point"
                 );
                 path.curve_to(
@@ -575,41 +575,4 @@ pub(crate) fn circle_arc_path(
         ));
     }
     path
-}
-
-fn text_cursor_area_from_layout(
-    text_bounds: vello::kurbo::Rect,
-    layout: &parley::Layout<[u8; 4]>,
-    max_lines: Option<usize>,
-    fallback_line_height: f64,
-) -> vello::kurbo::Rect {
-    let left = text_bounds.x0;
-    let right = text_bounds.x1.max(left + 1.0);
-    let top = text_bounds.y0;
-    let bottom = text_bounds.y1.max(top + 1.0);
-    if layout.is_empty() {
-        let available_height = bottom - top;
-        let line_height = fallback_line_height.clamp(1.0, available_height);
-        let y0 = top + ((available_height - line_height) * 0.5).max(0.0);
-        return vello::kurbo::Rect::new(left, y0, left + 1.0, (y0 + line_height).min(bottom));
-    }
-
-    let mut caret_x = left;
-    let mut caret_top = top;
-    let mut caret_bottom = (top + 1.0).min(bottom);
-    for (index, line) in layout.lines().enumerate() {
-        if max_lines.is_some_and(|limit| index >= limit) {
-            break;
-        }
-        let metrics = line.metrics();
-        caret_x = left + f64::from(metrics.offset + metrics.advance);
-        let line_top = f64::from(metrics.baseline - metrics.ascent);
-        let line_bottom = f64::from(metrics.baseline + metrics.descent);
-        caret_top = top + line_top;
-        caret_bottom = top + line_bottom.max(line_top + 1.0);
-    }
-    let caret_x = caret_x.clamp(left, right - 1.0);
-    let caret_top = caret_top.clamp(top, bottom - 1.0);
-    let caret_bottom = caret_bottom.clamp(caret_top + 1.0, bottom);
-    vello::kurbo::Rect::new(caret_x, caret_top, caret_x + 1.0, caret_bottom)
 }
