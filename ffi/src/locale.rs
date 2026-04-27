@@ -258,7 +258,13 @@ mod tests {
         unsafe {
             waterui_env_install_locale(env_ptr, WuiLocale::EnUs);
             waterui_env_install_locale(env_ptr, WuiLocale::EnGb);
-            assert_eq!(regional::current_settings().locale_tag(), "en-GB");
+            let settings = regional::current_settings();
+            let locale = settings.locale();
+            assert_eq!(locale.language.as_str(), "en");
+            assert_eq!(
+                locale.region.as_ref().map(|region| region.as_str()),
+                Some("GB")
+            );
 
             drop(Box::from_raw(env_ptr));
         }
