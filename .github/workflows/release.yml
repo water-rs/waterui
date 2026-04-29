@@ -14,13 +14,13 @@ jobs:
   release-plz:
     name: Release
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     outputs:
       cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
