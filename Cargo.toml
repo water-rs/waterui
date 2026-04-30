@@ -24,7 +24,7 @@ exclude = [
   ".claude",
   "*.png",
   "kit",
-  "utils/nami",
+  "vendor/nami",
 ]
 
 
@@ -78,8 +78,8 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 executor-core = { version = "0.7.1", features = ["std"]}
 futures = "0.3"
 # Local vendored dependency overrides via git submodule.
-nami = { version = "0.10.1", path = "utils/nami" }
-nami-core = { version = "0.3.2", path = "utils/nami/core" }
+nami = { version = "0.10.1", path = "vendor/nami" }
+nami-core = { version = "0.3.2", path = "vendor/nami/core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.18"
