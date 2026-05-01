@@ -1,0 +1,194 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0](https://github.com/water-rs/waterui/releases/tag/hydrolysis-v0.1.0) - 2026-05-01
+
+### Added
+
+- deepen semantic label integration
+- add popup menu surfaces to hydrolysis
+- unify label semantics and menu runtimes
+- unify label semantics and menu surfaces
+- *(runtime)* unify gesture semantics and picker backends
+- *(form)* add picker radio group parity
+- *(testing)* add waterui::test macro and a11y-first ui test runtime
+- *(hydrolysis)* finalize accessibility migration and wayland smoke verification
+- *(hydrolysis)* add image accessibility for gpu and scene views
+- *(hydrolysis)* extend list/table and icon accessibility semantics
+- *(hydrolysis)* implement menu picker option selection and Str caching
+- *(a11y)* add hidden/children/state metadata and suppress duplicate child semantics
+- *(hydrolysis)* expand accesskit semantics for text and composite views
+- *(hydrolysis)* wire accesskit accessibility tree and actions
+- *(hydrolysis)* add HydrolysisExt and HydrolysisGpuView wrapper
+- *(hydrolysis)* install offscreen ViewRenderer for environment capture
+- *(scene2d)* add SceneView pipeline and migrate canvas from direct vello
+- *(hydrolysis)* make navigation stack rebuildable with destination builders
+- *(hydrolysis)* add advanced handlers for navigation tabs list table and view effect
+- *(hydrolysis)* implement winit IME event flow for text inputs
+- *(hydrolysis)* add gesture observer tap handling
+- *(hydrolysis)* implement focused and hittable metadata semantics
+- *(hydrolysis)* close input/event loop and add wayland smoke docker runner
+- *(hydrolysis)* implement scroll view state and wheel input routing
+- *(hydrolysis)* add animation controller for toggle and transform metadata
+- *(hydrolysis)* wire reactive rebuild loop through ViewBuilder roots
+- *(hydrolysis)* add native control handlers with shared pointer targets
+- *(hydrolysis)* use parley intrinsic text measurement in layout
+- *(hydrolysis)* route pointer clicks to button actions
+- *(hydrolysis)* register SystemIcon native handler
+- *(hydrolysis)* add GpuSurface native handler
+- *(hydrolysis)* render Str and TextConfig via parley + vello
+- *(hydrolysis)* add native handlers for button and dynamic
+- *(hydrolysis)* switch AppliedFilter compositing to pure GPU path
+- *(hydrolysis)* add core primitive and metadata handlers
+- *(hydrolysis)* add platform abstraction and app runner skeleton
+- *(hydrolysis)* add core renderer and context foundation
+- integrate assets, media, and runtime updates
+- introduce GPU texture filtering utility and image example, refactor media components
+- *(README)* update header layout and add badges for improved visibility and branding
+- *(README)* add WaterUI logo and update header for improved branding
+- Enhance window management and hot reload functionality
+- Refactor rendering logic
+- Revamp README and enhance Android hot reload functionality
+- Enhance local development mode for WaterUI
+- enhance Dockerfile and documentation for improved build and configuration
+- *(android)* enhance Java environment detection for macOS by including Android Studio's bundled JBR
+- add initial form component file
+- Add watcher functionality for AnyViews and related types
+- *(cli)* enhance Android backend integration with improved logging and automation
+
+### Fixed
+
+- *(hydrolysis)* replay cached Dynamic side effects on rebuild
+- *(hydrolysis)* add scroll semantics and remove list/table a11y duplication
+- *(hydrolysis)* support bgra surfaces and stabilize wayland smoke
+- update documentation links in README.md
+- remove outdated contribution guidelines from README
+- update README and Cargo.toml files to specify README.md for all components
+- add placeholder crate to work around missing workspace member in old commit; update waterui version in README
+- update documentation to reflect Android View terminology for consistency
+- correct spelling errors and improve comments across the codebase
+- *(dependencies)* replace log with tracing for improved logging consistency
+
+### Other
+
+- Fix CI dependency and WaterKit lint blockers
+- Fix Hydrolysis and testing strict lints
+- Prepare dev for release automation
+- Allow Hydrolysis testing adapters in test host
+- Fix Hydrolysis CI offscreen test adapter
+- Fix CI fontconfig deps and README doctests
+- Fix Android tooling and strict linting
+- Clean dev CI and example builds
+- Fix Android packaging toolchain resolution
+- Clean reactive view composition anti-patterns
+- Expand hydrolysis UI testing coverage
+- Add view builder macros and migrate branchy views
+- Tighten reactive text updates and remove redundant AnyView
+- Restore extractor-based testing actions
+- refactor handler state extraction
+- Add date picker testing support
+- split hydrolysis renderer architecture
+- snapshot in-progress canonical changes
+- Implement testing roadmap coverage and CI reporting
+- Fix hydrolysis testing regressions
+- Use hydrolysis headless runtime in testing
+- Refactor split navigation around stable selection ids
+- Checkpoint current WaterUI changes
+- Re-setup hydrolysis gpu surfaces on format changes
+- Fix local state rebuild semantics
+- Persist hydrolysis effect and scene runtimes
+- Persist hydrolysis applied filters
+- Fix async filter setup handling
+- bridge view dimensions across backends
+- rewrite alignment guides as wrapper views
+- add alignment guides and paragraph alignment
+- checkpoint local workspace changes
+- Fix filter setup, sizing, and dynamic-range handling
+- checkpoint all in-progress workspace changes
+- checkpoint all in-progress workspace changes
+- fix probe_accessibility_runtime call path in winit runner
+- prioritize hit targets by paint order over tree depth
+- gate accesskit on runtime bus and fix slider edge drag hitbox
+- lock slider drag and switch caret to fade animation
+- stop rebuild-loop pointer replay and stabilize slider drag
+- handle accessibility root focus without panic
+- prioritize gesture hit targets by depth and order
+- modularize gesture engine and sync layout-coupled input
+- fix logical hit/input coordinates and text input caret state
+- keep pointer input in physical coordinate space
+- fast-fail unsupported accessibility actions
+- map winit pointer coordinates to logical space
+- pin tracing-subscriber dependency locally
+- initialize tracing subscriber from RUST_LOG
+- keep accessibility node ids monotonic across frames
+- remove temporary accesskit action panic
+- debug trap accesskit action delivery
+- drop tracing subscriber bootstrap for runner
+- pin tracing-subscriber dependency locally
+- initialize tracing subscriber from RUST_LOG
+- fast-fail on unmapped accessibility action targets
+- accept accessibility actions from non-root trees
+- restore control hit testing and text input accessibility focus
+- fix text input focus order and render text caret
+- align hit testing order with UIKit depth priority
+- use spring animation for default toggle transitions
+- keep dynamic intrinsic cache across frames
+- fix pointer dispatch and winit scale/input hit mapping
+- fix control hit regions and slider pointer mapping
+- remove progress intrinsic dependency on dynamic labels
+- remove unsynced gpu surface hdr path
+- normalize slider labels before intrinsic measure
+- drop unrelated gpu-surface HDR changes from text fix
+- support waterui_text::Text in intrinsic measurement
+- wire character key presses into text input
+- implement non-tap gesture pipeline on winit
+- add winit input mapping regression tests
+- add render phase diagnostics instrumentation
+- align winit pointer and wheel coordinates with hit-test space
+- implement SubView for HydrolysisGpuView and align async setup
+- add reactive redraw pipeline and unified resource drawing
+- Implement Animatable pipeline and native filtered blur hooks
+- add reactive redraw pipeline and unified resource drawing
+- virtualize lazy container list and table rendering
+- Fix hydrolysis input hit-testing and dynamic intrinsic layout
+- *(hydrolysis)* remove ffmpeg and dav1d deps from wayland smoke image
+- commit pending workspace changes on dev
+- *(str)* migrate chart, drag-drop, and ime paths to Str
+- *(hydrolysis)* move navigation view a11y registration out of render
+- land style/transition/line-limit renderer support
+- complete TextField IME preedit/commit path
+- align list intrinsic with normalized layout path
+- make tabs intrinsic stable across pages
+- replace fixed native intrinsic sizing
+- fix intrinsic text/empty views and native table hook
+- *(hydrolysis)* add HydrolysisExt offscreen regression
+- *(hydrolysis)* format animation and scroll helpers
+- *(hydrolysis)* unify kurbo to single graph instance
+- *(hydrolysis)* migrate to crates.io linebender deps
+- *(hydrolysis)* remove legacy node/render command skeleton
+- Remove on_demand and add needs_redraw
+- Enhance video, chart, and locale platform support
+- Remove hot reload functionality in favor of preview system
+- Move static assets to R2 CDN and add PID-based window capture
+- Add preview system and refactor core APIs
+- Refactor color module to use waterui_graphics
+- Remove Hydrolysis backend components and related infrastructure
+- update licenses to include Apache 2.0 and MIT, and update README badge
+- Release 0.2.0
+- Bump waterui version to 0.2 in documentation across multiple components
+- Add waterui-color, waterui-str, and waterui-url crates with comprehensive documentation
+- Remove TUI backend and associated files
+- Enhance documentation and improve code clarity across multiple modules
+- Refactor and clean up code across multiple components
+- Update README and FFI components for consistency and clarity
+- Remove AGENT.md and enhance FFI bindings for events and gestures
+- Remove terminal backend mention from README.md
+- Update documentation and add CMake checks for Apple builds
+- Make Suspense/hot reload use thread-safe executor
+- update FFI header regeneration instructions and enhance README content
