@@ -83,22 +83,22 @@ nami-core = { version = "0.3.2", path = "vendor/nami/core" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.18"
-waterui-core = { version = "0.2.0", path = "core" }
-waterui-str = { version = "0.2.1", path = "utils/str" }
-waterui-url = { version = "0.2.1", path = "utils/url" }
-waterui-text = { version = "0.2.2", path = "components/text" }
-waterui-media = { version = "0.2.1", path = "components/media" }
+waterui-core = { version = "0.2.1", path = "core" }
+waterui-str = { version = "0.2.2", path = "utils/str" }
+waterui-url = { version = "0.2.2", path = "utils/url" }
+waterui-text = { version = "0.2.3", path = "components/text" }
+waterui-media = { version = "0.2.2", path = "components/media" }
 waterui-image = { version = "0.2.1", path = "components/image" }
 waterui-video = { version = "0.2.1", path = "components/video" }
-waterui-form = { version = "0.2.1", path = "components/form" }
-waterui-controls = { version = "0.2.1", path = "components/controls"}
-waterui-graphics = { version = "0.2.1", path = "components/graphics" }
+waterui-form = { version = "0.2.2", path = "components/form" }
+waterui-controls = { version = "0.2.2", path = "components/controls"}
+waterui-graphics = { version = "0.2.2", path = "components/graphics" }
 waterui-canvas = { version = "0.1.0", path = "components/canvas" }
 waterui-shape = { version = "0.1.0", path = "components/shape" }
 waterui-svg = { version = "0.1.0", path = "components/svg" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
-waterui-layout = { version = "0.2.2", path = "components/layout" }
-waterui-navigation = { version = "0.2.1", path = "components/navigation" }
+waterui-layout = { version = "0.2.3", path = "components/layout" }
+waterui-navigation = { version = "0.2.2", path = "components/navigation" }
 waterui-webview = { version = "0.2.0", path = "components/webview" }
 waterui-icon = { version = "0.2.0", path = "components/icon" }
 waterui-icons-sf-symbol = { version = "0.1.0", path = "icon-packs/sf-symbol" }
@@ -120,8 +120,8 @@ waterkit-codec = { version = "0.1.0", path = "kit/codec", default-features = fal
 waterkit-video = { version = "0.1.0", path = "kit/video" }
 waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
-filtrate = { version = "0.1.0", path = "utils/filtrate" }
-filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
+filtrate = { version = "0.1.1", path = "utils/filtrate" }
+filtrate-core = { version = "0.1.1", path = "utils/filtrate-core" }
 waterui-barcode = { version = "0.1.0", path = "components/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-chart = { version = "0.1.0", path = "components/chart" }
@@ -135,7 +135,7 @@ waterui = { version = "0.2.1", path = "." }
 waterui-build-support = { version = "0.1.0", path = "utils/build-support" }
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis-m3" }
 native-executor = { version = "0.7.0" }
-waterui-macros = { version = "0.2.1", path = "macros" }
+waterui-macros = { version = "0.2.2", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27"
 encase = { version = "0.10", features = ["glam"] }
