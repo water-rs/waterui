@@ -7,6 +7,255 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/water-rs/waterui/compare/cli-v0.1.3...cli-v0.1.4) - 2026-05-01
+
+### Added
+
+- unify label semantics and menu runtimes
+- unify label semantics and menu surfaces
+- continue deep review fixes and ffi fast-fail cleanup
+- ship gpu on-demand rendering, animation updates, and cli/runtime sync
+- integrate assets, media, and runtime updates
+- *(cli)* add confirmed recursive clean mode
+- *(preview)* Add water preview command for view rendering
+- Support keyboard command on macOS
+- Implement Audio Visualizer with Microphone Input and CLI Permission Support
+- *(icons)* Refactor icon system with extensible CLI architecture
+- Introduce `waterui-canvas`, `waterui-shape`, and `waterui-svg` crates, refactor graphics components, and integrate Vello for advanced rendering.
+- enhance font management and color handling across platforms
+- font bundling system and download icons at build time
+- enhance error reporting in command execution and add target triple retrieval
+- add Kotlin and Java support to Android toolchain and diagnostics
+- Add support for streaming native platform logs in run options and log streaming
+- add macOS local device gesture support and screenshot functionality
+- Implement screenshot capture functionality for iOS and Android devices
+- *(android)* enhance log streaming to capture panic information
+- Enhance panic handling and logging in macOS device management
+- Enhance macOS crash detection and logging
+- *(cli)* implement crash debugging output and enhance logging
+- *(shape)* Introduce shape system for view clipping and filling
+- add GTK4 Color and LazyContainer components, and update dependencies for GPU support
+- Introduce TargetPlatform enum and migrate backends
+- add GTK backend support to WaterUI CLI
+- Enhance window management and hot reload functionality
+- *(media-picker)* add media picker example with photo, video, and live photo selection
+- Add mac screenshot image and improve markdown example
+- *(cli)* enable hot reload by default for water run
+- Enhance panic logging and error handling in Apple backends
+- enhance logging levels for Apple platforms and improve app structure
+- *(examples)* add gesture and list examples with corresponding templates and assets
+- *(android)* streamline APK installation process and add CMake toolchain wrapper for ABI support
+- *(android)* switch from ComponentActivity to AppCompatActivity and disable Compose
+- *(android)* implement multi-ABI packaging support and optimize build configurations
+- *(android)* add support for multiple architectures and clean jniLibs
+- Rewrite CLI
+- Add project creation with git initialization and new playground example
+- Update dependencies and enhance backend configurations
+- Implement hot reload server and connection handling
+- Enhance Apple platform support with new platform kinds and SDKs
+- Add initial Android and Apple project templates
+- enhance Android and Apple platform support with new configurations and utility functions
+- update platform implementations for Android and Apple, improve function signatures and add architecture handling
+- enhance platform support and add new build options for Android and Apple
+- enhance Android and Apple device support with new functionalities
+- enhance Android and Apple platform support, add Homebrew toolchain manager
+- *(android)* refactor backend and platform modules
+- Enhance async support and device scanning in backend implementations
+- Refactor toolchain error handling and enhance hot reload configuration
+- Implement report generation for various command results
+- Introduce async runtime and enhance file watcher functionality
+- Revamp README and enhance Android hot reload functionality
+- Enhance video component functionality and interrupt handling
+- Enhance Android packaging and hot reload functionality
+- Introduce permission management for playground projects
+- Add CLAUDE.md for project guidance and build instructions
+- Implement interruptible command execution and secure metadata handling
+- Enhance panic reporting and logging in hot reload system
+- Introduce comprehensive logging and panic reporting plan
+- Enhance debugging and layout system in Apple backend
+- Implement safe area handling in layout system
+- Enhance local development mode for WaterUI
+- Rename Android library to libwaterui_app.so
+- add Gemini CLI assistant documentation and subagent manager script
+- add Git commit hash to build output and update dependencies
+- enhance Dockerfile and documentation for improved build and configuration
+- enhance Android platform support with target triples and improve artifact stripping
+- integrate hyper and tungstenite for hot reload server functionality
+- *(run)* implement hot reload support and ensure cdylib generation
+- *(android)* enhance NDK toolchain checks and environment configuration
+- *(logging)* add log filter support for hot reload and CLI
+- *(logging)* enhance tracing and panic forwarding for improved log management
+- *(hot_reload)* implement hot reload support for FFI and backend configurations
+- update dependencies to use git sources and improve error handling in CLI
+- *(android)* enhance Java environment detection for macOS by including Android Studio's bundled JBR
+- add debugging workflow checklist and enhance non-interactive terminal handling
+- Add watcher functionality for AnyViews and related types
+- *(apple)* enhance simulator boot logic and add state checking
+- *(device)* add platform filtering for device listing
+- document hot reload support for Android, Apple, Web, and TUI backends
+- add TUI platform support and enhance hot reload functionality
+- *(hot-reload)* enhance hot reload configuration and update related commands
+- Introduce build command for native artifacts
+- *(cli)* enhance Android backend integration with improved logging and automation
+- enhance Android backend integration and logging capabilities
+- *(cli)* add backend list command
+- *(cli)* support backend upgrade with ffi checks
+- *(cli)* add backend management command
+- *(cli)* use local android backend in dev
+- Update Android project structure and dependencies for improved backend integration
+- Implement hot reload functionality with configurable environment
+
+### Fixed
+
+- fix playground cache layout and cli cache bugs
+- fix cli review regressions
+- *(preview)* harden symbol resolution and render error handling
+- *(android)* keep emulator alive and prefer Vulkan shared context
+- *(android)* bundle libc++_shared for Rust JNI apps
+- *(log)* Change log streaming level to default and increase timeout duration
+- enhance CLI launch command handling and update environment variable documentation
+- update android backend dependency version to 0.2.0
+- update minimum version for Swift package reference to 0.2.0
+- update repository URLs in template files for Apple and Android backends
+- update README and Cargo.toml files to specify README.md for all components
+- update waterui version to 0.2 in templates and documentation
+- format function parameters for better readability in tests
+- update dependencies and improve path handling in template context
+- improve code formatting and readability across multiple files
+- correct spelling errors and improve comments across the codebase
+- update llvm-strip command to preserve dynamic symbol table
+- improve interrupt handling in wait_for_interrupt function
+- remove hot reload import for non-WASM targets
+- clean up imports and improve command output messages in Android and Apple device modules
+- *(android)* add INTERNET permission to AndroidManifest for network access
+- *(dependencies)* replace log with tracing for improved logging consistency
+
+### Other
+
+- Prepare release baseline versions
+- Sync Android backend scaffold ref
+- Sync Apple backend scaffold ref
+- Verify Android host tools after doctor fixes
+- Prepare dev for release automation
+- Remove WaterKit fs from release crates
+- Sync Apple backend scaffold ref
+- Fix preview dylib platform matching
+- Fix CI coverage and preview dylib targets
+- Fix Android tooling and strict linting
+- Clean dev CI and example builds
+- Fix Android packaging toolchain resolution
+- Fix Apple simulator packaging build settings
+- Optimize preview wrapper linking
+- expose support app render timings
+- trim crate-type override and persist support logs
+- trim dylib debug info and init support tracing
+- move rust stdlib rpath to build and drop runtime dylib patching
+- use local-path render in CLI and unify HasDylib cache truth
+- use local dylib path and extend support-app idle lifetime
+- enforce dev dynamic-linking and split runtime wrapper crates
+- Fix remaining preview support app workarounds
+- Optimize preview support app launch and hot path
+- Stabilize preview runtime fingerprint identity
+- Align scaffold backends and versions to build refs
+- Fix CLI dev checkout mode detection
+- Refactor waterui-cli lint-heavy command flows
+- *(cli)* type-safe template scaffolding
+- Refactor CLI managed build cache
+- snapshot in-progress canonical changes
+- remove legacy asset pipeline
+- add clean flag for global playground cache
+- unify cache and support app helpers
+- Remove cached font archives after extraction
+- Fix recursive clean cache discovery
+- Checkpoint current WaterUI changes
+- Refactor asset and icon build helpers
+- checkpoint all in-progress workspace changes
+- Fix form text-field freeze and add cross-distro Linux doctor checks
+- Bump dependency versions across workspace
+- checkpoint all in-progress workspace changes
+- include waterui dependency in generated hydrolysis backend crates
+- refresh stale playground hydrolysis scaffolding when deps drift
+- implement app/playground backend orchestration
+- *(cli)* remove obsolete dav1d toolchain integration
+- commit pending workspace changes on dev
+- enforce fast-fail rules and remove legacy fallback paths
+- commit full review and inspector/runtime updates
+- harden fast-fail paths and runtime compatibility
+- Auto-install Meson on macOS when cargo build fails
+- Fix GTK main thread executor and video renderer
+- Enhance video, chart, and locale platform support
+- Refactor MediaPicker and add reminders example
+- *(cli)* use async fs checks in recursive clean
+- Add smart asset management system with asset! macro
+- Remove hot reload functionality in favor of preview system
+- Add Android JNI FFI support and improve CLI process management
+- Move static assets to R2 CDN and add PID-based window capture
+- Enhance documentation and examples for reactive patterns in WaterUI, including new guidelines for bindings and real-time updates
+- Add sccache support for improved build performance and caching
+- Refactor preview app communication and remove unresponsive app handling
+- Enhance preview app communication and error handling
+- Refactor code for improved readability and consistency
+- anyviews watch FFI + preview/gtk/window improvements
+- Fix ZStack stretch behavior
+- Integrate preview TCP server into view
+- Add preview system and refactor core APIs
+- CLI improvements and misc updates
+- simplify `text!` macro calls by removing the `waterui::` prefix.
+- rename GTK backend to GTK4
+- release
+- Release 0.2.0
+- release
+- improve code readability and consistency across multiple files
+- Refactor layout tests to use approximate equality for floating-point comparisons
+- Add waterui-color, waterui-str, and waterui-url crates with comprehensive documentation
+- streamline media picker and loading state management
+- Refactor Native Component and Improve Error Handling
+- Refactor Android device run logic and update Gradle configurations for improved build process
+- Add log level management for device log streaming across platforms
+- Enhance Android and Apple backends with permission management and Gradle build improvements
+- Add AndroidEmulator device and defer launch to CLI
+- Embed CLI commit hash and add water dir management
+- Add Android SDK path helpers and use adb_path
+- Switch zenwave/skyzen to crates.io versions
+- Add playground backend paths and target dir support
+- Update submodules and enhance macOS launcher UI
+- Implement CLI commands for WaterUI: build, clean, create, devices, doctor, package, and run
+- Enhance documentation and improve code clarity across multiple modules
+- Refactor backend trait and implement new build system
+- WTF...Let's rewrite it!
+- clean up and enhance project structure and backend definitions
+- Refactor CLI toolchain and installation modules
+- Refactor and clean up code across multiple components
+- Refactor layout components and improve documentation
+- Simplify WebSocket close handling and clean up code formatting
+- Update workspace configuration and dependencies for examples
+- Clean up hot reload session logging and initialization
+- Simplify hot reload configuration for Android and Apple devices
+- Update hot reload configuration and enhance dependencies
+- Remove deprecated files and streamline project structure
+- Streamline playground project handling and enhance build process
+- Clean up project structure and enhance CLI functionality
+- Update backend submodules and enhance CLI device commands
+- Refactor CLI commands for device management and enhance roadmap documentation
+- Update Android backend submodule and adjust padding in template
+- Update Android backend submodule and modify build process
+- Standardize library naming for Android and Apple backends
+- Update android backend submodule and enhance clean command functionality
+- Update documentation and add CMake checks for Apple builds
+- Enhance WaterUI CLI documentation and add screenshot capture feature
+- Fix CLI to copy libc++_shared.so to jniLibs for Android builds
+- remove unused hyper and tungstenite dependencies, integrate skyzen for hot reload functionality
+- simplify hot reload library path handling and extract filename logic
+- prefer Android Studio JBR when Java missing
+- Align Android tooling and agent workflow
+- Refactor Apple backend integration and remove deprecated files
+- *(build)* streamline argument handling in build script
+- Enhance UI output handling and add terminal utilities for improved user experience
+- Improve command construction and error handling in project build and run functions
+- Refactor CLI structure and remove unused modules
+- Start to refractor WaterUI CLI...
+- Rename no_watch argument to no_hot_reload for clarity and update related function signatures
+
 ## [0.1.2](https://github.com/water-rs/waterui/compare/cli-v0.1.1...cli-v0.1.2) - 2025-12-14
 
 ### Fixed
