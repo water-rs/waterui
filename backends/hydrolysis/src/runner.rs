@@ -1016,8 +1016,12 @@ impl HeadlessRuntime {
         ));
 
         let content_builder = content.clone();
-        let window =
-            Window::new("", move || content_builder.build()).background(Color::transparent());
+        let window = Window::new(
+            "",
+            waterui_core::binding(waterui::window::WindowState::Normal),
+            move || content_builder.build(),
+        )
+        .background(Color::transparent());
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
             waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),

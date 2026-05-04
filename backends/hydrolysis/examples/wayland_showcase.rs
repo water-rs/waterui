@@ -111,9 +111,13 @@ fn main_view() -> impl View {
 
 fn app() -> App {
     let env = Environment::new();
-    let window = Window::new("Hydrolysis Wayland Showcase", main_view)
-        .resizable(true)
-        .background(Color::srgb_hex("#EEF2FF"));
+    let window = Window::new(
+        "Hydrolysis Wayland Showcase",
+        binding(waterui::window::WindowState::Normal),
+        main_view,
+    )
+    .resizable(true)
+    .background(Color::srgb_hex("#EEF2FF"));
     window
         .frame
         .set(Rect::new(Point::zero(), Size::new(1366.0, 900.0)));

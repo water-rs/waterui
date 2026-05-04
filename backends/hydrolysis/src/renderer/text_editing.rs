@@ -1281,10 +1281,13 @@ impl HydrolysisRenderer {
                     .spacing(0.0),
             )
         };
-        let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
-            .style(WindowStyle::Borderless)
-            .resizable(false)
-            .with_state(menu_state.clone());
+        let mut popup = Window::new(
+            TEXT_CONTEXT_MENU_WINDOW_TITLE,
+            menu_state.clone(),
+            popup_content,
+        )
+        .style(WindowStyle::Borderless)
+        .resizable(false);
         popup.closable = false;
         popup.frame.set(LayoutRect::new(
             LayoutPoint::new(origin.x + point.x as f32, origin.y + point.y as f32),
