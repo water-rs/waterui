@@ -19,6 +19,10 @@ bugreport*.zip
 .wrangler/
 node_modules/
 
+# Claude Code runtime artifacts (per-session, not source)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # Binary assets (hosted on assets.waterui.dev)
 *.png
 *.heic
