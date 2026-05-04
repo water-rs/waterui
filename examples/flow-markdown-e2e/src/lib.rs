@@ -188,6 +188,20 @@ fn configured_flow(
     configured
 }
 
+/// Aggregates the bindings that the document-control buttons share, so each
+/// button can inject a single `State<StreamControl>` instead of stacking many
+/// `State<Binding<T>>` parameters and matching `.state(...)` calls. See
+/// `docs/api-style.md` for when to prefer this idiom.
+#[derive(Clone)]
+struct StreamControl {
+    markdown: Binding<Str>,
+    document_index: Binding<i32>,
+    char_progress: Binding<i32>,
+    streaming: Binding<bool>,
+    stream_revision: Binding<i32>,
+    stream_cps: Binding<i32>,
+}
+
 fn main() -> impl View {
     let markdown: Binding<Str> = Binding::container(Str::from_static(""));
     let document_index = Binding::i32(0);
@@ -198,6 +212,15 @@ fn main() -> impl View {
     let animation_preset = Binding::i32(0);
     let animation_cps = Binding::i32(64);
     let token_fade_enabled = Binding::bool(true);
+
+    let control = StreamControl {
+        markdown: markdown.clone(),
+        document_index: document_index.clone(),
+        char_progress: char_progress.clone(),
+        streaming: streaming.clone(),
+        stream_revision: stream_revision.clone(),
+        stream_cps: stream_cps.clone(),
+    };
     let document_title = document_index.clone().map(current_document_title);
     let document_number = document_index
         .clone()
@@ -266,76 +289,50 @@ fn main() -> impl View {
             )
             .caption(),
             hstack((
-                button("Prev doc").action({
-                    let document_index = document_index.clone();
-                    let markdown = markdown.clone();
-                    let char_progress = char_progress.clone();
-                    let stream_revision = stream_revision.clone();
-                    let streaming = streaming.clone();
-                    move || {
-                        cancel_stream(&streaming, &stream_revision);
-                        document_index.set(document_index.get() - 1);
-                        reset_stream(&markdown, &char_progress);
-                    }
-                }),
-                button("Next doc").action({
-                    let document_index = document_index.clone();
-                    let markdown = markdown.clone();
-                    let char_progress = char_progress.clone();
-                    let stream_revision = stream_revision.clone();
-                    let streaming = streaming.clone();
-                    move || {
-                        cancel_stream(&streaming, &stream_revision);
-                        document_index.set(document_index.get() + 1);
-                        reset_stream(&markdown, &char_progress);
-                    }
-                }),
-                button("Start stream")
-                    .action({
-                        let markdown = markdown.clone();
-                        let char_progress = char_progress.clone();
-                        let stream_revision = stream_revision.clone();
-                        let streaming = streaming.clone();
-                        let document_index = document_index.clone();
-                        let stream_cps = stream_cps.clone();
-                        move || {
-                            start_character_stream(
-                                markdown.clone(),
-                                char_progress.clone(),
-                                stream_revision.clone(),
-                                streaming.clone(),
-                                document_index.clone(),
-                                stream_cps.clone(),
-                            );
-                        }
+                button("Prev doc")
+                    .action(|State(c): State<StreamControl>| {
+                        cancel_stream(&c.streaming, &c.stream_revision);
+                        c.document_index.set(c.document_index.get() - 1);
+                        reset_stream(&c.markdown, &c.char_progress);
                     })
-                    .bordered_prominent(),
-                button("Load full").action({
-                    let markdown = markdown.clone();
-                    let char_progress = char_progress.clone();
-                    let stream_revision = stream_revision.clone();
-                    let streaming = streaming.clone();
-                    let document_index = document_index.clone();
-                    move || {
-                        load_full_document(
-                            &markdown,
-                            &char_progress,
-                            &stream_revision,
-                            &streaming,
-                            document_index.get(),
+                    .state(&control),
+                button("Next doc")
+                    .action(|State(c): State<StreamControl>| {
+                        cancel_stream(&c.streaming, &c.stream_revision);
+                        c.document_index.set(c.document_index.get() + 1);
+                        reset_stream(&c.markdown, &c.char_progress);
+                    })
+                    .state(&control),
+                button("Start stream")
+                    .bordered_prominent()
+                    .action(|State(c): State<StreamControl>| {
+                        start_character_stream(
+                            c.markdown.clone(),
+                            c.char_progress.clone(),
+                            c.stream_revision.clone(),
+                            c.streaming.clone(),
+                            c.document_index.clone(),
+                            c.stream_cps.clone(),
                         );
-                    }
-                }),
-                button("Reset").action({
-                    let markdown = markdown.clone();
-                    let char_progress = char_progress.clone();
-                    let stream_revision = stream_revision.clone();
-                    let streaming = streaming.clone();
-                    move || {
-                        cancel_stream(&streaming, &stream_revision);
-                        reset_stream(&markdown, &char_progress);
-                    }
-                }),
+                    })
+                    .state(&control),
+                button("Load full")
+                    .action(|State(c): State<StreamControl>| {
+                        load_full_document(
+                            &c.markdown,
+                            &c.char_progress,
+                            &c.stream_revision,
+                            &c.streaming,
+                            c.document_index.get(),
+                        );
+                    })
+                    .state(&control),
+                button("Reset")
+                    .action(|State(c): State<StreamControl>| {
+                        cancel_stream(&c.streaming, &c.stream_revision);
+                        reset_stream(&c.markdown, &c.char_progress);
+                    })
+                    .state(&control),
             ))
             .spacing(10.0),
             text!(
