@@ -122,7 +122,7 @@ fn slider_increment_decrement_updates_value() {
 
     let mut app = mount_view(move || {
         control_shell(vstack((
-            Slider::new(0.0..=1.0, &value_for_view).label("Volume"),
+            Slider::new(&value_for_view).label("Volume"),
             waterui::text!("value:{value_for_view:.2}").foreground(Srgb::WHITE),
         )))
     });
@@ -164,7 +164,7 @@ fn slider_accessibility_role_is_slider() {
     let value_for_view = value.clone();
 
     let mut app = mount_view(move || {
-        control_shell(Slider::new(0.0..=1.0, &value_for_view).label("Exposure"))
+        control_shell(Slider::new(&value_for_view).label("Exposure"))
     });
 
     let element = app.query().role(Role::SLIDER).label("Exposure").single();
