@@ -1,6 +1,6 @@
 use core::str::FromStr;
 
-use nami::Signal;
+use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
 use super::{
@@ -22,6 +22,8 @@ pub struct Srgb {
     /// Blue component (0.0 to 1.0)
     pub blue: f32,
 }
+
+impl_constant!(Srgb);
 /// Standard black color
 pub const BLACK: Srgb = Srgb::BLACK;
 /// Standard white color
