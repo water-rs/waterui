@@ -23,6 +23,12 @@ node_modules/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 
+# Override macOS-style global ignore patterns that catch repo paths on
+# case-insensitive APFS (e.g. a user global ignoring `Icon` for Finder
+# metadata also catches our `components/icon/` directory).
+!components/icon/
+!components/icon/**
+
 # Binary assets (hosted on assets.waterui.dev)
 *.png
 *.heic
