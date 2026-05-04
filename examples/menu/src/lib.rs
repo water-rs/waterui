@@ -9,7 +9,7 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui::reactive::Binding;
+use waterui::reactive::{Binding, binding};
 use waterui::window::Window;
 
 const BLUE: Srgb = Srgb::from_hex("#2196F3");
@@ -291,9 +291,11 @@ pub fn app(env: Environment) -> App {
     let content_toolbar_status = toolbar_status.clone();
 
     App::new_with_windows(
-        [Window::new("WaterUI Menu Examples", move || {
-            main(content_toolbar_status.clone())
-        })
+        [Window::new(
+            "WaterUI Menu Examples",
+            binding(waterui::window::WindowState::Normal),
+            move || main(content_toolbar_status.clone()),
+        )
         .toolbar(window_toolbar(&toolbar_status))],
         env,
     )

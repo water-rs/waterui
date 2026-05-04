@@ -24,8 +24,13 @@ pub struct App {
 
 impl App {
     /// Create a new application with the given main content view and environment.
+    ///
+    /// The application's main window opens immediately (state is initialized
+    /// to [`WindowState::Normal`] rather than the type's `default()`, which is
+    /// `Closed`).
     pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
-        Self::new_with_windows([Window::new("WaterUI App", content)], env)
+        let state = nami::binding(crate::window::WindowState::Normal);
+        Self::new_with_windows([Window::new("WaterUI App", state, content)], env)
     }
 
     /// Create a new application with the given windows and environment.
