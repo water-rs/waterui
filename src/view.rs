@@ -101,6 +101,32 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, metadata)
     }
 
+    /// Selects the [`ColorSpace`] for this subtree.
+    ///
+    /// Friendly wrapper over the underlying [`StandardDynamicRange`] /
+    /// [`HighDynamicRange`] metadata. Prefer this over
+    /// `metadata(HighDynamicRange::new())` for new code.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::metadata::secure::ColorSpace;
+    ///
+    /// hdr_shapes().color_space(ColorSpace::Hdr);
+    /// avatar_thumbnail().color_space(ColorSpace::Sdr);
+    /// ```
+    fn color_space(
+        self,
+        space: crate::metadata::secure::ColorSpace,
+    ) -> AnyView {
+        use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+        match space {
+            ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
+            ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
+        }
+    }
+
     /// Adjusts the opacity (transparency) of this view.
     ///
     /// This produces a lightweight `Metadata<Opacity>` that maps directly to

@@ -12,7 +12,7 @@
 
 use core::f32::consts::{FRAC_PI_2, PI};
 use waterui::app::App;
-use waterui::metadata::secure::{HighDynamicRange, StandardDynamicRange};
+use waterui::metadata::secure::ColorSpace;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::{
@@ -228,10 +228,8 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
         text("HDR Shapes").size(18.0),
         "Extended range colors via headroom",
         Toggle::new(&show_hdr).label("Show HDR"),
-        when(show_hdr.clone(), || {
-            hdr_shapes().metadata(HighDynamicRange::new())
-        })
-        .otherwise(|| hdr_shapes().metadata(StandardDynamicRange::new())),
+        when(show_hdr.clone(), || hdr_shapes().color_space(ColorSpace::Hdr))
+            .otherwise(|| hdr_shapes().color_space(ColorSpace::Sdr)),
     ))
     .padding()
 }
