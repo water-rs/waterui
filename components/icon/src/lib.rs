@@ -27,11 +27,11 @@
 //! For cross-platform icons, prefer icon-pack crates such as Material, Lucide, Font Awesome, or Native packs.
 //!
 //! ```ignore
-//! use waterui_icon::SystemIcon;
+//! use waterui_icon::{SystemIcon, system_icon};
 //!
-//! // Use predefined constants
-//! SystemIcon::HOME
-//! SystemIcon::SETTINGS
+//! // Common icons via the function-form module
+//! system_icon::home()
+//! system_icon::settings()
 //!
 //! // Or create from a name
 //! SystemIcon::new("custom.icon.name")
@@ -63,11 +63,11 @@ use waterui_str::Str;
 /// # Example
 ///
 /// ```ignore
-/// use waterui_icon::SystemIcon;
+/// use waterui_icon::{SystemIcon, system_icon};
 ///
-/// // Use predefined constants
-/// SystemIcon::HOME
-/// SystemIcon::SETTINGS
+/// // Common icons via the function-form module
+/// system_icon::home()
+/// system_icon::settings()
 ///
 /// // Or create dynamically
 /// SystemIcon::new("house")
@@ -93,44 +93,54 @@ impl SystemIcon {
         }
     }
 
-    // Common system icon constants
-
-    /// Home icon.
-    pub const HOME: Self = Self::from_static("house");
-
-    /// Settings/gear icon.
-    pub const SETTINGS: Self = Self::from_static("gear");
-
-    /// Search/magnifying glass icon.
-    pub const SEARCH: Self = Self::from_static("magnifyingglass");
-
-    /// Person icon.
-    pub const PERSON: Self = Self::from_static("person");
-
-    /// Plus/add icon.
-    pub const PLUS: Self = Self::from_static("plus");
-
-    /// Trash/delete icon.
-    pub const TRASH: Self = Self::from_static("trash");
-
-    /// Chevron right icon.
-    pub const CHEVRON_RIGHT: Self = Self::from_static("chevron.right");
-
-    /// Chevron left icon.
-    pub const CHEVRON_LEFT: Self = Self::from_static("chevron.left");
-
-    /// Close/X icon.
-    pub const CLOSE: Self = Self::from_static("xmark");
-
-    /// Checkmark icon.
-    pub const CHECKMARK: Self = Self::from_static("checkmark");
-
-    /// Star icon.
-    pub const STAR: Self = Self::from_static("star");
-
-    /// Heart icon.
-    pub const HEART: Self = Self::from_static("heart");
 }
 
 raw_view!(SystemIcon);
 impl_constant!(SystemIcon);
+
+/// Common cross-platform system icon constructors.
+///
+/// Function-form entry points that match the shape of icon-pack crates
+/// (`lucide`, `material-icon`, `sf-symbol`).
+pub mod system_icon {
+    use super::SystemIcon;
+
+    macro_rules! system_icons {
+        ($($(#[$meta:meta])* $name:ident => $sf:literal,)*) => {
+            $(
+                $(#[$meta])*
+                #[must_use]
+                pub fn $name() -> SystemIcon {
+                    SystemIcon::from_static($sf)
+                }
+            )*
+        };
+    }
+
+    system_icons! {
+        /// Home icon.
+        home => "house",
+        /// Settings/gear icon.
+        settings => "gear",
+        /// Search/magnifying glass icon.
+        search => "magnifyingglass",
+        /// Person icon.
+        person => "person",
+        /// Plus/add icon.
+        plus => "plus",
+        /// Trash/delete icon.
+        trash => "trash",
+        /// Chevron right icon.
+        chevron_right => "chevron.right",
+        /// Chevron left icon.
+        chevron_left => "chevron.left",
+        /// Close/X icon.
+        close => "xmark",
+        /// Checkmark icon.
+        checkmark => "checkmark",
+        /// Star icon.
+        star => "star",
+        /// Heart icon.
+        heart => "heart",
+    }
+}

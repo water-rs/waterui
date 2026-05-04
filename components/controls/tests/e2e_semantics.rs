@@ -7,7 +7,7 @@ use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
 use waterui_controls::{Label, Menu, Slider, Stepper, TextField, Toggle, button, toggle};
-use waterui_icon::SystemIcon;
+use waterui_icon::system_icon;
 use waterui_testing::{Role, Selector};
 
 use support::{control_shell, mount_view};
@@ -282,7 +282,7 @@ fn icon_only_label_preserves_button_accessible_name() {
     let mut app = mount_view(|| {
         control_shell(button(
             Label::new("Search")
-                .system_icon(SystemIcon::SEARCH)
+                .system_icon(system_icon::search())
                 .icon_only(),
         ))
     });
@@ -297,7 +297,7 @@ fn icon_only_label_preserves_button_accessible_name() {
 fn menu_button_exposes_accessible_name() {
     let mut app = mount_view(|| {
         control_shell(Menu::new(
-            Label::new("Actions").system_icon(SystemIcon::SEARCH),
+            Label::new("Actions").system_icon(system_icon::search()),
             (
                 button("Refresh").action(|| {}),
                 Menu::new("Advanced", (button("Archive").action(|| {}),)),
