@@ -375,6 +375,8 @@ pub enum Animation {
     },
 }
 
+nami::impl_constant!(Animation);
+
 impl Animation {
     /// Creates a new Linear animation with the specified duration
     ///

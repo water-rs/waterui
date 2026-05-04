@@ -586,7 +586,7 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
-        self.get(index)
+        Collection::get(self, index)
     }
 
     fn watch(
