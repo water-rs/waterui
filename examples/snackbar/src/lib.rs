@@ -4,7 +4,7 @@ use core::time::Duration;
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
-use waterui_icon::SystemIcon;
+use waterui_icon::system_icon;
 
 fn main(manager: SnackbarManager) -> impl View {
     scroll(
@@ -18,14 +18,14 @@ fn main(manager: SnackbarManager) -> impl View {
                 .state(&manager),
             button("With Icon")
                 .action(|State(m): State<SnackbarManager>| {
-                    m.show(Snackbar::new("File saved successfully").icon(SystemIcon::CHECKMARK));
+                    m.show(Snackbar::new("File saved successfully").icon(system_icon::checkmark()));
                 })
                 .state(&manager),
             button("With Action Button")
                 .action(|State(m): State<SnackbarManager>| {
                     m.show(
                         Snackbar::new("Item moved to trash")
-                            .icon(SystemIcon::TRASH)
+                            .icon(system_icon::trash())
                             .duration(Duration::from_secs(5))
                             .action("Undo", || {
                                 waterui::log::info!("Undo clicked!");
@@ -37,7 +37,7 @@ fn main(manager: SnackbarManager) -> impl View {
                 .action(|State(m): State<SnackbarManager>| {
                     m.show(
                         Snackbar::new("Network connected")
-                            .icon(SystemIcon::CHECKMARK)
+                            .icon(system_icon::checkmark())
                             .position(SnackbarPosition::TopCenter),
                     );
                 })
