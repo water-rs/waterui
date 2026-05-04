@@ -84,22 +84,35 @@ impl DatePickerType {
     }
 }
 
-/// Values accepted by [`DatePicker::range`].
-#[doc(hidden)]
-pub trait DatePickerRangeValue: Clone + 'static {
-    #[doc(hidden)]
+/// Types that can drive a [`DatePicker`].
+///
+/// Implemented for `Date`, `Time`, and `DateTime`. A single
+/// [`DatePicker::new`] constructor dispatches on this trait, so callers do not
+/// have to remember separate constructor names per binding type.
+pub trait DatePickable: Clone + 'static {
+    /// Maps a `Binding<Self>` into the canonical `Binding<DateTime>` that
+    /// `DatePicker` stores internally, preserving round-trip semantics.
+    fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime>;
+
+    /// Lifts an inclusive range of `Self` into the canonical
+    /// `RangeInclusive<DateTime>` used by the picker.
     fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime>;
+
+    /// Returns the default [`DatePickerType`] when the user has not specified
+    /// one explicitly.
+    fn default_picker_type() -> DatePickerType;
+
+    /// Returns the canonical full range used when the user has not constrained
+    /// the picker.
+    fn full_range() -> RangeInclusive<DateTime>;
 }
 
 /// A control for selecting dates and times.
 ///
 /// `DatePicker` stores a full date-time internally so backends can round-trip
-/// hidden components without loss. Use the constructor that matches your
-/// binding type:
-///
-/// - [`DatePicker::new`] for `Binding<Date>`
-/// - [`DatePicker::time`] for `Binding<Time>`
-/// - [`DatePicker::datetime`] for `Binding<DateTime>`
+/// hidden components without loss. Use [`DatePicker::new`] with any binding
+/// whose value type implements [`DatePickable`] (`Date`, `Time`, or
+/// `DateTime`).
 #[derive(Debug)]
 pub struct DatePicker(DatePickerConfig);
 
@@ -147,42 +160,21 @@ impl View for DatePicker {
 }
 
 impl DatePicker {
-    /// Creates a date-only picker bound to a `Date`.
+    /// Creates a picker bound to `value`, dispatching on its type
+    /// (`Date`, `Time`, or `DateTime`) via [`DatePickable`].
     #[must_use]
-    pub fn new(date: &Binding<Date>) -> Self {
+    pub fn new<T: DatePickable>(value: &Binding<T>) -> Self {
         Self(DatePickerConfig {
             label: AnyView::default(),
-            value: map_date_binding(date),
-            range: Date::into_picker_range(Date::MIN..=Date::MAX),
-            ty: DatePickerType::Date,
-        })
-    }
-
-    /// Creates a time-only picker bound to a `Time`.
-    #[must_use]
-    pub fn time(time: &Binding<Time>) -> Self {
-        Self(DatePickerConfig {
-            label: AnyView::default(),
-            value: map_time_binding(time),
-            range: Time::into_picker_range(Time::MIN..=end_of_day_time()),
-            ty: DatePickerType::HourAndMinute,
-        })
-    }
-
-    /// Creates a date-time picker bound to a `DateTime`.
-    #[must_use]
-    pub fn datetime(value: &Binding<DateTime>) -> Self {
-        Self(DatePickerConfig {
-            label: AnyView::default(),
-            value: value.clone(),
-            range: DateTime::into_picker_range(full_picker_range()),
-            ty: DatePickerType::DateHourAndMinute,
+            value: T::into_datetime_binding(value),
+            range: T::full_range(),
+            ty: T::default_picker_type(),
         })
     }
 
     /// Sets the valid range for the picker.
     #[must_use]
-    pub fn range<T: DatePickerRangeValue>(mut self, range: RangeInclusive<T>) -> Self {
+    pub fn range<T: DatePickable>(mut self, range: RangeInclusive<T>) -> Self {
         let mapped = T::into_picker_range(range);
         self.0.value = self.0.value.clamp(mapped.clone());
         self.0.range = mapped;
@@ -204,21 +196,57 @@ impl DatePicker {
     }
 }
 
-impl DatePickerRangeValue for Date {
+impl DatePickable for Date {
+    fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
+        map_date_binding(binding)
+    }
+
     fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime> {
         start_of_day(*range.start())..=end_of_day(*range.end())
     }
-}
 
-impl DatePickerRangeValue for Time {
-    fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime> {
-        anchor_time(*range.start())..=anchor_time(*range.end())
+    fn default_picker_type() -> DatePickerType {
+        DatePickerType::Date
+    }
+
+    fn full_range() -> RangeInclusive<DateTime> {
+        Self::into_picker_range(Self::MIN..=Self::MAX)
     }
 }
 
-impl DatePickerRangeValue for DateTime {
+impl DatePickable for Time {
+    fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
+        map_time_binding(binding)
+    }
+
+    fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime> {
+        anchor_time(*range.start())..=anchor_time(*range.end())
+    }
+
+    fn default_picker_type() -> DatePickerType {
+        DatePickerType::HourAndMinute
+    }
+
+    fn full_range() -> RangeInclusive<DateTime> {
+        Self::into_picker_range(Self::MIN..=end_of_day_time())
+    }
+}
+
+impl DatePickable for DateTime {
+    fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
+        binding.clone()
+    }
+
     fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime> {
         range
+    }
+
+    fn default_picker_type() -> DatePickerType {
+        DatePickerType::DateHourAndMinute
+    }
+
+    fn full_range() -> RangeInclusive<DateTime> {
+        full_picker_range()
     }
 }
 

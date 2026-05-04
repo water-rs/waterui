@@ -61,7 +61,7 @@ fn main_view() -> impl View {
                 .prompt("Type your name"),
             SecureField::new("Password", &password),
             Toggle::new(&toggle_value).label("Realtime rebuild"),
-            Slider::new(0.0..=1.0, &slider_value).label("Animation blend"),
+            Slider::new(&slider_value).label("Animation blend"),
             Stepper::new(&stepper_value)
                 .label("Detail level")
                 .range(1..=12),

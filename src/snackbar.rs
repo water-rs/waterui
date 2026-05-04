@@ -184,16 +184,20 @@ impl Snackbar {
     /// With injected state:
     /// ```rust,ignore
     /// Snackbar::new("Item deleted")
-    ///     .action("Undo")
-    ///     .handler(|State(items): State<Items>| items.restore())
+    ///     .action("Undo", |State(items): State<Items>| items.restore())
     ///     .state(&items)
     /// ```
     #[must_use]
-    pub fn action(self, label: impl Into<Str>) -> SnackbarActionBuilder {
-        SnackbarActionBuilder {
-            snackbar: self,
+    pub fn action<Args>(
+        mut self,
+        label: impl Into<Str>,
+        handler: impl Handler<Args, ()> + 'static,
+    ) -> Self {
+        self.action = Some(SnackbarAction {
             label: label.into(),
-        }
+            handler: shared_action(handler),
+        });
+        self
     }
 
     /// Sets the auto-dismiss duration.
@@ -426,25 +430,3 @@ impl Default for SnackbarManager {
     }
 }
 
-// ============================================================================
-// Snackbar Action Builder
-// ============================================================================
-
-/// Builder for creating snackbar actions with captured state.
-#[derive(Debug)]
-pub struct SnackbarActionBuilder {
-    snackbar: Snackbar,
-    label: Str,
-}
-
-impl SnackbarActionBuilder {
-    /// Sets the action handler (no state).
-    #[must_use]
-    pub fn handler<Args>(mut self, handler: impl Handler<Args, ()> + 'static) -> Snackbar {
-        self.snackbar.action = Some(SnackbarAction {
-            label: self.label,
-            handler: shared_action(handler),
-        });
-        self.snackbar
-    }
-}

@@ -27,8 +27,7 @@ fn main(manager: SnackbarManager) -> impl View {
                         Snackbar::new("Item moved to trash")
                             .icon(SystemIcon::TRASH)
                             .duration(Duration::from_secs(5))
-                            .action("Undo")
-                            .handler(|| {
+                            .action("Undo", || {
                                 waterui::log::info!("Undo clicked!");
                             }),
                     );
