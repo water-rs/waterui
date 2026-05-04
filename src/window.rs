@@ -75,12 +75,16 @@ pub struct Window {
 }
 
 /// The state of a window.
+///
+/// `Default::default()` returns [`Self::Closed`]: a freshly initialized
+/// state binding represents a window that has not yet been shown. Setting
+/// the binding to [`Self::Normal`] is what triggers the window to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowState {
     /// The window is in its normal state.
-    #[default]
     Normal,
     /// The window is closed.
+    #[default]
     Closed,
     /// The window is minimized.
     Minimized,
@@ -172,11 +176,22 @@ impl_constant!(WindowState);
 impl_constant!(WindowStyle);
 
 impl Window {
-    /// Create a new window instance with the specified title and content.
+    /// Create a new window with the specified title, state binding, and content.
     ///
-    /// Notice that would not show this window immediately
+    /// `state` is required: every example calls `.with_state(...)` on every
+    /// window in practice, so the parameter is positional. Use
+    /// `binding::<WindowState>(default())` (which is [`WindowState::Closed`])
+    /// to start the window closed; flip to [`WindowState::Normal`] to open it.
+    ///
+    /// Note: this does not show the window immediately. It is shown via
+    /// [`Self::show`] or by being conditionally rendered with
+    /// [`conditional_window`].
     #[must_use]
-    pub fn new(title: impl IntoComputed<Str>, content: impl ViewBuilder) -> Self {
+    pub fn new(
+        title: impl IntoComputed<Str>,
+        state: Binding<WindowState>,
+        content: impl ViewBuilder,
+    ) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
         let (snackbar_manager, snackbar_view) = SnackbarManager::new();
@@ -194,7 +209,7 @@ impl Window {
             resizable: true,
             frame: Binding::container(default_frame),
             content,
-            state: Binding::default(),
+            state,
             toolbar: None,
             style: WindowStyle::default(),
             background: WindowBackground::default(),
@@ -273,36 +288,6 @@ impl Window {
         self.content.build()
     }
 
-    /// Set the state binding for the window.
-    ///
-    /// Use this to connect an external state binding to the window,
-    /// allowing you to track when the window is closed by the native close button.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use waterui::prelude::*;
-    /// use waterui::window::{Window, WindowState};
-    ///
-    /// let state = binding(WindowState::Normal);
-    ///
-    /// // Window with external state binding
-    /// Window::new("My Window", content)
-    ///     .with_state(state.clone());
-    ///
-    /// // Watch for close
-    /// watch(state, |s| {
-    ///     if s == WindowState::Closed {
-    ///         // Window was closed
-    ///     }
-    /// });
-    /// ```
-    #[must_use]
-    pub fn with_state(mut self, state: Binding<WindowState>) -> Self {
-        self.state = state;
-        self
-    }
-
     /// Set the title of the window.
     #[must_use]
     pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
@@ -350,7 +335,7 @@ impl View for Window {
 /// When `state` becomes `Closed` again (either programmatically or via the native
 /// close button updating the binding), the helper resets and a subsequent open will
 /// create a new window.
-pub fn conditional_window<F>(state: Binding<WindowState>, creator: F) -> impl View
+pub fn conditional_window<F>(state: &Binding<WindowState>, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,
 {
@@ -359,6 +344,7 @@ where
 
     let shown = Rc::new(Cell::new(false));
     let creator = Rc::new(creator);
+    let state = state.clone();
 
     state
         .clone()

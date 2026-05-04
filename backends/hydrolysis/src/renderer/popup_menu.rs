@@ -183,10 +183,13 @@ pub(super) fn popup_menu_window(
                 .with(group_for_content.clone()),
         )
     };
-    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
-        .style(WindowStyle::Borderless)
-        .resizable(false)
-        .with_state(state_for_content);
+    let mut popup = Window::new(
+        TEXT_CONTEXT_MENU_WINDOW_TITLE,
+        state_for_content,
+        popup_content,
+    )
+    .style(WindowStyle::Borderless)
+    .resizable(false);
     popup.closable = false;
     popup.frame.set(LayoutRect::new(
         origin,
