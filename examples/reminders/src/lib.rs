@@ -6,7 +6,7 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::RoundedRectangle;
 use waterui::view;
-use waterui_icon::SystemIcon;
+use waterui_icon::{SystemIcon, system_icon};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -326,7 +326,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .title(dest.title())
     .searchable(&search, "Search reminders")
     .navigation_bar_trailing(
-        button(Label::new("").icon(SystemIcon::PLUS))
+        button(Label::new("").icon(system_icon::plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )

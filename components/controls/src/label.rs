@@ -30,8 +30,8 @@ nami::impl_constant!(IconPosition);
 ///
 /// ```rust,ignore
 /// hstack((
-///     button(label("Search").system_icon(SystemIcon::SEARCH)).action(|| {}),
-///     button(label("Settings").system_icon(SystemIcon::SETTINGS)).action(|| {}),
+///     button(label("Search").system_icon(system_icon::search())).action(|| {}),
+///     button(label("Settings").system_icon(system_icon::settings())).action(|| {}),
 /// ))
 /// .install(LabelDisplayMode::IconOnly)
 /// ```

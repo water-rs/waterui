@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn menu_command_preserves_semantic_label_from_any_view_button() {
-        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::SystemIcon::SEARCH))
+        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
             .action(|| {})
             .config()
             .render();

@@ -1,6 +1,6 @@
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
-use waterui_icon::{IconGlyph, SystemIcon};
+use waterui_icon::{IconGlyph, system_icon};
 use waterui_testing::{MountedApp, Role};
 
 fn icon_glyph_view() -> impl waterui::View {
@@ -11,7 +11,7 @@ fn icon_glyph_view() -> impl waterui::View {
 }
 
 fn system_icon_view() -> impl waterui::View {
-    SystemIcon::STAR
+    system_icon::star()
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("System icon")
 }

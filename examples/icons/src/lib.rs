@@ -19,11 +19,11 @@ fn sf_symbols_demo() -> impl View {
     vstack((
         text("SF Symbols (Apple)").size(18.0),
         hstack((
-            sf::HOUSE_FILL,
-            sf::PERSON_FILL,
-            sf::GEARSHAPE,
-            sf::HEART_FILL,
-            sf::STAR_FILL,
+            sf::house_fill(),
+            sf::person_fill(),
+            sf::gearshape(),
+            sf::heart_fill(),
+            sf::star_fill(),
         ))
         .spacing(16.0),
     ))

@@ -649,11 +649,11 @@ mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::Signal;
-    use waterui_icon::SystemIcon;
+    use waterui_icon::system_icon;
 
     #[test]
     fn menu_view_accepts_plain_buttons() {
-        let items = button(Label::new("Search").system_icon(SystemIcon::SEARCH))
+        let items = button(Label::new("Search").system_icon(system_icon::search()))
             .action(|| {})
             .into_menu_items()
             .get();
