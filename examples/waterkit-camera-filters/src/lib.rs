@@ -75,7 +75,7 @@ fn main() -> impl View {
             filter_button("Dream", 5, &active_filter),
         ))
         .spacing(8.0),
-        Slider::new(0.0..=1.0, &filter_strength),
+        Slider::new(&filter_strength),
     ))
     .spacing(8.0);
 

@@ -70,7 +70,7 @@ fn photo_section() -> impl View {
         photo,
         hstack((
             text("Blur:"),
-            Slider::new(0.0..=10.0, &blur_value),
+            Slider::new(&blur_value).range(0.0..=10.0),
             text!("{blur_value:.1}"),
         )),
     ))
@@ -130,7 +130,7 @@ fn custom_url_section() -> impl View {
         photo_view,
         hstack((
             text("Blur:"),
-            Slider::new(0.0..=20.0, &blur_value),
+            Slider::new(&blur_value).range(0.0..=20.0),
             text!("{blur_value:.1}"),
         )),
     ))

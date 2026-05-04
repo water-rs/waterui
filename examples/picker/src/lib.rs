@@ -79,10 +79,10 @@ fn main() -> impl View {
     let menu_selection = binding(Fruit::Banana);
     let radio_selection = binding(Fruit::Cherry);
 
-    let date = binding(fixed_date(2025, 1, 1));
-    let time_only = binding(fixed_time(14, 30, 0));
-    let datetime = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
-    let calendar_date = binding(fixed_date(2025, 6, 15));
+    let date: Binding<Date> = binding(fixed_date(2025, 1, 1));
+    let time_only: Binding<Time> = binding(fixed_time(14, 30, 0));
+    let datetime: Binding<DateTime> = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
+    let calendar_date: Binding<Date> = binding(fixed_date(2025, 6, 15));
     let available_dates = binding(BTreeSet::<Date>::new());
     let available_date_count = available_dates
         .map(|dates: BTreeSet<Date>| dates.len())
@@ -134,12 +134,12 @@ fn main() -> impl View {
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
                 text!("Selected date: {date}"),
                 spacer(),
-                DatePicker::time(&time_only)
+                DatePicker::new(&time_only)
                     .label("Time Only")
                     .ty(DatePickerType::HourMinuteAndSecond),
                 text!("Selected time: {time_only}"),
                 spacer(),
-                DatePicker::datetime(&datetime)
+                DatePicker::new(&datetime)
                     .label("Date & Time")
                     .ty(DatePickerType::DateHourMinuteAndSecond),
                 text!("Selected datetime: {datetime}"),
@@ -180,12 +180,12 @@ fn main() -> impl View {
                 spacer(),
                 ColorPicker::new(&alpha_color)
                     .label("With Alpha")
-                    .support_alpha(true),
+                    .with_alpha(),
                 color_preview(&alpha_color, "Alpha"),
                 spacer(),
                 ColorPicker::new(&hdr_color)
                     .label("HDR Color")
-                    .support_hdr(true),
+                    .with_hdr(),
                 color_preview(&hdr_color, "HDR"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -194,7 +194,7 @@ fn main() -> impl View {
                 text("FilePicker").headline(),
                 text("Select files from the device").body(),
                 spacer(),
-                FilePicker::open(&selected_files).num(5),
+                FilePicker::open(&selected_files).max_count(5),
                 spacer(),
                 text("Selected files:").bold(),
                 file_list(&selected_files),

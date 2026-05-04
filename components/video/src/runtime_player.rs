@@ -1145,7 +1145,7 @@ fn player_controls(bindings: PlayerControlBindings, on_event: OnEvent) -> impl V
 
     vstack((
         timeline,
-        slider(0.0..=1.0, &progress),
+        slider(&progress),
         transport,
         speed_controls,
     ))
@@ -1194,7 +1194,7 @@ fn transport_controls(bindings: TransportBindings, on_event: OnEvent) -> impl Vi
         ),
         play_pause_button(is_playing),
         mute_button(muted),
-        slider(0.0..=1.0, &volume_level),
+        slider(&volume_level),
         picture_in_picture_button(&picture_in_picture_request),
         subtitle_toggle,
         seek_button("Forward 10s", progress, duration_seconds, 10.0),
@@ -1271,7 +1271,7 @@ fn speed_controls(
         playback_speed_button("1.0x", playback_rate.clone(), 1.0),
         playback_speed_button("1.5x", playback_rate.clone(), 1.5),
         playback_speed_button("2.0x", playback_rate.clone(), 2.0),
-        slider(0.25..=2.0, playback_rate_level),
+        slider(playback_rate_level).range(0.25..=2.0),
         With::new(
             button(Text::display(preserve_pitch.clone().map(|enabled| {
                 if enabled {

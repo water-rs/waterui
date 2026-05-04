@@ -42,10 +42,10 @@ configurable!(
     ///
     /// ```ignore
     /// // Basic slider (0 to 100)
-    /// slider(0.0..=100.0, &volume)
+    /// slider(&volume).range(0.0..=100.0)
     ///
-    /// // With custom labels
-    /// slider(0.0..=1.0, &brightness)
+    /// // With custom labels (default range 0.0..=1.0)
+    /// slider(&brightness)
     ///     .label("Brightness")
     ///     .min_value_label("Dark")
     ///     .max_value_label("Bright")
@@ -53,7 +53,7 @@ configurable!(
     /// // In a form (slider fills remaining width)
     /// hstack((
     ///     text("Volume"),
-    ///     slider(0.0..=100.0, &volume),
+    ///     slider(&volume).range(0.0..=100.0),
     /// ))
     /// ```
     //
@@ -73,16 +73,24 @@ configurable!(
 );
 
 impl Slider {
-    /// Creates a new [`Slider`] widget.
+    /// Creates a new [`Slider`] bound to `value` with the default
+    /// normalized range `0.0..=1.0`. Use [`Slider::range`] to override.
     #[must_use]
-    pub fn new(range: RangeInclusive<f64>, value: &Binding<f64>) -> Self {
+    pub fn new(value: &Binding<f64>) -> Self {
         Self(SliderConfig {
             label: AnyView::new(Text::computed(s!("{:.2}", value))),
             min_value_label: AnyView::default(),
             max_value_label: AnyView::default(),
-            range,
+            range: 0.0..=1.0,
             value: value.clone(),
         })
+    }
+
+    /// Sets the inclusive value range for this slider.
+    #[must_use]
+    pub fn range(mut self, range: RangeInclusive<f64>) -> Self {
+        self.0.range = range;
+        self
     }
 }
 
@@ -103,8 +111,9 @@ impl Slider {
     labels!(label, min_value_label, max_value_label);
 }
 
-/// Creates a new [`Slider`] with the specified range and value binding.
+/// Convenience constructor for a [`Slider`] bound to `value` with the default
+/// normalized range `0.0..=1.0`. Chain [`Slider::range`] to override.
 #[must_use]
-pub fn slider(range: RangeInclusive<f64>, value: &Binding<f64>) -> Slider {
-    Slider::new(range, value)
+pub fn slider(value: &Binding<f64>) -> Slider {
+    Slider::new(value)
 }

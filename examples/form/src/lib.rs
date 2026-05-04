@@ -115,7 +115,7 @@ fn main(
                     .range(0..=100)
                     .step(5),
                 // Slider with label
-                Slider::new(0.0..=1.0, &custom_slider).label("Progress"),
+                Slider::new(&custom_slider).label("Progress"),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,

@@ -22,7 +22,7 @@ fn main_view() -> impl View {
                 .size(560.0, 180.0),
             hstack((
                 Toggle::new(&toggle_value).label("Toggle"),
-                Slider::new(0.0..=1.0, &slider_value).label("Slider"),
+                Slider::new(&slider_value).label("Slider"),
                 Stepper::new(&stepper_value).range(0..=10).label("Stepper"),
             ))
             .spacing(16.0),

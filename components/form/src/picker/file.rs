@@ -51,8 +51,8 @@ impl FilePicker<Text> {
     ///
     /// One file can be selected by default.
     #[must_use]
-    pub fn num(mut self, value: usize) -> Self {
-        debug_assert!(value >= 1, "num must be at least 1");
+    pub fn max_count(mut self, value: usize) -> Self {
+        debug_assert!(value >= 1, "max_count must be at least 1");
         self.num = value;
         self
     }
