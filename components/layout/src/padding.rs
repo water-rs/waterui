@@ -102,6 +102,8 @@ pub struct EdgeInsets {
     trailing: f32,
 }
 
+nami::impl_constant!(EdgeInsets);
+
 #[allow(clippy::cast_possible_truncation)]
 impl<T: Into<f64>> From<T> for EdgeInsets {
     fn from(value: T) -> Self {

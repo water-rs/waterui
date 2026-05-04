@@ -152,6 +152,8 @@ pub enum Material {
     UltraThick,
 }
 
+nami::impl_constant!(Material);
+
 impl MetadataKey for Background {}
 
 impl From<Color> for Background {

@@ -52,7 +52,7 @@ pub use waterui_svg::Svg;
 mod glyph;
 pub use glyph::IconGlyph;
 
-use waterui_core::raw_view;
+use waterui_core::{impl_constant, raw_view};
 use waterui_str::Str;
 
 /// `SystemIcon` component representing a platform system icon by name.
@@ -133,3 +133,4 @@ impl SystemIcon {
 }
 
 raw_view!(SystemIcon);
+impl_constant!(SystemIcon);
