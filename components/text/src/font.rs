@@ -1,3 +1,32 @@
+//! Font configuration and the two-layer typography system.
+//!
+//! `WaterUI` text styling exposes three orthogonal entry points; each is
+//! kept on purpose because they speak to different concerns. Pick the
+//! highest-level one that fits the use case:
+//!
+//! 1. **Semantic categories** — `.title()`, `.headline()`, `.sub_headline()`,
+//!    `.body()`, `.caption()`. These resolve through the active `Theme` and
+//!    pick up accessibility text-size scaling automatically. **Prefer these
+//!    for product UI.** They guarantee that a "Settings → Larger Text" user
+//!    setting cascades into your screen without per-call ceremony.
+//!
+//! 2. **Font slots** — `.font(Title)`, `.font(font::Caption)`. Same
+//!    semantic categories as (1), but expressed as a value you can hold,
+//!    pass around, or compose. Prefer this when the choice is computed or
+//!    needs to be parameterized; the `.title()` family is shorthand for
+//!    these.
+//!
+//! 3. **Direct overrides** — `.size(f32)`, plus `.bold()`, `.italic()`,
+//!    [`Font`] constructors with explicit size/weight/family. This is the
+//!    escape hatch for fixed layouts (posters, splash screens, hero
+//!    headlines) and for example/demo code that wants to demonstrate a
+//!    specific visual. Direct overrides ignore Theme-driven scaling.
+//!
+//! These layers coexist by design: layers 1 and 2 are sugar over the
+//! Theme-resolved font slots, layer 3 escapes that resolution entirely.
+//! Do not collapse them — readability of UI code beats minimalism of API
+//! surface.
+
 use core::fmt::Debug;
 
 use nami::{Computed, Signal, impl_constant};
