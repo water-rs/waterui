@@ -102,6 +102,24 @@ pub mod secure {
         }
     }
 
+    /// Selects the color space for a subtree.
+    ///
+    /// This is the friendlier API surface for what would otherwise be
+    /// [`StandardDynamicRange`] / [`HighDynamicRange`] metadata. Use
+    /// [`crate::view::ViewExt::color_space`] to apply it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ColorSpace {
+        /// Standard dynamic range. Use for content that should not exceed
+        /// `1.0` per channel — avatars, screenshots, UI chrome.
+        Sdr,
+        /// High dynamic range. Honors per-color `headroom` so highlights can
+        /// extend beyond the display's nominal white point.
+        #[default]
+        Hdr,
+    }
+
+    nami::impl_constant!(ColorSpace);
+
     /// Apply standard dynamic range color for this views.
     ///
     /// By default, `WaterUI` enables high dynamic range color for all views.

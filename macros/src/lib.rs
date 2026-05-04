@@ -14,6 +14,23 @@ mod view_builder;
 
 #[proc_macro]
 /// Expands `text!(...)` into a localized `Text` view with compile-time catalog loading.
+///
+/// **i18n contract — do not relax**: placeholder names in the format string
+/// are translation slot keys. The compile-time translation extractor and the
+/// runtime locale resolver both rely on a 1:1 mapping between placeholder
+/// name and the identifier it binds to in the surrounding scope. This is why
+/// `text!` does NOT accept arbitrary expressions in placeholder positions.
+///
+/// If a binding's local identifier does not match the desired slot key,
+/// alias it explicitly:
+///
+/// ```ignore
+/// text!("{slot}", slot = local_var)
+/// ```
+///
+/// The flow-markdown-e2e example's `_text` clone aliases at the top of its
+/// section function are the canonical workaround for this constraint, and
+/// are intentionally preserved.
 pub fn text(input: TokenStream) -> TokenStream {
     locale::text(&input)
 }
