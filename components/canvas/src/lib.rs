@@ -68,7 +68,18 @@ use core::cell::Cell;
 use nami::Signal;
 use nami::signal::IntoSignal;
 use waterui_core::IntoSignalF32;
-use waterui_core::layout::{Point, Rect, Size, StretchAxis};
+use waterui_core::layout::{Affine2, Point, Rect, Size, StretchAxis};
+
+fn affine2_to_kurbo(t: Affine2) -> kurbo::Affine {
+    kurbo::Affine::new([
+        f64::from(t.a),
+        f64::from(t.b),
+        f64::from(t.c),
+        f64::from(t.d),
+        f64::from(t.e),
+        f64::from(t.f),
+    ])
+}
 
 // Internal imports for rendering (not exposed to users)
 use kurbo::Shape as _;
@@ -441,60 +452,20 @@ impl DrawingContext<'_> {
 
     /// Applies an arbitrary affine transform.
     ///
-    /// The transform is specified as a 2x3 matrix: [a, b, c, d, e, f]
-    /// which represents the matrix [[a, c, e], [b, d, f], [0, 0, 1]].
-    #[allow(clippy::many_single_char_names)]
-    pub fn transform(
-        &mut self,
-        a: impl IntoSignalF32,
-        b: impl IntoSignalF32,
-        c: impl IntoSignalF32,
-        d: impl IntoSignalF32,
-        e: impl IntoSignalF32,
-        f: impl IntoSignalF32,
-    ) {
-        let a = self.resolve_f32(a);
-        let b = self.resolve_f32(b);
-        let c = self.resolve_f32(c);
-        let d = self.resolve_f32(d);
-        let e = self.resolve_f32(e);
-        let f = self.resolve_f32(f);
-        let affine = kurbo::Affine::new([
-            f64::from(a),
-            f64::from(b),
-            f64::from(c),
-            f64::from(d),
-            f64::from(e),
-            f64::from(f),
-        ]);
+    /// Accepts any value convertible into [`Affine2`], including the type
+    /// itself, `[f32; 6]`, or one of the helper constructors
+    /// `Affine2::translate(...)`, `::scale(...)`, `::rotate(...)`. The
+    /// supplied transform is multiplied onto the current transform.
+    pub fn transform(&mut self, transform: impl Into<Affine2>) {
+        let affine = affine2_to_kurbo(transform.into());
         self.current_state.transform *= affine;
     }
 
     /// Replaces the current transform with the specified matrix.
-    #[allow(clippy::many_single_char_names)]
-    pub fn set_transform(
-        &mut self,
-        a: impl IntoSignalF32,
-        b: impl IntoSignalF32,
-        c: impl IntoSignalF32,
-        d: impl IntoSignalF32,
-        e: impl IntoSignalF32,
-        f: impl IntoSignalF32,
-    ) {
-        let a = self.resolve_f32(a);
-        let b = self.resolve_f32(b);
-        let c = self.resolve_f32(c);
-        let d = self.resolve_f32(d);
-        let e = self.resolve_f32(e);
-        let f = self.resolve_f32(f);
-        self.current_state.transform = kurbo::Affine::new([
-            f64::from(a),
-            f64::from(b),
-            f64::from(c),
-            f64::from(d),
-            f64::from(e),
-            f64::from(f),
-        ]);
+    ///
+    /// Accepts any value convertible into [`Affine2`].
+    pub fn set_transform(&mut self, transform: impl Into<Affine2>) {
+        self.current_state.transform = affine2_to_kurbo(transform.into());
     }
 
     /// Resets the transform to the identity matrix.
