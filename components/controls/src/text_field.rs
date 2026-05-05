@@ -110,15 +110,12 @@ impl TextField {
 
     /// Sets the maximum number of lines to show.
     ///
-    /// By default, the line limit is 1.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `line_limit` is 0.
+    /// By default, the line limit is 1. The argument is a [`NonZeroUsize`] so
+    /// that "zero lines" is rejected at the type level rather than at runtime.
+    /// Use [`Self::disable_line_limit`] to remove the limit entirely.
     #[must_use]
-    pub fn line_limit(mut self, line_limit: usize) -> Self {
-        assert!(line_limit > 0, "Line limit must be greater than 0");
-        self.0.line_limit = NonZeroUsize::new(line_limit);
+    pub const fn line_limit(mut self, line_limit: NonZeroUsize) -> Self {
+        self.0.line_limit = Some(line_limit);
         self
     }
 
@@ -186,19 +183,14 @@ mod tests {
     use waterui_core::Str;
     use waterui_text::styled::StyledStr;
 
-    use super::TextField;
+    use core::num::NonZeroUsize;
 
-    #[test]
-    #[should_panic(expected = "Line limit must be greater than 0")]
-    fn line_limit_zero_panics() {
-        let value = Binding::container(Str::from(""));
-        let _ = TextField::new(&value).line_limit(0);
-    }
+    use super::TextField;
 
     #[test]
     fn line_limit_non_one_is_supported() {
         let value = Binding::container(Str::from(""));
-        let _ = TextField::new(&value).line_limit(2);
+        let _ = TextField::new(&value).line_limit(NonZeroUsize::new(2).unwrap());
     }
 
     #[test]

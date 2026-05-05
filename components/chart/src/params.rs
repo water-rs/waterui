@@ -92,16 +92,6 @@ impl PositiveF32 {
         Ok(Self(value))
     }
 
-    /// Creates a positive scalar and panics on invalid input.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `value` is non-finite or is not strictly positive.
-    #[must_use]
-    pub fn new(value: f32) -> Self {
-        Self::try_new(value).expect("PositiveF32 requires finite value > 0")
-    }
-
     /// Returns the inner `f32`.
     #[must_use]
     pub const fn get(self) -> f32 {
@@ -143,16 +133,6 @@ impl UnitInterval {
             });
         }
         Ok(Self(value))
-    }
-
-    /// Creates a unit-interval scalar and panics on invalid input.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `value` is non-finite or is outside `0.0..=1.0`.
-    #[must_use]
-    pub fn new(value: f32) -> Self {
-        Self::try_new(value).expect("UnitInterval requires finite value in [0, 1]")
     }
 
     /// Returns the inner `f32`.
