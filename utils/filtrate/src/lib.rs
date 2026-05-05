@@ -1,43 +1,31 @@
-//! GPU texture filters using wgpu.
+//! GPU filter library built on top of `filtrate-core` abstractions.
 //!
-//! `filtrate` provides GPU-accelerated image filters that work with any wgpu texture.
-//! It's designed to be standalone and usable outside of `WaterUI` - for images, video frames,
-//! render targets, or any GPU texture.
+//! `filtrate` hosts the built-in filter implementations and their WGSL
+//! shaders, and (in upcoming phases) the GPU runtime that compiles a
+//! [`Filter`] graph into a wgpu pipeline. It is designed to be usable
+//! outside of WaterUI for any wgpu-based image, video, or render-target
+//! workflow.
 //!
-//! # Features
+//! # Layout
 //!
-//! - **Blur**: Gaussian blur with configurable radius
-//! - **Brightness**: Adjust image brightness
-//! - **Saturation**: Control color saturation
-//! - **Contrast**: Adjust image contrast
-//! - **Grayscale**: Convert to grayscale
-//! - **Hue Rotation**: Rotate colors around the color wheel
-//! - **Invert**: Invert all colors
-//! - **Sepia**: Apply sepia tone effect
-//! - **Vignette**: Add vignette effect
-//! - **Sharpen**: Sharpen image details
+//! - [`filters`]: built-in filter structs (`Brightness`, `Blur`, ...).
+//!   Each filter implements [`Filter`] from `filtrate-core` and references
+//!   one or more WGSL shader files under `src/shaders/`.
+//! - `shaders/` (not a Rust module): WGSL fragments and full-shader files
+//!   compiled into the binary via `include_str!` from individual filter
+//!   modules.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use filtrate::{Blur, Brightness, FilterExt};
-//! use waterui_graphics::FilterAdapter;
+//! use filtrate::{Filter, FilterExt};
+//! use filtrate::filters::{Blur, Brightness};
 //!
-//! // Chain filters together
-//! let filter = Blur(5.0).then(Brightness(0.1));
-//!
-//! // Use FilterAdapter to apply to GPU textures
-//! let adapter = FilterAdapter::new(filter);
+//! let chain = Blur(5.0).then(Brightness(0.1));
 //! ```
 
-// Re-export core traits for convenience
-pub use filtrate_core::{Chain, Filter, FilterExt, FragmentList, ParamArray};
+pub mod filters;
 
-// Re-export nami for Signal trait access
-pub use filtrate_core::nami;
-
-// Re-export all filter implementations
-pub use filtrate_core::filters::{
-    Blur, Brightness, Contrast, Grayscale, HueRotation, Invert, Saturation, Sepia, Sharpen,
-    Vignette,
+pub use filtrate_core::{
+    Chain, Filter, FilterExt, FragmentList, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
 };

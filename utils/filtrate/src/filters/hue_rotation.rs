@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::HueRotation;
+/// use filtrate::filters::HueRotation;
 ///
 /// // Rotate 180 degrees (complementary colors)
 /// let complement = HueRotation(180.0);

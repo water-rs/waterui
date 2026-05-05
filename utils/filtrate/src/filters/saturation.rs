@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Saturation;
+/// use filtrate::filters::Saturation;
 ///
 /// let desaturated = Saturation(0.5);
 /// let vibrant = Saturation(1.5);

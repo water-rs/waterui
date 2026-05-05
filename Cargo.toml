@@ -122,6 +122,7 @@ waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
+filtrate-derive = { version = "0.1.0", path = "utils/filtrate-derive" }
 waterui-barcode = { version = "0.1.0", path = "components/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-chart = { version = "0.1.0", path = "components/chart" }

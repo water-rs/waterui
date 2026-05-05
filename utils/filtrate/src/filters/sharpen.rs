@@ -15,7 +15,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Sharpen;
+/// use filtrate::filters::Sharpen;
 ///
 /// let subtle = Sharpen(0.5);
 /// let crisp = Sharpen(1.5);

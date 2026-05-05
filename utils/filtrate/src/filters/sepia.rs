@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Sepia;
+/// use filtrate::filters::Sepia;
 ///
 /// let vintage = Sepia(0.8);
 /// ```

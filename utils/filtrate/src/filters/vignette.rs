@@ -13,7 +13,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Vignette;
+/// use filtrate::filters::Vignette;
 ///
 /// let subtle = Vignette(0.8, 0.3);
 /// let dramatic = Vignette(0.3, 0.1);

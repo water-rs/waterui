@@ -9,7 +9,7 @@ use crate::Filter;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Invert;
+/// use filtrate::filters::Invert;
 ///
 /// let inverted = Invert;
 /// ```

@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.87"
 readme = "../../README.md"
 repository = "https://github.com/water-rs/waterui"
-description = "GPU texture filters using wgpu - blur, brightness, saturation, and more"
+description = "GPU texture filter library: built-in filters (blur, brightness, color matrix, ...) and runtime, built on filtrate-core."
 keywords = ["gpu", "filter", "wgpu", "image", "video"]
 categories = ["graphics", "multimedia::images", "rendering"]
 license = "MIT OR Apache-2.0"
@@ -14,8 +14,13 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [dependencies]
+filtrate-core.workspace = true
+nami.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
-filtrate-core.workspace = true
+
 [package.metadata.cargo-machete]
+# wgpu and bytemuck are reserved for the runtime modules introduced in
+# upcoming phases (Pipeline + Effect). They are intentionally pulled in here
+# so each phase remains a clean atomic commit.
 ignored = ["bytemuck", "wgpu"]
