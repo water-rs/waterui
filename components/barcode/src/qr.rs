@@ -8,7 +8,12 @@ use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
 use crate::BarcodeRenderer;
 
 /// Supported barcode symbologies.
+///
+/// This enum is `#[non_exhaustive]` so that future symbologies (EAN-13,
+/// DataMatrix, PDF417, …) can be added without breaking downstream `match`
+/// statements. Pattern matches against this type must include a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BarcodeSymbology {
     /// 2D QR code matrix.
     Qr,

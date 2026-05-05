@@ -6,7 +6,11 @@ use core::ops::Range;
 use waterui_graphics::color::Color;
 
 /// Emitter shape for particle spawning.
+///
+/// `#[non_exhaustive]` lets us add new emitter shapes (line, spline, polygon,
+/// mesh surface…) without breaking downstream `match` statements.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub enum EmitterShape {
     /// Emit from a single point.
     #[default]
@@ -26,7 +30,11 @@ pub enum EmitterShape {
 }
 
 /// Blend mode for particle rendering.
+///
+/// `#[non_exhaustive]` reserves room for future blend modes such as
+/// multiply, screen, or premultiplied-alpha variants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlendMode {
     /// Standard alpha blending.
     #[default]
@@ -54,7 +62,11 @@ impl Default for EmitterConfig {
 }
 
 /// Particle shape for SDF rendering.
+///
+/// `#[non_exhaustive]` reserves room for future SDF primitives such as
+/// triangles, stars, or sprites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ParticleShape {
     /// Circular particle sprite.
     #[default]
