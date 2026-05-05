@@ -4,15 +4,15 @@ use waterui_graphics::Color;
 #[derive(Debug, Clone)]
 pub struct WaveformTheme {
     /// Background color.
-    pub bg_color: Color,
+    pub(crate) bg_color: Color,
     /// Primary line color.
-    pub line_color: Color,
+    pub(crate) line_color: Color,
     /// Glow color.
-    pub glow_color: Color,
+    pub(crate) glow_color: Color,
     /// Line width in pixels.
-    pub line_width: f32,
+    pub(crate) line_width: f32,
     /// Glow intensity (0.0 to 1.0).
-    pub glow_intensity: f32,
+    pub(crate) glow_intensity: f32,
 }
 
 impl Default for WaveformTheme {
@@ -60,13 +60,13 @@ impl WaveformTheme {
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrumTheme {
     /// Background color [R, G, B].
-    pub bg_color: [f32; 3],
+    pub(crate) bg_color: [f32; 3],
     /// Bar color at bottom [R, G, B].
-    pub color_low: [f32; 3],
+    pub(crate) color_low: [f32; 3],
     /// Bar color at top [R, G, B].
-    pub color_high: [f32; 3],
+    pub(crate) color_high: [f32; 3],
     /// Number of frequency bars.
-    pub bar_count: u32,
+    pub(crate) bar_count: u32,
 }
 
 impl Default for SpectrumTheme {

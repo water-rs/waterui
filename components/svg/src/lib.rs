@@ -34,15 +34,15 @@ use waterui_str::Str;
 #[derive(Debug, Clone)]
 pub struct Svg {
     /// SVG content (path data or full SVG markup).
-    pub content: Str,
+    pub(crate) content: Str,
     /// Intrinsic width for aspect ratio.
-    pub width: Option<f32>,
+    pub(crate) width: Option<f32>,
     /// Intrinsic height for aspect ratio.
-    pub height: Option<f32>,
+    pub(crate) height: Option<f32>,
     /// Optional tint color (for monochrome icons).
-    pub tint: Option<Color>,
+    pub(crate) tint: Option<Color>,
     /// Whether to render as stroke (outline) rather than fill.
-    pub stroke: bool,
+    pub(crate) stroke: bool,
 }
 
 impl Svg {

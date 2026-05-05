@@ -101,10 +101,15 @@ impl BarcodeSource {
 
     /// Returns the encoded matrix, generating it if needed.
     ///
+    /// Visible only inside the barcode crate; external code should obtain a
+    /// rendered barcode through [`crate::Barcode`] or [`crate::BarcodeRenderer`]
+    /// rather than poking at the cached matrix.
+    ///
     /// # Panics
     ///
-    /// Panics if matrix generation failed to populate the cache after `generate_matrix()`.
-    pub fn matrix(&mut self) -> &BarcodeMatrix {
+    /// Panics if matrix generation failed to populate the cache after
+    /// `generate_matrix()`.
+    pub(crate) fn matrix(&mut self) -> &BarcodeMatrix {
         if self.matrix.is_none() {
             self.generate_matrix();
         }
