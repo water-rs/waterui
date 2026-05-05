@@ -119,9 +119,6 @@ pub use scene2d_vello::VelloScene2D;
 pub use inventory;
 pub use rayon;
 
-// Re-export wgpu and bytemuck for users to access GPU types directly.
-pub use wgpu;
-
 /// Re-export bytemuck for safe byte conversions in GPU programming.
 pub use bytemuck;
 

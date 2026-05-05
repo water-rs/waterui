@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use waterui_barcode::{BarcodeRenderer, BarcodeSource};
-use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize, wgpu};
+use waterui_graphics::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
 
 #[test]
 fn generate_qr_png_offscreen() {

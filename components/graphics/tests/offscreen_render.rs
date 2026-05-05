@@ -1,7 +1,7 @@
 //! Offscreen rendering regression test for `GpuSurface`.
 
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize, wgpu,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
 };
 
 #[derive(Debug, Clone, Copy)]

@@ -13,7 +13,7 @@ use std::mem::offset_of;
 use waterui_graphics::{
     color::ResolvedColor,
     gpu_surface::{GpuContext, GpuFrame, GpuView},
-    impl_gpu_subview, wgpu,
+    impl_gpu_subview,
 };
 
 /// Resolved particle configuration ready for GPU.
@@ -748,7 +748,7 @@ mod tests {
         shaders::{COMPUTE_SHADER, RENDER_SHADER},
     };
     use encase::{ShaderSize, StorageBuffer};
-    use waterui_graphics::{GpuView, color::ResolvedColor, wgpu};
+    use waterui_graphics::{GpuView, color::ResolvedColor};
 
     fn opaque_white() -> ResolvedColor {
         ResolvedColor {

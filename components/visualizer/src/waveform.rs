@@ -4,7 +4,7 @@ use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
 use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview, wgpu,
+    GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview,
 };
 
 /// Resolved configuration for GPU rendering.

@@ -19,3 +19,4 @@ waterui.workspace = true
 waterkit-camera = { path = "../../kit/camera" }
 waterkit-permission.workspace = true
 futures.workspace = true
+wgpu.workspace = true

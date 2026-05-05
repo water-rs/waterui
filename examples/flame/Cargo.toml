@@ -16,3 +16,4 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
+wgpu.workspace = true

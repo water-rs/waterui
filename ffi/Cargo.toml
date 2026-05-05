@@ -33,6 +33,7 @@ waterui-graphics.workspace = true
 waterui-svg.workspace = true
 waterui-icon.workspace = true
 waterui-webview.workspace = true
+cookie = "0.18.1"
 waterui-map.workspace = true
 waterui-str.workspace = true
 waterui-locale.workspace = true

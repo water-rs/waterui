@@ -31,6 +31,3 @@ mod system;
 
 pub use config::{BlendMode, EmitterShape, ParticleShape};
 pub use system::ParticleSystem;
-
-// Re-export wgpu for advanced users
-pub use wgpu;

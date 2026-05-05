@@ -729,7 +729,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
+    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
 
     #[test]
     fn tonemap_only_for_hdr_float_source_into_sdr_target() {

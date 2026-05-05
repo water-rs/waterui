@@ -35,7 +35,7 @@ use waterui_core::{
     env::With,
     layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions},
 };
-use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle, wgpu};
+use waterui_graphics::{Color, GpuContext, GpuFrame, GpuSurface, GpuView, RedrawHandle};
 use waterui_layout::{
     overlay,
     stack::{Alignment, hstack, vstack},
@@ -4462,7 +4462,6 @@ mod tests {
         path::PathBuf,
         time::{Duration, SystemTime},
     };
-    use waterui_graphics::wgpu;
     use waterui_url::Url;
 
     #[test]

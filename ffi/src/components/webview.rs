@@ -14,9 +14,10 @@ use crate::closure::WuiFn;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
 use base64::Engine;
 use waterui_str::Str;
+use cookie::Cookie;
 use waterui_webview::{
     CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewError,
-    WebViewEvent, WebViewHandle, cookie::Cookie,
+    WebViewEvent, WebViewHandle,
 };
 
 // =============================================================================
