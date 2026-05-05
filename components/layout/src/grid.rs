@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
 use num_traits::ToPrimitive;
-use waterui_core::{AnyView, Environment, View, view::TupleViews};
+use waterui_core::{AnyView, Environment, IntoSignalF32, View, view::TupleViews};
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
@@ -343,8 +343,13 @@ impl Grid {
     }
 
     /// Sets the horizontal and vertical spacing for the grid.
+    ///
+    /// Accepts any numeric literal or signal of f32; snapshotted at modifier
+    /// time per WaterUI's Vue-like reactivity model.
     #[must_use]
-    pub const fn spacing(mut self, spacing: f32) -> Self {
+    pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        let spacing = spacing.into_signal_f32().get();
         self.layout.spacing = Size::new(spacing, spacing);
         self
     }

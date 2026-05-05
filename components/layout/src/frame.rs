@@ -5,7 +5,7 @@
 //! renderers and component authors have a reference point.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, IntoSignalF32, View};
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
@@ -250,8 +250,15 @@ impl Frame {
     }
 
     /// Sets the ideal width of the frame.
+    ///
+    /// Accepts any numeric literal or signal of f32 (`f32`, `f64`, `i32`,
+    /// `Computed<f32>`, `Binding<f32>`, …). The value is snapshotted at
+    /// modifier time; live layout updates depend on parent reconstruction
+    /// per WaterUI's Vue-like reactivity model.
     #[must_use]
-    pub const fn width(mut self, width: f32) -> Self {
+    pub fn width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        let width = width.into_signal_f32().get();
         self.layout.min_width = Some(width);
         self.layout.ideal_width = Some(width);
         self.layout.max_width = Some(width);
@@ -260,7 +267,9 @@ impl Frame {
 
     /// Sets the ideal height of the frame.
     #[must_use]
-    pub const fn height(mut self, height: f32) -> Self {
+    pub fn height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        let height = height.into_signal_f32().get();
         self.layout.min_height = Some(height);
         self.layout.ideal_height = Some(height);
         self.layout.max_height = Some(height);
@@ -269,29 +278,33 @@ impl Frame {
 
     /// Sets the minimum width of the frame.
     #[must_use]
-    pub const fn min_width(mut self, width: f32) -> Self {
-        self.layout.min_width = Some(width);
+    pub fn min_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        self.layout.min_width = Some(width.into_signal_f32().get());
         self
     }
 
     /// Sets the maximum width of the frame.
     #[must_use]
-    pub const fn max_width(mut self, width: f32) -> Self {
-        self.layout.max_width = Some(width);
+    pub fn max_width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        self.layout.max_width = Some(width.into_signal_f32().get());
         self
     }
 
     /// Sets the minimum height of the frame.
     #[must_use]
-    pub const fn min_height(mut self, height: f32) -> Self {
-        self.layout.min_height = Some(height);
+    pub fn min_height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        self.layout.min_height = Some(height.into_signal_f32().get());
         self
     }
 
     /// Sets the maximum height of the frame.
     #[must_use]
-    pub const fn max_height(mut self, height: f32) -> Self {
-        self.layout.max_height = Some(height);
+    pub fn max_height(mut self, height: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        self.layout.max_height = Some(height.into_signal_f32().get());
         self
     }
 }
