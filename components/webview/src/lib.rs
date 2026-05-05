@@ -29,8 +29,7 @@ use std::fmt;
 mod handler;
 pub use handler::*;
 
-// Re-export dependencies for FFI layer
-pub use cookie;
+// Re-export waterui-internal types for FFI layer
 pub use waterui_url::Url;
 
 use waterui_core::{

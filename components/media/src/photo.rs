@@ -297,7 +297,7 @@ mod tests {
     use super::{fetch_and_decode_streaming, png_contains_cicp_pq};
     use crate::Url;
     use image::{ImageDecoder, ImageEncoder as _};
-    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize, wgpu};
+    use waterui_graphics::{OffscreenRenderConfig, OffscreenSize};
     use waterui_image::{DecodePath, Image};
 
     fn sample_png_bytes() -> Vec<u8> {
