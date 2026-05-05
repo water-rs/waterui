@@ -3,27 +3,13 @@ use std::time::Duration;
 
 use futures_lite::io::BufReader;
 use smol::net::TcpStream;
+use waterui::Identifiable;
 use waterui::app::App;
+use waterui::component::list::{List, ListItem};
 use waterui::prelude::*;
-use waterui::prelude::theme_color::{Background, Foreground, MutedForeground, Surface, SurfaceVariant};
-use waterui::shape::{Capsule, RoundedRectangle};
-use waterui::widget::condition::when;
+use waterui::prelude::theme_color::{Accent, Background, Foreground, MutedForeground};
 use waterui_inspector_protocol::transport::{read_frame, write_frame};
 use waterui_inspector_protocol::{InspectorClientMessage, InspectorEvent, InspectorServerMessage};
-
-const LIVE: Srgb = Srgb::from_hex("#22c55e");
-const RETRY: Srgb = Srgb::from_hex("#f59e0b");
-
-const PAGE_PADDING: f32 = 18.0;
-const SECTION_GAP: f32 = 14.0;
-const CARD_PADDING: f32 = 18.0;
-const CARD_GAP: f32 = 14.0;
-const KPI_GAP: f32 = 10.0;
-
-const CARD_RADIUS: f32 = 0.16;
-const TILE_RADIUS: f32 = 0.14;
-
-const KPI_TILE_HEIGHT: f32 = 96.0;
 
 #[derive(Clone)]
 struct InspectorState {
@@ -60,7 +46,7 @@ impl InspectorState {
 
 fn main() -> impl View {
     let state = InspectorState::runtime();
-    reactive_dashboard(state.clone()).task({
+    inspector_view(reactive_rows(state.clone())).task({
         let state_for_task = state.clone();
         async move {
             connect_forever(state_for_task).await;
@@ -70,229 +56,145 @@ fn main() -> impl View {
 
 #[preview]
 fn inspector_style_preview() -> impl View {
-    static_dashboard(StaticSnapshot::live())
+    inspector_view(static_rows(StaticSnapshot::live()))
 }
 
 #[preview]
 fn inspector_offline_preview() -> impl View {
-    static_dashboard(StaticSnapshot::offline())
+    inspector_view(static_rows(StaticSnapshot::offline()))
 }
 
-// ---- Layout shell --------------------------------------------------------
+// ---- View ---------------------------------------------------------------
 
-fn dashboard_shell<H, K, A, D>(hero: H, kpi: K, activity: A, diagnostics: D) -> impl View
-where
-    H: View,
-    K: View,
-    A: View,
-    D: View,
-{
-    scroll(
-        vstack((hero, kpi, activity, diagnostics))
-            .spacing(SECTION_GAP)
-            .padding_with(EdgeInsets::all(PAGE_PADDING)),
+fn inspector_view(rows: Vec<InspectorRow>) -> NavigationView {
+    NavigationView::new(
+        "Inspector",
+        List::for_each(rows, render_row).background(Background),
     )
-    .background(Background)
-    .ignore_safe_area(EdgeSet::ALL)
 }
 
-fn card<V: View>(content: V) -> impl View {
-    content
-        .padding_with(EdgeInsets::all(CARD_PADDING))
-        .background(SurfaceVariant)
-        .clip(RoundedRectangle::new(CARD_RADIUS))
+#[derive(Clone, Copy)]
+enum RowLayout {
+    /// `label …………………… value`
+    Inline,
+    /// `label …………………… value` with accent color on value (for status)
+    Highlight,
+    /// label
+    /// value (full-width, multi-line capable)
+    Detail,
 }
 
-fn eyebrow(label: &'static str) -> impl View {
-    text(label).footnote().bold().foreground(MutedForeground)
+#[derive(Clone)]
+struct InspectorRow {
+    id: u32,
+    label: &'static str,
+    value: Computed<Str>,
+    layout: RowLayout,
 }
 
-fn pill(label: &'static str, color: Srgb) -> impl View {
-    text(label)
-        .footnote()
-        .bold()
-        .foreground(Srgb::WHITE)
-        .padding_with(EdgeInsets::symmetric(6.0, 14.0))
-        .background(color)
-        .clip(Capsule)
+impl Identifiable for InspectorRow {
+    type Id = u32;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
 }
 
-fn kpi_tile_view<V: View>(label: &'static str, value: V) -> impl View {
-    vstack((eyebrow(label), spacer(), value))
-        .alignment(HorizontalAlignment::Leading)
-        .spacing(6.0)
-        .padding_with(EdgeInsets::all(14.0))
-        .min_height(KPI_TILE_HEIGHT)
-        .background(SurfaceVariant)
-        .clip(RoundedRectangle::new(TILE_RADIUS))
-}
-
-fn event_block_view<V: View>(label: &'static str, body: V) -> impl View {
-    vstack((eyebrow(label), body))
-        .alignment(HorizontalAlignment::Leading)
-        .spacing(6.0)
-        .padding_with(EdgeInsets::all(12.0))
-        .background(Surface)
-        .clip(RoundedRectangle::new(TILE_RADIUS))
+fn render_row(row: InspectorRow) -> ListItem {
+    let value_text = text!("{v}", v = row.value);
+    let body: AnyView = match row.layout {
+        RowLayout::Inline => AnyView::new(stat_row(
+            row.label,
+            value_text.foreground(MutedForeground),
+        )),
+        RowLayout::Highlight => {
+            AnyView::new(stat_row(row.label, value_text.foreground(Accent)))
+        }
+        RowLayout::Detail => AnyView::new(detail_row(
+            row.label,
+            value_text.foreground(Foreground),
+        )),
+    };
+    ListItem::new(body)
 }
 
 fn stat_row<V: View>(label: &'static str, value: V) -> impl View {
-    hstack((
-        text(label).caption().foreground(MutedForeground),
-        spacer(),
-        value,
-    ))
-    .spacing(8.0)
+    hstack((text(label).foreground(Foreground), spacer(), value))
+        .spacing(12.0)
+        .padding_with(EdgeInsets::symmetric(12.0, 16.0))
 }
 
-fn hero_layout<E, P>(endpoint: E, status: P) -> impl View
-where
-    E: View,
-    P: View,
-{
-    card(
-        hstack((
-            vstack((
-                eyebrow("WATERUI"),
-                text("Inspector")
-                    .sub_headline()
-                    .bold()
-                    .foreground(Foreground),
-                endpoint,
-            ))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(4.0),
-            spacer(),
-            status,
-        ))
-        .alignment(VerticalAlignment::Center)
-        .spacing(12.0),
-    )
-}
-
-fn kpi_strip_view<P, S, A>(polls: P, stalls: S, attempts: A) -> impl View
-where
-    P: View,
-    S: View,
-    A: View,
-{
-    hstack((
-        kpi_tile_view("Polls", polls),
-        kpi_tile_view("Stalls", stalls),
-        kpi_tile_view("Retries", attempts),
-    ))
-    .spacing(KPI_GAP)
-}
-
-fn activity_card_view<I, P, S>(indicator: I, last_poll: P, last_stall: S) -> impl View
-where
-    I: View,
-    P: View,
-    S: View,
-{
-    card(
-        vstack((
-            section_header("Live activity", indicator),
-            event_block_view("LAST POLL", last_poll),
-            event_block_view("LAST STALL", last_stall),
-        ))
+fn detail_row<V: View>(label: &'static str, value: V) -> impl View {
+    vstack((text(label).caption().foreground(MutedForeground), value))
         .alignment(HorizontalAlignment::Leading)
-        .spacing(CARD_GAP),
-    )
+        .spacing(4.0)
+        .padding_with(EdgeInsets::symmetric(12.0, 16.0))
 }
 
-fn section_header<I: View>(title: &'static str, indicator: I) -> impl View {
-    hstack((
-        text(title).sub_headline().bold().foreground(Foreground),
-        spacer(),
-        indicator,
-    ))
-    .spacing(8.0)
-}
+// ---- Reactive (runtime) -------------------------------------------------
 
-fn diagnostics_card_view<S, P, B, E>(status: S, pid: P, build: B, error: E) -> impl View
-where
-    S: View,
-    P: View,
-    B: View,
-    E: View,
-{
-    card(
-        vstack((
-            text("Diagnostics").sub_headline().bold().foreground(Foreground),
-            stat_row("Status", status),
-            stat_row("App PID", pid),
-            stat_row("Runtime build", build),
-            stat_row("Last error", error),
-        ))
-        .alignment(HorizontalAlignment::Leading)
-        .spacing(10.0),
-    )
-}
+fn reactive_rows(state: InspectorState) -> Vec<InspectorRow> {
+    let connection_label: Computed<Str> = state
+        .connected
+        .clone()
+        .select(Str::from("Live"), Str::from("Retrying"))
+        .computed();
 
-// ---- Reactive (runtime) dashboard ---------------------------------------
-
-fn reactive_dashboard(state: InspectorState) -> impl View {
-    let endpoint = text!("{endpoint}", endpoint = state.target.clone())
-        .caption()
-        .foreground(MutedForeground);
-
-    let polls = text!("{n}", n = state.polls.clone())
-        .headline()
-        .bold()
-        .foreground(Foreground);
-    let stalls = text!("{n}", n = state.stalls.clone())
-        .headline()
-        .bold()
-        .foreground(Foreground);
-    let attempts = text!("{n}", n = state.attempts.clone())
-        .headline()
-        .bold()
-        .foreground(Foreground);
-
-    let last_poll = text!("{v}", v = state.last_poll.clone())
-        .body()
-        .foreground(Foreground);
-    let last_stall = text!("{v}", v = state.last_stall.clone())
-        .body()
-        .foreground(Foreground);
-
-    let status_text = text!("{v}", v = state.status.clone())
-        .body()
-        .foreground(Foreground);
-    let pid_text = text!("{v}", v = state.app_pid.clone())
-        .body()
-        .foreground(Foreground);
-    let build_text = text!("{v}", v = state.build_commit.clone())
-        .body()
-        .foreground(MutedForeground);
-    let error_text = text!("{v}", v = state.last_error.clone())
-        .body()
-        .foreground(MutedForeground);
-
-    dashboard_shell(
-        hero_layout(endpoint, reactive_status_pill(state.connected.clone())),
-        kpi_strip_view(polls, stalls, attempts),
-        activity_card_view(
-            reactive_stream_indicator(state.connected),
-            last_poll,
-            last_stall,
+    vec![
+        row(1, "Connection", connection_label, RowLayout::Highlight),
+        row(2, "Endpoint", binding_to_text(state.target), RowLayout::Inline),
+        row(3, "Status", binding_to_text(state.status), RowLayout::Inline),
+        row(4, "Polls", int_to_text(state.polls), RowLayout::Inline),
+        row(5, "Stalls", int_to_text(state.stalls), RowLayout::Inline),
+        row(
+            6,
+            "Connect attempts",
+            int_to_text(state.attempts),
+            RowLayout::Inline,
         ),
-        diagnostics_card_view(status_text, pid_text, build_text, error_text),
-    )
+        row(7, "App PID", binding_to_text(state.app_pid), RowLayout::Inline),
+        row(
+            8,
+            "Runtime build",
+            binding_to_text(state.build_commit),
+            RowLayout::Inline,
+        ),
+        row(9, "Last poll", binding_to_text(state.last_poll), RowLayout::Detail),
+        row(
+            10,
+            "Last stall",
+            binding_to_text(state.last_stall),
+            RowLayout::Detail,
+        ),
+        row(
+            11,
+            "Last error",
+            binding_to_text(state.last_error),
+            RowLayout::Detail,
+        ),
+    ]
 }
 
-fn reactive_status_pill(connected: Binding<bool>) -> impl View {
-    when(connected, || pill("LIVE", LIVE)).otherwise(|| pill("RETRYING", RETRY))
+fn row(
+    id: u32,
+    label: &'static str,
+    value: Computed<Str>,
+    layout: RowLayout,
+) -> InspectorRow {
+    InspectorRow {
+        id,
+        label,
+        value,
+        layout,
+    }
 }
 
-fn reactive_stream_indicator(connected: Binding<bool>) -> impl View {
-    when(connected, || stream_indicator("STREAMING", LIVE))
-        .otherwise(|| stream_indicator("PAUSED", RETRY))
+fn binding_to_text(binding: Binding<Str>) -> Computed<Str> {
+    binding.computed()
 }
 
-fn stream_indicator(label: &'static str, color: Srgb) -> impl View {
-    text(label).footnote().bold().foreground(color)
+fn int_to_text(binding: Binding<i32>) -> Computed<Str> {
+    binding.map(|n| Str::from(n.to_string())).computed()
 }
 
 // ---- Static preview snapshot --------------------------------------------
@@ -321,7 +223,7 @@ impl StaticSnapshot {
             attempts: 4,
             last_poll: "waterui::layout::HStack · 274µs wall · 261µs cpu · 8333µs budget @120Hz",
             last_stall: "waterui::media::Video · 132.1% of budget · overrun 1983µs",
-            status: "Streaming live events",
+            status: "Connected",
             app_pid: "81406",
             build_commit: "bdee11e5a716",
             last_error: "—",
@@ -345,42 +247,38 @@ impl StaticSnapshot {
     }
 }
 
-fn static_dashboard(snap: StaticSnapshot) -> impl View {
-    let (pill_label, pill_color, indicator_label, indicator_color) = if snap.connected {
-        ("LIVE", LIVE, "STREAMING", LIVE)
-    } else {
-        ("RETRYING", RETRY, "PAUSED", RETRY)
-    };
-
-    dashboard_shell(
-        hero_layout(
-            text(snap.endpoint).caption().foreground(MutedForeground),
-            pill(pill_label, pill_color),
+fn static_rows(snap: StaticSnapshot) -> Vec<InspectorRow> {
+    vec![
+        row(
+            1,
+            "Connection",
+            constant(if snap.connected { "Live" } else { "Retrying" }),
+            RowLayout::Highlight,
         ),
-        kpi_strip_view(
-            static_kpi_value(snap.polls),
-            static_kpi_value(snap.stalls),
-            static_kpi_value(snap.attempts),
+        row(2, "Endpoint", constant(snap.endpoint), RowLayout::Inline),
+        row(3, "Status", constant(snap.status), RowLayout::Inline),
+        row(4, "Polls", constant_int(snap.polls), RowLayout::Inline),
+        row(5, "Stalls", constant_int(snap.stalls), RowLayout::Inline),
+        row(
+            6,
+            "Connect attempts",
+            constant_int(snap.attempts),
+            RowLayout::Inline,
         ),
-        activity_card_view(
-            stream_indicator(indicator_label, indicator_color),
-            text(snap.last_poll).body().foreground(Foreground),
-            text(snap.last_stall).body().foreground(Foreground),
-        ),
-        diagnostics_card_view(
-            text(snap.status).body().foreground(Foreground),
-            text(snap.app_pid).body().foreground(Foreground),
-            text(snap.build_commit).body().foreground(MutedForeground),
-            text(snap.last_error).body().foreground(MutedForeground),
-        ),
-    )
+        row(7, "App PID", constant(snap.app_pid), RowLayout::Inline),
+        row(8, "Runtime build", constant(snap.build_commit), RowLayout::Inline),
+        row(9, "Last poll", constant(snap.last_poll), RowLayout::Detail),
+        row(10, "Last stall", constant(snap.last_stall), RowLayout::Detail),
+        row(11, "Last error", constant(snap.last_error), RowLayout::Detail),
+    ]
 }
 
-fn static_kpi_value(value: i32) -> impl View {
-    text(value.to_string())
-        .headline()
-        .bold()
-        .foreground(Foreground)
+fn constant(value: &'static str) -> Computed<Str> {
+    Computed::constant(Str::from(value))
+}
+
+fn constant_int(value: i32) -> Computed<Str> {
+    Computed::constant(Str::from(value.to_string()))
 }
 
 // ---- Networking ----------------------------------------------------------
