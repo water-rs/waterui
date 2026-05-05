@@ -27,84 +27,9 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_core::{IntoSignalF32, View, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
-
-// ============================================================================
-// UnitPoint - Normalized coordinates for positioning
-// ============================================================================
-
-/// Normalized coordinates (0.0-1.0) for positioning.
-///
-/// Used to specify both anchor points on views and target positions in parent.
-/// Values outside 0.0-1.0 are valid and will position outside bounds.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct UnitPoint {
-    /// X coordinate (0.0 = left edge, 1.0 = right edge)
-    pub x: f32,
-    /// Y coordinate (0.0 = top edge, 1.0 = bottom edge)
-    pub y: f32,
-}
-
-impl UnitPoint {
-    /// Top-left corner (0.0, 0.0)
-    pub const TOP_LEADING: Self = Self { x: 0.0, y: 0.0 };
-    /// Top center (0.5, 0.0)
-    pub const TOP: Self = Self { x: 0.5, y: 0.0 };
-    /// Top-right corner (1.0, 0.0)
-    pub const TOP_TRAILING: Self = Self { x: 1.0, y: 0.0 };
-    /// Left center (0.0, 0.5)
-    pub const LEADING: Self = Self { x: 0.0, y: 0.5 };
-    /// Center (0.5, 0.5)
-    pub const CENTER: Self = Self { x: 0.5, y: 0.5 };
-    /// Right center (1.0, 0.5)
-    pub const TRAILING: Self = Self { x: 1.0, y: 0.5 };
-    /// Bottom-left corner (0.0, 1.0)
-    pub const BOTTOM_LEADING: Self = Self { x: 0.0, y: 1.0 };
-    /// Bottom center (0.5, 1.0)
-    pub const BOTTOM: Self = Self { x: 0.5, y: 1.0 };
-    /// Bottom-right corner (1.0, 1.0)
-    pub const BOTTOM_TRAILING: Self = Self { x: 1.0, y: 1.0 };
-
-    /// Creates a custom unit point.
-    #[must_use]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
-impl From<Alignment> for UnitPoint {
-    fn from(alignment: Alignment) -> Self {
-        let horizontal = alignment.horizontal();
-        let vertical = alignment.vertical();
-        if horizontal == HorizontalAlignment::Leading && vertical == VerticalAlignment::Top {
-            Self::TOP_LEADING
-        } else if horizontal == HorizontalAlignment::Trailing && vertical == VerticalAlignment::Top
-        {
-            Self::TOP_TRAILING
-        } else if horizontal == HorizontalAlignment::Leading
-            && vertical == VerticalAlignment::Bottom
-        {
-            Self::BOTTOM_LEADING
-        } else if horizontal == HorizontalAlignment::Trailing
-            && vertical == VerticalAlignment::Bottom
-        {
-            Self::BOTTOM_TRAILING
-        } else if horizontal == HorizontalAlignment::Leading {
-            Self::LEADING
-        } else if horizontal == HorizontalAlignment::Trailing {
-            Self::TRAILING
-        } else if vertical == VerticalAlignment::Top {
-            Self::TOP
-        } else if vertical == VerticalAlignment::Bottom {
-            Self::BOTTOM
-        } else {
-            Self::CENTER
-        }
-    }
-}
 
 // ============================================================================
 // AbsoluteLayout - Fills parent, gives all children full bounds
