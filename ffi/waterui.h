@@ -589,12 +589,6 @@ typedef enum WuiWindowStyle {
 } WuiWindowStyle;
 
 /**
- * Anchor point for transforms, specified as normalized coordinates.
- * (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right
- */
-typedef struct Anchor Anchor;
-
-/**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
  *
  * Bindings provide a reactive way to work with values. When a binding's value
@@ -3844,16 +3838,6 @@ typedef struct WuiApp {
    */
   struct WuiEnv *env;
 } WuiApp;
-
-
-
-
-
-
-
-
-
-
 
 
 
