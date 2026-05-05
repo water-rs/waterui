@@ -909,6 +909,258 @@ impl Point {
     }
 }
 
+impl From<(f32, f32)> for Point {
+    fn from((x, y): (f32, f32)) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<[f32; 2]> for Point {
+    fn from([x, y]: [f32; 2]) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<(f32, f32)> for Size {
+    fn from((width, height): (f32, f32)) -> Self {
+        Self { width, height }
+    }
+}
+
+impl From<[f32; 2]> for Size {
+    fn from([width, height]: [f32; 2]) -> Self {
+        Self { width, height }
+    }
+}
+
+// ============================================================================
+// Vec2
+// ============================================================================
+
+/// Two-dimensional displacement vector (e.g. velocity, gravity, wind, offset).
+///
+/// Distinct from [`Point`], which represents an absolute position. A `Vec2`
+/// encodes a delta and is the natural input for physics-style modifiers such
+/// as `gravity(...)` and `wind(...)` on a particle system.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Vec2 {
+    /// Displacement along the x axis.
+    pub dx: f32,
+    /// Displacement along the y axis.
+    pub dy: f32,
+}
+
+impl Vec2 {
+    /// Constructs a [`Vec2`] with the given components.
+    #[must_use]
+    pub const fn new(dx: f32, dy: f32) -> Self {
+        Self { dx, dy }
+    }
+
+    /// The zero vector.
+    pub const ZERO: Self = Self { dx: 0.0, dy: 0.0 };
+}
+
+impl From<(f32, f32)> for Vec2 {
+    fn from((dx, dy): (f32, f32)) -> Self {
+        Self { dx, dy }
+    }
+}
+
+impl From<[f32; 2]> for Vec2 {
+    fn from([dx, dy]: [f32; 2]) -> Self {
+        Self { dx, dy }
+    }
+}
+
+// ============================================================================
+// UnitPoint
+// ============================================================================
+
+/// Normalized coordinates (0.0–1.0) for positioning and gradient endpoints.
+///
+/// Used to specify both anchor points on views and target positions in parents.
+/// Values outside `0.0..=1.0` are valid and will position outside bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct UnitPoint {
+    /// X coordinate (0.0 = left edge, 1.0 = right edge).
+    pub x: f32,
+    /// Y coordinate (0.0 = top edge, 1.0 = bottom edge).
+    pub y: f32,
+}
+
+impl UnitPoint {
+    /// Top-left corner (0.0, 0.0).
+    pub const TOP_LEADING: Self = Self { x: 0.0, y: 0.0 };
+    /// Top center (0.5, 0.0).
+    pub const TOP: Self = Self { x: 0.5, y: 0.0 };
+    /// Top-right corner (1.0, 0.0).
+    pub const TOP_TRAILING: Self = Self { x: 1.0, y: 0.0 };
+    /// Left center (0.0, 0.5).
+    pub const LEADING: Self = Self { x: 0.0, y: 0.5 };
+    /// Center (0.5, 0.5).
+    pub const CENTER: Self = Self { x: 0.5, y: 0.5 };
+    /// Right center (1.0, 0.5).
+    pub const TRAILING: Self = Self { x: 1.0, y: 0.5 };
+    /// Bottom-left corner (0.0, 1.0).
+    pub const BOTTOM_LEADING: Self = Self { x: 0.0, y: 1.0 };
+    /// Bottom center (0.5, 1.0).
+    pub const BOTTOM: Self = Self { x: 0.5, y: 1.0 };
+    /// Bottom-right corner (1.0, 1.0).
+    pub const BOTTOM_TRAILING: Self = Self { x: 1.0, y: 1.0 };
+
+    /// Creates a custom unit point.
+    #[must_use]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<(f32, f32)> for UnitPoint {
+    fn from((x, y): (f32, f32)) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<[f32; 2]> for UnitPoint {
+    fn from([x, y]: [f32; 2]) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<Alignment> for UnitPoint {
+    fn from(alignment: Alignment) -> Self {
+        let horizontal = alignment.horizontal();
+        let vertical = alignment.vertical();
+        if horizontal == HorizontalAlignment::Leading && vertical == VerticalAlignment::Top {
+            Self::TOP_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing && vertical == VerticalAlignment::Top
+        {
+            Self::TOP_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_LEADING
+        } else if horizontal == HorizontalAlignment::Trailing
+            && vertical == VerticalAlignment::Bottom
+        {
+            Self::BOTTOM_TRAILING
+        } else if horizontal == HorizontalAlignment::Leading {
+            Self::LEADING
+        } else if horizontal == HorizontalAlignment::Trailing {
+            Self::TRAILING
+        } else if vertical == VerticalAlignment::Top {
+            Self::TOP
+        } else if vertical == VerticalAlignment::Bottom {
+            Self::BOTTOM
+        } else {
+            Self::CENTER
+        }
+    }
+}
+
+// ============================================================================
+// Affine2
+// ============================================================================
+
+/// 2D affine transform stored as a row-major 2x3 matrix.
+///
+/// The transform maps a point `(x, y)` to:
+///
+/// ```text
+/// x' = a * x + c * y + e
+/// y' = b * x + d * y + f
+/// ```
+///
+/// Layout matches the canonical 6-coefficient ordering used by `kurbo` and the
+/// HTML Canvas 2D context, so a transform built here can be losslessly handed to
+/// a 2D rendering backend.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Affine2 {
+    /// Scale on the x axis.
+    pub a: f32,
+    /// Shear on the y axis (i.e. y component of the transformed x basis).
+    pub b: f32,
+    /// Shear on the x axis (i.e. x component of the transformed y basis).
+    pub c: f32,
+    /// Scale on the y axis.
+    pub d: f32,
+    /// Translation on the x axis.
+    pub e: f32,
+    /// Translation on the y axis.
+    pub f: f32,
+}
+
+impl Affine2 {
+    /// Identity transform: leaves any point unchanged.
+    pub const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    /// Constructs an affine transform from raw coefficients.
+    #[must_use]
+    pub const fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
+        Self { a, b, c, d, e, f }
+    }
+
+    /// Pure translation by `(tx, ty)`.
+    #[must_use]
+    pub const fn translate(tx: f32, ty: f32) -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: tx,
+            f: ty,
+        }
+    }
+
+    /// Non-uniform scale around the origin.
+    #[must_use]
+    pub const fn scale(sx: f32, sy: f32) -> Self {
+        Self {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: sy,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    /// Rotation around the origin by `radians`.
+    #[must_use]
+    pub fn rotate(radians: f32) -> Self {
+        let (s, c) = radians.sin_cos();
+        Self {
+            a: c,
+            b: s,
+            c: -s,
+            d: c,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+}
+
+impl From<[f32; 6]> for Affine2 {
+    fn from([a, b, c, d, e, f]: [f32; 6]) -> Self {
+        Self { a, b, c, d, e, f }
+    }
+}
+
+impl From<Affine2> for [f32; 6] {
+    fn from(t: Affine2) -> Self {
+        [t.a, t.b, t.c, t.d, t.e, t.f]
+    }
+}
+
 macro_rules! impl_layout_signal_constant {
     ($($ty:ty),+ $(,)?) => {
         $(
@@ -934,6 +1186,9 @@ impl_layout_signal_constant!(
     Point,
     Size,
     Rect,
+    Vec2,
+    UnitPoint,
+    Affine2,
     HorizontalAlignment,
     VerticalAlignment,
     Alignment
