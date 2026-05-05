@@ -632,7 +632,7 @@ fn bind_param_watcher<S>(
 
 macro_rules! impl_filter_graph_one_param {
     ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + 'static,
             S::Guard: 'static,
@@ -652,7 +652,7 @@ macro_rules! impl_filter_graph_one_param {
         }
     };
     ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + 'static,
             S::Guard: 'static,
@@ -675,7 +675,7 @@ macro_rules! impl_filter_graph_one_param {
 
 macro_rules! impl_filter_graph_two_params {
     ($ty:ident, color) => {
-        impl<A, B> FilterGraph for filtrate_core::filters::$ty<A, B>
+        impl<A, B> FilterGraph for filtrate::filters::$ty<A, B>
         where
             A: Signal<Output = f32> + 'static,
             B: Signal<Output = f32> + 'static,
@@ -698,7 +698,7 @@ macro_rules! impl_filter_graph_two_params {
         }
     };
     ($ty:ident, spatial) => {
-        impl<A, B> FilterGraph for filtrate_core::filters::$ty<A, B>
+        impl<A, B> FilterGraph for filtrate::filters::$ty<A, B>
         where
             A: Signal<Output = f32> + 'static,
             B: Signal<Output = f32> + 'static,
@@ -724,7 +724,7 @@ macro_rules! impl_filter_graph_two_params {
 
 macro_rules! impl_filter_graph_four_params {
     ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -751,7 +751,7 @@ macro_rules! impl_filter_graph_four_params {
         }
     };
     ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -785,7 +785,7 @@ macro_rules! impl_filter_graph_four_params {
 
 macro_rules! impl_filter_graph_array_two_params {
     ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -812,7 +812,7 @@ macro_rules! impl_filter_graph_array_two_params {
         }
     };
     ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -846,7 +846,7 @@ macro_rules! impl_filter_graph_array_two_params {
 
 macro_rules! impl_filter_graph_array_three_params {
     ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -880,7 +880,7 @@ macro_rules! impl_filter_graph_array_three_params {
 
 macro_rules! impl_filter_graph_eight_params {
     ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -914,7 +914,7 @@ macro_rules! impl_filter_graph_eight_params {
 
 macro_rules! impl_filter_graph_twelve_params {
     ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate_core::filters::$ty<S>
+        impl<S> FilterGraph for filtrate::filters::$ty<S>
         where
             S: Signal<Output = f32> + Clone + 'static,
             S::Guard: 'static,
@@ -944,7 +944,7 @@ macro_rules! impl_filter_graph_twelve_params {
 
 macro_rules! impl_filter_graph_three_params {
     ($ty:ident, color) => {
-        impl<A, B, C> FilterGraph for filtrate_core::filters::$ty<A, B, C>
+        impl<A, B, C> FilterGraph for filtrate::filters::$ty<A, B, C>
         where
             A: Signal<Output = f32> + 'static,
             B: Signal<Output = f32> + 'static,
@@ -970,7 +970,7 @@ macro_rules! impl_filter_graph_three_params {
         }
     };
     ($ty:ident, spatial) => {
-        impl<A, B, C> FilterGraph for filtrate_core::filters::$ty<A, B, C>
+        impl<A, B, C> FilterGraph for filtrate::filters::$ty<A, B, C>
         where
             A: Signal<Output = f32> + 'static,
             B: Signal<Output = f32> + 'static,
@@ -1013,7 +1013,7 @@ impl_filter_graph_two_params!(HighlightsShadows, color);
 impl_filter_graph_two_params!(MotionBlur, spatial);
 impl_filter_graph_three_params!(ZoomBlur, spatial);
 impl_filter_graph_twelve_params!(ColorMatrix, color);
-impl<S> FilterGraph for filtrate_core::filters::GaussianBlur<S>
+impl<S> FilterGraph for filtrate::filters::GaussianBlur<S>
 where
     S: Signal<Output = f32> + 'static,
     S::Guard: 'static,
@@ -1021,12 +1021,12 @@ where
     fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
         push_spatial_stage(
             out,
-            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_horizontal.wgsl"),
+            include_str!("../../../utils/filtrate/src/shaders/gaussian_blur_horizontal.wgsl"),
             1,
         );
         push_spatial_stage(
             out,
-            include_str!("../../../utils/filtrate-core/src/shaders/gaussian_blur_vertical.wgsl"),
+            include_str!("../../../utils/filtrate/src/shaders/gaussian_blur_vertical.wgsl"),
             1,
         );
     }
@@ -1073,7 +1073,7 @@ impl_filter_graph_four_params!(LineHalftone, spatial);
 impl_filter_graph_four_params!(Kaleidoscope, spatial);
 impl_filter_graph_array_two_params!(MirrorTile, spatial);
 
-impl<S> FilterGraph for filtrate_core::filters::Blur<S>
+impl<S> FilterGraph for filtrate::filters::Blur<S>
 where
     S: Signal<Output = f32> + 'static,
     S::Guard: 'static,
@@ -1082,12 +1082,12 @@ where
         // Separable blur: horizontal then vertical, both driven by the same radius.
         push_spatial_stage(
             out,
-            include_str!("../../../utils/filtrate-core/src/shaders/blur_horizontal.wgsl"),
+            include_str!("../../../utils/filtrate/src/shaders/blur_horizontal.wgsl"),
             1,
         );
         push_spatial_stage(
             out,
-            include_str!("../../../utils/filtrate-core/src/shaders/blur_vertical.wgsl"),
+            include_str!("../../../utils/filtrate/src/shaders/blur_vertical.wgsl"),
             1,
         );
     }
@@ -1118,13 +1118,13 @@ where
     }
 }
 
-impl FilterGraph for filtrate_core::filters::Invert {
+impl FilterGraph for filtrate::filters::Invert {
     fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
         push_color_stage(out, self.fragments(), 0);
     }
 }
 
-impl<R, S> FilterGraph for filtrate_core::filters::Vignette<R, S>
+impl<R, S> FilterGraph for filtrate::filters::Vignette<R, S>
 where
     R: Signal<Output = f32> + 'static,
     S: Signal<Output = f32> + 'static,
@@ -2381,9 +2381,9 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         target_format: wgpu::TextureFormat,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let preamble =
-            include_str!("../../../utils/filtrate-core/src/shaders/fragment_preamble.wgsl");
+            include_str!("../../../utils/filtrate/src/shaders/fragment_preamble.wgsl");
         let postamble =
-            include_str!("../../../utils/filtrate-core/src/shaders/fragment_postamble.wgsl");
+            include_str!("../../../utils/filtrate/src/shaders/fragment_postamble.wgsl");
 
         let mut shader_source = alloc::string::String::from(preamble);
         shader_source.push_str(fragments);
@@ -3022,10 +3022,10 @@ mod tests {
     #[test]
     fn fuse_adjacent_color_stages() {
         let filter = Chain {
-            first: filtrate_core::filters::Brightness(0.2f32),
+            first: filtrate::filters::Brightness(0.2f32),
             second: Chain {
-                first: filtrate_core::filters::Contrast(1.1f32),
-                second: filtrate_core::filters::Invert,
+                first: filtrate::filters::Contrast(1.1f32),
+                second: filtrate::filters::Invert,
             },
         };
 
@@ -3042,10 +3042,10 @@ mod tests {
     #[test]
     fn keep_spatial_boundaries() {
         let filter = Chain {
-            first: filtrate_core::filters::Blur(2.0f32),
+            first: filtrate::filters::Blur(2.0f32),
             second: Chain {
-                first: filtrate_core::filters::Brightness(0.1f32),
-                second: filtrate_core::filters::Sharpen(0.8f32),
+                first: filtrate::filters::Brightness(0.1f32),
+                second: filtrate::filters::Sharpen(0.8f32),
             },
         };
 
@@ -3063,12 +3063,12 @@ mod tests {
     #[test]
     fn preserve_param_offsets_across_fused_and_spatial_passes() {
         let filter = Chain {
-            first: filtrate_core::filters::Brightness(0.2f32),
+            first: filtrate::filters::Brightness(0.2f32),
             second: Chain {
-                first: filtrate_core::filters::Contrast(1.1f32),
+                first: filtrate::filters::Contrast(1.1f32),
                 second: Chain {
-                    first: filtrate_core::filters::Blur(2.0f32),
-                    second: filtrate_core::filters::Sepia(0.7f32),
+                    first: filtrate::filters::Blur(2.0f32),
+                    second: filtrate::filters::Sepia(0.7f32),
                 },
             },
         };
@@ -3091,10 +3091,10 @@ mod tests {
     #[test]
     fn runtime_binding_plan_tracks_scratch_ping_pong_and_blit_source() {
         let filter = Chain {
-            first: filtrate_core::filters::Blur(2.0f32),
+            first: filtrate::filters::Blur(2.0f32),
             second: Chain {
-                first: filtrate_core::filters::Brightness(0.2f32),
-                second: filtrate_core::filters::Sharpen(0.8f32),
+                first: filtrate::filters::Brightness(0.2f32),
+                second: filtrate::filters::Sharpen(0.8f32),
             },
         };
 
@@ -3140,10 +3140,10 @@ mod tests {
     #[test]
     fn runtime_binding_plan_for_fused_color_chain_uses_direct_output() {
         let filter = Chain {
-            first: filtrate_core::filters::Brightness(0.1f32),
+            first: filtrate::filters::Brightness(0.1f32),
             second: Chain {
-                first: filtrate_core::filters::Contrast(1.2f32),
-                second: filtrate_core::filters::Invert,
+                first: filtrate::filters::Contrast(1.2f32),
+                second: filtrate::filters::Invert,
             },
         };
 
@@ -3196,7 +3196,7 @@ mod tests {
         }
 
         fn fragments(&self) -> Self::Fragments {
-            include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl")
+            include_str!("../../../utils/filtrate/src/shaders/fragments/brightness.wgsl")
         }
     }
 
@@ -3204,7 +3204,7 @@ mod tests {
         fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
             push_color_stage(
                 out,
-                include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl"),
+                include_str!("../../../utils/filtrate/src/shaders/fragments/brightness.wgsl"),
                 <Self::Params as ParamArray>::LEN,
             );
         }
@@ -3280,10 +3280,10 @@ mod tests {
     #[test]
     fn hdr_color_fragments_do_not_clamp_to_unit_range() {
         let brightness =
-            include_str!("../../../utils/filtrate-core/src/shaders/fragments/brightness.wgsl");
+            include_str!("../../../utils/filtrate/src/shaders/fragments/brightness.wgsl");
         let contrast =
-            include_str!("../../../utils/filtrate-core/src/shaders/fragments/contrast.wgsl");
-        let sharpen = include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl");
+            include_str!("../../../utils/filtrate/src/shaders/fragments/contrast.wgsl");
+        let sharpen = include_str!("../../../utils/filtrate/src/shaders/sharpen.wgsl");
 
         assert!(!brightness.contains("clamp("));
         assert!(!contrast.contains("clamp("));
@@ -3292,8 +3292,8 @@ mod tests {
 
     #[test]
     fn spatial_shaders_use_dynamic_storage_format_and_texture_load() {
-        let blur = include_str!("../../../utils/filtrate-core/src/shaders/blur.wgsl");
-        let sharpen = include_str!("../../../utils/filtrate-core/src/shaders/sharpen.wgsl");
+        let blur = include_str!("../../../utils/filtrate/src/shaders/blur.wgsl");
+        let sharpen = include_str!("../../../utils/filtrate/src/shaders/sharpen.wgsl");
 
         assert!(blur.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
         assert!(sharpen.contains(SPATIAL_OUTPUT_FORMAT_TOKEN));
@@ -3305,7 +3305,7 @@ mod tests {
 
     #[test]
     fn hdr_policy_builders_update_adapter_policy() {
-        let adapter = FilterAdapter::new(filtrate_core::filters::Blur(2.0f32));
+        let adapter = FilterAdapter::new(filtrate::filters::Blur(2.0f32));
         assert_eq!(adapter.hdr_policy, HdrPolicy::PreferHdr);
 
         let adapter = adapter.require_hdr();
@@ -3317,8 +3317,8 @@ mod tests {
 
     #[test]
     fn then_preserves_hdr_policy() {
-        let adapter = FilterAdapter::new(filtrate_core::filters::Blur(2.0f32)).require_hdr();
-        let chained = adapter.then(filtrate_core::filters::Sharpen(1.0f32));
+        let adapter = FilterAdapter::new(filtrate::filters::Blur(2.0f32)).require_hdr();
+        let chained = adapter.then(filtrate::filters::Sharpen(1.0f32));
         assert_eq!(chained.hdr_policy, HdrPolicy::RequireHdr);
     }
 
@@ -3386,7 +3386,7 @@ mod tests {
             view_formats: &[],
         });
 
-        let mut adapter = FilterAdapter::new(filtrate_core::filters::Brightness(0.25f32));
+        let mut adapter = FilterAdapter::new(filtrate::filters::Brightness(0.25f32));
         let ctx = FilterContext {
             device,
             queue,
@@ -3489,7 +3489,7 @@ mod tests {
             view_formats: &[],
         });
 
-        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
         let ctx = FilterContext {
             device,
             queue,
@@ -3607,7 +3607,7 @@ mod tests {
             view_formats: &[],
         });
 
-        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
         let ctx = FilterContext {
             device,
             queue,
@@ -3726,7 +3726,7 @@ mod tests {
             view_formats: &[],
         });
 
-        let mut adapter = FilterAdapter::new(filtrate_core::filters::Blur(1.0f32));
+        let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
         let ctx = FilterContext {
             device,
             queue,
@@ -3849,69 +3849,69 @@ mod tests {
             "brightness.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Brightness(0.2f32))
+            FilterAdapter::new(filtrate::filters::Brightness(0.2f32))
         );
         export_filter!(
             "contrast.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Contrast(1.4f32))
+            FilterAdapter::new(filtrate::filters::Contrast(1.4f32))
         );
         export_filter!(
             "saturation.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Saturation(1.8f32))
+            FilterAdapter::new(filtrate::filters::Saturation(1.8f32))
         );
         export_filter!(
             "grayscale.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Grayscale(1.0f32))
+            FilterAdapter::new(filtrate::filters::Grayscale(1.0f32))
         );
         export_filter!(
             "hue_rotation.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::HueRotation(120.0f32))
+            FilterAdapter::new(filtrate::filters::HueRotation(120.0f32))
         );
         export_filter!(
             "sepia.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Sepia(1.0f32))
+            FilterAdapter::new(filtrate::filters::Sepia(1.0f32))
         );
         export_filter!(
             "invert.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Invert)
+            FilterAdapter::new(filtrate::filters::Invert)
         );
         export_filter!(
             "blur.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Blur(3.0f32))
+            FilterAdapter::new(filtrate::filters::Blur(3.0f32))
         );
         export_filter!(
             "sharpen.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Sharpen(1.5f32))
+            FilterAdapter::new(filtrate::filters::Sharpen(1.5f32))
         );
         export_filter!(
             "chain_blur_brightness.png",
             input_width,
             input_height,
-            FilterAdapter::new(filtrate_core::filters::Blur(2.0f32))
-                .then(filtrate_core::filters::Brightness(0.15f32))
-                .then(filtrate_core::filters::Contrast(1.2f32))
+            FilterAdapter::new(filtrate::filters::Blur(2.0f32))
+                .then(filtrate::filters::Brightness(0.15f32))
+                .then(filtrate::filters::Contrast(1.2f32))
         );
         export_filter!(
             "blur_resized_384x216.png",
             384,
             216,
-            FilterAdapter::new(filtrate_core::filters::Blur(2.0f32))
+            FilterAdapter::new(filtrate::filters::Blur(2.0f32))
         );
 
         eprintln!("Filter gallery exported to {}", output_dir.display());
@@ -3923,82 +3923,82 @@ mod tests {
 /// These aliases intentionally normalize reactive parameters to `Computed<f32>`
 /// so backend hook nodes remain concrete (`FilteredView<Blur>`, etc.).
 /// Alias for a box-blur filter.
-pub type Blur = FilterAdapter<filtrate_core::filters::Blur<Computed<f32>>>;
+pub type Blur = FilterAdapter<filtrate::filters::Blur<Computed<f32>>>;
 /// Alias for a brightness adjustment filter.
-pub type Brightness = FilterAdapter<filtrate_core::filters::Brightness<Computed<f32>>>;
+pub type Brightness = FilterAdapter<filtrate::filters::Brightness<Computed<f32>>>;
 /// Alias for a contrast adjustment filter.
-pub type Contrast = FilterAdapter<filtrate_core::filters::Contrast<Computed<f32>>>;
+pub type Contrast = FilterAdapter<filtrate::filters::Contrast<Computed<f32>>>;
 /// Alias for an exposure adjustment filter.
-pub type Exposure = FilterAdapter<filtrate_core::filters::Exposure<Computed<f32>>>;
+pub type Exposure = FilterAdapter<filtrate::filters::Exposure<Computed<f32>>>;
 /// Alias for a 4x5 color-matrix filter.
-pub type ColorMatrix = FilterAdapter<filtrate_core::filters::ColorMatrix<f32>>;
+pub type ColorMatrix = FilterAdapter<filtrate::filters::ColorMatrix<f32>>;
 /// Alias for a gamma adjustment filter.
-pub type Gamma = FilterAdapter<filtrate_core::filters::Gamma<Computed<f32>>>;
+pub type Gamma = FilterAdapter<filtrate::filters::Gamma<Computed<f32>>>;
 /// Alias for a Gaussian blur filter.
-pub type GaussianBlur = FilterAdapter<filtrate_core::filters::GaussianBlur<Computed<f32>>>;
+pub type GaussianBlur = FilterAdapter<filtrate::filters::GaussianBlur<Computed<f32>>>;
 /// Alias for a saturation adjustment filter.
-pub type Saturation = FilterAdapter<filtrate_core::filters::Saturation<Computed<f32>>>;
+pub type Saturation = FilterAdapter<filtrate::filters::Saturation<Computed<f32>>>;
 /// Alias for a temperature/tint adjustment filter.
 pub type TemperatureTint =
-    FilterAdapter<filtrate_core::filters::TemperatureTint<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::TemperatureTint<Computed<f32>, Computed<f32>>>;
 /// Alias for a grayscale mix filter.
-pub type Grayscale = FilterAdapter<filtrate_core::filters::Grayscale<Computed<f32>>>;
+pub type Grayscale = FilterAdapter<filtrate::filters::Grayscale<Computed<f32>>>;
 /// Alias for a bloom filter.
-pub type Bloom = FilterAdapter<filtrate_core::filters::Bloom<Computed<f32>>>;
+pub type Bloom = FilterAdapter<filtrate::filters::Bloom<Computed<f32>>>;
 /// Alias for a gloom filter.
-pub type Gloom = FilterAdapter<filtrate_core::filters::Gloom<Computed<f32>>>;
+pub type Gloom = FilterAdapter<filtrate::filters::Gloom<Computed<f32>>>;
 /// Alias for a highlights/shadows adjustment filter.
 pub type HighlightsShadows =
-    FilterAdapter<filtrate_core::filters::HighlightsShadows<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::HighlightsShadows<Computed<f32>, Computed<f32>>>;
 /// Alias for a hue-rotation filter.
-pub type HueRotation = FilterAdapter<filtrate_core::filters::HueRotation<Computed<f32>>>;
+pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Computed<f32>>>;
 /// Alias for a color inversion filter.
-pub type Invert = FilterAdapter<filtrate_core::filters::Invert>;
+pub type Invert = FilterAdapter<filtrate::filters::Invert>;
 /// Alias for a motion blur filter.
 pub type MotionBlur =
-    FilterAdapter<filtrate_core::filters::MotionBlur<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::MotionBlur<Computed<f32>, Computed<f32>>>;
 /// Alias for a bump distortion filter.
-pub type BumpDistortion = FilterAdapter<filtrate_core::filters::BumpDistortion<Computed<f32>>>;
+pub type BumpDistortion = FilterAdapter<filtrate::filters::BumpDistortion<Computed<f32>>>;
 /// Alias for a pinch distortion filter.
-pub type PinchDistortion = FilterAdapter<filtrate_core::filters::PinchDistortion<Computed<f32>>>;
+pub type PinchDistortion = FilterAdapter<filtrate::filters::PinchDistortion<Computed<f32>>>;
 /// Alias for a twirl distortion filter.
-pub type TwirlDistortion = FilterAdapter<filtrate_core::filters::TwirlDistortion<Computed<f32>>>;
+pub type TwirlDistortion = FilterAdapter<filtrate::filters::TwirlDistortion<Computed<f32>>>;
 /// Alias for a vortex distortion filter.
-pub type VortexDistortion = FilterAdapter<filtrate_core::filters::VortexDistortion<Computed<f32>>>;
+pub type VortexDistortion = FilterAdapter<filtrate::filters::VortexDistortion<Computed<f32>>>;
 /// Alias for a perspective transform filter.
-pub type PerspectiveTransform = FilterAdapter<filtrate_core::filters::PerspectiveTransform<f32>>;
+pub type PerspectiveTransform = FilterAdapter<filtrate::filters::PerspectiveTransform<f32>>;
 /// Alias for a perspective correction filter.
-pub type PerspectiveCorrection = FilterAdapter<filtrate_core::filters::PerspectiveCorrection<f32>>;
+pub type PerspectiveCorrection = FilterAdapter<filtrate::filters::PerspectiveCorrection<f32>>;
 /// Alias for a sepia-toning filter.
-pub type Sepia = FilterAdapter<filtrate_core::filters::Sepia<Computed<f32>>>;
+pub type Sepia = FilterAdapter<filtrate::filters::Sepia<Computed<f32>>>;
 /// Alias for a vibrance adjustment filter.
-pub type Vibrance = FilterAdapter<filtrate_core::filters::Vibrance<Computed<f32>>>;
+pub type Vibrance = FilterAdapter<filtrate::filters::Vibrance<Computed<f32>>>;
 /// Alias for a pixellation filter.
-pub type Pixellate = FilterAdapter<filtrate_core::filters::Pixellate<Computed<f32>>>;
+pub type Pixellate = FilterAdapter<filtrate::filters::Pixellate<Computed<f32>>>;
 /// Alias for a crystallize filter.
-pub type Crystallize = FilterAdapter<filtrate_core::filters::Crystallize<Computed<f32>>>;
+pub type Crystallize = FilterAdapter<filtrate::filters::Crystallize<Computed<f32>>>;
 /// Alias for an edge-work stylization filter.
-pub type EdgeWork = FilterAdapter<filtrate_core::filters::EdgeWork<Computed<f32>>>;
+pub type EdgeWork = FilterAdapter<filtrate::filters::EdgeWork<Computed<f32>>>;
 /// Alias for a dot-halftone filter.
-pub type DotHalftone = FilterAdapter<filtrate_core::filters::DotHalftone<Computed<f32>>>;
+pub type DotHalftone = FilterAdapter<filtrate::filters::DotHalftone<Computed<f32>>>;
 /// Alias for a line-halftone filter.
-pub type LineHalftone = FilterAdapter<filtrate_core::filters::LineHalftone<Computed<f32>>>;
+pub type LineHalftone = FilterAdapter<filtrate::filters::LineHalftone<Computed<f32>>>;
 /// Alias for a kaleidoscope filter.
-pub type Kaleidoscope = FilterAdapter<filtrate_core::filters::Kaleidoscope<Computed<f32>>>;
+pub type Kaleidoscope = FilterAdapter<filtrate::filters::Kaleidoscope<Computed<f32>>>;
 /// Alias for a mirror-tile filter.
-pub type MirrorTile = FilterAdapter<filtrate_core::filters::MirrorTile<Computed<f32>>>;
+pub type MirrorTile = FilterAdapter<filtrate::filters::MirrorTile<Computed<f32>>>;
 /// Alias for an unsharp-mask filter.
-pub type UnsharpMask = FilterAdapter<filtrate_core::filters::UnsharpMask<Computed<f32>>>;
+pub type UnsharpMask = FilterAdapter<filtrate::filters::UnsharpMask<Computed<f32>>>;
 /// Alias for a sharpen filter.
-pub type Sharpen = FilterAdapter<filtrate_core::filters::Sharpen<Computed<f32>>>;
+pub type Sharpen = FilterAdapter<filtrate::filters::Sharpen<Computed<f32>>>;
 /// Alias for a vignette filter.
-pub type Vignette = FilterAdapter<filtrate_core::filters::Vignette<Computed<f32>, Computed<f32>>>;
+pub type Vignette = FilterAdapter<filtrate::filters::Vignette<Computed<f32>, Computed<f32>>>;
 /// Alias for a white-point adjustment filter.
 pub type WhitePoint =
-    FilterAdapter<filtrate_core::filters::WhitePoint<Computed<f32>, Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::WhitePoint<Computed<f32>, Computed<f32>, Computed<f32>>>;
 /// Alias for a zoom-blur filter.
 pub type ZoomBlur =
-    FilterAdapter<filtrate_core::filters::ZoomBlur<Computed<f32>, Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::ZoomBlur<Computed<f32>, Computed<f32>, Computed<f32>>>;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
@@ -4011,7 +4011,7 @@ impl Blur {
 /// Rebuilds the canonical blur filter adapter from a reactive radius signal.
 #[must_use]
 pub fn blur_from_radius_signal(radius: Computed<f32>) -> Blur {
-    FilterAdapter::new(filtrate_core::filters::Blur(radius))
+    FilterAdapter::new(filtrate::filters::Blur(radius))
 }
 
 fn u32_to_f32(value: u32) -> f32 {
@@ -4051,7 +4051,7 @@ pub trait FilterViewExt: View + Sized {
     fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Blur(
+            FilterAdapter::new(filtrate::filters::Blur(
                 radius.into_signal_f32().computed(),
             )),
         )
@@ -4061,7 +4061,7 @@ pub trait FilterViewExt: View + Sized {
     fn brightness<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Brightness> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Brightness(
+            FilterAdapter::new(filtrate::filters::Brightness(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -4071,7 +4071,7 @@ pub trait FilterViewExt: View + Sized {
     fn exposure<T: IntoSignalF32>(self, ev: T) -> Filtered<Self, Exposure> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Exposure(
+            FilterAdapter::new(filtrate::filters::Exposure(
                 ev.into_signal_f32().computed(),
             )),
         )
@@ -4081,7 +4081,7 @@ pub trait FilterViewExt: View + Sized {
     fn gamma<T: IntoSignalF32>(self, gamma: T) -> Filtered<Self, Gamma> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Gamma(
+            FilterAdapter::new(filtrate::filters::Gamma(
                 gamma.into_signal_f32().computed(),
             )),
         )
@@ -4091,7 +4091,7 @@ pub trait FilterViewExt: View + Sized {
     fn contrast<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Contrast> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Contrast(
+            FilterAdapter::new(filtrate::filters::Contrast(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -4101,7 +4101,7 @@ pub trait FilterViewExt: View + Sized {
     fn saturation<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Saturation> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Saturation(
+            FilterAdapter::new(filtrate::filters::Saturation(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -4111,7 +4111,7 @@ pub trait FilterViewExt: View + Sized {
     fn vibrance<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Vibrance> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Vibrance(
+            FilterAdapter::new(filtrate::filters::Vibrance(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -4121,7 +4121,7 @@ pub trait FilterViewExt: View + Sized {
     fn grayscale<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Grayscale> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Grayscale(
+            FilterAdapter::new(filtrate::filters::Grayscale(
                 intensity.into_signal_f32().computed(),
             )),
         )
@@ -4131,7 +4131,7 @@ pub trait FilterViewExt: View + Sized {
     fn hue_rotation<T: IntoSignalF32>(self, angle: T) -> Filtered<Self, HueRotation> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::HueRotation(
+            FilterAdapter::new(filtrate::filters::HueRotation(
                 angle.into_signal_f32().computed(),
             )),
         )
@@ -4139,14 +4139,14 @@ pub trait FilterViewExt: View + Sized {
 
     /// Apply an invert filter.
     fn invert(self) -> Filtered<Self, Invert> {
-        Filtered::new(self, FilterAdapter::new(filtrate_core::filters::Invert))
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::Invert))
     }
 
     /// Apply a sepia filter.
     fn sepia<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Sepia> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sepia(
+            FilterAdapter::new(filtrate::filters::Sepia(
                 intensity.into_signal_f32().computed(),
             )),
         )
@@ -4156,7 +4156,7 @@ pub trait FilterViewExt: View + Sized {
     fn sharpen<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Sharpen> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sharpen(
+            FilterAdapter::new(filtrate::filters::Sharpen(
                 amount.into_signal_f32().computed(),
             )),
         )
@@ -4170,7 +4170,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, TemperatureTint> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::TemperatureTint(
+            FilterAdapter::new(filtrate::filters::TemperatureTint(
                 temperature.into_signal_f32().computed(),
                 tint.into_signal_f32().computed(),
             )),
@@ -4185,7 +4185,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, HighlightsShadows> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::HighlightsShadows(
+            FilterAdapter::new(filtrate::filters::HighlightsShadows(
                 highlights.into_signal_f32().computed(),
                 shadows.into_signal_f32().computed(),
             )),
@@ -4200,7 +4200,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, MotionBlur> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::MotionBlur(
+            FilterAdapter::new(filtrate::filters::MotionBlur(
                 radius.into_signal_f32().computed(),
                 angle.into_signal_f32().computed(),
             )),
@@ -4215,7 +4215,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Vignette> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Vignette(
+            FilterAdapter::new(filtrate::filters::Vignette(
                 radius.into_signal_f32().computed(),
                 softness.into_signal_f32().computed(),
             )),
@@ -4231,7 +4231,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, WhitePoint> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::WhitePoint(
+            FilterAdapter::new(filtrate::filters::WhitePoint(
                 red.into_signal_f32().computed(),
                 green.into_signal_f32().computed(),
                 blue.into_signal_f32().computed(),
@@ -4248,7 +4248,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, ZoomBlur> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::ZoomBlur(
+            FilterAdapter::new(filtrate::filters::ZoomBlur(
                 amount.into_signal_f32().computed(),
                 center_x.into_signal_f32().computed(),
                 center_y.into_signal_f32().computed(),
@@ -4260,7 +4260,7 @@ pub trait FilterViewExt: View + Sized {
     fn gaussian_blur<T: IntoSignalF32>(self, sigma: T) -> Filtered<Self, GaussianBlur> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::GaussianBlur(
+            FilterAdapter::new(filtrate::filters::GaussianBlur(
                 sigma.into_signal_f32().computed(),
             )),
         )
@@ -4284,7 +4284,7 @@ pub trait FilterViewExt: View + Sized {
         ];
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::ColorMatrix(params)),
+            FilterAdapter::new(filtrate::filters::ColorMatrix(params)),
         )
     }
 
@@ -4297,7 +4297,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Bloom> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Bloom([
+            FilterAdapter::new(filtrate::filters::Bloom([
                 radius.into_signal_f32().computed(),
                 intensity.into_signal_f32().computed(),
                 threshold.into_signal_f32().computed(),
@@ -4314,7 +4314,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Gloom> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Gloom([
+            FilterAdapter::new(filtrate::filters::Gloom([
                 radius.into_signal_f32().computed(),
                 intensity.into_signal_f32().computed(),
                 threshold.into_signal_f32().computed(),
@@ -4330,7 +4330,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, UnsharpMask> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::UnsharpMask([
+            FilterAdapter::new(filtrate::filters::UnsharpMask([
                 radius.into_signal_f32().computed(),
                 amount.into_signal_f32().computed(),
             ])),
@@ -4347,7 +4347,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, BumpDistortion> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::BumpDistortion([
+            FilterAdapter::new(filtrate::filters::BumpDistortion([
                 center_x.into_signal_f32().computed(),
                 center_y.into_signal_f32().computed(),
                 radius.into_signal_f32().computed(),
@@ -4366,7 +4366,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, PinchDistortion> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::PinchDistortion([
+            FilterAdapter::new(filtrate::filters::PinchDistortion([
                 center_x.into_signal_f32().computed(),
                 center_y.into_signal_f32().computed(),
                 radius.into_signal_f32().computed(),
@@ -4385,7 +4385,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, TwirlDistortion> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::TwirlDistortion([
+            FilterAdapter::new(filtrate::filters::TwirlDistortion([
                 center_x.into_signal_f32().computed(),
                 center_y.into_signal_f32().computed(),
                 radius.into_signal_f32().computed(),
@@ -4404,7 +4404,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, VortexDistortion> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::VortexDistortion([
+            FilterAdapter::new(filtrate::filters::VortexDistortion([
                 center_x.into_signal_f32().computed(),
                 center_y.into_signal_f32().computed(),
                 radius.into_signal_f32().computed(),
@@ -4421,7 +4421,7 @@ pub trait FilterViewExt: View + Sized {
         ];
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::PerspectiveTransform(params)),
+            FilterAdapter::new(filtrate::filters::PerspectiveTransform(params)),
         )
     }
 
@@ -4433,7 +4433,7 @@ pub trait FilterViewExt: View + Sized {
         ];
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::PerspectiveCorrection(params)),
+            FilterAdapter::new(filtrate::filters::PerspectiveCorrection(params)),
         )
     }
 
@@ -4441,7 +4441,7 @@ pub trait FilterViewExt: View + Sized {
     fn pixellate<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Pixellate> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Pixellate(
+            FilterAdapter::new(filtrate::filters::Pixellate(
                 size.into_signal_f32().computed(),
             )),
         )
@@ -4451,7 +4451,7 @@ pub trait FilterViewExt: View + Sized {
     fn crystallize<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Crystallize> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Crystallize(
+            FilterAdapter::new(filtrate::filters::Crystallize(
                 size.into_signal_f32().computed(),
             )),
         )
@@ -4465,7 +4465,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, EdgeWork> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::EdgeWork([
+            FilterAdapter::new(filtrate::filters::EdgeWork([
                 radius.into_signal_f32().computed(),
                 amount.into_signal_f32().computed(),
             ])),
@@ -4482,7 +4482,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, DotHalftone> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::DotHalftone([
+            FilterAdapter::new(filtrate::filters::DotHalftone([
                 scale.into_signal_f32().computed(),
                 angle.into_signal_f32().computed(),
                 center_x.into_signal_f32().computed(),
@@ -4501,7 +4501,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, LineHalftone> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::LineHalftone([
+            FilterAdapter::new(filtrate::filters::LineHalftone([
                 scale.into_signal_f32().computed(),
                 angle.into_signal_f32().computed(),
                 center_x.into_signal_f32().computed(),
@@ -4520,7 +4520,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, Kaleidoscope> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Kaleidoscope([
+            FilterAdapter::new(filtrate::filters::Kaleidoscope([
                 segments.into_signal_f32().computed(),
                 angle.into_signal_f32().computed(),
                 center_x.into_signal_f32().computed(),
@@ -4537,7 +4537,7 @@ pub trait FilterViewExt: View + Sized {
     ) -> Filtered<Self, MirrorTile> {
         Filtered::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::MirrorTile([
+            FilterAdapter::new(filtrate::filters::MirrorTile([
                 repeat_x.into_signal_f32().computed(),
                 repeat_y.into_signal_f32().computed(),
             ])),

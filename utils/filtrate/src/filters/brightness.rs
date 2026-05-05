@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Brightness;
+/// use filtrate::filters::Brightness;
 ///
 /// // Static brightness
 /// let bright = Brightness(0.2);
