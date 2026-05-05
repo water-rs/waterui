@@ -290,12 +290,61 @@ where
 // ListItem - Individual item in a list
 // ============================================================================
 
+/// Semantic section break carried by a [`ListItem`].
+///
+/// When an item carries a `ListSection`, the renderer treats that item as the
+/// start of a new logical group within the same list. Subsequent items
+/// without their own `ListSection` belong to the most recently opened group.
+///
+/// The visual is left to the backend: iOS renders this as a `UITableView`
+/// section header (and inset-grouped chrome around the section), macOS uses
+/// `NSTableView` group rows, and Material backends translate it into
+/// Material section dividers. View code only declares the semantic intent.
+#[derive(Debug, Clone, Default)]
+pub struct ListSection {
+    /// Title shown above the section.
+    pub label: Option<waterui_core::Str>,
+    /// Footer text shown below the section.
+    pub footer: Option<waterui_core::Str>,
+}
+
+impl ListSection {
+    /// Creates a new section descriptor with just a header label.
+    #[must_use]
+    pub fn new(label: impl Into<waterui_core::Str>) -> Self {
+        Self {
+            label: Some(label.into()),
+            footer: None,
+        }
+    }
+
+    /// Creates an unlabeled section break (visual divider only, no header).
+    #[must_use]
+    pub const fn unlabeled() -> Self {
+        Self {
+            label: None,
+            footer: None,
+        }
+    }
+
+    /// Adds a footer note shown below the section.
+    #[must_use]
+    pub fn footer(mut self, footer: impl Into<waterui_core::Str>) -> Self {
+        self.footer = Some(footer.into());
+        self
+    }
+}
+
 /// An item in a list that can be configured with various behaviors.
 pub struct ListItem {
     /// The view content to display for this item.
     pub content: AnyView,
     /// Read-only signal indicating whether this item can be deleted.
     pub deletable: Computed<bool>,
+    /// When `Some`, this item starts a new logical section. The backend uses
+    /// this marker to group subsequent items into native chrome (iOS inset
+    /// grouped sections, macOS group rows, Material section headers).
+    pub section: Option<ListSection>,
 }
 
 impl NativeView for ListItem {}
@@ -316,6 +365,7 @@ impl ListItem {
         Self {
             content: AnyView::new(content),
             deletable: Computed::new(true),
+            section: None,
         }
     }
 
@@ -325,6 +375,16 @@ impl ListItem {
     #[must_use]
     pub fn deletable(mut self, deletable: impl IntoComputed<bool>) -> Self {
         self.deletable = deletable.into_computed();
+        self
+    }
+
+    /// Marks this item as the first row of a new section with the given header.
+    ///
+    /// All later items without their own [`ListItem::section`] marker render
+    /// inside the same section until another marker is encountered.
+    #[must_use]
+    pub fn section(mut self, section: ListSection) -> Self {
+        self.section = Some(section);
         self
     }
 }

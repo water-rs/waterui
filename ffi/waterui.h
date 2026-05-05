@@ -2870,6 +2870,13 @@ typedef struct Computed_Video WuiComputed_Video;
 
 /**
  * FFI representation of a list item.
+ *
+ * `section_label` and `section_footer` are owned by the consumer — when
+ * they're empty the item carries no section break, otherwise the item opens
+ * a new logical section visible to the renderer (UITableView sections,
+ * NSTableView group rows, Material list groups, ...). Both fields are
+ * passed by value so ownership of the underlying byte buffers transfers
+ * cleanly to the backend; no separate drop call is required.
  */
 typedef struct WuiListItem {
   /**
@@ -2880,6 +2887,15 @@ typedef struct WuiListItem {
    * Read-only signal indicating whether this item can be deleted.
    */
   WuiComputed_bool *deletable;
+  /**
+   * Section header carried by this item, or empty when the item does not
+   * start a new section.
+   */
+  struct WuiStr section_label;
+  /**
+   * Section footer carried by this item, or empty when no footer is set.
+   */
+  struct WuiStr section_footer;
 } WuiListItem;
 
 /**
