@@ -5,7 +5,9 @@ use core::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::BarcodeSource;
-use waterui_graphics::{ViewEffectContext, ViewEffectInput, ViewEffectOutput, EffectRenderer, color::Srgb};
+use waterui_graphics::{
+    EffectRenderer, ViewEffectContext, ViewEffectInput, ViewEffectOutput, color::ResolvedColor,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -41,10 +43,14 @@ impl fmt::Debug for BarcodeMaskEffect {
 }
 
 impl BarcodeMaskEffect {
-    /// Creates a new mask effect from a QR source and light module color.
+    /// Creates a new mask effect from a barcode source and light module color.
+    ///
+    /// `light_color` is taken as a [`ResolvedColor`] because the
+    /// `EffectRenderer` setup phase does not have access to an environment.
+    /// Callers obtain the resolved color from `Color::resolve(env).get()` at
+    /// view-body time.
     #[must_use]
-    pub fn new(source: BarcodeSource, light_color: Srgb) -> Self {
-        let resolved = light_color.resolve();
+    pub fn new(source: BarcodeSource, light_color: ResolvedColor) -> Self {
         Self {
             source,
             pipeline: None,
@@ -55,10 +61,10 @@ impl BarcodeMaskEffect {
             current_matrix_dim: 0,
             current_matrix_words: 0,
             light_color: [
-                resolved.red,
-                resolved.green,
-                resolved.blue,
-                resolved.opacity,
+                light_color.red,
+                light_color.green,
+                light_color.blue,
+                light_color.opacity,
             ],
         }
     }
