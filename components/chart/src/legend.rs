@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use waterui_core::{AnyView, View};
-use waterui_graphics::color::{Color, Srgb};
+use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
 use waterui_layout::{PositionExt, UnitPoint, absolute};
@@ -18,13 +18,13 @@ pub struct LegendItem {
     /// Label text.
     pub label: Text,
     /// Color marker.
-    pub color: Srgb,
+    pub color: Color,
 }
 
 impl LegendItem {
     /// Creates a new legend item.
     #[must_use]
-    pub fn new(label: impl IntoText, color: impl Into<Srgb>) -> Self {
+    pub fn new(label: impl IntoText, color: impl Into<Color>) -> Self {
         Self {
             label: label.into_text(),
             color: color.into(),
@@ -137,7 +137,7 @@ impl View for Legend {
             .items
             .into_iter()
             .map(|item| {
-                let marker = Frame::new(Rectangle.fill(Color::from(item.color)))
+                let marker = Frame::new(Rectangle.fill(item.color))
                     .width(marker_size)
                     .height(marker_size);
                 let label = item.label;
