@@ -129,6 +129,7 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
+pub use waterui_icon as icon;
 pub use waterui_graphics::image_analysis;
 pub use waterui_graphics::image_generator;
 pub use waterui_graphics::{

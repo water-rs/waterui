@@ -1,26 +1,56 @@
 use crate::action::{WuiIndexAction, WuiMoveAction};
 use crate::reactive::WuiComputed;
 use crate::views::WuiAnyViews;
-use crate::{IntoFFI, WuiAnyView};
-use waterui::component::list::{ListConfig, ListItem};
+use crate::{IntoFFI, WuiAnyView, WuiStr};
+use waterui::Str;
+use waterui::component::list::{ListConfig, ListItem, ListSection};
 use waterui::views::ViewsExt;
 
 /// FFI representation of a list item.
+///
+/// `section_label` and `section_footer` are owned by the consumer — when
+/// they're empty the item carries no section break, otherwise the item opens
+/// a new logical section visible to the renderer (UITableView sections,
+/// NSTableView group rows, Material list groups, ...). Both fields are
+/// passed by value so ownership of the underlying byte buffers transfers
+/// cleanly to the backend; no separate drop call is required.
 #[repr(C)]
 pub struct WuiListItem {
     /// The content view for this item.
     pub content: *mut WuiAnyView,
     /// Read-only signal indicating whether this item can be deleted.
     pub deletable: *mut WuiComputed<bool>,
+    /// Section header carried by this item, or empty when the item does not
+    /// start a new section.
+    pub section_label: WuiStr,
+    /// Section footer carried by this item, or empty when no footer is set.
+    pub section_footer: WuiStr,
+}
+
+fn empty_wuistr() -> WuiStr {
+    Str::default().into_ffi()
+}
+
+fn section_to_ffi(section: Option<ListSection>) -> (WuiStr, WuiStr) {
+    match section {
+        None => (empty_wuistr(), empty_wuistr()),
+        Some(ListSection { label, footer }) => (
+            label.unwrap_or_default().into_ffi(),
+            footer.unwrap_or_default().into_ffi(),
+        ),
+    }
 }
 
 impl IntoFFI for ListItem {
     type FFI = WuiListItem;
 
     fn into_ffi(self) -> Self::FFI {
+        let (section_label, section_footer) = section_to_ffi(self.section);
         WuiListItem {
             content: self.content.into_ffi(),
             deletable: self.deletable.into_ffi(),
+            section_label,
+            section_footer,
         }
     }
 }
