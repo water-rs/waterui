@@ -20,7 +20,7 @@ waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-video.workspace = true
 waterkit-dialog = { workspace = true, optional = true }
-filtrate.workspace = true
+filtrate-core.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true

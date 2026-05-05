@@ -1,0 +1,22 @@
+[package]
+name = "filtrate-derive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+readme = "../../README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "Procedural macros for the filtrate GPU filter library."
+keywords = ["gpu", "filter", "derive", "proc-macro"]
+categories = ["graphics", "rendering"]
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

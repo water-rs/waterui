@@ -84,8 +84,9 @@ pub use {
     waterui_video::{Delivery, MediaItem, SubtitleTrack},
 };
 
-/// Re-export filtrate's Filter enum for GPU-accelerated image filters.
-pub use filtrate::Filter;
+/// Re-export the stable [`Filter`] trait from `filtrate-core` for
+/// GPU-accelerated image filters.
+pub use filtrate_core::Filter;
 
 /// URL types for working with media resources
 pub mod url;

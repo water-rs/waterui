@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Contrast;
+/// use filtrate::filters::Contrast;
 ///
 /// let high_contrast = Contrast(1.5);
 /// ```

@@ -15,7 +15,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Blur;
+/// use filtrate::filters::Blur;
 ///
 /// let soft = Blur(5.0);
 /// let heavy = Blur(20.0);

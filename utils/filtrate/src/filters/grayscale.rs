@@ -14,7 +14,7 @@ use nami::Signal;
 /// # Example
 ///
 /// ```ignore
-/// use filtrate_core::filters::Grayscale;
+/// use filtrate::filters::Grayscale;
 ///
 /// let full_gray = Grayscale(1.0);
 /// let partial = Grayscale(0.5);

@@ -5,14 +5,12 @@ edition = "2024"
 rust-version = "1.87"
 readme = "../../README.md"
 repository = "https://github.com/water-rs/waterui"
-description = "Core traits for GPU filter pipelines - lazy, zero-copy, fuseable"
-keywords = ["gpu", "filter", "wgpu", "pipeline", "compute"]
-categories = ["graphics", "rendering"]
+description = "Stable abstraction layer for GPU filter pipelines: pure-data Filter trait, Chain, and parameter/fragment composition primitives."
+keywords = ["gpu", "filter", "pipeline", "trait", "abstraction"]
+categories = ["graphics", "rendering", "no-std"]
 license = "MIT OR Apache-2.0"
 
 [lints]
 workspace = true
 
 [dependencies]
-wgpu.workspace = true
-nami.workspace = true
