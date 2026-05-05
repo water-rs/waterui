@@ -2,7 +2,9 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, env::with, id::Identifiable, view::TupleViews, views::ForEach};
+use waterui_core::{
+    AnyView, IntoSignalF32, View, env::with, id::Identifiable, view::TupleViews, views::ForEach,
+};
 
 use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -507,9 +509,13 @@ impl<C> HStack<C> {
     }
 
     /// Sets the spacing between children in the stack.
+    ///
+    /// Accepts any numeric literal or signal of f32; snapshotted at modifier
+    /// time per WaterUI's Vue-like reactivity model.
     #[must_use]
-    pub const fn spacing(mut self, spacing: f32) -> Self {
-        self.layout.spacing = spacing;
+    pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
+        use waterui_core::Signal;
+        self.layout.spacing = spacing.into_signal_f32().get();
         self
     }
 }
