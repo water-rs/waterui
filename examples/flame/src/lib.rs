@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
 use waterui::prelude::*;
 use waterui::preview;

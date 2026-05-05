@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui::prelude::theme_color::{MutedForeground, Surface};
 use waterui::prelude::*;

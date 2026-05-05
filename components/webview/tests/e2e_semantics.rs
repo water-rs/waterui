@@ -8,7 +8,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui::component::{button, vstack};
 use waterui::{Environment, SignalExt, View};
 use waterui_testing::{Role, Selector, UiTest, WaitOptions, WaitResult};
-use waterui_webview::cookie::Cookie;
+use cookie::Cookie;
 use waterui_webview::{
     CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent,
     WebViewHandle,

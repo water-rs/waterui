@@ -5,7 +5,7 @@ use waterui::ViewExt;
 use waterui::env::Environment;
 use waterui::shape::RoundedRectangle;
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize, wgpu,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
 };
 
 #[derive(Clone)]
