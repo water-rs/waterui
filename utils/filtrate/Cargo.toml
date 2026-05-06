@@ -20,7 +20,7 @@ wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false }
+divan = "0.1"
 
 [[bench]]
 name = "filter_trait"
