@@ -57,8 +57,6 @@ pub mod view_effect;
 
 /// AppliedFilter metadata FFI bindings for GPU filter rendering
 pub mod applied_filter;
-/// FilteredView<Blur> hook FFI bindings for compositor-native blur paths
-pub mod filtered_blur;
 pub(crate) mod pixel_upload;
 
 /// Android-only AHardwareBuffer import helpers (Vulkan)
