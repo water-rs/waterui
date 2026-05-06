@@ -3622,6 +3622,12 @@ pub type Median3x3 = FilterAdapter<filtrate::filters::Median3x3>;
 /// Alias for a 3x3 convolution filter (caller-supplied kernel).
 pub type Convolution3x3 =
     FilterAdapter<filtrate::filters::Convolution3x3<Reactive<Computed<f32>>>>;
+/// Alias for a 3x3 morphological erosion filter (per-channel minimum).
+pub type MorphologyMin = FilterAdapter<filtrate::filters::MorphologyMin>;
+/// Alias for a 3x3 morphological dilation filter (per-channel maximum).
+pub type MorphologyMax = FilterAdapter<filtrate::filters::MorphologyMax>;
+/// Alias for a 3x3 morphological gradient filter (per-channel max minus min).
+pub type MorphologyGradient = FilterAdapter<filtrate::filters::MorphologyGradient>;
 /// Alias for a motion blur filter.
 pub type MotionBlur =
     FilterAdapter<filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
@@ -3834,6 +3840,24 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Convolution3x3(signals)),
+        )
+    }
+
+    /// Apply a 3x3 morphological erosion (per-channel minimum).
+    fn morphology_min(self) -> Filtered<Self, MorphologyMin> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::MorphologyMin))
+    }
+
+    /// Apply a 3x3 morphological dilation (per-channel maximum).
+    fn morphology_max(self) -> Filtered<Self, MorphologyMax> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::MorphologyMax))
+    }
+
+    /// Apply a 3x3 morphological gradient (per-channel max minus min).
+    fn morphology_gradient(self) -> Filtered<Self, MorphologyGradient> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::MorphologyGradient),
         )
     }
 
