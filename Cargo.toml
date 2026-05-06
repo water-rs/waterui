@@ -123,6 +123,7 @@ waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
 filtrate-derive = { version = "0.1.0", path = "utils/filtrate-derive" }
+filtrate-multi-input = { version = "0.1.0", path = "utils/filtrate-multi-input" }
 waterui-barcode = { version = "0.1.0", path = "components/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-chart = { version = "0.1.0", path = "components/chart" }

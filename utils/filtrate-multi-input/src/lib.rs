@@ -423,11 +423,17 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         wgpu::Sampler,
         wgpu::Buffer,
     ) {
-        let shader = crate::shared_context::create_cached_shader_module(
-            ctx.device,
-            "multi-input filter shader",
-            include_str!("shaders/multi_input_filter.wgsl"),
-        );
+        // Multi-input filters compile their pipeline once per setup and
+        // reuse it for every render pass, so the shared graphics-side
+        // shader cache buys little — use direct module creation here.
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("multi-input filter shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("shaders/multi_input_filter.wgsl").into(),
+                ),
+            });
         let bind_group_layout = Self::create_bind_group_layout(ctx);
 
         let pipeline_layout = ctx
@@ -444,13 +450,13 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
                 label: Some("multi-input filter pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: shader.as_ref(),
+                    module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: shader.as_ref(),
+                    module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.output_format,

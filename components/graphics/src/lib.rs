@@ -50,8 +50,10 @@ pub mod view_effect;
 
 /// Filter-based view effects using the Filter trait system.
 pub mod filter_view;
-/// Multi-input filters (blend/mask/transition/displacement/depth/temporal).
-pub mod multi_input_filter;
+/// Multi-input filters live in the `filtrate-multi-input` crate; this alias
+/// keeps the historical `waterui_graphics::multi_input_filter::*` import path
+/// working without re-declaring the module here.
+pub use filtrate_multi_input as multi_input_filter;
 
 // Re-export key types for user convenience.
 pub use gpu_surface::{
