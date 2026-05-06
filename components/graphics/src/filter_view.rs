@@ -3622,6 +3622,9 @@ pub type Median3x3 = FilterAdapter<filtrate::filters::Median3x3>;
 /// Alias for a 3x3 convolution filter (caller-supplied kernel).
 pub type Convolution3x3 =
     FilterAdapter<filtrate::filters::Convolution3x3<Reactive<Computed<f32>>>>;
+/// Alias for a 5x5 convolution filter (caller-supplied kernel).
+pub type Convolution5x5 =
+    FilterAdapter<filtrate::filters::Convolution5x5<Reactive<Computed<f32>>>>;
 /// Alias for a 3x3 morphological erosion filter (per-channel minimum).
 pub type MorphologyMin = FilterAdapter<filtrate::filters::MorphologyMin>;
 /// Alias for a 3x3 morphological dilation filter (per-channel maximum).
@@ -3840,6 +3843,18 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Convolution3x3(signals)),
+        )
+    }
+
+    /// Apply a 5x5 convolution filter with a caller-supplied 25-element
+    /// kernel (row-major).
+    fn convolution5x5<P: IntoSignalF32 + Copy>(self, kernel: [P; 25]) -> Filtered<Self, Convolution5x5> {
+        let signals: [Reactive<Computed<f32>>; 25] = core::array::from_fn(|i| {
+            Reactive(kernel[i].into_signal_f32().computed())
+        });
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::Convolution5x5(signals)),
         )
     }
 
