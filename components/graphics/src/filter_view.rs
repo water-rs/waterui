@@ -3385,6 +3385,125 @@ mod tests {
             FilterAdapter::new(filtrate::filters::Blur(2.0f32))
         );
 
+        // P9 additions — verify each new spatial / preset filter actually
+        // round-trips through the wgpu pipeline end-to-end.
+        export_filter!(
+            "sobel.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::Sobel)
+        );
+        export_filter!(
+            "prewitt.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::Prewitt)
+        );
+        export_filter!(
+            "median3x3.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::Median3x3)
+        );
+        export_filter!(
+            "morphology_min.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::MorphologyMin)
+        );
+        export_filter!(
+            "morphology_max.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::MorphologyMax)
+        );
+        export_filter!(
+            "morphology_gradient.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::MorphologyGradient)
+        );
+        // 3x3 sharpen kernel: identity * 5 minus the four neighbours.
+        export_filter!(
+            "convolution3x3_sharpen.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::Convolution3x3([
+                0.0f32, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0,
+            ]))
+        );
+        // 5x5 identity (centre = 1, rest = 0). Output should match input.
+        export_filter!("convolution5x5_identity.png", input_width, input_height, {
+            let mut kernel = [0.0f32; 25];
+            kernel[12] = 1.0;
+            FilterAdapter::new(filtrate::filters::Convolution5x5(kernel))
+        });
+        export_filter!(
+            "photo_effect_mono.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectMono)
+        );
+        export_filter!(
+            "photo_effect_noir.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectNoir)
+        );
+        export_filter!(
+            "photo_effect_chrome.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectChrome)
+        );
+        export_filter!(
+            "photo_effect_instant.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectInstant)
+        );
+        export_filter!(
+            "photo_effect_fade.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectFade)
+        );
+        export_filter!(
+            "photo_effect_process.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectProcess)
+        );
+        export_filter!(
+            "photo_effect_tonal.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectTonal)
+        );
+        export_filter!(
+            "photo_effect_transfer.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectTransfer)
+        );
+        // Mixed chain: photo preset chained with tunable color filters.
+        export_filter!(
+            "chain_chrome_brightness_contrast.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::PhotoEffectChrome)
+                .then(filtrate::filters::Brightness(0.05f32))
+                .then(filtrate::filters::Contrast(1.1f32))
+        );
+        // Mixed chain: edge detection feeding a tonal preset.
+        export_filter!(
+            "chain_sobel_then_tonal.png",
+            input_width,
+            input_height,
+            FilterAdapter::new(filtrate::filters::Sobel)
+                .then(filtrate::filters::PhotoEffectTonal)
+        );
+
         eprintln!("Filter gallery exported to {}", output_dir.display());
     }
 }

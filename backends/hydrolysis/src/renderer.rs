@@ -110,11 +110,13 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor, Srgb};
 use waterui_graphics::gpu_surface::GestureState;
-use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
+use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
+use waterui_graphics::view_effect::{
+    ViewEffectContext, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
+};
 use waterui_graphics::{
-    AppliedFilter, EffectContext, EffectInput, EffectOutput, GpuContext, GpuFrame, GpuSurface,
-    GradientType, PointerState, RedrawHandle, ResolvedGradient, ResolvedGradientStop, SceneView,
-    VelloScene2D,
+    AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
+    ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -1542,7 +1544,7 @@ impl HydrolysisRenderer {
             )
             .expect("hydrolysis ViewEffect failed to capture child scene");
 
-        let setup_context = EffectContext {
+        let setup_context = ViewEffectContext {
             device: &device,
             queue: &queue,
             input_format: wgpu::TextureFormat::Rgba8Unorm,
@@ -1571,7 +1573,7 @@ impl HydrolysisRenderer {
             view_formats: &[],
         });
 
-        let input = EffectInput {
+        let input = ViewEffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -1580,7 +1582,7 @@ impl HydrolysisRenderer {
             width: input_width,
             height: input_height,
         };
-        let output = EffectOutput {
+        let output = ViewEffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,
