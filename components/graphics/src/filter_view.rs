@@ -3613,6 +3613,15 @@ pub type HighlightsShadows =
 pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Reactive<Computed<f32>>>>;
 /// Alias for a color inversion filter.
 pub type Invert = FilterAdapter<filtrate::filters::Invert>;
+/// Alias for a Sobel edge-detection filter.
+pub type Sobel = FilterAdapter<filtrate::filters::Sobel>;
+/// Alias for a Prewitt edge-detection filter.
+pub type Prewitt = FilterAdapter<filtrate::filters::Prewitt>;
+/// Alias for a 3x3 median filter.
+pub type Median3x3 = FilterAdapter<filtrate::filters::Median3x3>;
+/// Alias for a 3x3 convolution filter (caller-supplied kernel).
+pub type Convolution3x3 =
+    FilterAdapter<filtrate::filters::Convolution3x3<Reactive<Computed<f32>>>>;
 /// Alias for a motion blur filter.
 pub type MotionBlur =
     FilterAdapter<filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
@@ -3799,6 +3808,33 @@ pub trait FilterViewExt: View + Sized {
     /// Apply an invert filter.
     fn invert(self) -> Filtered<Self, Invert> {
         Filtered::new(self, FilterAdapter::new(filtrate::filters::Invert))
+    }
+
+    /// Apply a Sobel edge-detection filter (3x3, gradient magnitude).
+    fn sobel(self) -> Filtered<Self, Sobel> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::Sobel))
+    }
+
+    /// Apply a Prewitt edge-detection filter (3x3, uniform-weight kernels).
+    fn prewitt(self) -> Filtered<Self, Prewitt> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::Prewitt))
+    }
+
+    /// Apply a 3x3 per-channel median filter for salt-and-pepper denoising.
+    fn median3x3(self) -> Filtered<Self, Median3x3> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::Median3x3))
+    }
+
+    /// Apply a 3x3 convolution filter with a caller-supplied kernel
+    /// (row-major, top-left to bottom-right).
+    fn convolution3x3<P: IntoSignalF32 + Copy>(self, kernel: [P; 9]) -> Filtered<Self, Convolution3x3> {
+        let signals: [Reactive<Computed<f32>>; 9] = core::array::from_fn(|i| {
+            Reactive(kernel[i].into_signal_f32().computed())
+        });
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::Convolution3x3(signals)),
+        )
     }
 
     /// Apply a sepia filter.
