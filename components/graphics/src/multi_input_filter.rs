@@ -11,7 +11,7 @@ use core::fmt;
 use core::future::Future;
 use num_traits::ToPrimitive;
 
-use crate::filter_view::{FilterContext, FilterInput, FilterOutput, GpuFilter};
+use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
 
 const MAX_AUX_IMAGES: usize = 3;
 const MAX_PARAMS: usize = 8;
@@ -350,7 +350,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
         }
     }
 
-    fn create_bind_group_layout(ctx: &FilterContext) -> wgpu::BindGroupLayout {
+    fn create_bind_group_layout(ctx: &EffectContext) -> wgpu::BindGroupLayout {
         ctx.device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("multi-input filter bind group layout"),
@@ -416,7 +416,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
     }
 
     fn create_pipeline(
-        ctx: &FilterContext,
+        ctx: &EffectContext,
     ) -> (
         wgpu::RenderPipeline,
         wgpu::BindGroupLayout,
@@ -506,11 +506,11 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
     }
 }
 
-impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
+impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
     fn setup(
         &mut self,
-        ctx: &FilterContext,
-    ) -> impl Future<Output = crate::filter_view::FilterSetupResult> {
+        ctx: &EffectContext,
+    ) -> impl Future<Output = filtrate::EffectSetupResult> {
         if O::AUX_IMAGE_COUNT > MAX_AUX_IMAGES {
             let err = "multi-input filter declared too many auxiliary images";
             self.set_setup_error(err);
@@ -549,9 +549,9 @@ impl<O: MultiInputOperation> GpuFilter for MultiInputFilter<O> {
 
     fn render(
         &mut self,
-        input: &FilterInput,
-        output: &FilterOutput,
-    ) -> crate::filter_view::FilterRenderResult {
+        input: &EffectInput,
+        output: &EffectOutput,
+    ) -> filtrate::EffectRenderResult {
         if let Some(err) = self.runtime.setup_error {
             return Err(err);
         }
