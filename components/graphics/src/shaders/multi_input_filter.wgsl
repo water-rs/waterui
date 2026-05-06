@@ -100,6 +100,62 @@ fn blend_overlay(base: vec3<f32>, top: vec3<f32>) -> vec3<f32> {
     return mix(low, high, mask);
 }
 
+// Helpers used by the HSL-based composite blend modes (Hue/Saturation/
+// Color/Luminosity). These mirror the algorithm sketched in the SVG/PDF
+// compositing spec, working in HSL rather than HSY for simplicity.
+
+fn rgb_to_hsl_max_min(rgb: vec3<f32>) -> vec3<f32> {
+    let max_c = max(max(rgb.r, rgb.g), rgb.b);
+    let min_c = min(min(rgb.r, rgb.g), rgb.b);
+    let l = (max_c + min_c) * 0.5;
+    if max_c == min_c {
+        return vec3<f32>(0.0, 0.0, l);
+    }
+    let d = max_c - min_c;
+    let s = select(d / (2.0 - max_c - min_c), d / (max_c + min_c), l > 0.5);
+    var h: f32;
+    if max_c == rgb.r {
+        h = (rgb.g - rgb.b) / d + select(0.0, 6.0, rgb.g < rgb.b);
+    } else if max_c == rgb.g {
+        h = (rgb.b - rgb.r) / d + 2.0;
+    } else {
+        h = (rgb.r - rgb.g) / d + 4.0;
+    }
+    return vec3<f32>(h / 6.0, s, l);
+}
+
+fn hue_to_rgb_helper(p: f32, q: f32, t_in: f32) -> f32 {
+    var t = t_in;
+    if t < 0.0 { t = t + 1.0; }
+    if t > 1.0 { t = t - 1.0; }
+    if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
+    if t < 0.5 { return q; }
+    if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+    return p;
+}
+
+fn hsl_to_rgb_local(hsl: vec3<f32>) -> vec3<f32> {
+    if hsl.y == 0.0 {
+        return vec3<f32>(hsl.z);
+    }
+    let q = select(hsl.z + hsl.y - hsl.z * hsl.y, hsl.z * (1.0 + hsl.y), hsl.z < 0.5);
+    let p = 2.0 * hsl.z - q;
+    return vec3<f32>(
+        hue_to_rgb_helper(p, q, hsl.x + 1.0 / 3.0),
+        hue_to_rgb_helper(p, q, hsl.x),
+        hue_to_rgb_helper(p, q, hsl.x - 1.0 / 3.0),
+    );
+}
+
+fn blend_hsl(base: vec3<f32>, top: vec3<f32>, take_h_top: bool, take_s_top: bool, take_l_top: bool) -> vec3<f32> {
+    let base_hsl = rgb_to_hsl_max_min(base);
+    let top_hsl = rgb_to_hsl_max_min(top);
+    let h = select(base_hsl.x, top_hsl.x, take_h_top);
+    let s = select(base_hsl.y, top_hsl.y, take_s_top);
+    let l = select(base_hsl.z, top_hsl.z, take_l_top);
+    return hsl_to_rgb_local(vec3<f32>(h, s, l));
+}
+
 fn blend_soft_light(base: vec3<f32>, top: vec3<f32>) -> vec3<f32> {
     let low = base - (1.0 - 2.0 * top) * base * (1.0 - base);
     let high = base + (2.0 * top - 1.0) * (sqrt(max(base, vec3<f32>(0.0))) - base);
@@ -141,6 +197,22 @@ fn blend_color(base: vec3<f32>, top: vec3<f32>, mode: u32) -> vec3<f32> {
         }
         case 11u: {
             return 1.0 - (1.0 - base) / max(top, vec3<f32>(0.0001));
+        }
+        case 12u: {
+            // Hue: hue from top, saturation+luminance from base.
+            return blend_hsl(base, top, true, false, false);
+        }
+        case 13u: {
+            // Saturation: saturation from top, hue+luminance from base.
+            return blend_hsl(base, top, false, true, false);
+        }
+        case 14u: {
+            // Color: hue+saturation from top, luminance from base.
+            return blend_hsl(base, top, true, true, false);
+        }
+        case 15u: {
+            // Luminosity: luminance from top, hue+saturation from base.
+            return blend_hsl(base, top, false, false, true);
         }
         default: {
             return top;
