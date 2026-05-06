@@ -6,7 +6,7 @@ use gdk4::prelude::{PaintableExt, TextureExtManual};
 use glib::Bytes;
 use gtk4::prelude::*;
 use gtk4::{Picture, Widget};
-use waterui_graphics::filter_view::{AppliedFilter, FilterContext, FilterInput, FilterOutput};
+use waterui_graphics::filter_view::{AppliedFilter, EffectContext, EffectInput, EffectOutput};
 use waterui_graphics::shared_context::{init_shared_context, shared_context};
 
 struct AppliedFilterState {
@@ -206,7 +206,7 @@ fn render_filter_output(
 
     let mut state = state.borrow_mut();
     if !state.setup_done {
-        let filter_context = FilterContext {
+        let filter_context = EffectContext {
             device,
             queue,
             input_format: wgpu::TextureFormat::Rgba8Unorm,
@@ -272,7 +272,7 @@ fn render_filter_output(
         view_formats: &[],
     });
 
-    let input = FilterInput {
+    let input = EffectInput {
         device,
         queue,
         texture: &input_texture,
@@ -281,7 +281,7 @@ fn render_filter_output(
         width,
         height,
     };
-    let output = FilterOutput {
+    let output = EffectOutput {
         device,
         queue,
         texture: &output_texture,

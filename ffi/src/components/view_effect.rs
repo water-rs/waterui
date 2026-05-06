@@ -33,7 +33,7 @@ pub type WuiExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 use waterui_graphics::shared_context::shared_context;
 use waterui_graphics::view_effect::{
-    EffectContext, EffectInput, EffectOutput, OutputSize, ViewEffectErased,
+    ViewEffectContext, ViewEffectInput, ViewEffectOutput, OutputSize, ViewEffectErased,
 };
 
 use super::pixel_upload::prepare_rgba8_upload;
@@ -594,7 +594,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
         });
 
         // Create input/output structs
-        let input = EffectInput {
+        let input = ViewEffectInput {
             device: &state.device,
             queue: &state.queue,
             texture: input_texture,
@@ -604,7 +604,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(
             height: state.input_height,
         };
 
-        let effect_output = EffectOutput {
+        let effect_output = ViewEffectOutput {
             device: &state.device,
             queue: &state.queue,
             texture: &output.texture,
@@ -642,7 +642,7 @@ fn ensure_view_effect_setup(state: &mut WuiViewEffectState, input_format: wgpu::
         return;
     }
 
-    let ctx = EffectContext {
+    let ctx = ViewEffectContext {
         device: &state.device,
         queue: &state.queue,
         input_format,

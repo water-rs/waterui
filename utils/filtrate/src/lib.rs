@@ -24,8 +24,13 @@
 //! let chain = Blur(5.0).then(Brightness(0.1));
 //! ```
 
+pub mod effect;
 pub mod filters;
 
+pub use effect::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupFuture,
+    EffectSetupResult, ErasedEffect,
+};
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,
     FragmentList, Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,

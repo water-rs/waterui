@@ -1,6 +1,6 @@
 //! GPU filter processing for captured view content.
 //!
-//! This module provides the `GpuFilter` trait for implementing GPU-based filters
+//! This module provides the `Effect` trait for implementing GPU-based filters
 //! that process captured view textures. Native backends capture child views to
 //! textures, pass them to Rust for GPU processing via wgpu.
 //!
@@ -23,8 +23,12 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
-use core::future::Future;
-use core::pin::Pin;
+// Re-export so callers (lib.rs `pub use`, ffi/ crate, downstream modules)
+// continue to find these runtime types under `waterui_graphics::filter_view`.
+pub use filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupFuture,
+    EffectSetupResult, ErasedEffect,
+};
 use num_traits::ToPrimitive;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
@@ -40,204 +44,12 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
 
-/// Boxed future for filter setup.
-pub type FilterSetupFuture<'a> = Pin<Box<dyn Future<Output = FilterSetupResult> + 'a>>;
-
-/// Result returned by filter setup.
-pub type FilterSetupResult = Result<(), &'static str>;
-
-/// Result returned by one filter render pass.
-pub type FilterRenderResult = Result<bool, &'static str>;
-
-/// GPU resources provided to the filter during setup.
-///
-/// Contains references to the wgpu device, queue, and texture formats.
-pub struct FilterContext<'a> {
-    /// The wgpu device for creating GPU resources.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue for submitting commands.
-    pub queue: &'a wgpu::Queue,
-    /// The texture format of the input (captured view).
-    pub input_format: wgpu::TextureFormat,
-    /// The texture format of the output.
-    pub output_format: wgpu::TextureFormat,
-    /// Optional pipeline cache for faster pipeline creation.
-    pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
-}
-
-impl fmt::Debug for FilterContext<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FilterContext")
-            .field("input_format", &self.input_format)
-            .field("output_format", &self.output_format)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Input texture provided during filter rendering.
-pub struct FilterInput<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue.
-    pub queue: &'a wgpu::Queue,
-    /// The captured view's texture.
-    pub texture: &'a wgpu::Texture,
-    /// A view into the input texture.
-    pub view: wgpu::TextureView,
-    /// The texture format.
-    pub format: wgpu::TextureFormat,
-    /// Width of the input texture in pixels.
-    pub width: u32,
-    /// Height of the input texture in pixels.
-    pub height: u32,
-}
-
-impl fmt::Debug for FilterInput<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FilterInput")
-            .field("format", &self.format)
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Output texture provided during filter rendering.
-pub struct FilterOutput<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue.
-    pub queue: &'a wgpu::Queue,
-    /// The output texture to write to.
-    pub texture: &'a wgpu::Texture,
-    /// A view into the output texture.
-    pub view: wgpu::TextureView,
-    /// The texture format.
-    pub format: wgpu::TextureFormat,
-    /// Width of the output texture in pixels.
-    pub width: u32,
-    /// Height of the output texture in pixels.
-    pub height: u32,
-}
-
-impl fmt::Debug for FilterOutput<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FilterOutput")
-            .field("format", &self.format)
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Trait for GPU filter processors.
-///
-/// Implement this trait to create custom GPU filters that process captured
-/// view textures. The filter receives input and output textures with their
-/// dimensions, allowing for effects that change output size.
-///
-/// # Async Setup
-///
-/// The `setup` method returns a future, allowing async initialization.
-/// For sync filters, return `async {}` after doing sync work.
-/// The future is awaited on the same render thread that created it.
-///
-/// # Animation Support
-///
-/// The `render` method returns a [`FilterRenderResult`]. Return `Ok(true)`
-/// while animation is in progress, `Ok(false)` for a completed frame, and
-/// `Err(...)` for an explicit render failure.
-pub trait GpuFilter: 'static {
-    /// Called once when GPU resources are ready.
-    ///
-    /// Use this to create pipelines, bind groups, samplers, and other
-    /// GPU resources that persist across frames.
-    ///
-    /// # Errors
-    ///
-    /// Returns an explicit setup error when the filter cannot build the
-    /// required GPU pipeline for the current device or texture formats.
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult>;
-
-    /// Called each frame to apply the filter.
-    ///
-    /// Read from `input.texture`/`input.view` and write to `output.texture`/`output.view`.
-    /// Input and output may have different dimensions.
-    ///
-    /// Returns `Ok(true)` if another frame is needed (animation in progress).
-    ///
-    /// # Errors
-    ///
-    /// Returns an explicit render error when the compiled filter graph is
-    /// incomplete or required GPU resources are missing.
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
-
-    /// Resolve the output dimensions from the current snapped filter state.
-    ///
-    /// Implementations that depend on reactive inputs must snapshot those values
-    /// in [`GpuFilter::sync_targets`] and only read the snapped state here.
-    #[must_use]
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        (input_width, input_height)
-    }
-
-    /// Snapshot reactive target values before render dispatch.
-    ///
-    /// Native backends call this on the UI thread before scheduling render on a
-    /// background queue. Filters without reactive sources can keep the default.
-    fn sync_targets(&mut self) {}
-
-    /// Whether the filter has pending state that requires another render pass.
-    ///
-    /// This is used by native backends to keep on-demand rendering responsive
-    /// when reactive parameters change without layout updates.
-    fn redraw_hint(&self) -> bool {
-        false
-    }
-}
-
-/// Object-safe trait for type-erased GPU filters.
-pub(crate) trait GpuFilterImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a>;
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult;
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
-    fn sync_targets(&mut self);
-    fn redraw_hint(&self) -> bool;
-    fn concrete_type_id(&self) -> TypeId;
-}
-
-impl<T: GpuFilter> GpuFilterImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
-        Box::pin(GpuFilter::setup(self, ctx))
-    }
-
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
-        GpuFilter::render(self, input, output)
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        GpuFilter::output_size(self, input_width, input_height)
-    }
-
-    fn sync_targets(&mut self) {
-        GpuFilter::sync_targets(self);
-    }
-
-    fn redraw_hint(&self) -> bool {
-        GpuFilter::redraw_hint(self)
-    }
-
-    fn concrete_type_id(&self) -> TypeId {
-        TypeId::of::<T>()
-    }
-}
-
 /// Type-erased filter for FFI boundary.
 ///
-/// This wraps a `Box<dyn GpuFilterImpl>` and implements `MetadataKey`, allowing
+/// This wraps a `Box<dyn ErasedEffect>` and implements `MetadataKey`, allowing
 /// it to be used with the `Metadata<T>` pattern.
 pub struct AppliedFilter {
-    filter: Box<dyn GpuFilterImpl>,
+    filter: Box<dyn ErasedEffect>,
 }
 
 impl fmt::Debug for AppliedFilter {
@@ -250,14 +62,14 @@ impl MetadataKey for AppliedFilter {}
 
 impl AppliedFilter {
     /// Create a new `AppliedFilter` from a GPU filter.
-    pub fn new<F: GpuFilter>(filter: F) -> Self {
+    pub fn new<F: Effect>(filter: F) -> Self {
         Self {
             filter: Box::new(filter),
         }
     }
 
     /// Calls `setup` on the filter, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a FilterContext<'a>) -> FilterSetupFuture<'a> {
+    pub fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a> {
         self.filter.setup(ctx)
     }
 
@@ -268,7 +80,7 @@ impl AppliedFilter {
     /// # Errors
     ///
     /// Propagates the wrapped filter's render failure.
-    pub fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
+    pub fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
         self.filter.render(input, output)
     }
 
@@ -301,19 +113,19 @@ impl AppliedFilter {
 /// `Filtered` preserves the concrete content type for fluent chaining. Its `body()`
 /// erases content to [`AnyView`] and yields [`FilteredView<F>`], which is the stable
 /// backend hook node.
-pub struct Filtered<V: View, F: GpuFilter> {
+pub struct Filtered<V: View, F: Effect> {
     content: V,
     filter: F,
 }
 
-impl<V: View, F: GpuFilter> fmt::Debug for Filtered<V, F> {
+impl<V: View, F: Effect> fmt::Debug for Filtered<V, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Filtered").finish_non_exhaustive()
     }
 }
 
-impl<V: View, F: GpuFilter> Filtered<V, F> {
-    /// Create a new filtered view with a `GpuFilter`.
+impl<V: View, F: Effect> Filtered<V, F> {
+    /// Create a new filtered view with a `Effect`.
     #[must_use]
     pub const fn new(content: V, filter: F) -> Self {
         Self { content, filter }
@@ -516,7 +328,7 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
     }
 }
 
-impl<V: View, F: GpuFilter> View for Filtered<V, F> {
+impl<V: View, F: Effect> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         FilteredView::new(AnyView::new(self.content), self.filter)
     }
@@ -531,18 +343,18 @@ impl<V: View, F: GpuFilter> View for Filtered<V, F> {
 /// Backends can register concrete handlers such as `FilteredView<Blur>`. If a
 /// backend does not hook this node, normal view expansion continues and falls back
 /// to `Metadata<AppliedFilter>`.
-pub struct FilteredView<F: GpuFilter> {
+pub struct FilteredView<F: Effect> {
     content: AnyView,
     filter: F,
 }
 
-impl<F: GpuFilter> fmt::Debug for FilteredView<F> {
+impl<F: Effect> fmt::Debug for FilteredView<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FilteredView").finish_non_exhaustive()
     }
 }
 
-impl<F: GpuFilter> FilteredView<F> {
+impl<F: Effect> FilteredView<F> {
     /// Create a backend hook node with type-erased content.
     #[must_use]
     pub const fn new(content: AnyView, filter: F) -> Self {
@@ -572,7 +384,7 @@ impl<F: GpuFilter> FilteredView<F> {
     }
 }
 
-impl<F: GpuFilter> View for FilteredView<F> {
+impl<F: Effect> View for FilteredView<F> {
     fn body(self, _env: &Environment) -> impl View {
         Metadata::new(self.content, AppliedFilter::new(self.filter))
     }
@@ -1004,13 +816,13 @@ impl SignalVisitor for WatcherInstaller<'_> {
 }
 
 // ============================================================================
-// Filter trait adapter - converts Filter to GpuFilter with animation support
+// Filter trait adapter - converts Filter to Effect with animation support
 // ============================================================================
 
-/// Adapter that wraps a `Filter` to implement `GpuFilter` with animation support.
+/// Adapter that wraps a `Filter` to implement `Effect` with animation support.
 ///
 /// This bridges the pure-data `Filter` trait from filtrate-core to the
-/// GPU-aware `GpuFilter` trait used by the rendering system.
+/// GPU-aware `Effect` trait used by the rendering system.
 ///
 /// When filter parameters change with animation metadata, this adapter
 /// smoothly interpolates values and signals for continued rendering.
@@ -1364,7 +1176,7 @@ impl<F: Filter> FilterAdapter<F> {
     #[allow(clippy::too_many_lines)]
     fn build_compiled_passes(
         &mut self,
-        ctx: &FilterContext,
+        ctx: &EffectContext,
         planned: &[PlannedPass],
         scratch_format: wgpu::TextureFormat,
     ) -> Result<(), &'static str> {
@@ -1525,8 +1337,8 @@ impl<F: Filter> FilterAdapter<F> {
     }
 }
 
-impl<F: Filter> GpuFilter for FilterAdapter<F> {
-    fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult> {
+impl<F: Filter> Effect for FilterAdapter<F> {
+    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult> {
         let param_count = <F::Params as ParamArray>::LEN;
         if param_count > MAX_FILTER_PARAMS {
             let err = "filter chain exceeds 64 params (uniform limit)";
@@ -1625,7 +1437,7 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> FilterRenderResult {
+    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
         #[cfg(test)]
         {
             self.last_render_used_direct_output = false;
@@ -2043,7 +1855,7 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
 #[allow(private_bounds)]
 impl<F: Filter> FilterAdapter<F> {
     fn create_color_pipeline(
-        ctx: &FilterContext,
+        ctx: &EffectContext,
         fragments: &str,
         target_format: wgpu::TextureFormat,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
@@ -2139,7 +1951,7 @@ impl<F: Filter> FilterAdapter<F> {
     }
 
     fn create_spatial_pipeline(
-        ctx: &FilterContext,
+        ctx: &EffectContext,
         shader_source: &str,
         storage_format: wgpu::TextureFormat,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
@@ -2210,7 +2022,7 @@ impl<F: Filter> FilterAdapter<F> {
         Ok((pipeline, bind_group_layout))
     }
 
-    fn create_blit_pipeline(ctx: &FilterContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    fn create_blit_pipeline(ctx: &EffectContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader = crate::shared_context::create_cached_shader_module(
             ctx.device,
             "filter blit shader",
@@ -2616,7 +2428,7 @@ mod tests {
         data
     }
 
-    fn run_filter_and_readback<G: GpuFilter>(
+    fn run_filter_and_readback<G: Effect>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input_texture: &wgpu::Texture,
@@ -2642,7 +2454,7 @@ mod tests {
             view_formats: &[],
         });
 
-        let ctx = FilterContext {
+        let ctx = EffectContext {
             device,
             queue,
             input_format: format,
@@ -2651,7 +2463,7 @@ mod tests {
         };
         crate::pollster::block_on(filter.setup(&ctx));
 
-        let input = FilterInput {
+        let input = EffectInput {
             device,
             queue,
             texture: input_texture,
@@ -2660,7 +2472,7 @@ mod tests {
             width: input_width,
             height: input_height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device,
             queue,
             texture: &output_texture,
@@ -3046,16 +2858,16 @@ mod tests {
         });
 
         let mut adapter = FilterAdapter::new(filtrate::filters::Brightness(0.25f32));
-        let ctx = FilterContext {
+        let ctx = EffectContext {
             device,
             queue,
             input_format: format,
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
 
-        let input = FilterInput {
+        let input = EffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -3064,7 +2876,7 @@ mod tests {
             width,
             height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,
@@ -3074,7 +2886,7 @@ mod tests {
             height,
         };
 
-        let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
+        let needs_redraw = Effect::render(&mut adapter, &input, &output);
         assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, width, height);
@@ -3149,14 +2961,14 @@ mod tests {
         });
 
         let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
-        let ctx = FilterContext {
+        let ctx = EffectContext {
             device,
             queue,
             input_format: format,
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping spatial GPU test on adapter {} ({:?}): unsupported capability ({:?})",
@@ -3173,7 +2985,7 @@ mod tests {
             "spatial passes should be compiled"
         );
 
-        let input = FilterInput {
+        let input = EffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -3182,7 +2994,7 @@ mod tests {
             width: in_width,
             height: in_height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,
@@ -3192,7 +3004,7 @@ mod tests {
             height: out_height,
         };
 
-        let needs_redraw = GpuFilter::render(&mut adapter, &input, &output);
+        let needs_redraw = Effect::render(&mut adapter, &input, &output);
         assert_eq!(needs_redraw, Ok(false));
 
         let pixel = readback_rgba8_pixel(device, queue, &output_texture, out_width, out_height);
@@ -3267,14 +3079,14 @@ mod tests {
         });
 
         let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
-        let ctx = FilterContext {
+        let ctx = EffectContext {
             device,
             queue,
             input_format: format,
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping GPU test: setup failed ({:?})",
@@ -3284,7 +3096,7 @@ mod tests {
         }
         let expected_direct_output = adapter.final_spatial_output.is_some();
 
-        let input = FilterInput {
+        let input = EffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -3293,7 +3105,7 @@ mod tests {
             width,
             height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,
@@ -3303,7 +3115,7 @@ mod tests {
             height,
         };
 
-        let _ = GpuFilter::render(&mut adapter, &input, &output);
+        let _ = Effect::render(&mut adapter, &input, &output);
         assert_eq!(
             adapter.last_render_used_direct_output(),
             expected_direct_output
@@ -3386,14 +3198,14 @@ mod tests {
         });
 
         let mut adapter = FilterAdapter::new(filtrate::filters::Blur(1.0f32));
-        let ctx = FilterContext {
+        let ctx = EffectContext {
             device,
             queue,
             input_format: format,
             output_format: format,
             pipeline_cache: None,
         };
-        crate::pollster::block_on(GpuFilter::setup(&mut adapter, &ctx));
+        crate::pollster::block_on(Effect::setup(&mut adapter, &ctx));
         if adapter.has_setup_error() {
             eprintln!(
                 "Skipping GPU test: setup failed ({:?})",
@@ -3402,7 +3214,7 @@ mod tests {
             return;
         }
 
-        let input = FilterInput {
+        let input = EffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -3411,7 +3223,7 @@ mod tests {
             width,
             height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,
@@ -3421,7 +3233,7 @@ mod tests {
             height,
         };
 
-        let _ = GpuFilter::render(&mut adapter, &input, &output);
+        let _ = Effect::render(&mut adapter, &input, &output);
         assert!(!adapter.last_render_used_direct_output());
         assert_eq!(
             adapter.allocated_scratch_slots(),
@@ -3715,11 +3527,11 @@ fn u32_to_f32(value: u32) -> f32 {
 
 /// Extension methods for applying filters to views.
 pub trait FilterViewExt: View + Sized {
-    /// Apply a `GpuFilter` to this view.
+    /// Apply a `Effect` to this view.
     ///
     /// For the high-level `Filter` API with automatic optimization,
     /// use convenience methods like `.blur()`, `.brightness()`, etc.
-    fn filter<F: GpuFilter>(self, filter: F) -> Filtered<Self, F> {
+    fn filter<F: Effect>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
 

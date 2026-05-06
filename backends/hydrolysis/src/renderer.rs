@@ -112,7 +112,7 @@ use waterui_graphics::color::{Color, ResolvedColor, Srgb};
 use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, ViewEffectErased};
 use waterui_graphics::{
-    AppliedFilter, FilterContext, FilterInput, FilterOutput, GpuContext, GpuFrame, GpuSurface,
+    AppliedFilter, EffectContext, EffectInput, EffectOutput, GpuContext, GpuFrame, GpuSurface,
     GradientType, PointerState, RedrawHandle, ResolvedGradient, ResolvedGradientStop, SceneView,
     VelloScene2D,
 };
@@ -1763,7 +1763,7 @@ impl HydrolysisRenderer {
             )
             .expect("hydrolysis AppliedFilter: failed to render subtree");
 
-        let filter_context = FilterContext {
+        let filter_context = EffectContext {
             device: &device,
             queue: &queue,
             input_format: wgpu::TextureFormat::Rgba8Unorm,
@@ -1800,7 +1800,7 @@ impl HydrolysisRenderer {
             view_formats: &[],
         });
 
-        let input = FilterInput {
+        let input = EffectInput {
             device: &device,
             queue: &queue,
             texture: &input_texture,
@@ -1809,7 +1809,7 @@ impl HydrolysisRenderer {
             width,
             height,
         };
-        let output = FilterOutput {
+        let output = EffectOutput {
             device: &device,
             queue: &queue,
             texture: &output_texture,

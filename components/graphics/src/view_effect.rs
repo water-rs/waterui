@@ -23,7 +23,7 @@ pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 /// Contains references to the wgpu device, queue, and texture formats.
 /// No dimensions are provided at setup time - effects handle dimension
 /// changes lazily in `render()`.
-pub struct EffectContext<'a> {
+pub struct ViewEffectContext<'a> {
     /// The wgpu device for creating GPU resources.
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
@@ -36,16 +36,16 @@ pub struct EffectContext<'a> {
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
 }
 
-impl fmt::Debug for EffectContext<'_> {
+impl fmt::Debug for ViewEffectContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EffectContext")
+        f.debug_struct("ViewEffectContext")
             .field("input_format", &self.input_format)
             .field("output_format", &self.output_format)
             .finish_non_exhaustive()
     }
 }
 
-impl EffectContext<'_> {
+impl ViewEffectContext<'_> {
     /// Returns `true` if the input format is HDR-capable (floating-point).
     #[must_use]
     pub const fn is_input_hdr(&self) -> bool {
@@ -68,7 +68,7 @@ impl EffectContext<'_> {
 /// Input data provided during each render call.
 ///
 /// Contains the captured view's texture and dimensions.
-pub struct EffectInput<'a> {
+pub struct ViewEffectInput<'a> {
     /// The wgpu device for creating GPU resources.
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
@@ -85,9 +85,9 @@ pub struct EffectInput<'a> {
     pub height: u32,
 }
 
-impl fmt::Debug for EffectInput<'_> {
+impl fmt::Debug for ViewEffectInput<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EffectInput")
+        f.debug_struct("ViewEffectInput")
             .field("format", &self.format)
             .field("width", &self.width)
             .field("height", &self.height)
@@ -95,7 +95,7 @@ impl fmt::Debug for EffectInput<'_> {
     }
 }
 
-impl EffectInput<'_> {
+impl ViewEffectInput<'_> {
     /// Returns `true` if the input format is HDR-capable (floating-point).
     #[must_use]
     pub const fn is_hdr(&self) -> bool {
@@ -109,7 +109,7 @@ impl EffectInput<'_> {
 /// Output data provided during each render call.
 ///
 /// Contains the texture to render the effect result into.
-pub struct EffectOutput<'a> {
+pub struct ViewEffectOutput<'a> {
     /// The wgpu device for creating GPU resources.
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
@@ -126,9 +126,9 @@ pub struct EffectOutput<'a> {
     pub height: u32,
 }
 
-impl fmt::Debug for EffectOutput<'_> {
+impl fmt::Debug for ViewEffectOutput<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EffectOutput")
+        f.debug_struct("ViewEffectOutput")
             .field("format", &self.format)
             .field("width", &self.width)
             .field("height", &self.height)
@@ -136,7 +136,7 @@ impl fmt::Debug for EffectOutput<'_> {
     }
 }
 
-impl EffectOutput<'_> {
+impl ViewEffectOutput<'_> {
     /// Returns `true` if the output format is HDR-capable (floating-point).
     #[must_use]
     pub const fn is_hdr(&self) -> bool {
@@ -171,7 +171,7 @@ impl EffectOutput<'_> {
 /// }
 ///
 /// impl EffectRenderer for BlurEffect {
-///     fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = ()> {
+///     fn setup(&mut self, ctx: &ViewEffectContext) -> impl Future<Output = ()> {
 ///         // Create pipeline, bind group layout, sampler
 ///         self.bind_group_layout = Some(ctx.device.create_bind_group_layout(&...));
 ///         self.sampler = Some(ctx.device.create_sampler(&...));
@@ -179,7 +179,7 @@ impl EffectOutput<'_> {
 ///         async {}
 ///     }
 ///
-///     fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
+///     fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
 ///         // Sample from input.view, render blurred result to output.view
 ///         let mut encoder = input.device.create_command_encoder(&Default::default());
 ///         // ... apply blur effect ...
@@ -195,13 +195,13 @@ pub trait EffectRenderer: 'static {
     /// handle dimension-dependent resources in `render()`.
     ///
     /// Returns a future that completes when setup is done.
-    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = ()>;
+    fn setup(&mut self, ctx: &ViewEffectContext) -> impl Future<Output = ()>;
 
     /// Called each frame to apply the effect.
     ///
     /// Read from `input.texture`/`input.view` and write to `output.texture`/`output.view`.
     /// Input and output dimensions are available via the respective structs.
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput);
+    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput);
 
     /// Returns whether the effect needs another frame immediately.
     ///
@@ -215,18 +215,18 @@ pub trait EffectRenderer: 'static {
 
 /// Object-safe trait for type-erased effect renderers.
 pub(crate) trait EffectRendererImpl: 'static {
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> SetupFuture<'a>;
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput);
+    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a>;
+    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput);
     fn needs_redraw(&self) -> bool;
     fn concrete_type_id(&self) -> TypeId;
 }
 
 impl<T: EffectRenderer> EffectRendererImpl for T {
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> SetupFuture<'a> {
+    fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a> {
         Box::pin(EffectRenderer::setup(self, ctx))
     }
 
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
+    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
         EffectRenderer::render(self, input, output);
     }
 
@@ -390,12 +390,12 @@ impl fmt::Debug for ViewEffectErased {
 
 impl ViewEffectErased {
     /// Calls `setup` on the effect, returning a future that completes when ready.
-    pub fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> SetupFuture<'a> {
+    pub fn setup<'a>(&'a mut self, ctx: &'a ViewEffectContext<'a>) -> SetupFuture<'a> {
         self.effect.setup(ctx)
     }
 
     /// Calls `render` on the effect.
-    pub fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
+    pub fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
         self.effect.render(input, output);
     }
 

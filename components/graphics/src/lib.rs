@@ -69,14 +69,14 @@ pub use gradient_renderer::{
 };
 
 pub use view_effect::{
-    EffectContext, EffectInput, EffectOutput, EffectRenderer, OutputSize, ViewEffect,
+    EffectRenderer, OutputSize, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
 };
 
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
-    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterContext, FilterInput, FilterOutput,
-    FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, GpuFilter, Grayscale,
-    HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, MirrorTile,
+    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, FilteredView, Gamma,
+    GaussianBlur, Gloom, Grayscale, HdrPolicy, HighlightsShadows, HueRotation, Invert,
+    Kaleidoscope, LineHalftone, MirrorTile,
     MotionBlur, PerspectiveCorrection, PerspectiveTransform, PinchDistortion, Pixellate,
     Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
     VortexDistortion, WhitePoint, ZoomBlur,

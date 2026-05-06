@@ -5,7 +5,7 @@ use core::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::BarcodeSource;
-use waterui_graphics::{EffectContext, EffectInput, EffectOutput, EffectRenderer, color::Srgb};
+use waterui_graphics::{ViewEffectContext, ViewEffectInput, ViewEffectOutput, EffectRenderer, color::Srgb};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -196,7 +196,7 @@ impl BarcodeMaskEffect {
 }
 
 impl EffectRenderer for BarcodeMaskEffect {
-    fn setup(&mut self, ctx: &EffectContext) -> impl core::future::Future<Output = ()> {
+    fn setup(&mut self, ctx: &ViewEffectContext) -> impl core::future::Future<Output = ()> {
         let (pipeline, bgl, sampler) =
             Self::create_pipeline(ctx.device, ctx.output_format, ctx.pipeline_cache);
         self.pipeline = Some(pipeline);
@@ -207,7 +207,7 @@ impl EffectRenderer for BarcodeMaskEffect {
         async {}
     }
 
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) {
+    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
         self.ensure_uniform_buffer(output.device);
         self.ensure_matrix_buffer(output.device, output.queue);
 
