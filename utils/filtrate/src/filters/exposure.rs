@@ -1,6 +1,6 @@
 //! Exposure filter implementation.
 
-use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
+use crate::FilterDerive;
 
 /// Adjusts exposure in photographic stops.
 ///
@@ -9,37 +9,14 @@ use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 /// # Parameters
 ///
 /// - `ev`: Exposure value in stops (0.0 = unchanged, 1.0 = +1 stop, -1.0 = -1 stop)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, FilterDerive)]
+#[filter(color_only, fragment = "fragments/exposure.wgsl")]
 pub struct Exposure<T>(pub T);
-
-impl<T: FilterParam> Filter for Exposure<T> {
-    const COLOR_ONLY: bool = true;
-
-    type Params = [f32; 1];
-    type Fragments = &'static str;
-
-    #[inline]
-    fn params(&self) -> [f32; 1] {
-        [self.0.snapshot()]
-    }
-
-    #[inline]
-    fn fragments(&self) -> &'static str {
-        include_str!("../shaders/fragments/exposure.wgsl")
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.color_fragment(self.fragments(), 1);
-    }
-
-    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
-        v.visit(0, &self.0);
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Filter;
 
     #[test]
     fn test_exposure_params() {

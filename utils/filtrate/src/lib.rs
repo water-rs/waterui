@@ -31,3 +31,7 @@ pub use filtrate_core::{
     FragmentList, Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
     SignalVisitor, StageCollector, WatchGuard,
 };
+
+/// Procedural derive that generates a [`Filter`] implementation for a tuple
+/// struct. See `filtrate-derive` for the supported `#[filter(...)]` shapes.
+pub use filtrate_derive::Filter as FilterDerive;
