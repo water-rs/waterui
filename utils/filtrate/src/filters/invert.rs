@@ -1,6 +1,6 @@
 //! Invert filter implementation.
 
-use crate::{Filter, StageCollector};
+use crate::FilterDerive;
 
 /// Inverts all colors in an image.
 ///
@@ -13,33 +13,14 @@ use crate::{Filter, StageCollector};
 ///
 /// let inverted = Invert;
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[filter(color_only, fragment = "fragments/invert.wgsl")]
 pub struct Invert;
-
-impl Filter for Invert {
-    const COLOR_ONLY: bool = true;
-
-    type Params = [f32; 0];
-    type Fragments = &'static str;
-
-    #[inline]
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    #[inline]
-    fn fragments(&self) -> &'static str {
-        include_str!("../shaders/fragments/invert.wgsl")
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.color_fragment(self.fragments(), 0);
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Filter;
 
     #[test]
     fn test_invert_no_params() {

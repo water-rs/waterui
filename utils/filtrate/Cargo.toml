@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 filtrate-core.workspace = true
+filtrate-derive.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 

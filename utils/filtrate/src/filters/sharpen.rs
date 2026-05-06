@@ -1,6 +1,6 @@
 //! Sharpen filter implementation.
 
-use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
+use crate::FilterDerive;
 
 /// Sharpens image details using an unsharp mask.
 ///
@@ -19,40 +19,14 @@ use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 /// let subtle = Sharpen(0.5);
 /// let crisp = Sharpen(1.5);
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, FilterDerive)]
+#[filter(spatial, shader = "sharpen.wgsl")]
 pub struct Sharpen<T>(pub T);
-
-impl<T: FilterParam> Filter for Sharpen<T> {
-    /// Sharpen samples neighboring pixels, so it cannot be fused.
-    const COLOR_ONLY: bool = false;
-
-    type Params = [f32; 1];
-    type Fragments = &'static str;
-
-    #[inline]
-    fn params(&self) -> [f32; 1] {
-        [self.0.snapshot()]
-    }
-
-    #[inline]
-    fn fragments(&self) -> &'static str {
-        // Note: Sharpen uses a standalone shader, not a fragment
-        // The pipeline handles this differently for spatial filters
-        include_str!("../shaders/sharpen.wgsl")
-    }
-
-    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.spatial_shader(self.fragments(), 1);
-    }
-
-    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
-        v.visit(0, &self.0);
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Filter;
 
     #[test]
     fn test_sharpen_params() {
