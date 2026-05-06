@@ -385,8 +385,11 @@ impl<F: Effect> FilteredView<F> {
 }
 
 impl<F: Effect> View for FilteredView<F> {
-    fn body(self, _env: &Environment) -> impl View {
-        Metadata::new(self.content, AppliedFilter::new(self.filter))
+    fn body(self, env: &Environment) -> impl View {
+        // Route through the cross-platform handler registry first; the
+        // helper falls back to the wgpu `AppliedFilter` metadata path when
+        // no backend has registered a handler for `F`.
+        crate::filter_registry::lower_filtered(self.content, self.filter, env)
     }
 
     fn stretch_axis(&self) -> StretchAxis {

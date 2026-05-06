@@ -50,6 +50,10 @@ pub mod view_effect;
 
 /// Filter-based view effects using the Filter trait system.
 pub mod filter_view;
+/// Cross-platform native compositor handler registry. Backends register
+/// concrete `Filter` types they want to intercept; default fallback runs
+/// the wgpu pipeline.
+pub mod filter_registry;
 /// Multi-input filters live in the `filtrate-multi-input` crate; this alias
 /// keeps the historical `waterui_graphics::multi_input_filter::*` import path
 /// working without re-declaring the module here.
