@@ -25,6 +25,7 @@ Keep the change set strictly scoped to the task.
 - Please use `waterui` skill and `waterui-agent-workspace` skill if they exist.
 - Continuously update this repo's `.claude/skills/waterui/SKILL.md` whenever WaterUI semantics, testing rules, or major component behavior become clearer during the task. The repo-local skill is part of the product.
 - "Visual test" in this repository means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden, including changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color checks, brightness checks, non-uniform checks, and similar proxy code.
+- AI-agent meta belongs only in this file. Do not leak it into anything a human will read.
 - `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
 - `GpuSurface::new(renderer)` owns one `GpuView` instance for that surface lifetime. `GpuView::setup()` is where persistent GPU resources for that renderer instance belong. Do not move renderer state into hidden shared caches just to survive `GpuSurface` teardown or parent rebuild.
