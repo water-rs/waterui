@@ -1,0 +1,7 @@
+    // Photo effect: fade — lifted blacks, mild desaturation.
+    {
+        let lifted = mix(vec3<f32>(0.10), color.rgb, 0.85);
+        let lum = dot(lifted, vec3<f32>(0.299, 0.587, 0.114));
+        let desat = mix(vec3<f32>(lum), lifted, 0.75);
+        color = vec4<f32>(clamp(desat, vec3<f32>(0.0), vec3<f32>(1.0)), color.a);
+    }

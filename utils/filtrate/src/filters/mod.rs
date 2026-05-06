@@ -31,6 +31,7 @@ mod morphology;
 mod motion_blur;
 mod perspective_correction;
 mod perspective_transform;
+mod photo_effects;
 mod pinch_distortion;
 mod pixellate;
 mod prewitt;
@@ -74,6 +75,10 @@ pub use morphology::{MorphologyGradient, MorphologyMax, MorphologyMin};
 pub use motion_blur::MotionBlur;
 pub use perspective_correction::PerspectiveCorrection;
 pub use perspective_transform::PerspectiveTransform;
+pub use photo_effects::{
+    PhotoEffectChrome, PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir,
+    PhotoEffectProcess, PhotoEffectTonal, PhotoEffectTransfer,
+};
 pub use pinch_distortion::PinchDistortion;
 pub use pixellate::Pixellate;
 pub use prewitt::Prewitt;
