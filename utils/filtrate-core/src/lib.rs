@@ -6,8 +6,10 @@
 //! actual GPU runtime lives in the `filtrate` crate; built-in filter
 //! implementations and their WGSL shaders live there as well.
 //!
-//! This crate aims for a stable 1.0 surface and intentionally has no `wgpu`,
-//! `nami`, or shader-string dependencies.
+//! This crate aims for a stable 1.0 surface and intentionally has no `wgpu`
+//! or reactive-system (e.g. `nami`) dependencies. Reactive frontends
+//! provide their own [`FilterParam`] implementations on top of these
+//! abstractions.
 //!
 //! # Key abstractions
 //!
@@ -17,6 +19,10 @@
 //! - [`ParamArray`]: zero-allocation parameter layout for nested tuples and
 //!   fixed-size arrays.
 //! - [`FragmentList`]: zero-allocation shader fragment composition.
+//! - [`FilterParam`] / [`Interpolator`]: reactive-system-agnostic parameter
+//!   abstraction with optional animation observation.
+//! - [`StageCollector`] / [`SignalVisitor`]: visitors used by the runtime
+//!   to walk a filter's GPU stages and reactive parameters.
 //!
 //! # Example
 //!
@@ -24,20 +30,27 @@
 //! use filtrate_core::{Filter, FilterExt};
 //! use filtrate::filters::{Grayscale, Invert, Blur, Brightness};
 //!
-//! // Type encodes fusion potential at compile time.
 //! let chain = Grayscale(1.0)
-//!     .then(Invert)         // Fuses with Grayscale (both color-only)
-//!     .then(Blur(5.0))      // Separate pass (spatial filter)
+//!     .then(Invert)
+//!     .then(Blur(5.0))
 //!     .then(Brightness(0.2));
 //! ```
 
+mod animation;
 mod filter;
 mod fragments;
+mod param;
 mod params;
+mod stage;
+mod visitor;
 
+pub use animation::AnimationTrack;
 pub use filter::{Chain, Filter, FilterExt};
 pub use fragments::FragmentList;
+pub use param::{AnimatedCallback, AnimatedTarget, FilterParam, Interpolator, WatchGuard};
 pub use params::ParamArray;
+pub use stage::StageCollector;
+pub use visitor::SignalVisitor;
 
 /// Maximum number of `f32` parameters a single fused filter pipeline can carry.
 ///

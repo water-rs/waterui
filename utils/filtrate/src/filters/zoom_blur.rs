@@ -1,7 +1,6 @@
 //! Zoom blur filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Applies radial zoom blur toward or away from a focal point.
 ///
@@ -15,9 +14,9 @@ pub struct ZoomBlur<A, X, Y>(pub A, pub X, pub Y);
 
 impl<A, X, Y> Filter for ZoomBlur<A, X, Y>
 where
-    A: Signal<Output = f32> + 'static,
-    X: Signal<Output = f32> + 'static,
-    Y: Signal<Output = f32> + 'static,
+    A: FilterParam,
+    X: FilterParam,
+    Y: FilterParam,
 {
     const COLOR_ONLY: bool = false;
 
@@ -26,12 +25,22 @@ where
 
     #[inline]
     fn params(&self) -> [f32; 3] {
-        [self.0.get(), self.1.get(), self.2.get()]
+        [self.0.snapshot(), self.1.snapshot(), self.2.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/zoom_blur.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.spatial_shader(self.fragments(), 3);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
+        v.visit(1, &self.1);
+        v.visit(2, &self.2);
     }
 }
 

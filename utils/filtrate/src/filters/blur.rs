@@ -1,7 +1,6 @@
 //! Blur filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Applies a box blur effect to an image.
 ///
@@ -23,7 +22,7 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct Blur<T>(pub T);
 
-impl<T: Signal<Output = f32> + 'static> Filter for Blur<T> {
+impl<T: FilterParam> Filter for Blur<T> {
     /// Blur samples neighboring pixels, so it cannot be fused.
     const COLOR_ONLY: bool = false;
 
@@ -33,15 +32,31 @@ impl<T: Signal<Output = f32> + 'static> Filter for Blur<T> {
 
     #[inline]
     fn params(&self) -> [f32; 2] {
-        let radius = self.0.get();
+        let radius = self.0.snapshot();
         [radius, radius]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
-        // Note: Blur uses a standalone shader, not a fragment
-        // The pipeline handles this differently for spatial filters
+        // The standalone shader is retained for legacy direct rendering paths;
+        // the planner uses `collect_stages` which emits the separable pair.
         include_str!("../shaders/blur.wgsl")
+    }
+
+    fn pass_count(&self) -> u32 {
+        2
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.spatial_shader(include_str!("../shaders/blur_horizontal.wgsl"), 1);
+        c.spatial_shader(include_str!("../shaders/blur_vertical.wgsl"), 1);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        // The radius drives both separable passes; broadcast to indices 0
+        // and 1 so animation events update both pass uniforms.
+        v.visit(0, &self.0);
+        v.visit(1, &self.0);
     }
 }
 
