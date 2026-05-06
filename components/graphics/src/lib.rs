@@ -54,6 +54,9 @@ pub mod filter_view;
 /// concrete `Filter` types they want to intercept; default fallback runs
 /// the wgpu pipeline.
 pub mod filter_registry;
+/// Visual parity harness used by tests and backend handlers to compare
+/// native compositor output against the wgpu reference.
+pub mod filter_parity;
 /// Multi-input filters live in the `filtrate-multi-input` crate; this alias
 /// keeps the historical `waterui_graphics::multi_input_filter::*` import path
 /// working without re-declaring the module here.
