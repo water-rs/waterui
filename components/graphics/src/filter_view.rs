@@ -373,6 +373,149 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
     }
 }
 
+// ============================================================================
+// Auto-fusion inherent methods
+// ============================================================================
+//
+// `Filtered<V, FilterAdapter<F>>` lets users continue chaining built-in filters
+// without losing fusion. When the receiver of `.brightness(0.2)` is already a
+// `Filtered<V, FilterAdapter<F>>`, Rust's method resolution picks these
+// inherent methods over the trait-method counterparts on `FilterViewExt`,
+// so `view.blur(5).brightness(0.2)` extends the existing chain instead of
+// wrapping the whole filtered view in a second adapter.
+
+/// Internal helper: declare an inherent auto-fusion method on
+/// `Filtered<V, FilterAdapter<F>>` that appends a single-parameter built-in
+/// filter to the chain.
+macro_rules! inherent_single_param_filter {
+    ($method:ident, $filter:ident) => {
+        #[doc = concat!("Append a `", stringify!($filter), "` filter to the existing chain.")]
+        ///
+        /// This extends the running `Filtered<V, FilterAdapter<...>>` instead
+        /// of starting a new adapter, preserving compile-time fusion.
+        #[must_use]
+        pub fn $method<P: IntoSignalF32>(
+            self,
+            value: P,
+        ) -> Filtered<V, FilterAdapter<Chain<F, filtrate::filters::$filter<Reactive<Computed<f32>>>>>>
+        {
+            self.then(filtrate::filters::$filter(Reactive(
+                value.into_signal_f32().computed(),
+            )))
+        }
+    };
+}
+
+#[allow(private_bounds)]
+impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
+    inherent_single_param_filter!(blur, Blur);
+    inherent_single_param_filter!(brightness, Brightness);
+    inherent_single_param_filter!(contrast, Contrast);
+    inherent_single_param_filter!(crystallize, Crystallize);
+    inherent_single_param_filter!(exposure, Exposure);
+    inherent_single_param_filter!(gamma, Gamma);
+    inherent_single_param_filter!(gaussian_blur, GaussianBlur);
+    inherent_single_param_filter!(grayscale, Grayscale);
+    inherent_single_param_filter!(hue_rotation, HueRotation);
+    inherent_single_param_filter!(pixellate, Pixellate);
+    inherent_single_param_filter!(saturation, Saturation);
+    inherent_single_param_filter!(sepia, Sepia);
+    inherent_single_param_filter!(sharpen, Sharpen);
+    inherent_single_param_filter!(vibrance, Vibrance);
+
+    /// Append an `Invert` filter to the chain (zero parameters).
+    #[must_use]
+    pub fn invert(
+        self,
+    ) -> Filtered<V, FilterAdapter<Chain<F, filtrate::filters::Invert>>> {
+        self.then(filtrate::filters::Invert)
+    }
+
+    /// Append a two-parameter `TemperatureTint` filter to the chain.
+    #[must_use]
+    pub fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
+        self,
+        temperature: T,
+        tint: U,
+    ) -> Filtered<
+        V,
+        FilterAdapter<
+            Chain<
+                F,
+                filtrate::filters::TemperatureTint<Reactive<Computed<f32>>, Reactive<Computed<f32>>>,
+            >,
+        >,
+    > {
+        self.then(filtrate::filters::TemperatureTint(
+            Reactive(temperature.into_signal_f32().computed()),
+            Reactive(tint.into_signal_f32().computed()),
+        ))
+    }
+
+    /// Append a `HighlightsShadows` filter to the chain.
+    #[must_use]
+    pub fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
+        self,
+        highlights: H,
+        shadows: S,
+    ) -> Filtered<
+        V,
+        FilterAdapter<
+            Chain<
+                F,
+                filtrate::filters::HighlightsShadows<
+                    Reactive<Computed<f32>>,
+                    Reactive<Computed<f32>>,
+                >,
+            >,
+        >,
+    > {
+        self.then(filtrate::filters::HighlightsShadows(
+            Reactive(highlights.into_signal_f32().computed()),
+            Reactive(shadows.into_signal_f32().computed()),
+        ))
+    }
+
+    /// Append a `Vignette` filter to the chain.
+    #[must_use]
+    pub fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
+        self,
+        radius: R,
+        softness: S,
+    ) -> Filtered<
+        V,
+        FilterAdapter<
+            Chain<F, filtrate::filters::Vignette<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>,
+        >,
+    > {
+        self.then(filtrate::filters::Vignette(
+            Reactive(radius.into_signal_f32().computed()),
+            Reactive(softness.into_signal_f32().computed()),
+        ))
+    }
+
+    /// Append a directional `MotionBlur` filter to the chain.
+    #[must_use]
+    pub fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
+        self,
+        radius: R,
+        angle: A,
+    ) -> Filtered<
+        V,
+        FilterAdapter<
+            Chain<
+                F,
+                filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>,
+            >,
+        >,
+    > {
+        self.then(filtrate::filters::MotionBlur(
+            Reactive(radius.into_signal_f32().computed()),
+            Reactive(angle.into_signal_f32().computed()),
+        ))
+    }
+}
+
 impl<V: View, F: GpuFilter> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         FilteredView::new(AnyView::new(self.content), self.filter)

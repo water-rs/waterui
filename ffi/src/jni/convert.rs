@@ -736,24 +736,6 @@ impl ToJavaStruct for crate::WuiMetadataOpacity {
     }
 }
 
-/// FilteredBlurStruct(contentPtr: Long, radiusPtr: Long)
-impl ToJavaStruct for crate::components::filtered_blur::WuiFilteredBlur {
-    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class("dev/waterui/android/runtime/FilteredBlurStruct")
-            .expect("FilteredBlurStruct class not found");
-        env.new_object(
-            &class,
-            "(JJ)V",
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.radius as jlong),
-            ],
-        )
-        .expect("Failed to create FilteredBlurStruct")
-    }
-}
-
 /// MetadataFocusedStruct(contentPtr: Long, bindingPtr: Long)
 impl ToJavaStruct for crate::WuiMetadataFocused {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {

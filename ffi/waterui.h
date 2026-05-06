@@ -3522,20 +3522,6 @@ typedef struct WuiAppliedFilterOutputSize {
 } WuiAppliedFilterOutputSize;
 
 /**
- * FFI representation of `FilteredView<Blur>`.
- */
-typedef struct WuiFilteredBlur {
-  /**
-   * Child content pointer consumed by native backend.
-   */
-  struct WuiAnyView *content;
-  /**
-   * Reactive blur radius pointer.
-   */
-  WuiComputed_f32 *radius;
-} WuiFilteredBlur;
-
-/**
  * Callback for returning rendered RGBA data to Rust.
  */
 typedef struct ViewRenderCallback {
@@ -3890,12 +3876,6 @@ typedef struct WuiApp {
 
 
 
-
-/**
- * Type ID for `FilteredView<Blur>`, used by native backends to intercept
- * before `body` expansion.
- */
-struct WuiTypeId waterui_filtered_blur_id(void);
 
 /**
  * # Safety
@@ -5878,26 +5858,6 @@ void *waterui_applied_filter_get_capture_metal_texture(struct WuiAppliedFilterSt
  * and must not be used after this call.
  */
 void waterui_applied_filter_drop(struct WuiAppliedFilterState *state);
-
-/**
- * Force-casts `AnyView` to `FilteredView<Blur>`.
- *
- * # Safety
- * Caller must guarantee `view` points to a `FilteredView<Blur>`.
- */
-struct WuiFilteredBlur waterui_force_as_filtered_blur(struct WuiAnyView *view);
-
-/**
- * Expands filtered blur into the generic fallback `Metadata<AppliedFilter>` node.
- *
- * This consumes `content` and `radius`, rebuilding the fallback subtree exactly
- * as `FilteredView<Blur>::body()`.
- *
- * # Safety
- * `content` must be a valid `WuiAnyView*`, `radius` must be a valid `WuiComputed<f32>*`.
- */
-struct WuiAnyView *waterui_filtered_blur_expand(struct WuiAnyView *content,
-                                                WuiComputed_f32 *radius);
 
 /**
  * Installs a `ViewRenderer` into the environment from a native function pointer.
