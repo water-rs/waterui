@@ -1,7 +1,6 @@
 //! Temperature/tint filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Adjusts white balance through temperature and tint shifts.
 ///
@@ -12,7 +11,7 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct TemperatureTint<T, U>(pub T, pub U);
 
-impl<T: Signal<Output = f32> + 'static, U: Signal<Output = f32> + 'static> Filter
+impl<T: FilterParam, U: FilterParam> Filter
     for TemperatureTint<T, U>
 {
     const COLOR_ONLY: bool = true;
@@ -22,12 +21,21 @@ impl<T: Signal<Output = f32> + 'static, U: Signal<Output = f32> + 'static> Filte
 
     #[inline]
     fn params(&self) -> [f32; 2] {
-        [self.0.get(), self.1.get()]
+        [self.0.snapshot(), self.1.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/temperature_tint.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 2);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
+        v.visit(1, &self.1);
     }
 }
 

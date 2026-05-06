@@ -1,6 +1,6 @@
 //! Invert filter implementation.
 
-use crate::Filter;
+use crate::{Filter, StageCollector};
 
 /// Inverts all colors in an image.
 ///
@@ -30,6 +30,10 @@ impl Filter for Invert {
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/invert.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 0);
     }
 }
 

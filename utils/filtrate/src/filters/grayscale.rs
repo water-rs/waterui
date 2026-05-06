@@ -1,7 +1,6 @@
 //! Grayscale filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Converts an image to grayscale.
 ///
@@ -22,7 +21,7 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct Grayscale<T>(pub T);
 
-impl<T: Signal<Output = f32> + 'static> Filter for Grayscale<T> {
+impl<T: FilterParam> Filter for Grayscale<T> {
     const COLOR_ONLY: bool = true;
 
     type Params = [f32; 1];
@@ -30,12 +29,20 @@ impl<T: Signal<Output = f32> + 'static> Filter for Grayscale<T> {
 
     #[inline]
     fn params(&self) -> [f32; 1] {
-        [self.0.get()]
+        [self.0.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/grayscale.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 1);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
     }
 }
 

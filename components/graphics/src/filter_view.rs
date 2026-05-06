@@ -29,9 +29,13 @@ use num_traits::ToPrimitive;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
-use filtrate_core::{Chain, Filter, ParamArray};
+use core::time::Duration;
+use filtrate_core::{
+    AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterParam, Interpolator,
+    ParamArray, SignalVisitor, StageCollector, WatchGuard,
+};
 use nami::{Computed, Signal, SignalExt as _};
-use waterui_core::animation::{Animation, AnimationTrack};
+use waterui_core::animation::Animation as WuiAnimation;
 use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
@@ -317,7 +321,7 @@ impl<V: View, F: GpuFilter> Filtered<V, F> {
 }
 
 #[allow(private_bounds)]
-impl<V: View, F: Filter + FilterGraph> Filtered<V, FilterAdapter<F>> {
+impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
     /// Chain another filter onto this view.
     ///
     /// Returns a new `Filtered` with the filters chained together.
@@ -332,7 +336,7 @@ impl<V: View, F: Filter + FilterGraph> Filtered<V, FilterAdapter<F>> {
     ///     .then(Contrast(1.5))
     /// ```
     #[must_use]
-    pub fn then<F2: Filter + FilterGraph>(
+    pub fn then<F2: Filter>(
         self,
         filter: F2,
     ) -> Filtered<V, FilterAdapter<Chain<F, F2>>> {
@@ -572,610 +576,6 @@ struct FinalSpatialOutputPipeline {
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
-/// Filter graph introspection for smart pass planning and animation hook installation.
-trait FilterGraph: Filter {
-    /// Collect atomic stages in source order.
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>);
-
-    /// Resolve this filter graph's output size from the current snapped parameters.
-    #[must_use]
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        (input_width, input_height)
-    }
-
-    /// Install animation watchers for all reactive parameters.
-    fn bind_animation_watchers(
-        &self,
-        _param_base: usize,
-        _animation_events: Sender<ParamAnimationEvent>,
-        _guards: &mut Vec<Box<dyn core::any::Any>>,
-    ) {
-    }
-}
-
-fn push_color_stage(stages: &mut Vec<AtomicStage>, fragment: &'static str, param_count: usize) {
-    stages.push(AtomicStage {
-        kind: AtomicStageKind::ColorFragment(fragment),
-        param_count,
-    });
-}
-
-fn push_spatial_stage(stages: &mut Vec<AtomicStage>, shader: &'static str, param_count: usize) {
-    stages.push(AtomicStage {
-        kind: AtomicStageKind::SpatialShader(shader),
-        param_count,
-    });
-}
-
-fn bind_param_watcher<S>(
-    signal: &S,
-    param_index: usize,
-    animation_events: Sender<ParamAnimationEvent>,
-    guards: &mut Vec<Box<dyn core::any::Any>>,
-) where
-    S: Signal<Output = f32> + 'static,
-    S::Guard: 'static,
-{
-    let guard = signal.watch(move |context| {
-        let animation = context.metadata().try_get::<Animation>();
-        if let Some(animation) = animation {
-            let target = context.into_value();
-            let _ = animation_events.send(ParamAnimationEvent {
-                param_index,
-                target_value: target,
-                animation,
-            });
-        }
-    });
-    guards.push(Box::new(guard));
-}
-
-macro_rules! impl_filter_graph_one_param {
-    ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 1);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events, guards);
-            }
-        }
-    };
-    ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 1);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events, guards);
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_two_params {
-    ($ty:ident, color) => {
-        impl<A, B> FilterGraph for filtrate::filters::$ty<A, B>
-        where
-            A: Signal<Output = f32> + 'static,
-            B: Signal<Output = f32> + 'static,
-            A::Guard: 'static,
-            B::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 2);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
-                bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
-            }
-        }
-    };
-    ($ty:ident, spatial) => {
-        impl<A, B> FilterGraph for filtrate::filters::$ty<A, B>
-        where
-            A: Signal<Output = f32> + 'static,
-            B: Signal<Output = f32> + 'static,
-            A::Guard: 'static,
-            B::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 2);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
-                bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_four_params {
-    ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 4);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-        }
-    };
-    ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 4);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-
-            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-                (input_width, input_height)
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_array_two_params {
-    ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 2);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-        }
-    };
-    ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 2);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-
-            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-                (input_width, input_height)
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_array_three_params {
-    ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 3);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-
-            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-                (input_width, input_height)
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_eight_params {
-    ($ty:ident, spatial) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 8);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-
-            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-                (input_width, input_height)
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_twelve_params {
-    ($ty:ident, color) => {
-        impl<S> FilterGraph for filtrate::filters::$ty<S>
-        where
-            S: Signal<Output = f32> + Clone + 'static,
-            S::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 12);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                for (index, signal) in self.0.iter().enumerate() {
-                    bind_param_watcher(
-                        signal,
-                        param_base + index,
-                        animation_events.clone(),
-                        guards,
-                    );
-                }
-            }
-        }
-    };
-}
-
-macro_rules! impl_filter_graph_three_params {
-    ($ty:ident, color) => {
-        impl<A, B, C> FilterGraph for filtrate::filters::$ty<A, B, C>
-        where
-            A: Signal<Output = f32> + 'static,
-            B: Signal<Output = f32> + 'static,
-            C: Signal<Output = f32> + 'static,
-            A::Guard: 'static,
-            B::Guard: 'static,
-            C::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_color_stage(out, self.fragments(), 3);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
-                bind_param_watcher(&self.1, param_base + 1, animation_events.clone(), guards);
-                bind_param_watcher(&self.2, param_base + 2, animation_events, guards);
-            }
-        }
-    };
-    ($ty:ident, spatial) => {
-        impl<A, B, C> FilterGraph for filtrate::filters::$ty<A, B, C>
-        where
-            A: Signal<Output = f32> + 'static,
-            B: Signal<Output = f32> + 'static,
-            C: Signal<Output = f32> + 'static,
-            A::Guard: 'static,
-            B::Guard: 'static,
-            C::Guard: 'static,
-        {
-            fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-                push_spatial_stage(out, self.fragments(), 3);
-            }
-
-            fn bind_animation_watchers(
-                &self,
-                param_base: usize,
-                animation_events: Sender<ParamAnimationEvent>,
-                guards: &mut Vec<Box<dyn core::any::Any>>,
-            ) {
-                bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
-                bind_param_watcher(&self.1, param_base + 1, animation_events.clone(), guards);
-                bind_param_watcher(&self.2, param_base + 2, animation_events, guards);
-            }
-        }
-    };
-}
-
-impl_filter_graph_one_param!(Brightness, color);
-impl_filter_graph_one_param!(Exposure, color);
-impl_filter_graph_one_param!(Gamma, color);
-impl_filter_graph_one_param!(Contrast, color);
-impl_filter_graph_one_param!(Saturation, color);
-impl_filter_graph_one_param!(Grayscale, color);
-impl_filter_graph_one_param!(Vibrance, color);
-impl_filter_graph_three_params!(WhitePoint, color);
-impl_filter_graph_one_param!(HueRotation, color);
-impl_filter_graph_one_param!(Sepia, color);
-impl_filter_graph_one_param!(Sharpen, spatial);
-impl_filter_graph_two_params!(TemperatureTint, color);
-impl_filter_graph_two_params!(HighlightsShadows, color);
-impl_filter_graph_two_params!(MotionBlur, spatial);
-impl_filter_graph_three_params!(ZoomBlur, spatial);
-impl_filter_graph_twelve_params!(ColorMatrix, color);
-impl<S> FilterGraph for filtrate::filters::GaussianBlur<S>
-where
-    S: Signal<Output = f32> + 'static,
-    S::Guard: 'static,
-{
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        push_spatial_stage(
-            out,
-            include_str!("../../../utils/filtrate/src/shaders/gaussian_blur_horizontal.wgsl"),
-            1,
-        );
-        push_spatial_stage(
-            out,
-            include_str!("../../../utils/filtrate/src/shaders/gaussian_blur_vertical.wgsl"),
-            1,
-        );
-    }
-
-    fn bind_animation_watchers(
-        &self,
-        param_base: usize,
-        animation_events: Sender<ParamAnimationEvent>,
-        guards: &mut Vec<Box<dyn core::any::Any>>,
-    ) {
-        let guard = self.0.watch(move |context| {
-            let Some(animation) = context.metadata().try_get::<Animation>() else {
-                return;
-            };
-            let target = context.into_value();
-            let _ = animation_events.send(ParamAnimationEvent {
-                param_index: param_base,
-                target_value: target,
-                animation: animation.clone(),
-            });
-            let _ = animation_events.send(ParamAnimationEvent {
-                param_index: param_base + 1,
-                target_value: target,
-                animation,
-            });
-        });
-        guards.push(Box::new(guard));
-    }
-}
-impl_filter_graph_array_three_params!(Bloom, spatial);
-impl_filter_graph_array_three_params!(Gloom, spatial);
-impl_filter_graph_array_two_params!(UnsharpMask, spatial);
-impl_filter_graph_four_params!(BumpDistortion, spatial);
-impl_filter_graph_four_params!(PinchDistortion, spatial);
-impl_filter_graph_four_params!(TwirlDistortion, spatial);
-impl_filter_graph_four_params!(VortexDistortion, spatial);
-impl_filter_graph_eight_params!(PerspectiveTransform, spatial);
-impl_filter_graph_eight_params!(PerspectiveCorrection, spatial);
-impl_filter_graph_one_param!(Pixellate, spatial);
-impl_filter_graph_one_param!(Crystallize, spatial);
-impl_filter_graph_array_two_params!(EdgeWork, spatial);
-impl_filter_graph_four_params!(DotHalftone, spatial);
-impl_filter_graph_four_params!(LineHalftone, spatial);
-impl_filter_graph_four_params!(Kaleidoscope, spatial);
-impl_filter_graph_array_two_params!(MirrorTile, spatial);
-
-impl<S> FilterGraph for filtrate::filters::Blur<S>
-where
-    S: Signal<Output = f32> + 'static,
-    S::Guard: 'static,
-{
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        // Separable blur: horizontal then vertical, both driven by the same radius.
-        push_spatial_stage(
-            out,
-            include_str!("../../../utils/filtrate/src/shaders/blur_horizontal.wgsl"),
-            1,
-        );
-        push_spatial_stage(
-            out,
-            include_str!("../../../utils/filtrate/src/shaders/blur_vertical.wgsl"),
-            1,
-        );
-    }
-
-    fn bind_animation_watchers(
-        &self,
-        param_base: usize,
-        animation_events: Sender<ParamAnimationEvent>,
-        guards: &mut Vec<Box<dyn core::any::Any>>,
-    ) {
-        let guard = self.0.watch(move |context| {
-            let Some(animation) = context.metadata().try_get::<Animation>() else {
-                return;
-            };
-            let target = context.into_value();
-            let _ = animation_events.send(ParamAnimationEvent {
-                param_index: param_base,
-                target_value: target,
-                animation: animation.clone(),
-            });
-            let _ = animation_events.send(ParamAnimationEvent {
-                param_index: param_base + 1,
-                target_value: target,
-                animation,
-            });
-        });
-        guards.push(Box::new(guard));
-    }
-}
-
-impl FilterGraph for filtrate::filters::Invert {
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        push_color_stage(out, self.fragments(), 0);
-    }
-}
-
-impl<R, S> FilterGraph for filtrate::filters::Vignette<R, S>
-where
-    R: Signal<Output = f32> + 'static,
-    S: Signal<Output = f32> + 'static,
-    R::Guard: 'static,
-    S::Guard: 'static,
-{
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        push_color_stage(out, self.fragments(), 2);
-    }
-
-    fn bind_animation_watchers(
-        &self,
-        param_base: usize,
-        animation_events: Sender<ParamAnimationEvent>,
-        guards: &mut Vec<Box<dyn core::any::Any>>,
-    ) {
-        bind_param_watcher(&self.0, param_base, animation_events.clone(), guards);
-        bind_param_watcher(&self.1, param_base + 1, animation_events, guards);
-    }
-}
-
-impl<A, B> FilterGraph for Chain<A, B>
-where
-    A: Filter + FilterGraph,
-    B: Filter + FilterGraph,
-{
-    fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-        self.first.collect_stages(out);
-        self.second.collect_stages(out);
-    }
-
-    fn bind_animation_watchers(
-        &self,
-        param_base: usize,
-        animation_events: Sender<ParamAnimationEvent>,
-        guards: &mut Vec<Box<dyn core::any::Any>>,
-    ) {
-        self.first
-            .bind_animation_watchers(param_base, animation_events.clone(), guards);
-        self.second.bind_animation_watchers(
-            param_base + <A::Params as ParamArray>::LEN,
-            animation_events,
-            guards,
-        );
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        let (mid_width, mid_height) = self.first.output_size(input_width, input_height);
-        self.second.output_size(mid_width, mid_height)
-    }
-}
 
 fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str> {
     if stages.is_empty() {
@@ -1308,7 +708,7 @@ const PARAM_EPSILON: f32 = 0.000_01;
 
 #[derive(Debug)]
 struct ParamTrackState {
-    track: AnimationTrack<f32>,
+    track: AnimationTrack,
     animated_target: Option<f32>,
 }
 
@@ -1329,11 +729,135 @@ const fn approx_param_eq(a: f32, b: f32) -> bool {
     (a - b).abs() <= PARAM_EPSILON
 }
 
-#[derive(Debug, Clone)]
 struct ParamAnimationEvent {
     param_index: usize,
     target_value: f32,
-    animation: Animation,
+    interpolator: Option<Box<dyn Interpolator>>,
+}
+
+impl core::fmt::Debug for ParamAnimationEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParamAnimationEvent")
+            .field("param_index", &self.param_index)
+            .field("target_value", &self.target_value)
+            .field("animated", &self.interpolator.is_some())
+            .finish()
+    }
+}
+
+// ============================================================================
+// FilterParam ↔ nami signal bridge
+// ============================================================================
+
+/// Wraps any `nami::Signal<Output = f32>` so it can be used as a
+/// [`FilterParam`] in `filtrate-core` filter structs without coupling
+/// `filtrate-core` to nami.
+///
+/// Produced internally by view-level modifiers (`view.blur(...)` etc.); end
+/// users do not normally name this type.
+#[derive(Debug, Clone, Copy)]
+pub struct Reactive<S>(pub S);
+
+struct WaterUiAnimationInterpolator(WuiAnimation);
+
+impl Interpolator for WaterUiAnimationInterpolator {
+    fn duration(&self) -> Duration {
+        self.0.duration()
+    }
+    fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
+        self.0.interpolate(&from, &to, elapsed)
+    }
+    fn is_complete(&self, elapsed: Duration) -> bool {
+        self.0.is_complete(elapsed)
+    }
+}
+
+impl<S> FilterParam for Reactive<S>
+where
+    S: Signal<Output = f32> + 'static,
+    S::Guard: 'static,
+{
+    fn snapshot(&self) -> f32 {
+        self.0.get()
+    }
+
+    fn watch_animated(&self, callback: AnimatedCallback) -> Option<WatchGuard> {
+        let guard = self.0.watch(move |context| {
+            let interpolator = context
+                .metadata()
+                .try_get::<WuiAnimation>()
+                .map(|animation| {
+                    Box::new(WaterUiAnimationInterpolator(animation)) as Box<dyn Interpolator>
+                });
+            let value = context.into_value();
+            callback(AnimatedTarget {
+                value,
+                interpolator,
+            });
+        });
+        Some(WatchGuard::new(guard))
+    }
+}
+
+// ============================================================================
+// Stage and signal visitors used by the planner / animation watcher install.
+// ============================================================================
+
+#[derive(Default)]
+struct StageBuffer {
+    stages: Vec<AtomicStage>,
+}
+
+impl StageBuffer {
+    fn into_inner(self) -> Vec<AtomicStage> {
+        self.stages
+    }
+}
+
+impl StageCollector for StageBuffer {
+    fn color_fragment(&mut self, source: &'static str, param_count: usize) {
+        self.stages.push(AtomicStage {
+            kind: AtomicStageKind::ColorFragment(source),
+            param_count,
+        });
+    }
+    fn spatial_shader(&mut self, source: &'static str, param_count: usize) {
+        self.stages.push(AtomicStage {
+            kind: AtomicStageKind::SpatialShader(source),
+            param_count,
+        });
+    }
+}
+
+fn collect_filter_stages<F: Filter>(filter: &F) -> Vec<AtomicStage> {
+    let mut buffer = StageBuffer::default();
+    filter.collect_stages(&mut buffer);
+    buffer.into_inner()
+}
+
+struct WatcherInstaller<'a> {
+    sender: Sender<ParamAnimationEvent>,
+    guards: &'a mut Vec<Box<dyn core::any::Any>>,
+}
+
+impl SignalVisitor for WatcherInstaller<'_> {
+    fn visit<P: FilterParam + ?Sized>(&mut self, param_index: usize, param: &P) {
+        let sender = self.sender.clone();
+        if let Some(guard) = param.watch_animated(Box::new(move |target| {
+            // Only animated changes flow through the channel; plain value
+            // updates are picked up by the next `params()` snapshot at render
+            // time, matching the original Signal-based pipeline behavior.
+            if target.interpolator.is_some() {
+                let _ = sender.send(ParamAnimationEvent {
+                    param_index,
+                    target_value: target.value,
+                    interpolator: target.interpolator,
+                });
+            }
+        })) {
+            self.guards.push(Box::new(guard));
+        }
+    }
 }
 
 // ============================================================================
@@ -1398,7 +922,7 @@ impl<F: Filter> fmt::Debug for FilterAdapter<F> {
 }
 
 #[allow(private_bounds)]
-impl<F: Filter + FilterGraph> FilterAdapter<F> {
+impl<F: Filter> FilterAdapter<F> {
     /// Create a new filter adapter.
     #[must_use]
     pub fn new(filter: F) -> Self {
@@ -1422,7 +946,10 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
         let (animation_events_tx, animation_events) = mpsc::channel();
 
         let mut watcher_guards: Vec<Box<dyn core::any::Any>> = Vec::new();
-        filter.bind_animation_watchers(0, animation_events_tx, &mut watcher_guards);
+        filter.visit_signals(&mut WatcherInstaller {
+            sender: animation_events_tx,
+            guards: &mut watcher_guards,
+        });
 
         Self {
             filter,
@@ -1456,7 +983,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     /// Returns a new `FilterAdapter` wrapping a `Chain` of both filters.
     /// Consecutive color-only filters will be fused into a single GPU pass.
     #[must_use]
-    pub fn then<F2: Filter + FilterGraph>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
+    pub fn then<F2: Filter>(self, filter: F2) -> FilterAdapter<Chain<F, F2>> {
         let mut next = FilterAdapter::new(Chain {
             first: self.filter,
             second: filter,
@@ -1509,9 +1036,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
                 continue;
             }
             let entry = &mut self.animation_state.tracks[event.param_index];
-            entry
-                .track
-                .set_target(event.target_value, Some(event.animation));
+            entry.track.set_target(event.target_value, event.interpolator);
             entry.animated_target = Some(event.target_value);
             self.animation_state.has_active_animation = true;
         }
@@ -1857,7 +1382,7 @@ impl<F: Filter + FilterGraph> FilterAdapter<F> {
     }
 }
 
-impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
+impl<F: Filter> GpuFilter for FilterAdapter<F> {
     fn setup(&mut self, ctx: &FilterContext) -> impl Future<Output = FilterSetupResult> {
         let param_count = <F::Params as ParamArray>::LEN;
         if param_count > MAX_FILTER_PARAMS {
@@ -1879,8 +1404,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
         });
         self.sampler = Some(sampler);
 
-        let mut stages = Vec::new();
-        self.filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&self.filter);
         let planned = match fuse_stages(&stages) {
             Ok(passes) => passes,
             Err(err) => {
@@ -2374,7 +1898,7 @@ impl<F: Filter + FilterGraph> GpuFilter for FilterAdapter<F> {
     }
 }
 #[allow(private_bounds)]
-impl<F: Filter + FilterGraph> FilterAdapter<F> {
+impl<F: Filter> FilterAdapter<F> {
     fn create_color_pipeline(
         ctx: &FilterContext,
         fragments: &str,
@@ -3029,8 +2553,7 @@ mod tests {
             },
         };
 
-        let mut stages = Vec::new();
-        filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&filter);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
         assert_eq!(passes.len(), 1);
@@ -3049,8 +2572,7 @@ mod tests {
             },
         };
 
-        let mut stages = Vec::new();
-        filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&filter);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
         assert_eq!(passes.len(), 4);
@@ -3073,8 +2595,7 @@ mod tests {
             },
         };
 
-        let mut stages = Vec::new();
-        filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&filter);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
         assert_eq!(passes.len(), 4);
@@ -3098,8 +2619,7 @@ mod tests {
             },
         };
 
-        let mut stages = Vec::new();
-        filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&filter);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
 
         let (plans, blit_source) =
@@ -3147,8 +2667,7 @@ mod tests {
             },
         };
 
-        let mut stages = Vec::new();
-        filter.collect_stages(&mut stages);
+        let stages = collect_filter_stages(&filter);
         let passes = fuse_stages(&stages).expect("fuse should succeed");
         let (plans, blit_source) =
             plan_runtime_bindings(&passes).expect("runtime binding planning should succeed");
@@ -3198,12 +2717,9 @@ mod tests {
         fn fragments(&self) -> Self::Fragments {
             include_str!("../../../utils/filtrate/src/shaders/fragments/brightness.wgsl")
         }
-    }
 
-    impl FilterGraph for HugeFilter {
-        fn collect_stages(&self, out: &mut Vec<AtomicStage>) {
-            push_color_stage(
-                out,
+        fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+            c.color_fragment(
                 include_str!("../../../utils/filtrate/src/shaders/fragments/brightness.wgsl"),
                 <Self::Params as ParamArray>::LEN,
             );
@@ -3920,97 +3436,97 @@ mod tests {
 
 /// Concrete filter aliases with stable type identities.
 ///
-/// These aliases intentionally normalize reactive parameters to `Computed<f32>`
+/// These aliases intentionally normalize reactive parameters to `Reactive<Computed<f32>>`
 /// so backend hook nodes remain concrete (`FilteredView<Blur>`, etc.).
 /// Alias for a box-blur filter.
-pub type Blur = FilterAdapter<filtrate::filters::Blur<Computed<f32>>>;
+pub type Blur = FilterAdapter<filtrate::filters::Blur<Reactive<Computed<f32>>>>;
 /// Alias for a brightness adjustment filter.
-pub type Brightness = FilterAdapter<filtrate::filters::Brightness<Computed<f32>>>;
+pub type Brightness = FilterAdapter<filtrate::filters::Brightness<Reactive<Computed<f32>>>>;
 /// Alias for a contrast adjustment filter.
-pub type Contrast = FilterAdapter<filtrate::filters::Contrast<Computed<f32>>>;
+pub type Contrast = FilterAdapter<filtrate::filters::Contrast<Reactive<Computed<f32>>>>;
 /// Alias for an exposure adjustment filter.
-pub type Exposure = FilterAdapter<filtrate::filters::Exposure<Computed<f32>>>;
+pub type Exposure = FilterAdapter<filtrate::filters::Exposure<Reactive<Computed<f32>>>>;
 /// Alias for a 4x5 color-matrix filter.
 pub type ColorMatrix = FilterAdapter<filtrate::filters::ColorMatrix<f32>>;
 /// Alias for a gamma adjustment filter.
-pub type Gamma = FilterAdapter<filtrate::filters::Gamma<Computed<f32>>>;
+pub type Gamma = FilterAdapter<filtrate::filters::Gamma<Reactive<Computed<f32>>>>;
 /// Alias for a Gaussian blur filter.
-pub type GaussianBlur = FilterAdapter<filtrate::filters::GaussianBlur<Computed<f32>>>;
+pub type GaussianBlur = FilterAdapter<filtrate::filters::GaussianBlur<Reactive<Computed<f32>>>>;
 /// Alias for a saturation adjustment filter.
-pub type Saturation = FilterAdapter<filtrate::filters::Saturation<Computed<f32>>>;
+pub type Saturation = FilterAdapter<filtrate::filters::Saturation<Reactive<Computed<f32>>>>;
 /// Alias for a temperature/tint adjustment filter.
 pub type TemperatureTint =
-    FilterAdapter<filtrate::filters::TemperatureTint<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::TemperatureTint<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 /// Alias for a grayscale mix filter.
-pub type Grayscale = FilterAdapter<filtrate::filters::Grayscale<Computed<f32>>>;
+pub type Grayscale = FilterAdapter<filtrate::filters::Grayscale<Reactive<Computed<f32>>>>;
 /// Alias for a bloom filter.
-pub type Bloom = FilterAdapter<filtrate::filters::Bloom<Computed<f32>>>;
+pub type Bloom = FilterAdapter<filtrate::filters::Bloom<Reactive<Computed<f32>>>>;
 /// Alias for a gloom filter.
-pub type Gloom = FilterAdapter<filtrate::filters::Gloom<Computed<f32>>>;
+pub type Gloom = FilterAdapter<filtrate::filters::Gloom<Reactive<Computed<f32>>>>;
 /// Alias for a highlights/shadows adjustment filter.
 pub type HighlightsShadows =
-    FilterAdapter<filtrate::filters::HighlightsShadows<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::HighlightsShadows<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 /// Alias for a hue-rotation filter.
-pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Computed<f32>>>;
+pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Reactive<Computed<f32>>>>;
 /// Alias for a color inversion filter.
 pub type Invert = FilterAdapter<filtrate::filters::Invert>;
 /// Alias for a motion blur filter.
 pub type MotionBlur =
-    FilterAdapter<filtrate::filters::MotionBlur<Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 /// Alias for a bump distortion filter.
-pub type BumpDistortion = FilterAdapter<filtrate::filters::BumpDistortion<Computed<f32>>>;
+pub type BumpDistortion = FilterAdapter<filtrate::filters::BumpDistortion<Reactive<Computed<f32>>>>;
 /// Alias for a pinch distortion filter.
-pub type PinchDistortion = FilterAdapter<filtrate::filters::PinchDistortion<Computed<f32>>>;
+pub type PinchDistortion = FilterAdapter<filtrate::filters::PinchDistortion<Reactive<Computed<f32>>>>;
 /// Alias for a twirl distortion filter.
-pub type TwirlDistortion = FilterAdapter<filtrate::filters::TwirlDistortion<Computed<f32>>>;
+pub type TwirlDistortion = FilterAdapter<filtrate::filters::TwirlDistortion<Reactive<Computed<f32>>>>;
 /// Alias for a vortex distortion filter.
-pub type VortexDistortion = FilterAdapter<filtrate::filters::VortexDistortion<Computed<f32>>>;
+pub type VortexDistortion = FilterAdapter<filtrate::filters::VortexDistortion<Reactive<Computed<f32>>>>;
 /// Alias for a perspective transform filter.
 pub type PerspectiveTransform = FilterAdapter<filtrate::filters::PerspectiveTransform<f32>>;
 /// Alias for a perspective correction filter.
 pub type PerspectiveCorrection = FilterAdapter<filtrate::filters::PerspectiveCorrection<f32>>;
 /// Alias for a sepia-toning filter.
-pub type Sepia = FilterAdapter<filtrate::filters::Sepia<Computed<f32>>>;
+pub type Sepia = FilterAdapter<filtrate::filters::Sepia<Reactive<Computed<f32>>>>;
 /// Alias for a vibrance adjustment filter.
-pub type Vibrance = FilterAdapter<filtrate::filters::Vibrance<Computed<f32>>>;
+pub type Vibrance = FilterAdapter<filtrate::filters::Vibrance<Reactive<Computed<f32>>>>;
 /// Alias for a pixellation filter.
-pub type Pixellate = FilterAdapter<filtrate::filters::Pixellate<Computed<f32>>>;
+pub type Pixellate = FilterAdapter<filtrate::filters::Pixellate<Reactive<Computed<f32>>>>;
 /// Alias for a crystallize filter.
-pub type Crystallize = FilterAdapter<filtrate::filters::Crystallize<Computed<f32>>>;
+pub type Crystallize = FilterAdapter<filtrate::filters::Crystallize<Reactive<Computed<f32>>>>;
 /// Alias for an edge-work stylization filter.
-pub type EdgeWork = FilterAdapter<filtrate::filters::EdgeWork<Computed<f32>>>;
+pub type EdgeWork = FilterAdapter<filtrate::filters::EdgeWork<Reactive<Computed<f32>>>>;
 /// Alias for a dot-halftone filter.
-pub type DotHalftone = FilterAdapter<filtrate::filters::DotHalftone<Computed<f32>>>;
+pub type DotHalftone = FilterAdapter<filtrate::filters::DotHalftone<Reactive<Computed<f32>>>>;
 /// Alias for a line-halftone filter.
-pub type LineHalftone = FilterAdapter<filtrate::filters::LineHalftone<Computed<f32>>>;
+pub type LineHalftone = FilterAdapter<filtrate::filters::LineHalftone<Reactive<Computed<f32>>>>;
 /// Alias for a kaleidoscope filter.
-pub type Kaleidoscope = FilterAdapter<filtrate::filters::Kaleidoscope<Computed<f32>>>;
+pub type Kaleidoscope = FilterAdapter<filtrate::filters::Kaleidoscope<Reactive<Computed<f32>>>>;
 /// Alias for a mirror-tile filter.
-pub type MirrorTile = FilterAdapter<filtrate::filters::MirrorTile<Computed<f32>>>;
+pub type MirrorTile = FilterAdapter<filtrate::filters::MirrorTile<Reactive<Computed<f32>>>>;
 /// Alias for an unsharp-mask filter.
-pub type UnsharpMask = FilterAdapter<filtrate::filters::UnsharpMask<Computed<f32>>>;
+pub type UnsharpMask = FilterAdapter<filtrate::filters::UnsharpMask<Reactive<Computed<f32>>>>;
 /// Alias for a sharpen filter.
-pub type Sharpen = FilterAdapter<filtrate::filters::Sharpen<Computed<f32>>>;
+pub type Sharpen = FilterAdapter<filtrate::filters::Sharpen<Reactive<Computed<f32>>>>;
 /// Alias for a vignette filter.
-pub type Vignette = FilterAdapter<filtrate::filters::Vignette<Computed<f32>, Computed<f32>>>;
+pub type Vignette = FilterAdapter<filtrate::filters::Vignette<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 /// Alias for a white-point adjustment filter.
 pub type WhitePoint =
-    FilterAdapter<filtrate::filters::WhitePoint<Computed<f32>, Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::WhitePoint<Reactive<Computed<f32>>, Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 /// Alias for a zoom-blur filter.
 pub type ZoomBlur =
-    FilterAdapter<filtrate::filters::ZoomBlur<Computed<f32>, Computed<f32>, Computed<f32>>>;
+    FilterAdapter<filtrate::filters::ZoomBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
 
 impl Blur {
     /// Returns the reactive blur radius signal driving this filter.
     #[must_use]
-    pub const fn radius_signal(&self) -> &Computed<f32> {
+    pub const fn radius_signal(&self) -> &Reactive<Computed<f32>> {
         &self.filter.0
     }
 }
 
 /// Rebuilds the canonical blur filter adapter from a reactive radius signal.
 #[must_use]
-pub fn blur_from_radius_signal(radius: Computed<f32>) -> Blur {
+pub fn blur_from_radius_signal(radius: Reactive<Computed<f32>>) -> Blur {
     FilterAdapter::new(filtrate::filters::Blur(radius))
 }
 
@@ -4052,7 +3568,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Blur(
-                radius.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
             )),
         )
     }
@@ -4062,7 +3578,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Brightness(
-                amount.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
             )),
         )
     }
@@ -4072,7 +3588,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Exposure(
-                ev.into_signal_f32().computed(),
+                Reactive(ev.into_signal_f32().computed()),
             )),
         )
     }
@@ -4082,7 +3598,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Gamma(
-                gamma.into_signal_f32().computed(),
+                Reactive(gamma.into_signal_f32().computed()),
             )),
         )
     }
@@ -4092,7 +3608,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Contrast(
-                amount.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
             )),
         )
     }
@@ -4102,7 +3618,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Saturation(
-                amount.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
             )),
         )
     }
@@ -4112,7 +3628,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Vibrance(
-                amount.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
             )),
         )
     }
@@ -4122,7 +3638,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Grayscale(
-                intensity.into_signal_f32().computed(),
+                Reactive(intensity.into_signal_f32().computed()),
             )),
         )
     }
@@ -4132,7 +3648,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::HueRotation(
-                angle.into_signal_f32().computed(),
+                Reactive(angle.into_signal_f32().computed()),
             )),
         )
     }
@@ -4147,7 +3663,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Sepia(
-                intensity.into_signal_f32().computed(),
+                Reactive(intensity.into_signal_f32().computed()),
             )),
         )
     }
@@ -4157,7 +3673,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Sharpen(
-                amount.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
             )),
         )
     }
@@ -4171,8 +3687,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::TemperatureTint(
-                temperature.into_signal_f32().computed(),
-                tint.into_signal_f32().computed(),
+                Reactive(temperature.into_signal_f32().computed()),
+                Reactive(tint.into_signal_f32().computed()),
             )),
         )
     }
@@ -4186,8 +3702,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::HighlightsShadows(
-                highlights.into_signal_f32().computed(),
-                shadows.into_signal_f32().computed(),
+                Reactive(highlights.into_signal_f32().computed()),
+                Reactive(shadows.into_signal_f32().computed()),
             )),
         )
     }
@@ -4201,8 +3717,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::MotionBlur(
-                radius.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
             )),
         )
     }
@@ -4216,8 +3732,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Vignette(
-                radius.into_signal_f32().computed(),
-                softness.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(softness.into_signal_f32().computed()),
             )),
         )
     }
@@ -4232,9 +3748,9 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::WhitePoint(
-                red.into_signal_f32().computed(),
-                green.into_signal_f32().computed(),
-                blue.into_signal_f32().computed(),
+                Reactive(red.into_signal_f32().computed()),
+                Reactive(green.into_signal_f32().computed()),
+                Reactive(blue.into_signal_f32().computed()),
             )),
         )
     }
@@ -4249,9 +3765,9 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::ZoomBlur(
-                amount.into_signal_f32().computed(),
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
+                Reactive(amount.into_signal_f32().computed()),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
             )),
         )
     }
@@ -4261,7 +3777,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::GaussianBlur(
-                sigma.into_signal_f32().computed(),
+                Reactive(sigma.into_signal_f32().computed()),
             )),
         )
     }
@@ -4298,9 +3814,9 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Bloom([
-                radius.into_signal_f32().computed(),
-                intensity.into_signal_f32().computed(),
-                threshold.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(intensity.into_signal_f32().computed()),
+                Reactive(threshold.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4315,9 +3831,9 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Gloom([
-                radius.into_signal_f32().computed(),
-                intensity.into_signal_f32().computed(),
-                threshold.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(intensity.into_signal_f32().computed()),
+                Reactive(threshold.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4331,8 +3847,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::UnsharpMask([
-                radius.into_signal_f32().computed(),
-                amount.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(amount.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4348,10 +3864,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::BumpDistortion([
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
-                radius.into_signal_f32().computed(),
-                scale.into_signal_f32().computed(),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(scale.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4367,10 +3883,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::PinchDistortion([
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
-                radius.into_signal_f32().computed(),
-                scale.into_signal_f32().computed(),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(scale.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4386,10 +3902,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::TwirlDistortion([
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
-                radius.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4405,10 +3921,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::VortexDistortion([
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
-                radius.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4442,7 +3958,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Pixellate(
-                size.into_signal_f32().computed(),
+                Reactive(size.into_signal_f32().computed()),
             )),
         )
     }
@@ -4452,7 +3968,7 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Crystallize(
-                size.into_signal_f32().computed(),
+                Reactive(size.into_signal_f32().computed()),
             )),
         )
     }
@@ -4466,8 +3982,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::EdgeWork([
-                radius.into_signal_f32().computed(),
-                amount.into_signal_f32().computed(),
+                Reactive(radius.into_signal_f32().computed()),
+                Reactive(amount.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4483,10 +3999,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::DotHalftone([
-                scale.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
+                Reactive(scale.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4502,10 +4018,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::LineHalftone([
-                scale.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
+                Reactive(scale.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4521,10 +4037,10 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::Kaleidoscope([
-                segments.into_signal_f32().computed(),
-                angle.into_signal_f32().computed(),
-                center_x.into_signal_f32().computed(),
-                center_y.into_signal_f32().computed(),
+                Reactive(segments.into_signal_f32().computed()),
+                Reactive(angle.into_signal_f32().computed()),
+                Reactive(center_x.into_signal_f32().computed()),
+                Reactive(center_y.into_signal_f32().computed()),
             ])),
         )
     }
@@ -4538,8 +4054,8 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::MirrorTile([
-                repeat_x.into_signal_f32().computed(),
-                repeat_y.into_signal_f32().computed(),
+                Reactive(repeat_x.into_signal_f32().computed()),
+                Reactive(repeat_y.into_signal_f32().computed()),
             ])),
         )
     }
