@@ -27,5 +27,7 @@
 pub mod filters;
 
 pub use filtrate_core::{
-    Chain, Filter, FilterExt, FragmentList, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
+    AnimatedCallback, AnimatedTarget, AnimationTrack, Chain, Filter, FilterExt, FilterParam,
+    FragmentList, Interpolator, MAX_FILTER_PARAM_VEC4S, MAX_FILTER_PARAMS, ParamArray,
+    SignalVisitor, StageCollector, WatchGuard,
 };

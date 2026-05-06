@@ -1,7 +1,6 @@
 //! Perspective correction filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Corrects a perspective-skewed quadrilateral back to a rectangle.
 #[derive(Debug, Clone)]
@@ -9,7 +8,7 @@ pub struct PerspectiveCorrection<T>(pub [T; 8]);
 
 impl<T> Filter for PerspectiveCorrection<T>
 where
-    T: Signal<Output = f32> + Clone + 'static,
+    T: FilterParam + Clone,
 {
     const COLOR_ONLY: bool = false;
 
@@ -18,11 +17,21 @@ where
 
     #[inline]
     fn params(&self) -> [f32; 8] {
-        core::array::from_fn(|idx| self.0[idx].get())
+        core::array::from_fn(|idx| self.0[idx].snapshot())
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/perspective_correction.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.spatial_shader(self.fragments(), 8);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        for (i, p) in self.0.iter().enumerate() {
+            v.visit(i, p);
+        }
     }
 }

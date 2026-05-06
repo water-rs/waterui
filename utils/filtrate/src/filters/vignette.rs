@@ -1,7 +1,6 @@
 //! Vignette filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Adds a vignette effect (darkened corners) to an image.
 ///
@@ -21,7 +20,7 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct Vignette<R, S>(pub R, pub S);
 
-impl<R: Signal<Output = f32> + 'static, S: Signal<Output = f32> + 'static> Filter
+impl<R: FilterParam, S: FilterParam> Filter
     for Vignette<R, S>
 {
     const COLOR_ONLY: bool = true;
@@ -31,12 +30,21 @@ impl<R: Signal<Output = f32> + 'static, S: Signal<Output = f32> + 'static> Filte
 
     #[inline]
     fn params(&self) -> [f32; 2] {
-        [self.0.get(), self.1.get()]
+        [self.0.snapshot(), self.1.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/vignette.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 2);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
+        v.visit(1, &self.1);
     }
 }
 

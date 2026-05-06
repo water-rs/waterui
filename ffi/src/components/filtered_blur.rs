@@ -2,7 +2,9 @@ use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiAnyView};
 use waterui::AnyView;
 use waterui_core::Metadata;
-use waterui_graphics::filter_view::{AppliedFilter, Blur, FilteredView, blur_from_radius_signal};
+use waterui_graphics::filter_view::{
+    AppliedFilter, Blur, FilteredView, Reactive, blur_from_radius_signal,
+};
 
 /// FFI representation of `FilteredView<Blur>`.
 #[repr(C)]
@@ -17,7 +19,7 @@ impl IntoFFI for FilteredView<Blur> {
     type FFI = WuiFilteredBlur;
 
     fn into_ffi(self) -> Self::FFI {
-        let radius = self.filter().radius_signal().clone();
+        let radius = self.filter().radius_signal().0.clone();
         let content = self.into_content();
         WuiFilteredBlur {
             content: content.into_ffi(),
@@ -54,7 +56,7 @@ pub unsafe extern "C" fn waterui_filtered_blur_expand(
     let content: AnyView = unsafe { IntoRust::into_rust(content) };
     let radius = unsafe { IntoRust::into_rust(radius) }
         .expect("waterui_filtered_blur_expand: radius must not be null");
-    let blur = blur_from_radius_signal(radius.0);
+    let blur = blur_from_radius_signal(Reactive(radius.0));
     let fallback = Metadata::new(content, AppliedFilter::new(blur));
     AnyView::new(fallback).into_ffi()
 }

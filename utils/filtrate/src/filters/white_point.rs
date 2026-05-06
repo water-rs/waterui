@@ -1,7 +1,6 @@
 //! White point filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Adjusts white balance using a target white point.
 ///
@@ -17,9 +16,9 @@ pub struct WhitePoint<R, G, B>(pub R, pub G, pub B);
 
 impl<R, G, B> Filter for WhitePoint<R, G, B>
 where
-    R: Signal<Output = f32> + 'static,
-    G: Signal<Output = f32> + 'static,
-    B: Signal<Output = f32> + 'static,
+    R: FilterParam,
+    G: FilterParam,
+    B: FilterParam,
 {
     const COLOR_ONLY: bool = true;
 
@@ -28,12 +27,22 @@ where
 
     #[inline]
     fn params(&self) -> [f32; 3] {
-        [self.0.get(), self.1.get(), self.2.get()]
+        [self.0.snapshot(), self.1.snapshot(), self.2.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/white_point.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 3);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
+        v.visit(1, &self.1);
+        v.visit(2, &self.2);
     }
 }
 

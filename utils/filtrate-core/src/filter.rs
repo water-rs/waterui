@@ -1,90 +1,85 @@
 //! Core Filter trait for GPU filter pipelines.
 //!
-//! Filters are pure data - they hold no GPU state. The [`Filter`] trait
-//! provides the recipe (shader fragments and parameters) that the pipeline
-//! compiles and executes.
+//! Filters are pure data — they hold no GPU state. The [`Filter`] trait
+//! provides the recipe (shader fragments, parameters, and stage layout)
+//! that the runtime in `filtrate` compiles and executes.
 //!
 //! # Automatic Shader Fusion
 //!
 //! Filters with `COLOR_ONLY = true` (per-pixel operations that don't sample
 //! neighbors) can be fused into a single GPU pass. The [`Chain`] type
-//! preserves this information at compile time, enabling automatic optimization.
+//! preserves this information at compile time, enabling automatic
+//! optimization at runtime via [`Filter::collect_stages`].
 //!
 //! # Example
 //!
 //! ```ignore
 //! use filtrate_core::{Filter, FilterExt};
 //!
-//! // Create a filter chain
+//! // Build a filter chain. Type encodes fusion potential.
 //! let chain = Grayscale(1.0)
-//!     .then(Invert)           // Fuses with Grayscale
-//!     .then(Blur(5.0))        // Separate pass (spatial filter)
-//!     .then(Brightness(0.2)); // Fuses with nothing (after spatial)
-//!
-//! // Type encodes fusion potential:
-//! // Chain<Chain<Chain<Grayscale, Invert>, Blur>, Brightness>
-//! // COLOR_ONLY: false (because Blur is not color-only)
+//!     .then(Invert)         // Fuses with Grayscale
+//!     .then(Blur(5.0))      // Separate pass (spatial filter)
+//!     .then(Brightness(0.2));
 //! ```
 
-use crate::{FragmentList, ParamArray};
+use crate::{FragmentList, ParamArray, SignalVisitor, StageCollector, visitor::OffsetVisitor};
 
 /// A GPU filter that processes textures.
 ///
-/// Filters are pure data - they provide shader fragments and parameters,
-/// but hold no GPU state. The pipeline handles compilation and execution.
-///
-/// # Associated Types
-///
-/// - `Params`: The parameter values (e.g., `[f32; 1]` for brightness amount)
-/// - `Fragments`: The shader code fragments (e.g., `&'static str`)
-///
-/// # Constants
-///
-/// - `COLOR_ONLY`: Whether this filter only performs per-pixel color operations
-///   (doesn't sample neighboring pixels). Color-only filters can be fused
-///   into a single pass for better performance.
+/// Filters are pure data — they provide shader fragments, parameters, and
+/// a stage layout, but hold no GPU state. The pipeline handles compilation
+/// and execution.
 pub trait Filter: 'static {
     /// Whether this filter performs only per-pixel color operations.
     ///
-    /// - `true`: Filter reads only the current pixel, can be fused with adjacent
-    ///   color-only filters into a single pass.
-    /// - `false`: Filter samples neighboring pixels (e.g., blur, sharpen),
-    ///   requires its own pass with intermediate texture.
+    /// `true` filters can be fused with adjacent color-only filters into a
+    /// single fragment-shader pass; `false` filters require their own pass.
     const COLOR_ONLY: bool;
 
-    /// The parameter array type for this filter.
+    /// Parameter array layout for this filter (or chain).
     type Params: ParamArray;
 
-    /// The shader fragment list type for this filter.
+    /// Shader fragment(s) for this filter (or chain).
     type Fragments: FragmentList;
 
-    /// Get the current parameter values.
-    ///
-    /// For animated parameters, this samples the current value.
-    /// Called each frame during render.
+    /// Snapshot the current parameter values.
     fn params(&self) -> Self::Params;
 
-    /// Get the shader fragments for this filter.
-    ///
-    /// Returns static shader code that will be composed with other fragments.
+    /// Get the shader fragment(s).
     fn fragments(&self) -> Self::Fragments;
+
+    /// Number of GPU passes this filter requires. Default `1`. Separable
+    /// filters (e.g. two-pass blur) override to return more.
+    fn pass_count(&self) -> u32 {
+        1
+    }
+
+    /// Resolve output dimensions from input dimensions. Default returns
+    /// the input unchanged. Filters that downsample / upsample override.
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        let _ = (input_width, input_height);
+        (input_width, input_height)
+    }
+
+    /// Walk every atomic GPU stage this filter requires, in order. Each
+    /// call to [`StageCollector`] records one shader source plus the
+    /// number of `f32` parameters it consumes.
+    ///
+    /// Chains forward this method to their children.
+    fn collect_stages<C: StageCollector>(&self, collector: &mut C);
+
+    /// Walk every reactive parameter this filter owns, in flattened order.
+    /// Default does nothing — useful for static filters with no signal
+    /// inputs.
+    fn visit_signals<V: SignalVisitor>(&self, _visitor: &mut V) {}
 }
 
 /// A chain of two filters.
 ///
-/// `Chain` implements `Filter`, preserving type information for automatic
-/// fusion optimization. Consecutive color-only filters are fused into
-/// a single GPU pass.
-///
-/// # Type-Level Fusion
-///
-/// ```ignore
-/// // These three are all color-only, so Chain::COLOR_ONLY = true
-/// type Fused = Chain<Chain<Grayscale, Brightness>, Contrast>;
-///
-/// // Blur is not color-only, so Chain::COLOR_ONLY = false
-/// type Mixed = Chain<Fused, Blur>;
-/// ```
+/// `Chain` implements [`Filter`], preserving type information for automatic
+/// fusion optimization. Consecutive color-only filters are fused into a
+/// single GPU pass at runtime.
 #[derive(Debug, Clone, Copy)]
 pub struct Chain<A: Filter, B: Filter> {
     /// The first filter in the chain.
@@ -94,7 +89,7 @@ pub struct Chain<A: Filter, B: Filter> {
 }
 
 impl<A: Filter, B: Filter> Filter for Chain<A, B> {
-    /// Chain is color-only only if both filters are color-only.
+    /// Chain is color-only iff both children are color-only.
     const COLOR_ONLY: bool = A::COLOR_ONLY && B::COLOR_ONLY;
 
     type Params = (A::Params, B::Params);
@@ -109,23 +104,36 @@ impl<A: Filter, B: Filter> Filter for Chain<A, B> {
     fn fragments(&self) -> Self::Fragments {
         (self.first.fragments(), self.second.fragments())
     }
+
+    #[inline]
+    fn pass_count(&self) -> u32 {
+        self.first.pass_count() + self.second.pass_count()
+    }
+
+    #[inline]
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        let (mid_w, mid_h) = self.first.output_size(input_width, input_height);
+        self.second.output_size(mid_w, mid_h)
+    }
+
+    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+        self.first.collect_stages(collector);
+        self.second.collect_stages(collector);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, visitor: &mut V) {
+        self.first.visit_signals(visitor);
+        let mut offset = OffsetVisitor::new(visitor, <A::Params as ParamArray>::LEN);
+        self.second.visit_signals(&mut offset);
+    }
 }
 
 /// Extension trait for chaining filters.
-///
-/// Provides the `.then()` method for composing filters into chains.
 pub trait FilterExt: Filter + Sized {
     /// Chain this filter with another.
     ///
-    /// The resulting `Chain` type preserves fusion information at compile time.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let chain = Grayscale(1.0)
-    ///     .then(Brightness(0.1))
-    ///     .then(Contrast(1.2));
-    /// ```
+    /// The resulting [`Chain`] preserves fusion information at compile
+    /// time and is itself a [`Filter`].
     fn then<F: Filter>(self, filter: F) -> Chain<Self, F> {
         Chain {
             first: self,
@@ -140,7 +148,6 @@ impl<T: Filter> FilterExt for T {}
 mod tests {
     use super::*;
 
-    // Test filter for color-only operations
     struct ColorFilter;
     impl Filter for ColorFilter {
         const COLOR_ONLY: bool = true;
@@ -153,9 +160,11 @@ mod tests {
         fn fragments(&self) -> &'static str {
             "// color"
         }
+        fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+            c.color_fragment(self.fragments(), 1);
+        }
     }
 
-    // Test filter for spatial operations
     struct SpatialFilter;
     impl Filter for SpatialFilter {
         const COLOR_ONLY: bool = false;
@@ -168,22 +177,25 @@ mod tests {
         fn fragments(&self) -> &'static str {
             "// spatial"
         }
+        fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+            c.spatial_shader(self.fragments(), 2);
+        }
     }
 
     #[test]
-    fn test_color_only_chain() {
+    fn color_only_chain_is_fully_color_only() {
         type ChainType = Chain<ColorFilter, ColorFilter>;
         assert!(ChainType::COLOR_ONLY);
     }
 
     #[test]
-    fn test_mixed_chain() {
+    fn mixed_chain_is_not_color_only() {
         type ChainType = Chain<ColorFilter, SpatialFilter>;
         assert!(!ChainType::COLOR_ONLY);
     }
 
     #[test]
-    fn test_chain_params() {
+    fn chain_params_are_concatenated_tuple() {
         let chain = ColorFilter.then(SpatialFilter);
         let (a, b) = chain.params();
         assert_eq!(a, [1.0]);
@@ -191,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_fragments() {
+    fn chain_fragments_are_concatenated_tuple() {
         let chain = ColorFilter.then(SpatialFilter);
         let (a, b) = chain.fragments();
         assert_eq!(a, "// color");
@@ -199,8 +211,31 @@ mod tests {
     }
 
     #[test]
-    fn test_deep_chain() {
-        let chain = ColorFilter.then(ColorFilter).then(SpatialFilter);
+    fn deep_chain_inherits_spatial_color_only_correctly() {
         assert!(!<Chain<Chain<ColorFilter, ColorFilter>, SpatialFilter>>::COLOR_ONLY);
+    }
+
+    #[test]
+    fn chain_pass_count_sums_children() {
+        let chain = ColorFilter.then(SpatialFilter);
+        assert_eq!(chain.pass_count(), 2);
+    }
+
+    #[test]
+    fn collect_stages_walks_chain_in_order() {
+        struct RecordingCollector(Vec<&'static str>);
+        impl StageCollector for RecordingCollector {
+            fn color_fragment(&mut self, src: &'static str, _: usize) {
+                self.0.push(src);
+            }
+            fn spatial_shader(&mut self, src: &'static str, _: usize) {
+                self.0.push(src);
+            }
+        }
+
+        let chain = ColorFilter.then(SpatialFilter);
+        let mut c = RecordingCollector(Vec::new());
+        chain.collect_stages(&mut c);
+        assert_eq!(c.0, vec!["// color", "// spatial"]);
     }
 }

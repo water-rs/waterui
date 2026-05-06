@@ -1,7 +1,6 @@
 //! Hue rotation filter implementation.
 
-use crate::Filter;
-use nami::Signal;
+use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 
 /// Rotates the hue of all colors around the color wheel.
 ///
@@ -22,7 +21,7 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct HueRotation<T>(pub T);
 
-impl<T: Signal<Output = f32> + 'static> Filter for HueRotation<T> {
+impl<T: FilterParam> Filter for HueRotation<T> {
     const COLOR_ONLY: bool = true;
 
     type Params = [f32; 1];
@@ -30,12 +29,20 @@ impl<T: Signal<Output = f32> + 'static> Filter for HueRotation<T> {
 
     #[inline]
     fn params(&self) -> [f32; 1] {
-        [self.0.get()]
+        [self.0.snapshot()]
     }
 
     #[inline]
     fn fragments(&self) -> &'static str {
         include_str!("../shaders/fragments/hue_rotation.wgsl")
+    }
+
+    fn collect_stages<C: StageCollector>(&self, c: &mut C) {
+        c.color_fragment(self.fragments(), 1);
+    }
+
+    fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {
+        v.visit(0, &self.0);
     }
 }
 
