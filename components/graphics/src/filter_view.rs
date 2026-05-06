@@ -3631,6 +3631,22 @@ pub type MorphologyMin = FilterAdapter<filtrate::filters::MorphologyMin>;
 pub type MorphologyMax = FilterAdapter<filtrate::filters::MorphologyMax>;
 /// Alias for a 3x3 morphological gradient filter (per-channel max minus min).
 pub type MorphologyGradient = FilterAdapter<filtrate::filters::MorphologyGradient>;
+/// Alias for the monochrome photo preset.
+pub type PhotoEffectMono = FilterAdapter<filtrate::filters::PhotoEffectMono>;
+/// Alias for the noir photo preset.
+pub type PhotoEffectNoir = FilterAdapter<filtrate::filters::PhotoEffectNoir>;
+/// Alias for the chrome photo preset.
+pub type PhotoEffectChrome = FilterAdapter<filtrate::filters::PhotoEffectChrome>;
+/// Alias for the instant photo preset.
+pub type PhotoEffectInstant = FilterAdapter<filtrate::filters::PhotoEffectInstant>;
+/// Alias for the fade photo preset.
+pub type PhotoEffectFade = FilterAdapter<filtrate::filters::PhotoEffectFade>;
+/// Alias for the process photo preset.
+pub type PhotoEffectProcess = FilterAdapter<filtrate::filters::PhotoEffectProcess>;
+/// Alias for the tonal photo preset.
+pub type PhotoEffectTonal = FilterAdapter<filtrate::filters::PhotoEffectTonal>;
+/// Alias for the transfer photo preset.
+pub type PhotoEffectTransfer = FilterAdapter<filtrate::filters::PhotoEffectTransfer>;
 /// Alias for a motion blur filter.
 pub type MotionBlur =
     FilterAdapter<filtrate::filters::MotionBlur<Reactive<Computed<f32>>, Reactive<Computed<f32>>>>;
@@ -3873,6 +3889,61 @@ pub trait FilterViewExt: View + Sized {
         Filtered::new(
             self,
             FilterAdapter::new(filtrate::filters::MorphologyGradient),
+        )
+    }
+
+    /// Apply the monochrome photo preset.
+    fn photo_effect_mono(self) -> Filtered<Self, PhotoEffectMono> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectMono))
+    }
+
+    /// Apply the noir photo preset.
+    fn photo_effect_noir(self) -> Filtered<Self, PhotoEffectNoir> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectNoir))
+    }
+
+    /// Apply the chrome photo preset.
+    fn photo_effect_chrome(self) -> Filtered<Self, PhotoEffectChrome> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::PhotoEffectChrome),
+        )
+    }
+
+    /// Apply the instant photo preset.
+    fn photo_effect_instant(self) -> Filtered<Self, PhotoEffectInstant> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::PhotoEffectInstant),
+        )
+    }
+
+    /// Apply the fade photo preset.
+    fn photo_effect_fade(self) -> Filtered<Self, PhotoEffectFade> {
+        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectFade))
+    }
+
+    /// Apply the process photo preset.
+    fn photo_effect_process(self) -> Filtered<Self, PhotoEffectProcess> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::PhotoEffectProcess),
+        )
+    }
+
+    /// Apply the tonal photo preset.
+    fn photo_effect_tonal(self) -> Filtered<Self, PhotoEffectTonal> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::PhotoEffectTonal),
+        )
+    }
+
+    /// Apply the transfer photo preset.
+    fn photo_effect_transfer(self) -> Filtered<Self, PhotoEffectTransfer> {
+        Filtered::new(
+            self,
+            FilterAdapter::new(filtrate::filters::PhotoEffectTransfer),
         )
     }
 
