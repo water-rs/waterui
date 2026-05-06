@@ -35,14 +35,14 @@ fn main(
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     let dims = vec2<u32>(uniforms.output_dimensions);
-    let active = global_id.x < dims.x && global_id.y < dims.y;
+    let is_active = global_id.x < dims.x && global_id.y < dims.y;
 
     let input_dims_u = vec2<u32>(uniforms.input_dimensions);
     let input_dims_i = vec2<i32>(input_dims_u);
     let coord = vec2<i32>(global_id.xy);
     let amount = param(0u);
 
-    if input_dims_u == dims {
+    if all(input_dims_u == dims) {
         let output_x = i32(global_id.x);
         let output_y = i32(global_id.y);
         let tile_origin_x = output_x - i32(local_id.x) - 1;
@@ -83,13 +83,13 @@ fn main(
 
         let laplacian = center * 4.0 - top - bottom - left - right;
         let result = center + laplacian * amount;
-        if active {
+        if is_active {
             textureStore(output_texture, coord, vec4<f32>(result.rgb, center.a));
         }
         return;
     }
 
-    if !active {
+    if !is_active {
         return;
     }
 

@@ -2495,6 +2495,105 @@ mod tests {
         ))
     }
 
+    fn count_nonblank_pixels(rgba: &[u8]) -> (usize, usize) {
+        let mut opaque = 0;
+        let mut nonzero_rgb = 0;
+        for chunk in rgba.chunks_exact(4) {
+            if chunk[3] == 255 {
+                opaque += 1;
+            }
+            if chunk[0] != 0 || chunk[1] != 0 || chunk[2] != 0 {
+                nonzero_rgb += 1;
+            }
+        }
+        (opaque, nonzero_rgb)
+    }
+
+    #[test]
+    fn gpu_workgroup_spatial_produces_real_pixels() {
+        let Some(gpu) = create_test_device() else {
+            return;
+        };
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+
+        let width = 64u32;
+        let height = 64u32;
+        let total = (width * height) as usize;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let input_rgba = create_test_input_rgba(width, height);
+
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("workgroup spatial smoke input"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &input_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &input_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let sharpen_out = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate::filters::Sharpen(1.0f32)),
+        )
+        .expect("Sharpen render should succeed");
+        let (sharpen_opaque, sharpen_nonzero) = count_nonblank_pixels(&sharpen_out);
+        assert_eq!(sharpen_opaque, total, "Sharpen alpha must be opaque");
+        assert!(
+            sharpen_nonzero >= total * 9 / 10,
+            "Sharpen output is mostly black ({sharpen_nonzero} of {total} px non-zero RGB)",
+        );
+
+        let blur_out = run_filter_and_readback(
+            device,
+            queue,
+            &input_texture,
+            width,
+            height,
+            width,
+            height,
+            FilterAdapter::new(filtrate::filters::Blur(2.0f32)),
+        )
+        .expect("Blur render should succeed");
+        let (blur_opaque, blur_nonzero) = count_nonblank_pixels(&blur_out);
+        assert_eq!(blur_opaque, total, "Blur alpha must be opaque");
+        assert!(
+            blur_nonzero >= total * 9 / 10,
+            "Blur output is mostly black ({blur_nonzero} of {total} px non-zero RGB)",
+        );
+    }
+
     #[test]
     fn reject_empty_stage_graph() {
         let err = fuse_stages(&[]).expect_err("empty stage graph should fail");
