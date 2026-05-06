@@ -186,6 +186,14 @@ pub enum BlendMode {
     ColorDodge,
     /// Darken the input with color burn.
     ColorBurn,
+    /// Hue from the auxiliary, saturation and luminance from the input.
+    Hue,
+    /// Saturation from the auxiliary, hue and luminance from the input.
+    Saturation,
+    /// Hue and saturation from the auxiliary, luminance from the input.
+    Color,
+    /// Luminance from the auxiliary, hue and saturation from the input.
+    Luminosity,
 }
 
 /// Swipe direction for image transition filters.
@@ -227,6 +235,10 @@ impl BlendMode {
             Self::Exclusion => 9.0,
             Self::ColorDodge => 10.0,
             Self::ColorBurn => 11.0,
+            Self::Hue => 12.0,
+            Self::Saturation => 13.0,
+            Self::Color => 14.0,
+            Self::Luminosity => 15.0,
         }
     }
 }
@@ -1324,6 +1336,10 @@ mod tests {
         assert_eq!(BlendMode::Exclusion.token(), 9.0);
         assert_eq!(BlendMode::ColorDodge.token(), 10.0);
         assert_eq!(BlendMode::ColorBurn.token(), 11.0);
+        assert_eq!(BlendMode::Hue.token(), 12.0);
+        assert_eq!(BlendMode::Saturation.token(), 13.0);
+        assert_eq!(BlendMode::Color.token(), 14.0);
+        assert_eq!(BlendMode::Luminosity.token(), 15.0);
     }
 
     #[test]
