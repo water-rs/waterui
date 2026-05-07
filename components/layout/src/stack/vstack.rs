@@ -323,21 +323,7 @@ impl<C: TupleViews> VStack<(C,)> {
     }
 }
 
-impl<C, F, V> VStack<ForEach<C, F, V>>
-where
-    C: Collection,
-    C::Item: Identifiable,
-    F: 'static + Fn(C::Item) -> V,
-    V: View,
-{
-    /// Creates a vertical stack by iterating over a collection and generating views.
-    pub fn for_each(collection: C, generator: F) -> Self {
-        Self {
-            layout: VStackLayout::default(),
-            contents: ForEach::new(collection, generator),
-        }
-    }
-}
+crate::stack::impl_stack_for_each!(VStack, VStackLayout);
 
 impl<C> VStack<C> {
     /// Sets the horizontal alignment for children in the stack.
