@@ -12,6 +12,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-layout.workspace = true
 waterui-url.workspace = true
 waterui-str.workspace = true
 thiserror.workspace = true
