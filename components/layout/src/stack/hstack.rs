@@ -520,6 +520,8 @@ impl<C> HStack<C> {
     }
 }
 
+crate::stack::impl_stack_for_each!(HStack, HStackLayout);
+
 impl<V> FromIterator<V> for HStack<(Vec<AnyView>,)>
 where
     V: View,
