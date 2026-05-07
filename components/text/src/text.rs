@@ -9,7 +9,7 @@ use fmt::Display;
 
 use nami::signal::{IntoComputed, IntoSignal};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
-use nami::{Computed, Signal, SignalExt};
+use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, View};
@@ -124,6 +124,15 @@ where
     }
 }
 
+impl<T> IntoText for Binding<T>
+where
+    T: IntoText + Clone + 'static,
+{
+    fn into_text(self) -> Text {
+        Text::from_signal(self)
+    }
+}
+
 impl From<&'static str> for Text {
     fn from(value: &'static str) -> Self {
         value.into_text()
@@ -153,6 +162,15 @@ where
     T: IntoText + Clone + 'static,
 {
     fn from(value: Computed<T>) -> Self {
+        value.into_text()
+    }
+}
+
+impl<T> From<Binding<T>> for Text
+where
+    T: IntoText + Clone + 'static,
+{
+    fn from(value: Binding<T>) -> Self {
         value.into_text()
     }
 }
