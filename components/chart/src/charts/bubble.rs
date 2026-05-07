@@ -140,3 +140,9 @@ impl<S: Signal<Output = Vec<BubblePoint>> + Clone + 'static> View for BubbleChar
         )
     }
 }
+
+/// Convenience constructor for [`BubbleChart`]. Equivalent to [`BubbleChart::new`].
+#[must_use]
+pub fn bubble_chart<S: Signal<Output = Vec<BubblePoint>>>(data: S) -> BubbleChart<S> {
+    BubbleChart::new(data)
+}

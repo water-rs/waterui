@@ -30,4 +30,4 @@ mod shaders;
 mod system;
 
 pub use config::{BlendMode, EmitterShape, ParticleShape};
-pub use system::ParticleSystem;
+pub use system::{ParticleSystem, particles};

@@ -408,3 +408,9 @@ impl GpuView for WaveformRenderer {
 }
 
 impl_gpu_subview!(WaveformRenderer);
+
+/// Convenience constructor for [`Waveform`] from an [`AudioCapture`].
+#[must_use]
+pub fn waveform(capture: AudioCapture) -> Waveform {
+    Waveform::new(capture)
+}

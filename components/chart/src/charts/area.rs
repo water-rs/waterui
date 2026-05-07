@@ -72,3 +72,9 @@ impl<S: Signal<Output = AreaData> + Clone + 'static> View for AreaChart<S> {
         )
     }
 }
+
+/// Convenience constructor for [`AreaChart`]. Equivalent to [`AreaChart::new`].
+#[must_use]
+pub fn area_chart<S: Signal<Output = AreaData>>(data: S) -> AreaChart<S> {
+    AreaChart::new(data)
+}

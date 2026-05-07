@@ -93,3 +93,9 @@ impl<S: Signal<Output = Vec<Candle>> + Clone + 'static> View for CandlestickChar
         )
     }
 }
+
+/// Convenience constructor for [`CandlestickChart`]. Equivalent to [`CandlestickChart::new`].
+#[must_use]
+pub fn candlestick_chart<S: Signal<Output = Vec<Candle>>>(data: S) -> CandlestickChart<S> {
+    CandlestickChart::new(data)
+}

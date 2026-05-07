@@ -89,20 +89,20 @@ pub use params::{
     ArcAngles, ChartParamError, DonutInnerRadius, GaugeRadii, PositiveF32, UnitInterval,
 };
 
-// Re-export chart views
-pub use charts::area::AreaChart;
-pub use charts::bar::BarChart;
-pub use charts::bubble::BubbleChart;
-pub use charts::candlestick::CandlestickChart;
-pub use charts::choropleth::ChoroplethChart;
-pub use charts::contour::ContourChart;
-pub use charts::depth::DepthChart;
-pub use charts::gauge::GaugeChart;
-pub use charts::heatmap::HeatmapChart;
-pub use charts::line::LineChart;
-pub use charts::pie::PieChart;
-pub use charts::radar::RadarChart;
-pub use charts::scatter::ScatterChart;
+// Re-export chart views and their ergonomic free-function constructors
+pub use charts::area::{AreaChart, area_chart};
+pub use charts::bar::{BarChart, bar_chart};
+pub use charts::bubble::{BubbleChart, bubble_chart};
+pub use charts::candlestick::{CandlestickChart, candlestick_chart};
+pub use charts::choropleth::{ChoroplethChart, choropleth_chart};
+pub use charts::contour::{ContourChart, contour_chart};
+pub use charts::depth::{DepthChart, depth_chart};
+pub use charts::gauge::{GaugeChart, gauge_chart};
+pub use charts::heatmap::{HeatmapChart, heatmap_chart};
+pub use charts::line::{LineChart, line_chart};
+pub use charts::pie::{PieChart, pie_chart};
+pub use charts::radar::{RadarChart, radar_chart};
+pub use charts::scatter::{ScatterChart, scatter_chart};
 
 // Re-export axis types
 pub use axes::{ChartAxes, ChartAxesReactive, ChartExt};
