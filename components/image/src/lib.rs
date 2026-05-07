@@ -7,4 +7,4 @@ pub mod codec;
 mod image;
 
 pub use codec::DecodePath;
-pub use image::{Image, image};
+pub use image::{Image, Interpolation, image};
