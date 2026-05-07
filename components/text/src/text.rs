@@ -397,30 +397,31 @@ impl Text {
     }
 
     /// Sets the text color.
-    pub fn color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    ///
+    /// Accepts any [`IntoSignal<Color>`] source: a static `Color` literal,
+    /// `Computed<Color>`, `Binding<Color>`, or any other `Signal<Output =
+    /// Color>`. The styled-content pipeline subscribes to the signal so a
+    /// changing binding re-emits the colored content automatically.
+    pub fn color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = color.into_signal();
         self.map_config(move |mut config| {
             config.content = config
                 .content
-                .map({
-                    let color = color.clone();
-                    move |content| content.foreground(color.clone())
-                })
+                .zip(&color)
+                .map(|(content, color)| content.foreground(color))
                 .computed();
             config
         })
     }
 
     /// Sets the background color for the text.
-    pub fn background_color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn background_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = color.into_signal();
         self.map_config(move |mut config| {
             config.content = config
                 .content
-                .map({
-                    let color = color.clone();
-                    move |content| content.background_color(color.clone())
-                })
+                .zip(&color)
+                .map(|(content, color)| content.background_color(color))
                 .computed();
             config
         })
