@@ -99,11 +99,13 @@ impl PositiveF32 {
     }
 }
 
-impl TryFrom<f32> for PositiveF32 {
-    type Error = ChartParamError;
-
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
-        Self::try_new(value)
+impl From<f32> for PositiveF32 {
+    /// Fail-fast convenience for chart builders so callers can write
+    /// `chart.line_width(2.0)` without an explicit `PositiveF32::try_new`.
+    /// Panics with a descriptive message on `NaN`, infinity, or non-positive
+    /// input. Use [`PositiveF32::try_new`] when the failure must be handled.
+    fn from(value: f32) -> Self {
+        Self::try_new(value).unwrap_or_else(|err| panic!("PositiveF32 from f32: {err}"))
     }
 }
 
@@ -142,11 +144,11 @@ impl UnitInterval {
     }
 }
 
-impl TryFrom<f32> for UnitInterval {
-    type Error = ChartParamError;
-
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
-        Self::try_new(value)
+impl From<f32> for UnitInterval {
+    /// Fail-fast convenience for chart builders. Panics on `NaN`, infinity,
+    /// or values outside `[0.0, 1.0]`.
+    fn from(value: f32) -> Self {
+        Self::try_new(value).unwrap_or_else(|err| panic!("UnitInterval from f32: {err}"))
     }
 }
 
@@ -187,11 +189,11 @@ impl DonutInnerRadius {
     }
 }
 
-impl TryFrom<f32> for DonutInnerRadius {
-    type Error = ChartParamError;
-
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
-        Self::try_new(value)
+impl From<f32> for DonutInnerRadius {
+    /// Fail-fast convenience for chart builders. Panics on `NaN`, infinity,
+    /// or values outside `[0.0, 0.95]`.
+    fn from(value: f32) -> Self {
+        Self::try_new(value).unwrap_or_else(|err| panic!("DonutInnerRadius from f32: {err}"))
     }
 }
 
@@ -237,6 +239,22 @@ impl ArcAngles {
     /// Returns [`ChartParamError`] when either angle is non-finite or `end <= start`.
     pub fn try_degrees(start: f32, end: f32) -> Result<Self, ChartParamError> {
         Self::try_radians(start.to_radians(), end.to_radians())
+    }
+
+    /// Fail-fast factory for arc angles in radians. Panics on invalid input.
+    ///
+    /// Use [`ArcAngles::try_radians`] when the failure must be handled.
+    #[must_use]
+    pub fn from_radians(start: f32, end: f32) -> Self {
+        Self::try_radians(start, end)
+            .unwrap_or_else(|err| panic!("ArcAngles from_radians: {err}"))
+    }
+
+    /// Fail-fast factory for arc angles in degrees. Panics on invalid input.
+    #[must_use]
+    pub fn from_degrees(start: f32, end: f32) -> Self {
+        Self::try_degrees(start, end)
+            .unwrap_or_else(|err| panic!("ArcAngles from_degrees: {err}"))
     }
 
     /// Arc start angle in radians.
@@ -302,6 +320,13 @@ impl GaugeRadii {
             });
         }
         Ok(Self { inner, outer })
+    }
+
+    /// Fail-fast factory. Panics on invalid input. Use [`Self::try_new`] when
+    /// the failure must be handled.
+    #[must_use]
+    pub fn new(inner: f32, outer: f32) -> Self {
+        Self::try_new(inner, outer).unwrap_or_else(|err| panic!("GaugeRadii::new: {err}"))
     }
 
     /// Inner radius.

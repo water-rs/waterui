@@ -47,31 +47,14 @@ impl<S: Signal<Output = Vec<DataPoint>>> PieChart<S> {
         self
     }
 
-    /// Converts the pie into a donut chart and panics if the radius is invalid.
+    /// Converts the pie into a donut chart with the given inner-radius ratio.
     ///
-    /// # Panics
-    ///
-    /// Panics when `inner_radius` is not finite or is outside `0.0..=0.95`.
+    /// Accepts any value convertible into [`DonutInnerRadius`]. Passing a
+    /// raw `f32` panics on `NaN`, infinity, or values outside `[0.0, 0.95]`.
     #[must_use]
-    pub fn donut(self, inner_radius: f32) -> Self {
-        self.try_donut(inner_radius)
-            .expect("PieChart::donut(inner_radius) requires finite 0.0 <= inner_radius <= 0.95")
-    }
-
-    /// Converts the pie into a donut chart using an already-validated radius.
-    #[must_use]
-    pub const fn with_donut(mut self, inner_radius: DonutInnerRadius) -> Self {
-        self.inner_radius = inner_radius.get();
+    pub fn donut(mut self, inner_radius: impl Into<DonutInnerRadius>) -> Self {
+        self.inner_radius = inner_radius.into().get();
         self
-    }
-
-    /// Attempts to convert the pie into a donut chart.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `inner_radius` is not finite or is outside `0.0..=0.95`.
-    pub fn try_donut(self, inner_radius: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_donut(DonutInnerRadius::try_new(inner_radius)?))
     }
 
     /// Renders the chart as a full pie without a donut hole.
