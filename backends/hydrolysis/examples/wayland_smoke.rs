@@ -22,8 +22,8 @@ fn main_view() -> impl View {
                 .size(560.0, 180.0),
             hstack((
                 Toggle::new(&toggle_value).label("Toggle"),
-                Slider::new(&slider_value).label("Slider"),
-                Stepper::new(&stepper_value).range(0..=10).label("Stepper"),
+                Slider::new("Slider", &slider_value),
+                Stepper::new("Stepper", &stepper_value).range(0..=10),
             ))
             .spacing(16.0),
             text("Scroll to verify wheel routing").size(14.0),

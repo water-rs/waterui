@@ -129,18 +129,15 @@ fn main() -> impl View {
                 text("DatePicker").headline(),
                 text("Select dates and times with platform-native pickers").body(),
                 spacer(),
-                DatePicker::new(&date)
-                    .label("Date Only")
+                DatePicker::new("Date Only", &date)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
                 text!("Selected date: {date}"),
                 spacer(),
-                DatePicker::new(&time_only)
-                    .label("Time Only")
+                DatePicker::new("Time Only", &time_only)
                     .ty(DatePickerType::HourMinuteAndSecond),
                 text!("Selected time: {time_only}"),
                 spacer(),
-                DatePicker::new(&datetime)
-                    .label("Date & Time")
+                DatePicker::new("Date & Time", &datetime)
                     .ty(DatePickerType::DateHourMinuteAndSecond),
                 text!("Selected datetime: {datetime}"),
             ))
@@ -151,8 +148,7 @@ fn main() -> impl View {
                 text("Month-grid calendar with single-date selection and passive decorations")
                     .body(),
                 spacer(),
-                Calendar::new(&calendar_date)
-                    .label("Trip Date")
+                Calendar::new("Trip Date", &calendar_date)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
                     .decorated(decorated_dates.clone()),
                 text!("Selected calendar date: {calendar_date}"),
@@ -163,8 +159,7 @@ fn main() -> impl View {
                 text("Multi-Date Picker").headline(),
                 text("Month-grid calendar for selecting multiple dates").body(),
                 spacer(),
-                MultiDatePicker::new(&available_dates)
-                    .label("Available Dates")
+                MultiDatePicker::new("Available Dates", &available_dates)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
                     .decorated(decorated_dates),
                 text!("Selected dates: {available_date_count}"),
@@ -175,17 +170,13 @@ fn main() -> impl View {
                 text("ColorPicker").headline(),
                 text("Select colors with optional alpha and HDR support").body(),
                 spacer(),
-                ColorPicker::new(&basic_color).label("Basic Color"),
+                ColorPicker::new("Basic Color", &basic_color),
                 color_preview(&basic_color, "Basic"),
                 spacer(),
-                ColorPicker::new(&alpha_color)
-                    .label("With Alpha")
-                    .with_alpha(),
+                ColorPicker::new("With Alpha", &alpha_color).with_alpha(),
                 color_preview(&alpha_color, "Alpha"),
                 spacer(),
-                ColorPicker::new(&hdr_color)
-                    .label("HDR Color")
-                    .with_hdr(),
+                ColorPicker::new("HDR Color", &hdr_color).with_hdr(),
                 color_preview(&hdr_color, "HDR"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -194,7 +185,7 @@ fn main() -> impl View {
                 text("FilePicker").headline(),
                 text("Select files from the device").body(),
                 spacer(),
-                FilePicker::open(&selected_files).max_count(5),
+                FilePicker::open("Select Files", &selected_files).max_count(5),
                 spacer(),
                 text("Selected files:").bold(),
                 file_list(&selected_files),

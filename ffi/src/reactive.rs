@@ -141,6 +141,17 @@ impl<T: 'static> IntoFFI for waterui::Computed<T> {
     }
 }
 
+impl<T: 'static> IntoFFI for Option<waterui::Computed<T>> {
+    type FFI = *mut WuiComputed<T>;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Some(value) => value.into_ffi(),
+            None => core::ptr::null_mut(),
+        }
+    }
+}
+
 impl<T> IntoFFI for waterui::Binding<T> {
     type FFI = *mut WuiBinding<T>;
 

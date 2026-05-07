@@ -137,7 +137,7 @@ use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
 
-use crate::label::{IntoLabel, Label as SemanticLabel};
+use crate::label::{IntoLabel, Label, LabelDisplayMode};
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -245,43 +245,39 @@ pub enum ButtonStyle {
 /// extra space. In a stack, they take only the space they need.
 #[non_exhaustive]
 pub struct ButtonConfig {
-    /// Visual label displayed on the button. Hooks may replace this with any
-    /// view; the semantic identity is preserved separately in [`Self::semantic`].
-    pub label: AnyView,
+    /// The semantic label displayed on the button.
+    ///
+    /// [`Label`] carries both the visual chrome (text + icon + display mode)
+    /// and the spoken text used by assistive technology. Hooks receiving a
+    /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
+    /// cannot strip away the semantic identity.
+    pub label: Label,
     /// The action to execute when the button is clicked.
     pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
-    /// Semantic identity of the button. Always present, never replaced by hooks.
-    /// Used for accessibility announcements, menu/command palette entries, and
-    /// voice control. Backends derive the screen-reader label from
-    /// [`SemanticLabel::semantic_text`].
-    pub semantic: SemanticLabel,
 }
 
 impl_debug!(ButtonConfig);
 
 impl NativeView for ButtonConfig {}
 
-fn render_button_config<Label, Action>(
-    button: Button<Label, Action>,
+fn render_button_config<Action>(
+    button: Button<Action>,
     _env: &Environment,
 ) -> ButtonConfig
 where
-    Label: View,
     Action: FnMut(&Environment) + 'static,
 {
     ButtonConfig {
-        label: AnyView::new(button.label),
+        label: button.label,
         action: Box::new(button.action),
         style: button.style,
-        semantic: button.semantic,
     }
 }
 
-impl<Label, Action> View for Button<Label, Action>
+impl<Action> View for Button<Action>
 where
-    Label: View,
     Action: FnMut(&Environment) + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
@@ -299,31 +295,28 @@ where
 }
 
 impl ViewConfiguration for ButtonConfig {
-    type View = Button<AnyView, BoxedAction<()>>;
+    type View = Button<BoxedAction<()>>;
 
     fn render(self) -> Self::View {
         Button {
             label: self.label,
             action: self.action,
             style: self.style,
-            semantic: self.semantic,
         }
     }
 }
 
-impl<Label, Action> ConfigurableView for Button<Label, Action>
+impl<Action> ConfigurableView for Button<Action>
 where
-    Label: View,
     Action: FnMut(&Environment) + 'static,
 {
     type Config = ButtonConfig;
 
     fn config(self) -> Self::Config {
         ButtonConfig {
-            label: AnyView::new(self.label),
+            label: self.label,
             action: Box::new(self.action),
             style: self.style,
-            semantic: self.semantic,
         }
     }
 }
@@ -342,14 +335,13 @@ where
 /// - [`ViewExt::state`](waterui::ViewExt::state) - Inject local cloneable state for later extraction
 ///
 /// See the [module documentation](self) for detailed examples.
-pub struct Button<Label, Action> {
+pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
-    semantic: SemanticLabel,
 }
 
-impl<Label: Debug, Action> Debug for Button<Label, Action> {
+impl<Action> Debug for Button<Action> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Button")
             .field("label", &self.label)
@@ -358,18 +350,17 @@ impl<Label: Debug, Action> Debug for Button<Label, Action> {
     }
 }
 
-impl<Label: Clone, Action: Clone> Clone for Button<Label, Action> {
+impl<Action: Clone> Clone for Button<Action> {
     fn clone(&self) -> Self {
         Self {
             label: self.label.clone(),
             action: self.action.clone(),
             style: self.style,
-            semantic: self.semantic.clone(),
         }
     }
 }
 
-impl Button<SemanticLabel, fn(&Environment)> {
+impl Button<fn(&Environment)> {
     /// Creates a new button with the specified label.
     ///
     /// The button has no action by default. Use [`action`](Self::action) or
@@ -386,17 +377,15 @@ impl Button<SemanticLabel, fn(&Environment)> {
     /// let btn = Button::new("Click me").action(|| println!("Clicked!"));
     /// ```
     pub fn new(label: impl IntoLabel) -> Self {
-        let label = label.into_label();
         Self {
-            semantic: label.clone(),
-            label,
+            label: label.into_label(),
             action: noop,
             style: ButtonStyle::Automatic,
         }
     }
 }
 
-impl<Label: View, Action> Button<Label, Action> {
+impl<Action> Button<Action> {
     /// Sets the visual style of the button.
     ///
     /// # Arguments
@@ -423,8 +412,27 @@ impl<Label: View, Action> Button<Label, Action> {
     /// screen is unaffected.
     #[must_use]
     pub fn accessibility_label(mut self, label: impl IntoText) -> Self {
-        self.semantic = self.semantic.text(label);
+        self.label = self.label.text(label);
         self
+    }
+
+    /// Sets the visual presentation mode of the button's label.
+    ///
+    /// The semantic identity is always preserved for assistive technology
+    /// regardless of the chosen visual mode.
+    #[must_use]
+    pub fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+        self.label.set_display_mode(mode);
+        self
+    }
+
+    /// Visually hides the button's label while keeping its semantic text in
+    /// the accessibility tree.
+    ///
+    /// Shortcut for `.label_style(LabelDisplayMode::Hidden)`.
+    #[must_use]
+    pub fn hide_label(self) -> Self {
+        self.label_style(LabelDisplayMode::Hidden)
     }
 
     impl_style_methods!();
@@ -447,7 +455,7 @@ impl<Label: View, Action> Button<Label, Action> {
     /// });
     /// ```
     #[must_use]
-    pub fn action<F, Args>(self, action: F) -> Button<Label, impl FnMut(&Environment)>
+    pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
     where
         F: Handler<Args, ()> + 'static,
     {
@@ -455,7 +463,6 @@ impl<Label: View, Action> Button<Label, Action> {
             label: self.label,
             action: waterui_core::handler::boxed_action(action),
             style: self.style,
-            semantic: self.semantic,
         }
     }
 
@@ -476,7 +483,7 @@ impl<Label: View, Action> Button<Label, Action> {
     ///     process(data);
     /// });
     /// ```
-    pub fn action_async<F, Fut, Args>(self, action: F) -> Button<Label, impl FnMut(&Environment)>
+    pub fn action_async<F, Fut, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
     where
         F: Handler<Args, Fut> + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -491,20 +498,18 @@ impl<Label: View, Action> Button<Label, Action> {
 /// No-op action for buttons without a configured action.
 const fn noop(_env: &Environment) {}
 
-impl<Label, Action> From<Button<Label, Action>> for crate::menu::Command
+impl<Action> From<Button<Action>> for crate::menu::Command
 where
-    Label: View + 'static,
     Action: FnMut(&Environment) + 'static,
 {
-    fn from(value: Button<Label, Action>) -> Self {
+    fn from(value: Button<Action>) -> Self {
         let Button {
-            label: _,
+            label,
             mut action,
             style: _,
-            semantic,
         } = value;
         Self {
-            label: semantic,
+            label,
             action: shared_action(move |env: Environment| action(&env)),
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
@@ -514,12 +519,11 @@ where
     }
 }
 
-impl<Label, Action> From<Button<Label, Action>> for crate::menu::MenuItem
+impl<Action> From<Button<Action>> for crate::menu::MenuItem
 where
-    Label: View + 'static,
     Action: FnMut(&Environment) + 'static,
 {
-    fn from(value: Button<Label, Action>) -> Self {
+    fn from(value: Button<Action>) -> Self {
         Self::Command(value.into())
     }
 }
@@ -531,8 +535,8 @@ mod tests {
     use waterui_core::view::{ConfigurableView, ViewConfiguration};
 
     #[test]
-    fn menu_command_preserves_semantic_label_from_any_view_button() {
-        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
+    fn menu_command_preserves_label_through_config_render_roundtrip() {
+        let rendered = button(Label::new("Edit").icon(waterui_icon::system_icon::search()))
             .action(|| {})
             .config()
             .render();
@@ -556,41 +560,10 @@ mod tests {
     }
 
     #[test]
-    fn semantic_label_survives_hook_label_replacement() {
-        // Simulates the hook flow: a hook strips the visual label down to a
-        // unit view (e.g. compact toolbar). The semantic identity must
-        // survive so that menu / accessibility / voice control still work.
-        let original = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
-            .action(|| {});
-        let mut config = original.config();
-        config.label = AnyView::new(()); // hook replaces visual
-        let rendered = config.render();
-
-        // Visual label was wiped, but semantic identity is intact.
-        let command: crate::menu::Command = rendered.into();
-        assert_eq!(
-            command
-                .label
-                .semantic_text()
-                .resolve(&Environment::default())
-                .content
-                .get()
-                .to_plain()
-                .as_str(),
-            "Edit"
-        );
-        let icon = command
-            .label
-            .semantic_icon()
-            .expect("semantic label icon should survive hook label replacement");
-        assert_eq!(icon.name.as_str(), "magnifyingglass");
-    }
-
-    #[test]
-    fn accessibility_label_overrides_semantic_text_only() {
+    fn accessibility_label_overrides_text_only() {
         // Calling .accessibility_label("X") must rewrite the spoken text
         // while preserving the icon attached at construction time.
-        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
+        let rendered = button(Label::new("Edit").icon(waterui_icon::system_icon::search()))
             .accessibility_label("Edit document")
             .action(|| {})
             .config()
@@ -634,6 +607,6 @@ mod tests {
 ///
 /// button("Click me").action(|| println!("Clicked!"));
 /// ```
-pub fn button(label: impl IntoLabel) -> Button<SemanticLabel, fn(&Environment)> {
+pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
     Button::new(label)
 }

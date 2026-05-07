@@ -5,8 +5,7 @@
 use nami::Binding;
 use waterui_core::configurable;
 
-use crate::label::IntoLabel;
-use waterui_core::AnyView;
+use crate::label::{IntoLabel, Label, impl_label_style_methods};
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -25,8 +24,9 @@ pub enum ToggleStyle {
 #[non_exhaustive]
 /// Configuration for the `Toggle` component.
 pub struct ToggleConfig {
-    /// The label to display for the toggle.
-    pub label: AnyView,
+    /// The label displayed for the toggle. Default is empty; use
+    /// [`Toggle::label`] to set one.
+    pub label: Label,
     /// The binding to the toggle state.
     pub toggle: Binding<bool>,
     /// The visual style of the toggle.
@@ -79,9 +79,11 @@ configurable!(
 impl Toggle {
     #[must_use]
     /// Creates a new `Toggle` with the specified binding for the toggle state.
+    ///
+    /// The toggle has no label by default; use [`Self::label`] to attach one.
     pub fn new(toggle: &Binding<bool>) -> Self {
         Self(ToggleConfig {
-            label: AnyView::default(),
+            label: Label::default(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
         })
@@ -89,7 +91,7 @@ impl Toggle {
     #[must_use]
     /// Sets the label for the toggle.
     pub fn label(mut self, view: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(view.into_label());
+        self.0.label = view.into_label();
         self
     }
     #[must_use]
@@ -99,6 +101,8 @@ impl Toggle {
         self
     }
 }
+
+impl_label_style_methods!(Toggle);
 
 /// Creates a new `Toggle` with the specified label and binding for the toggle state.
 #[must_use]

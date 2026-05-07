@@ -452,6 +452,28 @@ impl HydrolysisRenderer {
         self.accessibility_label_from_view_with_budget(view, env, 32)
     }
 
+    /// Resolves the spoken accessibility text directly from a typed
+    /// [`Label`](waterui_controls::label::Label) without any view-tree
+    /// traversal. Backends should prefer this over `accessibility_label_from_view`
+    /// when the source is already a known label, so that `LabelDisplayMode::Hidden`
+    /// labels still surface their semantic text in the accessibility tree.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_label_from_label(
+        &self,
+        label: &waterui_controls::label::Label,
+        env: &Environment,
+    ) -> Option<String> {
+        use waterui_core::Signal;
+        let resolved = label.semantic_text().clone().resolve(env);
+        let plain = resolved.content.get().to_plain();
+        let trimmed = plain.as_str().trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(String::from(trimmed))
+        }
+    }
+
     #[cfg(feature = "accessibility")]
     fn accessibility_label_from_view_with_budget(
         &mut self,
