@@ -23,7 +23,7 @@ use alloc::vec;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {metal::MTLTextureType, metal::foreign_types::ForeignType, wgpu_hal::api::Metal as MetalApi};
 
-use waterui_graphics::filter_view::{AppliedFilter, FilterContext, FilterInput, FilterOutput};
+use waterui_graphics::filter_view::{AppliedFilter, EffectContext, EffectInput, EffectOutput};
 use waterui_graphics::shared_context::shared_context;
 
 use super::pixel_upload::prepare_rgba8_upload;
@@ -530,7 +530,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         });
 
         // Create input/output structs
-        let input = FilterInput {
+        let input = EffectInput {
             device: &state.device,
             queue: &state.queue,
             texture: input_texture,
@@ -540,7 +540,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             height: state.input_height,
         };
 
-        let filter_output = FilterOutput {
+        let filter_output = EffectOutput {
             device: &state.device,
             queue: &state.queue,
             texture: &output.texture,
@@ -596,7 +596,7 @@ fn ensure_applied_filter_setup(
         return true;
     }
 
-    let ctx = FilterContext {
+    let ctx = EffectContext {
         device: &state.device,
         queue: &state.queue,
         input_format,
