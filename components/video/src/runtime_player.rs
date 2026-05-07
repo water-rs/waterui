@@ -66,6 +66,26 @@ const MEDIA_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 type OnEvent = Rc<dyn Fn(Event) + 'static>;
 
+/// Bridges a typed [`BoxedEventAction<Event>`] to the runtime player's
+/// `Rc<dyn Fn(Event)>` slot by capturing the rendering [`Environment`] at
+/// hook time.
+///
+/// The runtime player and its many sub-tasks share the callback via `Rc`
+/// clones, which requires the inner closure to be `Fn(Event)`. The
+/// user-facing API still takes a typed `EventHandler` (`FnMut(Event,
+/// &Environment)`) so that handlers can extract `State<T>` / environment
+/// values; the captured `env` here is what makes that extraction work
+/// even though the runtime invocation surface is itself `Fn(Event)`.
+fn bind_event_handler_to_env(
+    handler: waterui_core::handler::BoxedEventAction<Event>,
+    env: Environment,
+) -> OnEvent {
+    let handler = core::cell::RefCell::new(handler);
+    Rc::new(move |event: Event| {
+        (handler.borrow_mut())(event, &env);
+    })
+}
+
 fn u32_to_f32(value: u32, name: &str) -> f32 {
     value
         .to_f32()
@@ -717,7 +737,7 @@ pub fn install_platform_hooks(env: &mut Environment) {
     env.insert_hook::<VideoPlayerConfig, AnyView>(video_player_hook);
 }
 
-fn video_hook(_env: &Environment, config: VideoConfig) -> AnyView {
+fn video_hook(env: &Environment, config: VideoConfig) -> AnyView {
     let VideoConfig {
         source,
         subtitle_selection,
@@ -732,7 +752,7 @@ fn video_hook(_env: &Environment, config: VideoConfig) -> AnyView {
         on_event,
     } = config;
 
-    let on_event: OnEvent = Rc::from(on_event);
+    let on_event: OnEvent = bind_event_handler_to_env(on_event, env.clone());
     let source = runtime_media_item_signal(&source);
     AnyView::new(
         source
@@ -765,7 +785,7 @@ fn video_hook(_env: &Environment, config: VideoConfig) -> AnyView {
     )
 }
 
-fn video_player_hook(_env: &Environment, config: VideoPlayerConfig) -> AnyView {
+fn video_player_hook(env: &Environment, config: VideoPlayerConfig) -> AnyView {
     let VideoPlayerConfig {
         source,
         subtitle_selection,
@@ -780,7 +800,7 @@ fn video_player_hook(_env: &Environment, config: VideoPlayerConfig) -> AnyView {
         on_event,
     } = config;
 
-    let on_event: OnEvent = Rc::from(on_event);
+    let on_event: OnEvent = bind_event_handler_to_env(on_event, env.clone());
     let source = runtime_media_item_signal(&source);
     AnyView::new(
         source
