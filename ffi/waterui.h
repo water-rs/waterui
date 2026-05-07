@@ -589,6 +589,22 @@ typedef enum WuiWindowStyle {
 } WuiWindowStyle;
 
 /**
+ * 2D affine transform stored as a row-major 2x3 matrix.
+ *
+ * The transform maps a point `(x, y)` to:
+ *
+ * ```text
+ * x' = a * x + c * y + e
+ * y' = b * x + d * y + f
+ * ```
+ *
+ * Layout matches the canonical 6-coefficient ordering used by `kurbo` and the
+ * HTML Canvas 2D context, so a transform built here can be losslessly handed to
+ * a 2D rendering backend.
+ */
+typedef struct Affine2 Affine2;
+
+/**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
  *
  * Bindings provide a reactive way to work with values. When a binding's value
@@ -954,12 +970,21 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
- * Normalized coordinates (0.0-1.0) for positioning.
+ * Normalized coordinates (0.0–1.0) for positioning and gradient endpoints.
  *
- * Used to specify both anchor points on views and target positions in parent.
- * Values outside 0.0-1.0 are valid and will position outside bounds.
+ * Used to specify both anchor points on views and target positions in parents.
+ * Values outside `0.0..=1.0` are valid and will position outside bounds.
  */
 typedef struct UnitPoint UnitPoint;
+
+/**
+ * Two-dimensional displacement vector (e.g. velocity, gravity, wind, offset).
+ *
+ * Distinct from [`Point`], which represents an absolute position. A `Vec2`
+ * encodes a delta and is the natural input for physics-style modifiers such
+ * as `gravity(...)` and `wind(...)` on a particle system.
+ */
+typedef struct Vec2 Vec2;
 
 typedef struct WuiAction WuiAction;
 
@@ -2296,6 +2321,10 @@ typedef struct WuiButton {
   struct WuiAnyView *label;
   struct WuiAction *action;
   enum WuiButtonStyle style;
+  /**
+   * Spoken accessibility text derived from the button's semantic label.
+   * Always non-null: every button carries a semantic label.
+   */
   WuiComputed_StyledStr *accessibility_label;
 } WuiButton;
 
@@ -3840,6 +3869,10 @@ typedef struct WuiApp {
    */
   struct WuiEnv *env;
 } WuiApp;
+
+
+
+
 
 
 

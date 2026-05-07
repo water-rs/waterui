@@ -135,7 +135,7 @@ use nami::Computed;
 use waterui_core::handler::{BoxedAction, Handler, shared_action};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
-use waterui_text::{IntoText, Text, styled::StyledStr};
+use waterui_text::IntoText;
 
 use crate::label::{IntoLabel, Label as SemanticLabel};
 
@@ -245,14 +245,18 @@ pub enum ButtonStyle {
 /// extra space. In a stack, they take only the space they need.
 #[non_exhaustive]
 pub struct ButtonConfig {
-    /// The label displayed on the button.
+    /// Visual label displayed on the button. Hooks may replace this with any
+    /// view; the semantic identity is preserved separately in [`Self::semantic`].
     pub label: AnyView,
     /// The action to execute when the button is clicked.
     pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
-    /// Optional semantic accessibility label resolved from the button label.
-    pub accessibility_label: Option<nami::Computed<StyledStr>>,
+    /// Semantic identity of the button. Always present, never replaced by hooks.
+    /// Used for accessibility announcements, menu/command palette entries, and
+    /// voice control. Backends derive the screen-reader label from
+    /// [`SemanticLabel::semantic_text`].
+    pub semantic: SemanticLabel,
 }
 
 impl_debug!(ButtonConfig);
@@ -261,7 +265,7 @@ impl NativeView for ButtonConfig {}
 
 fn render_button_config<Label, Action>(
     button: Button<Label, Action>,
-    env: &Environment,
+    _env: &Environment,
 ) -> ButtonConfig
 where
     Label: View,
@@ -271,9 +275,7 @@ where
         label: AnyView::new(button.label),
         action: Box::new(button.action),
         style: button.style,
-        accessibility_label: button
-            .accessibility_label
-            .map(|label| label.resolve(env).content),
+        semantic: button.semantic,
     }
 }
 
@@ -304,7 +306,7 @@ impl ViewConfiguration for ButtonConfig {
             label: self.label,
             action: self.action,
             style: self.style,
-            accessibility_label: self.accessibility_label.map(Text::computed),
+            semantic: self.semantic,
         }
     }
 }
@@ -321,7 +323,7 @@ where
             label: AnyView::new(self.label),
             action: Box::new(self.action),
             style: self.style,
-            accessibility_label: None,
+            semantic: self.semantic,
         }
     }
 }
@@ -344,7 +346,7 @@ pub struct Button<Label, Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
-    accessibility_label: Option<Text>,
+    semantic: SemanticLabel,
 }
 
 impl<Label: Debug, Action> Debug for Button<Label, Action> {
@@ -362,7 +364,7 @@ impl<Label: Clone, Action: Clone> Clone for Button<Label, Action> {
             label: self.label.clone(),
             action: self.action.clone(),
             style: self.style,
-            accessibility_label: self.accessibility_label.clone(),
+            semantic: self.semantic.clone(),
         }
     }
 }
@@ -385,12 +387,11 @@ impl Button<SemanticLabel, fn(&Environment)> {
     /// ```
     pub fn new(label: impl IntoLabel) -> Self {
         let label = label.into_label();
-        let accessibility_label = Some(label.semantic_text().clone());
         Self {
+            semantic: label.clone(),
             label,
             action: noop,
             style: ButtonStyle::Automatic,
-            accessibility_label,
         }
     }
 }
@@ -415,10 +416,14 @@ impl<Label: View, Action> Button<Label, Action> {
         self
     }
 
-    /// Overrides the semantic accessibility label announced by assistive technology.
+    /// Overrides the spoken accessibility text announced by assistive technology.
+    ///
+    /// This rewrites only the textual portion of the semantic label, preserving
+    /// any icon attached at construction time. The visual label rendered on
+    /// screen is unaffected.
     #[must_use]
     pub fn accessibility_label(mut self, label: impl IntoText) -> Self {
-        self.accessibility_label = Some(label.into_text());
+        self.semantic = self.semantic.text(label);
         self
     }
 
@@ -450,7 +455,7 @@ impl<Label: View, Action> Button<Label, Action> {
             label: self.label,
             action: waterui_core::handler::boxed_action(action),
             style: self.style,
-            accessibility_label: self.accessibility_label,
+            semantic: self.semantic,
         }
     }
 
@@ -486,22 +491,6 @@ impl<Label: View, Action> Button<Label, Action> {
 /// No-op action for buttons without a configured action.
 const fn noop(_env: &Environment) {}
 
-fn semantic_menu_label<Label: View + 'static>(
-    label: Label,
-    accessibility_label: Option<Text>,
-) -> SemanticLabel {
-    let label = AnyView::new(label);
-    if let Some(label) = label.downcast_ref::<SemanticLabel>() {
-        return label.clone();
-    }
-    if let Some(accessibility_label) = accessibility_label {
-        return SemanticLabel::new(accessibility_label);
-    }
-    panic!(
-        "Buttons used inside Menu must either use a semantic Label or provide Button::accessibility_label(...)"
-    );
-}
-
 impl<Label, Action> From<Button<Label, Action>> for crate::menu::Command
 where
     Label: View + 'static,
@@ -509,13 +498,13 @@ where
 {
     fn from(value: Button<Label, Action>) -> Self {
         let Button {
-            label,
+            label: _,
             mut action,
             style: _,
-            accessibility_label,
+            semantic,
         } = value;
         Self {
-            label: semantic_menu_label(label, accessibility_label),
+            label: semantic,
             action: shared_action(move |env: Environment| action(&env)),
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
@@ -567,18 +556,17 @@ mod tests {
     }
 
     #[test]
-    fn menu_command_falls_back_to_accessibility_label() {
-        let rendered = ButtonConfig {
-            label: AnyView::new(()),
-            action: Box::new(|_| {}),
-            style: ButtonStyle::Automatic,
-            accessibility_label: Some(
-                Text::new("Accessible")
-                    .resolve(&Environment::default())
-                    .content,
-            ),
-        }
-        .render();
+    fn semantic_label_survives_hook_label_replacement() {
+        // Simulates the hook flow: a hook strips the visual label down to a
+        // unit view (e.g. compact toolbar). The semantic identity must
+        // survive so that menu / accessibility / voice control still work.
+        let original = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
+            .action(|| {});
+        let mut config = original.config();
+        config.label = AnyView::new(()); // hook replaces visual
+        let rendered = config.render();
+
+        // Visual label was wiped, but semantic identity is intact.
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
@@ -589,24 +577,41 @@ mod tests {
                 .get()
                 .to_plain()
                 .as_str(),
-            "Accessible"
+            "Edit"
         );
-        assert!(command.label.semantic_icon().is_none());
+        let icon = command
+            .label
+            .semantic_icon()
+            .expect("semantic label icon should survive hook label replacement");
+        assert_eq!(icon.name.as_str(), "magnifyingglass");
     }
 
     #[test]
-    #[should_panic(
-        expected = "Buttons used inside Menu must either use a semantic Label or provide Button::accessibility_label(...)"
-    )]
-    fn menu_command_requires_semantic_label_or_accessibility_label() {
-        let rendered = ButtonConfig {
-            label: AnyView::new(()),
-            action: Box::new(|_| {}),
-            style: ButtonStyle::Automatic,
-            accessibility_label: None,
-        }
-        .render();
-        let _: crate::menu::Command = rendered.into();
+    fn accessibility_label_overrides_semantic_text_only() {
+        // Calling .accessibility_label("X") must rewrite the spoken text
+        // while preserving the icon attached at construction time.
+        let rendered = button(SemanticLabel::new("Edit").icon(waterui_icon::system_icon::search()))
+            .accessibility_label("Edit document")
+            .action(|| {})
+            .config()
+            .render();
+        let command: crate::menu::Command = rendered.into();
+        assert_eq!(
+            command
+                .label
+                .semantic_text()
+                .resolve(&Environment::default())
+                .content
+                .get()
+                .to_plain()
+                .as_str(),
+            "Edit document"
+        );
+        let icon = command
+            .label
+            .semantic_icon()
+            .expect("icon should be preserved when only the spoken text is overridden");
+        assert_eq!(icon.name.as_str(), "magnifyingglass");
     }
 }
 
