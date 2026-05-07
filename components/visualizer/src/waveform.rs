@@ -2,7 +2,9 @@ use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use std::borrow::Cow;
-use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
+use waterui_core::{
+    Binding, IntoSignal, IntoSignalF32, Signal, binding, env::Environment, view::View,
+};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, color::Color, impl_gpu_subview,
 };
@@ -98,8 +100,8 @@ impl Waveform {
     }
 
     /// Set the background color.
-    pub fn bg_color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn bg_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = color.into_signal().get();
         let mut theme = self.theme.get();
         theme.bg_color = color;
         self.theme.set(theme);
@@ -107,8 +109,8 @@ impl Waveform {
     }
 
     /// Set the primary line color.
-    pub fn line_color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn line_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = color.into_signal().get();
         let mut theme = self.theme.get();
         theme.line_color = color;
         self.theme.set(theme);
@@ -116,8 +118,8 @@ impl Waveform {
     }
 
     /// Set the glow color.
-    pub fn glow_color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn glow_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = color.into_signal().get();
         let mut theme = self.theme.get();
         theme.glow_color = color;
         self.theme.set(theme);
@@ -125,7 +127,8 @@ impl Waveform {
     }
 
     /// Set the line width.
-    pub fn line_width(self, width: f32) -> Self {
+    pub fn line_width(self, width: impl IntoSignalF32 + 'static) -> Self {
+        let width = width.into_signal_f32().get();
         let mut theme = self.theme.get();
         theme.line_width = width;
         self.theme.set(theme);
@@ -133,7 +136,8 @@ impl Waveform {
     }
 
     /// Set the glow intensity (0.0 to 1.0).
-    pub fn glow(self, intensity: f32) -> Self {
+    pub fn glow(self, intensity: impl IntoSignalF32 + 'static) -> Self {
+        let intensity = intensity.into_signal_f32().get();
         let mut theme = self.theme.get();
         theme.glow_intensity = intensity;
         self.theme.set(theme);
