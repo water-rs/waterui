@@ -7,10 +7,11 @@ use waterui::preview;
 use waterui::reactive::{binding, impl_constant, Binding};
 use waterui::view_builder;
 use waterui_chart::{
-    AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle,
-    CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint, DepthChart,
-    DepthData, DepthLevel, GaugeChart, GaugeData, GaugeRegion, HeatmapChart, HeatmapData,
-    LineChart, PieChart, RadarChart, RadarData, RadarSeries, ScatterChart,
+    AreaChart, AreaData, AreaSeries, ArcAngles, AxisConfig, BarChart, BubbleChart, BubblePoint,
+    Candle, CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint,
+    DepthChart, DepthData, DepthLevel, GaugeChart, GaugeData, GaugeRadii, GaugeRegion,
+    HeatmapChart, HeatmapData, LineChart, PieChart, RadarChart, RadarData, RadarSeries,
+    ScatterChart,
 };
 
 /// Chart types available in this demo.
@@ -456,8 +457,8 @@ fn gauge_chart_preview() -> impl View {
         .show_needle(true);
     let gauge = binding(gauge_data);
     GaugeChart::new(gauge)
-        .arc_degrees(-135.0, 135.0)
-        .radii(0.3, 0.45)
+        .arc(ArcAngles::from_degrees(-135.0, 135.0))
+        .radii(GaugeRadii::new(0.3, 0.45))
         .background_color(Srgb::from_hex("#333333"))
         .needle_color(Srgb::from_hex("#FFFFFF"))
         .size(300.0, 300.0)

@@ -86,58 +86,24 @@ impl<S: Signal<Output = RadarData>> RadarChart<S> {
         Ok(self.with_ring_count(count))
     }
 
-    /// Sets the radar line width and panics if the value is invalid.
+    /// Sets the radar line width.
     ///
-    /// # Panics
-    ///
-    /// Panics when `width` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values.
     #[must_use]
-    pub fn line_width(self, width: f32) -> Self {
-        self.try_line_width(width)
-            .expect("RadarChart::line_width(width) requires finite width > 0")
-    }
-
-    /// Sets the radar line width using an already-validated positive value.
-    #[must_use]
-    pub const fn with_line_width(mut self, width: PositiveF32) -> Self {
-        self.line_width = width.get();
+    pub fn line_width(mut self, width: impl Into<PositiveF32>) -> Self {
+        self.line_width = width.into().get();
         self
     }
 
-    /// Attempts to set the radar line width.
+    /// Sets the radar fill opacity.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `width` is not finite or is not strictly positive.
-    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_line_width(PositiveF32::try_new(width)?))
-    }
-
-    /// Sets the radar fill opacity and panics if the value is invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `opacity` is not finite or is outside `0.0..=1.0`.
+    /// Accepts any value convertible into [`UnitInterval`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or values outside `[0.0, 1.0]`.
     #[must_use]
-    pub fn fill_opacity(self, opacity: f32) -> Self {
-        self.try_fill_opacity(opacity)
-            .expect("RadarChart::fill_opacity(opacity) requires finite 0.0 <= opacity <= 1.0")
-    }
-
-    /// Sets the radar fill opacity using an already-validated unit interval.
-    #[must_use]
-    pub const fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
-        self.fill_opacity = opacity.get();
+    pub fn fill_opacity(mut self, opacity: impl Into<UnitInterval>) -> Self {
+        self.fill_opacity = opacity.into().get();
         self
-    }
-
-    /// Attempts to set the radar fill opacity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `opacity` is not finite or is outside `0.0..=1.0`.
-    pub fn try_fill_opacity(self, opacity: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_fill_opacity(UnitInterval::try_new(opacity)?))
     }
 }
 

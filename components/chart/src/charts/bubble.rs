@@ -57,91 +57,43 @@ impl<S: Signal<Output = Vec<BubblePoint>>> BubbleChart<S> {
         self
     }
 
-    /// Sets the minimum bubble radius and panics if the value is invalid.
+    /// Sets the minimum bubble radius.
     ///
-    /// # Panics
-    ///
-    /// Panics when `radius` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values. If the
+    /// minimum exceeds the current maximum, the maximum is widened to match.
     #[must_use]
-    pub fn min_radius(self, radius: f32) -> Self {
-        self.try_min_radius(radius)
-            .expect("BubbleChart::min_radius(radius) requires finite radius > 0")
-    }
-
-    /// Sets the minimum bubble radius using an already-validated positive value.
-    #[must_use]
-    pub fn with_min_radius(mut self, radius: PositiveF32) -> Self {
-        self.min_radius = radius.get();
+    pub fn min_radius(mut self, radius: impl Into<PositiveF32>) -> Self {
+        self.min_radius = radius.into().get();
         if self.max_radius < self.min_radius {
             self.max_radius = self.min_radius;
         }
         self
     }
 
-    /// Attempts to set the minimum bubble radius.
+    /// Sets the maximum bubble radius.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
-    pub fn try_min_radius(self, radius: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_min_radius(PositiveF32::try_new(radius)?))
-    }
-
-    /// Sets the maximum bubble radius and panics if the value is invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `radius` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values. If the
+    /// maximum is less than the current minimum, the minimum is reduced to
+    /// match.
     #[must_use]
-    pub fn max_radius(self, radius: f32) -> Self {
-        self.try_max_radius(radius)
-            .expect("BubbleChart::max_radius(radius) requires finite radius > 0")
-    }
-
-    /// Sets the maximum bubble radius using an already-validated positive value.
-    #[must_use]
-    pub fn with_max_radius(mut self, radius: PositiveF32) -> Self {
-        self.max_radius = radius.get();
+    pub fn max_radius(mut self, radius: impl Into<PositiveF32>) -> Self {
+        self.max_radius = radius.into().get();
         if self.max_radius < self.min_radius {
             self.min_radius = self.max_radius;
         }
         self
     }
 
-    /// Attempts to set the maximum bubble radius.
+    /// Sets bubble opacity.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
-    pub fn try_max_radius(self, radius: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_max_radius(PositiveF32::try_new(radius)?))
-    }
-
-    /// Sets bubble opacity and panics if the value is invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `opacity` is not finite or is outside `0.0..=1.0`.
+    /// Accepts any value convertible into [`UnitInterval`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or values outside `[0.0, 1.0]`.
     #[must_use]
-    pub fn opacity(self, opacity: f32) -> Self {
-        self.try_opacity(opacity)
-            .expect("BubbleChart::opacity(opacity) requires finite 0.0 <= opacity <= 1.0")
-    }
-
-    /// Sets bubble opacity using an already-validated unit interval.
-    #[must_use]
-    pub const fn with_opacity(mut self, opacity: UnitInterval) -> Self {
-        self.opacity = opacity.get();
+    pub fn opacity(mut self, opacity: impl Into<UnitInterval>) -> Self {
+        self.opacity = opacity.into().get();
         self
-    }
-
-    /// Attempts to set bubble opacity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `opacity` is not finite or is outside `0.0..=1.0`.
-    pub fn try_opacity(self, opacity: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_opacity(UnitInterval::try_new(opacity)?))
     }
 
     /// Tracks the currently focused bubble in an external binding.

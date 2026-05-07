@@ -48,82 +48,32 @@ impl<S: Signal<Output = GaugeData>> GaugeChart<S> {
 
     crate::composition::chart_composition_methods!(SliceDatum);
 
-    /// Sets the gauge arc in degrees and panics if the range is invalid.
+    /// Sets the gauge arc.
     ///
-    /// # Panics
-    ///
-    /// Panics when either angle is not finite or `end <= start`.
+    /// Accepts any value convertible into [`ArcAngles`]. Use
+    /// [`ArcAngles::from_degrees`] / [`ArcAngles::from_radians`] for
+    /// fail-fast factories that panic on `end <= start` or non-finite
+    /// inputs, or [`ArcAngles::try_radians`] / [`ArcAngles::try_degrees`]
+    /// for the fallible variants.
     #[must_use]
-    pub fn arc_degrees(self, start: f32, end: f32) -> Self {
-        self.try_arc_degrees(start, end)
-            .expect("GaugeChart::arc_degrees(start, end) requires finite end > start")
-    }
-
-    /// Attempts to set the gauge arc in degrees.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when either angle is not finite or `end <= start`.
-    pub fn try_arc_degrees(self, start: f32, end: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_arc_angles(ArcAngles::try_degrees(start, end)?))
-    }
-
-    /// Sets the gauge arc using already-validated angles.
-    #[must_use]
-    pub const fn with_arc_angles(mut self, angles: ArcAngles) -> Self {
+    pub fn arc(mut self, angles: impl Into<ArcAngles>) -> Self {
+        let angles = angles.into();
         self.start_angle = angles.start_radians();
         self.end_angle = angles.end_radians();
         self
     }
 
-    /// Sets the gauge arc in radians and panics if the range is invalid.
+    /// Sets the gauge ring radii.
     ///
-    /// # Panics
-    ///
-    /// Panics when either angle is not finite or `end <= start`.
+    /// Accepts any value convertible into [`GaugeRadii`]. Use
+    /// [`GaugeRadii::new`] for fail-fast construction or
+    /// [`GaugeRadii::try_new`] for the fallible variant.
     #[must_use]
-    pub fn arc_radians(self, start: f32, end: f32) -> Self {
-        self.try_arc_radians(start, end)
-            .expect("GaugeChart::arc_radians(start, end) requires finite end > start")
-    }
-
-    /// Attempts to set the gauge arc in radians.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when either angle is not finite or `end <= start`.
-    pub fn try_arc_radians(self, start: f32, end: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_arc_angles(ArcAngles::try_radians(start, end)?))
-    }
-
-    /// Sets the gauge ring radii and panics if the values are invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when either radius is not finite or the radii do not satisfy
-    /// `0.0 <= inner < outer <= 0.5`.
-    #[must_use]
-    pub fn radii(self, inner: f32, outer: f32) -> Self {
-        self.try_radii(inner, outer)
-            .expect("GaugeChart::radii(inner, outer) requires finite 0.0 <= inner < outer <= 0.5")
-    }
-
-    /// Sets gauge ring radii using already-validated values.
-    #[must_use]
-    pub const fn with_radii(mut self, radii: GaugeRadii) -> Self {
+    pub fn radii(mut self, radii: impl Into<GaugeRadii>) -> Self {
+        let radii = radii.into();
         self.inner_radius = radii.inner();
         self.outer_radius = radii.outer();
         self
-    }
-
-    /// Attempts to set the gauge ring radii.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when either radius is not finite or the
-    /// radii do not satisfy `0.0 <= inner < outer <= 0.5`.
-    pub fn try_radii(self, inner: f32, outer: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_radii(GaugeRadii::try_new(inner, outer)?))
     }
 
     /// Sets the background arc color.
