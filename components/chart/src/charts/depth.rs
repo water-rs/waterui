@@ -101,3 +101,9 @@ impl<S: Signal<Output = DepthData> + Clone + 'static> View for DepthChart<S> {
         )
     }
 }
+
+/// Convenience constructor for [`DepthChart`]. Equivalent to [`DepthChart::new`].
+#[must_use]
+pub fn depth_chart<S: Signal<Output = DepthData>>(data: S) -> DepthChart<S> {
+    DepthChart::new(data)
+}

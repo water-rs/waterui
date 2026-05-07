@@ -96,3 +96,9 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for PieChart<S> 
         )
     }
 }
+
+/// Convenience constructor for [`PieChart`]. Equivalent to [`PieChart::new`].
+#[must_use]
+pub fn pie_chart<S: Signal<Output = Vec<DataPoint>>>(data: S) -> PieChart<S> {
+    PieChart::new(data)
+}

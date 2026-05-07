@@ -101,3 +101,9 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for ScatterChart
         )
     }
 }
+
+/// Convenience constructor for [`ScatterChart`]. Equivalent to [`ScatterChart::new`].
+#[must_use]
+pub fn scatter_chart<S: Signal<Output = Vec<DataPoint>>>(data: S) -> ScatterChart<S> {
+    ScatterChart::new(data)
+}

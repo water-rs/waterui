@@ -73,3 +73,9 @@ impl<S: Signal<Output = ContourData> + Clone + 'static> View for ContourChart<S>
         )
     }
 }
+
+/// Convenience constructor for [`ContourChart`]. Equivalent to [`ContourChart::new`].
+#[must_use]
+pub fn contour_chart<S: Signal<Output = ContourData>>(data: S) -> ContourChart<S> {
+    ContourChart::new(data)
+}

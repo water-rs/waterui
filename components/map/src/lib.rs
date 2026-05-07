@@ -332,3 +332,13 @@ impl Map {
 pub fn map(region: impl IntoComputed<Region>) -> Map {
     Map::new(region)
 }
+
+/// Convenience constructor for [`Map::centered_on`].
+pub fn map_centered_on(coordinate: impl IntoComputed<Coordinate>) -> Map {
+    Map::centered_on(coordinate)
+}
+
+/// Convenience constructor for [`Map::centered_on_location`].
+pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
+    Map::centered_on_location(location)
+}
