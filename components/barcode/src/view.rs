@@ -1,7 +1,11 @@
 use crate::{BarcodeMaskEffect, BarcodeRenderer, BarcodeSource, BarcodeSymbology};
 use core::fmt;
-use waterui_core::{Environment, Str, View, layout::UnitPoint};
-use waterui_graphics::{GpuSurface, GpuView, ViewEffect, color::Color};
+use waterui_core::{AnyView, Environment, Signal, Str, View, layout::UnitPoint};
+use waterui_graphics::{
+    GpuSurface, GpuView, ViewEffect,
+    color::{Color, ResolvedColor},
+};
+use waterui_image::{Image, Interpolation};
 
 /// Fill style for dark barcode modules.
 ///
@@ -154,16 +158,84 @@ impl<V: GpuView> BarcodeGpuFill<V> {
 }
 
 impl View for Barcode {
-    fn body(self, _env: &Environment) -> impl View {
-        let source = match self.symbology {
-            BarcodeSymbology::Qr => BarcodeSource::qr(self.content),
-            BarcodeSymbology::Code128 => BarcodeSource::code128(self.content),
+    fn body(self, env: &Environment) -> impl View {
+        let Self {
+            symbology,
+            content,
+            fill,
+            light_color,
+        } = self;
+        let mut source = match symbology {
+            BarcodeSymbology::Qr => BarcodeSource::qr(content),
+            BarcodeSymbology::Code128 => BarcodeSource::code128(content),
         };
-        let renderer = BarcodeRenderer::new(source)
-            .with_fill(self.fill)
-            .with_light_color(self.light_color);
-        GpuSurface::new(renderer)
+        match fill {
+            // Solid fills are tiny per-module bitmaps that the GPU sampler
+            // can scale via nearest-neighbor — no need to spin the full
+            // packed-matrix fragment shader for every frame.
+            BarcodeFill::Solid(dark) => {
+                let resolved_dark = dark.resolve(env).get();
+                let resolved_light = light_color.resolve(env).get();
+                AnyView::new(render_solid_bitmap(&mut source, resolved_dark, resolved_light))
+            }
+            // Gradients still need shader interpolation across modules, so
+            // they keep the original GPU rasterizer path.
+            gradient @ BarcodeFill::LinearGradient { .. } => {
+                let renderer = BarcodeRenderer::new(source)
+                    .with_fill(gradient)
+                    .with_light_color(light_color);
+                AnyView::new(GpuSurface::new(renderer))
+            }
+        }
     }
+}
+
+fn render_solid_bitmap(
+    source: &mut BarcodeSource,
+    dark: ResolvedColor,
+    light: ResolvedColor,
+) -> Image {
+    let quiet_zone = source.quiet_zone();
+    let matrix = source.matrix();
+    let dim = matrix.dimension;
+    let total = dim + 2 * quiet_zone;
+    let total_usize = total as usize;
+    let dark_rgba = resolved_to_rgba8(dark);
+    let light_rgba = resolved_to_rgba8(light);
+    let mut pixels = vec![0u8; total_usize * total_usize * 4];
+    for y in 0..total {
+        for x in 0..total {
+            let module = match (x.checked_sub(quiet_zone), y.checked_sub(quiet_zone)) {
+                (Some(mx), Some(my)) if mx < dim && my < dim => {
+                    let linear_idx = (my * dim + mx) as usize;
+                    let word = matrix.packed_data[linear_idx / 32];
+                    (word >> (linear_idx % 32)) & 1 == 1
+                }
+                _ => false,
+            };
+            let rgba = if module { dark_rgba } else { light_rgba };
+            let offset = (y as usize * total_usize + x as usize) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&rgba);
+        }
+    }
+    Image::new(pixels, total, total)
+        .interpolation(Interpolation::Nearest)
+        .resizable()
+}
+
+fn resolved_to_rgba8(color: ResolvedColor) -> [u8; 4] {
+    let srgb = color.to_srgb();
+    let to_byte = |v: f32| -> u8 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let scaled = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        scaled
+    };
+    [
+        to_byte(srgb.red),
+        to_byte(srgb.green),
+        to_byte(srgb.blue),
+        to_byte(color.opacity),
+    ]
 }
 
 impl<V: GpuView> View for BarcodeGpuFill<V> {

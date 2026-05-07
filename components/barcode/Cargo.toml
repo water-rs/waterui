@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics.workspace = true
+waterui-image.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 fast_qr = "0.12"
