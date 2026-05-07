@@ -86,6 +86,9 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, link};
+    pub use super::component::list::{
+        List, ListContent, ListItem, ListSection, Row, Section, detail_row, row,
+    };
     pub use super::component::menu::{
         Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
     };

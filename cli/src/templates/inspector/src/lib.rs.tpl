@@ -4,7 +4,6 @@ use std::time::Duration;
 use futures_lite::io::BufReader;
 use smol::net::TcpStream;
 use waterui::app::App;
-use waterui::component::list::{List, Section, row, detail_row};
 use waterui::icon::SystemIcon;
 use waterui::prelude::*;
 use waterui::prelude::theme_color::{Accent, Background, MutedForeground};
