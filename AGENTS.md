@@ -2,6 +2,20 @@
 
 This file provides guidance to coding agents (Claude Code, Codex, and friends) when working with code in this repository. `CLAUDE.md` is a symlink to this file.
 
+## Framework Design Principles
+
+These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
+
+1. **Style is an attribute, not a separate component.** Toggle covers switch / checkbox; Picker covers menu / radio / wheel; List covers plain / inset-grouped / sidebar. Pick which visual via attribute (`.style(...)`, theme tokens, environment plugins, or backend platform default), never invent `CheckboxToggle` / `RadioPicker` / `GroupedList` parallel types. Semantic identity is fixed; visual presentation is a property of the surrounding context.
+
+2. **Minimum FFI surface — compose in Rust before binding native.** Only widgets backed by a real platform primitive that cannot be expressed by composing existing primitives belong on the FFI. `Form`, `Card`, `Badge`, `LabeledContent`, `GroupBox` are intentionally Rust-side composers that reuse `vstack` / `hstack` / `padding` / theme tokens and ship zero new C-ABI types. Adding a new `waterui_*_id()` requires evidence that no Rust-side composition produces the same result.
+
+3. **Cross-platform default appearance is the framework's job, not the view code's.** When a backend renders a primitive, it must read theme tokens (`Foreground` / `Background` / `Surface` / `SurfaceVariant` / `Border` / `Accent` / `MutedForeground` / `AccentForeground`) instead of hard-coding `.label` / `.systemBackground` / `NSColor.windowBackgroundColor` / `UIColor.secondarySystemBackground`. View code calling `.foreground()`, `.background()`, `text("…")` etc. with no extra modifiers must produce platform-correct output. If view code has to reach into a backend to make defaults right, that is a backend bug — fix the backend, do not paper over it in user-facing code.
+
+4. **Asymmetric primitives are documented, not faked.** When platform A has a primitive and platform B genuinely doesn't (e.g. SF Symbols on Apple vs no OS-supplied icon catalog on Android), the primitive is supported on A and **explicitly unsupported on B**. Do not bundle a Material font and pretend it is "system." For portable code, depend on a packaged icon-set crate (`waterui-icons-lucide`, `waterui-icons-material-icon`, `waterui-icons-fontawesome7`). Surfacing the asymmetry as documentation is the right answer; hiding it behind a fallback is not.
+
+5. **Fine-grained reactivity is non-negotiable.** WaterUI uses precise per-`Binding` / `Computed` updates, not SwiftUI-style structural diff. APIs that would force a structural recompute on every state change (e.g. requiring rebuild of an entire subtree to update a single text value) are rejected. New API surfaces must accept signals (`impl IntoComputed<T>`, `impl Signal<Output = T>`, `Binding<T>`) rather than plain values when the underlying state is dynamic.
+
 ## Engagement Rules
 
 DO NOT be over-engineer or write defensive code. If you encounter a problem, ask user for solution with your own idea, do not say "Let's have a simpler approach". You are expected to face the real problem and make code clean, reusable and elegant. Never take a workaround.

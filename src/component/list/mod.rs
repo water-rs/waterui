@@ -2,21 +2,31 @@
 //!
 //! This module provides the necessary components to build and configure lists
 //! in the `WaterUI` framework. It includes the `List` component for displaying
-//! collections of data, and `ListItem` for configuring individual items in the
-//! list.
+//! collections of data, [`ListItem`] for configuring individual items, and
+//! the [`ListContent`] / [`Section`] / [`row`] surface for composing static
+//! heterogeneous lists with sections.
 
 use alloc::boxed::Box;
+use core::ops::RangeBounds;
 use nami::collection::Collection;
+use nami::watcher::Context;
 use nami::{Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
+use waterui_core::id::SelfId;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View,
-    handler::{Handler, shared_action},
+    handler::{AnyViewBuilder, Handler, shared_action},
     id::Identifiable,
     layout::StretchAxis,
 };
+
+mod content;
+mod section;
+
+pub use content::{ListContent, ListItemSink, Row, RowLayout, detail_row, row};
+pub use section::Section;
 
 /// A list reorder operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +153,79 @@ where
     /// Creates a new list by iterating over a collection and generating items.
     pub const fn for_each(data: C, generator: F) -> Self {
         Self(ForEach::new(data, generator))
+    }
+}
+
+impl List<BuiltViews> {
+    /// Creates a list from a static [`ListContent`] tree.
+    ///
+    /// `ListContent` accepts [`ListItem`], [`Row`] (the [`row`] / [`detail_row`]
+    /// helpers produce one), [`Section<C>`], tuples, arrays, vectors, and
+    /// `Option<T>`, so heterogeneous content composes structurally just like
+    /// SwiftUI's `Section { row; row }` form. For dynamic identity-keyed data,
+    /// use [`List::for_each`] instead; for any pre-built [`Views`]
+    /// implementation, use [`List::new`].
+    #[must_use]
+    pub fn content(content: impl ListContent) -> Self {
+        let mut sink = ListItemSink::new();
+        content.collect_items(&mut sink);
+        Self(BuiltViews::new(sink))
+    }
+}
+
+/// `Views` adapter that materializes the entries collected by a
+/// [`ListContent`] tree on demand.
+///
+/// Each entry stores a clonable builder that produces a fresh [`ListItem`]
+/// every time `Views::get_view` is called, plus an optional [`ListSection`]
+/// marker attached by [`Section`].
+pub struct BuiltViews {
+    entries: alloc::vec::Vec<(AnyViewBuilder<ListItem>, Option<ListSection>)>,
+}
+
+impl BuiltViews {
+    pub(crate) fn new(sink: ListItemSink) -> Self {
+        Self {
+            entries: sink.into_entries(),
+        }
+    }
+}
+
+impl core::fmt::Debug for BuiltViews {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BuiltViews")
+            .field("len", &self.entries.len())
+            .finish()
+    }
+}
+
+impl Views for BuiltViews {
+    type Id = SelfId<usize>;
+    type Guard = ();
+    type View = ListItem;
+
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.entries.len())
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        (index < self.entries.len()).then(|| SelfId::new(index))
+    }
+
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        let (builder, section) = self.entries.get(index)?;
+        let mut item = builder.build();
+        if let Some(section) = section {
+            item.section = Some(section.clone());
+        }
+        Some(item)
+    }
+
+    fn watch(
+        &self,
+        _range: impl RangeBounds<usize>,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+    ) -> Self::Guard {
     }
 }
 
