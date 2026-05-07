@@ -180,9 +180,23 @@ pub struct WuiVideo {
 impl IntoFFI for VideoConfig {
     type FFI = WuiVideo;
     fn into_ffi(self) -> Self::FFI {
-        // Convert the Rust closure to a WuiFn
+        // The user-facing event handler is a typed `BoxedEventAction<Event>`
+        // that consumes (Event, &Environment). Native (Apple / Android)
+        // backends invoke the WuiFn closure without a rendering environment
+        // available at call time, so we supply a placeholder
+        // `Environment::default()` here. Hook-based render paths (e.g.
+        // runtime_player) wrap the handler with the live rendering
+        // environment via `bind_event_handler_to_env` before reaching FFI,
+        // so they retain real `State<T>` / extractor support.
+        // The handler is FnMut + needs an &Environment; WuiFn stores Fn(E),
+        // so wrap in RefCell for interior mutability and supply a placeholder
+        // env (see comment above).
+        let on_event_cell = core::cell::RefCell::new(self.on_event);
         let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            (self.on_event)(into_video_event(ffi_event));
+            (on_event_cell.borrow_mut())(
+                into_video_event(ffi_event),
+                &waterui_core::Environment::default(),
+            );
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary
@@ -275,9 +289,19 @@ pub struct WuiVideoPlayer {
 impl IntoFFI for VideoPlayerConfig {
     type FFI = WuiVideoPlayer;
     fn into_ffi(self) -> Self::FFI {
-        // Convert the Rust closure to a WuiFn
+        // See `IntoFFI for VideoConfig` for why a placeholder Environment is
+        // safe here: the typed handler runs with a real env on hook-based
+        // render paths (`runtime_player::bind_event_handler_to_env`); the
+        // FFI native path supplies a fresh default so the closure signature
+        // is satisfied without claiming a rendering environment that is
+        // not actually available at native fire time.
+        // Same FnMut + placeholder-env story as `IntoFFI for VideoConfig`.
+        let on_event_cell = core::cell::RefCell::new(self.on_event);
         let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            (self.on_event)(into_video_event(ffi_event));
+            (on_event_cell.borrow_mut())(
+                into_video_event(ffi_event),
+                &waterui_core::Environment::default(),
+            );
         });
 
         // Convert Computed<Url> to Computed<Str> for FFI boundary

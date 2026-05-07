@@ -119,6 +119,90 @@ pub fn boxed_action_once<Args, T: 'static>(f: impl HandlerOnce<Args, T>) -> Boxe
 }
 
 // ============================================================================
+// Event handlers
+// ============================================================================
+
+/// A boxed event handler that consumes one event payload alongside the
+/// environment-driven extractors.
+///
+/// This is essentially `Box<dyn FnMut(E, &Environment) -> T>` and is the
+/// counterpart to [`BoxedAction`] for views that report events upward —
+/// for example media playback events, video errors, or any photo-style
+/// completion notification. The first argument is the event payload (typed
+/// to the producing component); the remaining arguments are extracted from
+/// `env` exactly like [`Handler`] arguments.
+pub type BoxedEventAction<E, T = ()> = Box<dyn FnMut(E, &Environment) -> T>;
+
+/// A repeatable event handler that consumes a typed event payload plus
+/// environment-extracted arguments.
+///
+/// Implemented for any closure of the form `FnMut(E, A1, ..., An) -> T`
+/// where each `Ai: Extractor`. The shape mirrors [`Handler`] but inserts
+/// an "event" position in the leading argument slot. This lets event
+/// callbacks on views like `Photo::on_event`, `Video::on_event`, and
+/// `WebView::on_event` reuse the same `State<T>` / `Environment` extractor
+/// machinery as `Button::action`.
+///
+/// The `Args` tuple only counts extractor positions — the event payload is
+/// not part of the tuple — so a closure like `|event: E| { ... }` matches
+/// `EventHandler<E, (), ()>` and reads as "no extractors, returns unit".
+pub trait EventHandler<E, Args, T = ()>: 'static {
+    /// Invokes the handler with the given event payload and the extractor
+    /// arguments resolved from `env`.
+    fn call(&mut self, event: E, env: &Environment) -> T;
+}
+
+macro_rules! impl_event_handler {
+    () => {
+        impl<F, E, Output> EventHandler<E, (), Output> for F
+        where
+            F: FnMut(E) -> Output + 'static,
+        {
+            fn call(&mut self, event: E, _env: &Environment) -> Output {
+                self(event)
+            }
+        }
+    };
+    ($($T:ident),+) => {
+        impl<Func, E, Output, $($T),+> EventHandler<E, ($($T,)+), Output> for Func
+        where
+            Func: FnMut(E, $($T),+) -> Output + 'static,
+            $($T: Extractor),+
+        {
+            #[allow(non_snake_case)]
+            fn call(&mut self, event: E, env: &Environment) -> Output {
+                let mut state = ExtractionState::default();
+                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
+                self(event, $($T),+)
+            }
+        }
+    };
+}
+
+impl_event_handler!();
+impl_event_handler!(A);
+impl_event_handler!(A, B);
+impl_event_handler!(A, B, C);
+impl_event_handler!(A, B, C, D);
+impl_event_handler!(A, B, C, D, E1);
+impl_event_handler!(A, B, C, D, E1, F);
+impl_event_handler!(A, B, C, D, E1, F, G);
+impl_event_handler!(A, B, C, D, E1, F, G, H);
+
+/// Erases an [`EventHandler`] into a [`BoxedEventAction`] so a component
+/// config can store the callback as a typed field without leaking the
+/// extractor-tuple generics.
+#[inline]
+pub fn boxed_event_handler<E, Args, T: 'static>(
+    mut f: impl EventHandler<E, Args, T>,
+) -> BoxedEventAction<E, T>
+where
+    E: 'static,
+{
+    Box::new(move |event: E, env: &Environment| f.call(event, env))
+}
+
+// ============================================================================
 // Shared (Clone-able) Actions
 // ============================================================================
 

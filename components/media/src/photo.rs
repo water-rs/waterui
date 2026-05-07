@@ -14,7 +14,6 @@
 //! ```
 
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::string::String;
 use core::cell::RefCell;
 
@@ -48,8 +47,10 @@ pub struct Photo {
     url: Url,
     /// Preloaded local image for file-backed sources on native targets.
     preloaded_local: Option<Result<Image, String>>,
-    /// Event handler for photo loading events.
-    on_event: Option<Box<dyn Fn(Event) + 'static>>,
+    /// Event handler for photo loading events. Stored as a typed
+    /// [`BoxedEventAction`] so the closure can extract `State<T>` /
+    /// environment values, mirroring the [`Button::action`] pattern.
+    on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
     /// Dynamic view content updated when decoded frames arrive.
     content: Dynamic,
     /// Handle for publishing decoded frames into `content`.
@@ -121,28 +122,43 @@ impl Photo {
 
     /// Sets the event handler for the photo.
     ///
+    /// The handler shares the [`Handler`](waterui_core::handler::Handler)
+    /// extractor pattern used by [`Button::action`]: the leading argument is
+    /// the [`Event`] payload and any subsequent arguments are extracted from
+    /// the rendering [`Environment`] at fire time.
+    ///
     /// # Examples
     ///
     /// ```ignore
+    /// use waterui::prelude::*;
     /// use waterui_media::{Photo, photo::Event};
     ///
+    /// // Plain callback — no extractors.
+    /// let photo = Photo::new(url).on_event(|event: Event| match event {
+    ///     Event::Loaded => println!("Image loaded!"),
+    ///     Event::Error(msg) => println!("Error: {msg}"),
+    /// });
+    ///
+    /// // Extractor-based callback — pulls a binding via `State<T>`.
+    /// let last_status = binding(String::new());
     /// let photo = Photo::new(url)
-    ///     .on_event(|event| {
-    ///         match event {
-    ///             Event::Loaded => println!("Image loaded!"),
-    ///             Event::Error(msg) => println!("Error: {}", msg),
-    ///         }
-    ///     });
+    ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
+    ///         last.set(format!("{event:?}"));
+    ///     })
+    ///     .state(&last_status);
     /// ```
     #[must_use]
-    pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
-        self.on_event = Some(Box::new(handler));
+    pub fn on_event<H, A>(mut self, handler: H) -> Self
+    where
+        H: waterui_core::handler::EventHandler<Event, A, ()> + 'static,
+    {
+        self.on_event = Some(waterui_core::handler::boxed_event_handler(handler));
         self
     }
 }
 
 impl View for Photo {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let Self {
             url,
             preloaded_local,
@@ -151,13 +167,20 @@ impl View for Photo {
             content_handler,
             load_started,
         } = self;
+        // Bake the rendering environment into a shared invoker so async load
+        // tasks and `LifeCycleHook` callbacks (both `Fn`-shaped) can drive the
+        // typed `EventHandler` without re-deriving the env at fire time.
+        let env_for_event = env.clone();
         if let Some(preloaded) = preloaded_local {
             return match preloaded {
                 Ok(image) => {
-                    if let Some(on_event) = on_event {
+                    if let Some(mut on_event) = on_event {
+                        let env = env_for_event.clone();
                         AnyView::new(Metadata::new(
                             image,
-                            LifeCycleHook::new(LifeCycle::Appear, move || on_event(Event::Loaded)),
+                            LifeCycleHook::new(LifeCycle::Appear, move || {
+                                on_event(Event::Loaded, &env)
+                            }),
                         ))
                     } else {
                         AnyView::new(image)
@@ -165,11 +188,12 @@ impl View for Photo {
                 }
                 Err(error) => on_event.map_or_else(
                     || AnyView::new(()),
-                    |on_event| {
+                    |mut on_event| {
+                        let env = env_for_event.clone();
                         AnyView::new(Metadata::new(
                             (),
                             LifeCycleHook::new(LifeCycle::Appear, move || {
-                                on_event(Event::Error(error.clone()));
+                                on_event(Event::Error(error.clone()), &env);
                             }),
                         ))
                     },
@@ -189,6 +213,7 @@ impl View for Photo {
                     url.clone(),
                     on_event.borrow_mut().take(),
                     content_handler.clone(),
+                    env_for_event.clone(),
                 );
             }),
         ))
@@ -197,22 +222,23 @@ impl View for Photo {
 
 fn spawn_load_task(
     url: Url,
-    on_event: Option<Box<dyn Fn(Event) + 'static>>,
+    on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
     handler: DynamicHandler,
+    env: Environment,
 ) {
     spawn_local(async move {
         match fetch_and_decode_streaming(url, move |image| publish_decoded_frame(&handler, image))
             .await
         {
             Ok(()) => {
-                if let Some(on_event) = on_event {
-                    on_event(Event::Loaded);
+                if let Some(mut on_event) = on_event {
+                    on_event(Event::Loaded, &env);
                 }
             }
             Err(e) => {
                 tracing::error!("[Photo] Failed to load: {}", e);
-                if let Some(on_event) = on_event {
-                    on_event(Event::Error(e));
+                if let Some(mut on_event) = on_event {
+                    on_event(Event::Error(e), &env);
                 }
             }
         }
