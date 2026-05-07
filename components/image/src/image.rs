@@ -64,6 +64,35 @@ enum SourcePixelFormat {
     Rgba16Float,
 }
 
+/// How the image should be filtered when its pixel grid does not align
+/// with the destination pixel grid (which it almost never does on modern
+/// fractional-DPR displays).
+///
+/// `Linear` is the conventional default for photographs and decoded
+/// assets, while `Nearest` preserves sharp pixel edges and is the right
+/// choice for icons, pixel art, and rasterized barcodes.
+///
+/// `#[non_exhaustive]` so future modes (e.g. cubic / Lanczos) can be added
+/// without breaking exhaustive `match` statements downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Interpolation {
+    /// Bilinear / trilinear sampling. Default for photo-like content.
+    #[default]
+    Linear,
+    /// Nearest-neighbor sampling. Use for pixel art, icons, barcodes.
+    Nearest,
+}
+
+impl Interpolation {
+    fn to_wgpu_filter(self) -> wgpu::FilterMode {
+        match self {
+            Self::Linear => wgpu::FilterMode::Linear,
+            Self::Nearest => wgpu::FilterMode::Nearest,
+        }
+    }
+}
+
 impl Image {
     /// Creates a new Image from RGBA pixel data.
     ///
@@ -131,6 +160,18 @@ impl Image {
                 source_is_wide_gamut,
             ),
         }
+    }
+
+    /// Sets the texture sampling mode for this image.
+    ///
+    /// Defaults to [`Interpolation::Linear`]. Switch to
+    /// [`Interpolation::Nearest`] for content that should keep crisp pixel
+    /// edges across non-integer scale factors (icons, pixel art, rasterized
+    /// barcodes).
+    #[must_use]
+    pub const fn interpolation(mut self, mode: Interpolation) -> Self {
+        self.renderer.interpolation = mode;
+        self
     }
 
     /// Get the image dimensions (width, height).
@@ -255,6 +296,8 @@ struct ImageRenderer {
     width: u32,
     /// Image height
     height: u32,
+    /// Sampler filter mode chosen by the user.
+    interpolation: Interpolation,
     /// GPU texture (created during setup)
     texture: Option<wgpu::Texture>,
     /// Render pipeline for displaying to screen
@@ -292,6 +335,7 @@ impl ImageRenderer {
             source_is_wide_gamut,
             width,
             height,
+            interpolation: Interpolation::Linear,
             texture: None,
             render_pipeline: None,
             bind_group: None,
@@ -337,6 +381,7 @@ impl ImageRenderer {
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
         hdr_to_sdr_tonemap: bool,
+        interpolation: Interpolation,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
         // Keep alpha blending enabled for both SDR and HDR targets so transparent
         // image assets composite consistently regardless of surface format.
@@ -414,14 +459,15 @@ impl ImageRenderer {
             cache: pipeline_cache,
         });
 
+        let filter = interpolation.to_wgpu_filter();
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Image sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: filter,
+            min_filter: filter,
+            mipmap_filter: filter,
             ..Default::default()
         });
 
@@ -523,6 +569,7 @@ impl GpuView for ImageRenderer {
             ctx.surface_format,
             ctx.pipeline_cache,
             hdr_to_sdr_tonemap,
+            self.interpolation,
         );
 
         let texture = self.texture.as_ref().expect("Texture should be created");
