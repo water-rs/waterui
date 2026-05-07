@@ -294,6 +294,14 @@ impl Label {
     }
 
     /// Adds a semantic system icon to the label.
+    ///
+    /// `SystemIcon` is platform-asymmetric: it renders SF Symbols on Apple
+    /// platforms (iOS / iPadOS / macOS / tvOS / visionOS) and is
+    /// **intentionally unsupported on Android, Linux, Web**. For portable,
+    /// cross-platform icons, prefer [`Label::icon`] with an icon-pack crate
+    /// such as `waterui-icons-lucide`, `waterui-icons-material-icon`, or
+    /// `waterui-icons-fontawesome7`. See [`SystemIcon`] for the full
+    /// rationale.
     #[must_use]
     pub fn system_icon(mut self, icon: SystemIcon) -> Self {
         self.icon = Some(LabelIcon::system(icon));
