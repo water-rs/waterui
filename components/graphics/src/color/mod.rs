@@ -112,6 +112,22 @@ impl<T> WithOpacity<T> {
     }
 }
 
+// Constant `Signal` so a `WithOpacity<...>` color literal can flow through
+// the reactive builder surface (e.g. `ParticleSystem::color(...)` taking
+// `impl IntoSignal<Color>`). The static color is its own current value;
+// `IntoSignal` then bridges `Color: From<WithOpacity<T>>` to satisfy the
+// blanket `impl<C: Signal, Output: From<C::Output>> IntoSignal<Output> for C`.
+impl<T: Clone + 'static> Signal for WithOpacity<T> {
+    type Output = Self;
+    type Guard = ();
+
+    fn get(&self) -> Self::Output {
+        self.clone()
+    }
+
+    fn watch(&self, _watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static) {}
+}
+
 impl<T> Resolvable for WithOpacity<T>
 where
     T: Resolvable<Resolved = ResolvedColor> + 'static,

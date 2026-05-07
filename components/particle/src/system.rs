@@ -6,8 +6,7 @@ use crate::{
     renderer::{ParticleRenderer, ResolvedParticleConfig},
 };
 use core::{num::NonZeroU32, ops::Range};
-use waterui_core::Signal;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, IntoSignal, IntoSignalF32, Signal, View};
 use waterui_graphics::{
     GpuSurface, OffscreenRenderConfig, OffscreenRenderError, OffscreenRenderOutput,
     OffscreenRenderOutputHdr, color::Color,
@@ -22,6 +21,22 @@ pub struct ParticleSystem {
     max_particles: u32,
     pub(crate) config: ParticleConfig,
 }
+
+fn snapshot_f32(signal: impl IntoSignalF32 + 'static) -> f32 {
+    signal.into_signal_f32().get()
+}
+
+fn snapshot_color(signal: impl IntoSignal<Color> + 'static) -> Color {
+    signal.into_signal().get()
+}
+
+fn snapshot_range_f32(
+    start: impl IntoSignalF32 + 'static,
+    end: impl IntoSignalF32 + 'static,
+) -> Range<f32> {
+    snapshot_f32(start)..snapshot_f32(end)
+}
+
 
 impl ParticleSystem {
     /// Create a new particle system with a maximum particle count.
@@ -39,8 +54,8 @@ impl ParticleSystem {
 
     /// Set emission rate (particles per second).
     #[must_use]
-    pub const fn rate(mut self, rate: f32) -> Self {
-        self.config.emitter.rate = rate;
+    pub fn rate(mut self, rate: impl IntoSignalF32 + 'static) -> Self {
+        self.config.emitter.rate = snapshot_f32(rate);
         self
     }
 
@@ -53,51 +68,78 @@ impl ParticleSystem {
 
     /// Set emitter as a rectangle.
     #[must_use]
-    pub const fn emit_from_rect(mut self, width: f32, height: f32) -> Self {
-        self.config.emitter.shape = EmitterShape::Rect { width, height };
+    pub fn emit_from_rect(
+        mut self,
+        width: impl IntoSignalF32 + 'static,
+        height: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.emitter.shape = EmitterShape::Rect {
+            width: snapshot_f32(width),
+            height: snapshot_f32(height),
+        };
         self
     }
 
     /// Set emitter position (normalized coordinates 0.0-1.0).
     #[must_use]
-    pub const fn at(mut self, x: f32, y: f32) -> Self {
-        self.config.emitter.position = [x, y];
+    pub fn at(mut self, x: impl IntoSignalF32 + 'static, y: impl IntoSignalF32 + 'static) -> Self {
+        self.config.emitter.position = [snapshot_f32(x), snapshot_f32(y)];
         self
     }
 
     /// Set particle lifespan range.
     #[must_use]
-    pub const fn life(mut self, range: Range<f32>) -> Self {
-        self.config.particle.life = range;
+    pub fn life(
+        mut self,
+        start: impl IntoSignalF32 + 'static,
+        end: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.particle.life = snapshot_range_f32(start, end);
         self
     }
 
     /// Set particle speed range.
     #[must_use]
-    pub const fn speed(mut self, range: Range<f32>) -> Self {
-        self.config.particle.speed = range;
+    pub fn speed(
+        mut self,
+        start: impl IntoSignalF32 + 'static,
+        end: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.particle.speed = snapshot_range_f32(start, end);
         self
     }
 
     /// Set particle emission angle range (in radians).
     #[must_use]
-    pub const fn angle(mut self, range: Range<f32>) -> Self {
-        self.config.particle.angle = range;
+    pub fn angle(
+        mut self,
+        start: impl IntoSignalF32 + 'static,
+        end: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.particle.angle = snapshot_range_f32(start, end);
         self
     }
 
     /// Set particle size range.
     #[must_use]
-    pub const fn size(mut self, range: Range<f32>) -> Self {
-        self.config.particle.size = range;
+    pub fn size(
+        mut self,
+        start: impl IntoSignalF32 + 'static,
+        end: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.particle.size = snapshot_range_f32(start, end);
         self
     }
 
     /// Set particle start and end colors.
     #[must_use]
-    pub fn color(mut self, start: impl Into<Color>, end: impl Into<Color>) -> Self {
-        self.config.particle.color_start = start.into();
-        self.config.particle.color_end = end.into();
+    pub fn color(
+        mut self,
+        start: impl IntoSignal<Color> + 'static,
+        end: impl IntoSignal<Color> + 'static,
+    ) -> Self {
+        self.config.particle.color_start = snapshot_color(start);
+        self.config.particle.color_end = snapshot_color(end);
         self
     }
 
@@ -110,15 +152,23 @@ impl ParticleSystem {
 
     /// Set gravity vector.
     #[must_use]
-    pub const fn gravity(mut self, x: f32, y: f32) -> Self {
-        self.config.environment.gravity = [x, y];
+    pub fn gravity(
+        mut self,
+        x: impl IntoSignalF32 + 'static,
+        y: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.environment.gravity = [snapshot_f32(x), snapshot_f32(y)];
         self
     }
 
     /// Set wind vector.
     #[must_use]
-    pub const fn wind(mut self, x: f32, y: f32) -> Self {
-        self.config.environment.wind = [x, y];
+    pub fn wind(
+        mut self,
+        x: impl IntoSignalF32 + 'static,
+        y: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.environment.wind = [snapshot_f32(x), snapshot_f32(y)];
         self
     }
 
@@ -132,7 +182,17 @@ impl ParticleSystem {
 
     /// Keep particles inside a normalized rectangle.
     #[must_use]
-    pub fn collide_with_rect(mut self, x: f32, y: f32, width: f32, height: f32) -> Self {
+    pub fn collide_with_rect(
+        mut self,
+        x: impl IntoSignalF32 + 'static,
+        y: impl IntoSignalF32 + 'static,
+        width: impl IntoSignalF32 + 'static,
+        height: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        let x = snapshot_f32(x);
+        let y = snapshot_f32(y);
+        let width = snapshot_f32(width);
+        let height = snapshot_f32(height);
         self.config.collision.enabled = true;
         self.config.collision.bounds = [x, y, x + width, y + height];
         self
@@ -140,37 +200,46 @@ impl ParticleSystem {
 
     /// Add a circular obstacle collider in normalized coordinates.
     #[must_use]
-    pub fn collide_with_circle_obstacle(mut self, x: f32, y: f32, radius: f32) -> Self {
+    pub fn collide_with_circle_obstacle(
+        mut self,
+        x: impl IntoSignalF32 + 'static,
+        y: impl IntoSignalF32 + 'static,
+        radius: impl IntoSignalF32 + 'static,
+    ) -> Self {
         self.config
             .collision
             .circle_obstacles
             .push(CircleObstacleConfig {
-                center: [x, y],
-                radius,
+                center: [snapshot_f32(x), snapshot_f32(y)],
+                radius: snapshot_f32(radius),
             });
         self
     }
 
     /// Set the fraction of normal velocity preserved after a collision.
     #[must_use]
-    pub const fn bounce(mut self, restitution: f32) -> Self {
-        self.config.collision.restitution = restitution;
+    pub fn bounce(mut self, restitution: impl IntoSignalF32 + 'static) -> Self {
+        self.config.collision.restitution = snapshot_f32(restitution);
         self
     }
 
     /// Set the fraction of tangential velocity preserved after a collision.
     #[must_use]
-    pub const fn surface_friction(mut self, value: f32) -> Self {
-        self.config.collision.surface_friction = value;
+    pub fn surface_friction(mut self, value: impl IntoSignalF32 + 'static) -> Self {
+        self.config.collision.surface_friction = snapshot_f32(value);
         self
     }
 
     /// Enable pure-GPU particle-particle interaction using a neighbor grid.
     #[must_use]
-    pub const fn collide_with_particles(mut self, radius: f32, strength: f32) -> Self {
+    pub fn collide_with_particles(
+        mut self,
+        radius: impl IntoSignalF32 + 'static,
+        strength: impl IntoSignalF32 + 'static,
+    ) -> Self {
         self.config.interaction.enabled = true;
-        self.config.interaction.radius = radius;
-        self.config.interaction.strength = strength;
+        self.config.interaction.radius = snapshot_f32(radius);
+        self.config.interaction.strength = snapshot_f32(strength);
         self
     }
 
@@ -183,15 +252,15 @@ impl ParticleSystem {
 
     /// Set edge softness (0.0=hard, 1.0=soft).
     #[must_use]
-    pub const fn softness(mut self, value: f32) -> Self {
-        self.config.particle.softness = value;
+    pub fn softness(mut self, value: impl IntoSignalF32 + 'static) -> Self {
+        self.config.particle.softness = snapshot_f32(value);
         self
     }
 
     /// Set turbulence strength.
     #[must_use]
-    pub const fn turbulence(mut self, value: f32) -> Self {
-        self.config.environment.turbulence = value;
+    pub fn turbulence(mut self, value: impl IntoSignalF32 + 'static) -> Self {
+        self.config.environment.turbulence = snapshot_f32(value);
         self
     }
 
@@ -200,15 +269,17 @@ impl ParticleSystem {
     /// `1.0` keeps velocity unchanged, lower values damp motion over time
     /// without changing behavior across frame rates.
     #[must_use]
-    pub const fn drag(mut self, value: f32) -> Self {
-        self.config.environment.drag = value;
+    pub fn drag(mut self, value: impl IntoSignalF32 + 'static) -> Self {
+        self.config.environment.drag = snapshot_f32(value);
         self
     }
 
     /// Set emitter as a disk with the given radius.
     #[must_use]
-    pub const fn emit_from_circle(mut self, radius: f32) -> Self {
-        self.config.emitter.shape = EmitterShape::Circle { radius };
+    pub fn emit_from_circle(mut self, radius: impl IntoSignalF32 + 'static) -> Self {
+        self.config.emitter.shape = EmitterShape::Circle {
+            radius: snapshot_f32(radius),
+        };
         self
     }
 
@@ -219,10 +290,14 @@ impl ParticleSystem {
         self
     }
 
-    /// Set initial particle spin speed (radians/sec).
+    /// Set initial particle spin speed range (radians/sec).
     #[must_use]
-    pub const fn spin(mut self, range: Range<f32>) -> Self {
-        self.config.particle.spin = range;
+    pub fn spin(
+        mut self,
+        start: impl IntoSignalF32 + 'static,
+        end: impl IntoSignalF32 + 'static,
+    ) -> Self {
+        self.config.particle.spin = snapshot_range_f32(start, end);
         self
     }
 

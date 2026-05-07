@@ -114,6 +114,7 @@ pub mod easing;
 pub use easing::{EasingCurve, Interpolatable};
 pub use local_state::{LocalStateScope, LocalStateStore};
 pub use nami as reactive;
+pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
 mod computed_f32;
 pub use computed_f32::IntoSignalF32;
