@@ -1,7 +1,7 @@
 //! Semantic labels shared by controls, menus, and chrome.
 
 use core::any::Any;
-use nami::Computed;
+use nami::{Binding, Computed};
 use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
@@ -130,6 +130,15 @@ impl IntoLabel for StyledStr {
 }
 
 impl<T> IntoLabel for Computed<T>
+where
+    T: IntoText + Clone + 'static,
+{
+    fn into_label(self) -> Label {
+        Label::new(self)
+    }
+}
+
+impl<T> IntoLabel for Binding<T>
 where
     T: IntoText + Clone + 'static,
 {
