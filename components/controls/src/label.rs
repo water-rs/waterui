@@ -46,6 +46,15 @@ pub enum LabelDisplayMode {
     TitleOnly,
     /// Show only the icon when an icon is available.
     IconOnly,
+    /// Visually omit both title and icon.
+    ///
+    /// The label collapses to a zero-size view, but the semantic text is
+    /// still carried by [`Label::semantic_text`] for parent components and
+    /// assistive technology. Use this when the label's purpose is fully
+    /// described by adjacent context (for example, a slider beside an icon
+    /// whose meaning is obvious from layout) but the accessibility tree must
+    /// still announce it.
+    Hidden,
 }
 
 nami::impl_constant!(LabelDisplayMode);
@@ -240,6 +249,16 @@ impl Label {
         self.display_mode(LabelDisplayMode::IconOnly)
     }
 
+    /// Visually hides the label.
+    ///
+    /// The rendered view collapses to zero size, but the semantic text is
+    /// preserved for assistive technology. Equivalent to
+    /// `.display_mode(LabelDisplayMode::Hidden)`.
+    #[must_use]
+    pub const fn hide_label(self) -> Self {
+        self.display_mode(LabelDisplayMode::Hidden)
+    }
+
     fn effective_display_mode(&self, env: &Environment) -> LabelDisplayMode {
         let requested = if matches!(self.display_mode, LabelDisplayMode::Automatic) {
             env.get::<LabelDisplayMode>()
@@ -250,6 +269,7 @@ impl Label {
         };
 
         match requested {
+            LabelDisplayMode::Hidden => LabelDisplayMode::Hidden,
             LabelDisplayMode::Automatic | LabelDisplayMode::TitleAndIcon if self.icon.is_some() => {
                 LabelDisplayMode::TitleAndIcon
             }
@@ -304,6 +324,7 @@ impl View for Label {
                     IconPosition::Trailing => AnyView::new(hstack((text, icon)).spacing(spacing)),
                 }
             }
+            LabelDisplayMode::Hidden => AnyView::new(()),
             LabelDisplayMode::Automatic => {
                 panic!("Label::effective_display_mode must resolve Automatic before rendering");
             }
@@ -339,6 +360,30 @@ mod tests {
             label.semantic_text().resolve(&env).content.get().to_plain(),
             "Hello"
         );
+    }
+
+    #[test]
+    fn hide_label_keeps_semantic_text_for_accessibility() {
+        let env = test_env();
+        let label = super::Label::new("greeting").hide_label();
+
+        // The semantic text remains intact for assistive technology even when
+        // the label is configured to render no visible chrome.
+        assert_eq!(
+            label.semantic_text().resolve(&env).content.get().to_plain(),
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn hidden_mode_overrides_implicit_title_only_fallback() {
+        // Without an icon, Automatic / TitleAndIcon would fall back to TitleOnly.
+        // Hidden must take precedence over those defaults.
+        let env = test_env();
+        let label = super::Label::new("greeting").hide_label();
+
+        let mode = label.effective_display_mode(&env);
+        assert!(matches!(mode, super::LabelDisplayMode::Hidden));
     }
 
     fn test_env() -> Environment {
