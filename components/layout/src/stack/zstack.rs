@@ -257,25 +257,7 @@ impl<C> ZStack<C> {
     }
 }
 
-impl<C, F, V> ZStack<ForEach<C, F, V>>
-where
-    C: Collection,
-    C::Item: Identifiable,
-    F: 'static + Fn(C::Item) -> V,
-    V: View,
-{
-    /// Creates a new `ZStack` with views generated from a collection using `ForEach`.
-    ///
-    /// # Arguments
-    /// * `collection` - The collection of items to iterate over
-    /// * `generator` - A function that generates a view for each item in the collection
-    pub fn for_each(collection: C, generator: F) -> Self {
-        Self {
-            layout: ZStackLayout::default(),
-            contents: ForEach::new(collection, generator),
-        }
-    }
-}
+crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);
 
 impl<C: TupleViews> ZStack<(C,)> {
     /// Creates a new `ZStack` with the specified alignment and contents.

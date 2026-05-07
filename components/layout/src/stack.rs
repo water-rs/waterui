@@ -6,6 +6,35 @@
 //!
 //! ![Stack](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/stack.svg)
 
+/// Emits `for_each` on a stack wrapper around `ForEach<C, F, V>`.
+///
+/// Reused by HStack/VStack/ZStack so the three families share a single
+/// implementation without exposing a trait users would have to import.
+/// The macro is private to this crate (no `#[macro_export]`) and is
+/// invoked at the call site in each stack module.
+macro_rules! impl_stack_for_each {
+    ($Stack:ident, $Layout:ident) => {
+        impl<C, F, V> $Stack<ForEach<C, F, V>>
+        where
+            C: Collection,
+            C::Item: Identifiable,
+            F: 'static + Fn(C::Item) -> V,
+            V: View,
+        {
+            /// Creates the stack by iterating over a collection and generating
+            /// views.
+            pub fn for_each(collection: C, generator: F) -> Self {
+                Self {
+                    layout: $Layout::default(),
+                    contents: ForEach::new(collection, generator),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use impl_stack_for_each;
+
 mod vstack;
 pub use vstack::*;
 mod hstack;
