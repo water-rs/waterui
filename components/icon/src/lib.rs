@@ -57,8 +57,24 @@ use waterui_str::Str;
 
 /// `SystemIcon` component representing a platform system icon by name.
 ///
-/// On Apple platforms, this renders SF Symbols.
-/// Other backends may choose not to implement `SystemIcon`; for cross-platform usage, prefer icon-pack crates.
+/// # Platform support
+///
+/// `SystemIcon` is **intentionally asymmetric** across backends, because the
+/// underlying primitive is asymmetric:
+///
+/// - **Apple platforms** (iOS / iPadOS / macOS / tvOS / visionOS): renders the
+///   named glyph from Apple's SF Symbols catalog. Names follow SF Symbols
+///   conventions (e.g. `"house"`, `"chevron.right"`, `"wifi"`).
+/// - **Android, Linux, Web, terminal**: **not supported.** Android has no
+///   OS-supplied icon catalog — `SystemIcon` does not silently substitute a
+///   bundled Material font, because that would make the asymmetry invisible
+///   to view code that should know about it (see WaterUI's "Asymmetric
+///   primitives are documented, not faked" design principle in `AGENTS.md`).
+///
+/// For **portable, cross-platform** icons, depend on a packaged icon-pack
+/// crate instead — `waterui-icons-lucide`, `waterui-icons-material-icon`,
+/// `waterui-icons-fontawesome7`, etc. Those crates ship the icon font and
+/// render via [`IconGlyph`], which is supported on every backend.
 ///
 /// # Example
 ///
@@ -69,7 +85,7 @@ use waterui_str::Str;
 /// system_icon::home()
 /// system_icon::settings()
 ///
-/// // Or create dynamically
+/// // Or create dynamically — note: only meaningful on Apple platforms.
 /// SystemIcon::new("house")
 /// ```
 #[derive(Debug, Clone)]

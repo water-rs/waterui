@@ -3,12 +3,11 @@ use std::time::Duration;
 
 use futures_lite::io::BufReader;
 use smol::net::TcpStream;
-use waterui::Identifiable;
 use waterui::app::App;
-use waterui::component::list::{List, ListItem, ListSection};
+use waterui::component::list::{List, Section, row, detail_row};
 use waterui::icon::SystemIcon;
 use waterui::prelude::*;
-use waterui::prelude::theme_color::{Accent, Background, Foreground, MutedForeground};
+use waterui::prelude::theme_color::{Accent, Background, MutedForeground};
 use waterui_inspector_protocol::transport::{read_frame, write_frame};
 use waterui_inspector_protocol::{InspectorClientMessage, InspectorEvent, InspectorServerMessage};
 
@@ -47,7 +46,7 @@ impl InspectorState {
 
 fn main() -> impl View {
     let state = InspectorState::runtime();
-    inspector_view(reactive_rows(state.clone())).task({
+    inspector_view(reactive_snapshot(state.clone())).task({
         let state_for_task = state.clone();
         async move {
             connect_forever(state_for_task).await;
@@ -57,211 +56,89 @@ fn main() -> impl View {
 
 #[preview]
 fn inspector_style_preview() -> impl View {
-    inspector_view(static_rows(StaticSnapshot::live()))
+    inspector_view(snapshot_for(StaticSnapshot::live()))
 }
 
 #[preview]
 fn inspector_offline_preview() -> impl View {
-    inspector_view(static_rows(StaticSnapshot::offline()))
+    inspector_view(snapshot_for(StaticSnapshot::offline()))
 }
 
 // ---- View ---------------------------------------------------------------
 
-fn inspector_view(rows: Vec<InspectorRow>) -> NavigationView {
+fn inspector_view(snap: Snapshot) -> NavigationView {
     NavigationView::new(
         "Inspector",
-        List::for_each(rows, render_row).background(Background),
+        List::content((
+            Section::new("Connection").content((
+                row(label("Status").system_icon(SystemIcon::from_static("wifi")), snap.connection_label)
+                    .value_color(Accent),
+                row(label("Endpoint").system_icon(SystemIcon::from_static("network")), snap.endpoint),
+                row(label("Detail").system_icon(SystemIcon::from_static("info.circle")), snap.status),
+            )),
+            Section::new("Activity").content((
+                row(label("Polls").system_icon(SystemIcon::from_static("arrow.triangle.2.circlepath")), snap.polls)
+                    .value_color(MutedForeground),
+                row(label("Stalls").system_icon(SystemIcon::from_static("exclamationmark.triangle")), snap.stalls)
+                    .value_color(MutedForeground),
+                row(label("Connect attempts").system_icon(SystemIcon::from_static("arrow.clockwise")), snap.attempts)
+                    .value_color(MutedForeground),
+            )),
+            Section::new("Runtime").content((
+                row(label("App PID").system_icon(SystemIcon::from_static("number")), snap.app_pid)
+                    .value_color(MutedForeground),
+                row(label("Build").system_icon(SystemIcon::from_static("hammer")), snap.build_commit)
+                    .value_color(MutedForeground),
+            )),
+            Section::new("Recent events").content((
+                detail_row(label("Last poll").system_icon(SystemIcon::from_static("clock")), snap.last_poll),
+                detail_row(label("Last stall").system_icon(SystemIcon::from_static("exclamationmark.octagon")), snap.last_stall),
+                detail_row(label("Last error").system_icon(SystemIcon::from_static("xmark.octagon")), snap.last_error),
+            )),
+        ))
+        .background(Background),
     )
 }
 
-#[derive(Clone, Copy)]
-enum RowLayout {
-    /// `icon · label …………………… value` (single-line key/value with leading icon)
-    Inline,
-    /// Same as `Inline` but the value is rendered with the accent color so it
-    /// reads as a status badge (e.g. Live / Retrying).
-    Highlight,
-    /// Two-line layout: `icon · label` on top, full-width value below.
-    /// Used for variable-length payloads that need to wrap.
-    Detail,
-}
-
-#[derive(Clone)]
-struct InspectorRow {
-    id: u32,
-    section: Option<&'static str>,
-    icon: SystemIcon,
-    label: &'static str,
-    value: Computed<Str>,
-    layout: RowLayout,
-}
-
-impl Identifiable for InspectorRow {
-    type Id = u32;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
-fn render_row(row: InspectorRow) -> ListItem {
-    let value_text = text!("{v}", v = row.value);
-    let body: AnyView = match row.layout {
-        RowLayout::Inline => AnyView::new(stat_row(
-            row.icon.clone(),
-            row.label,
-            value_text.foreground(MutedForeground),
-        )),
-        RowLayout::Highlight => AnyView::new(stat_row(
-            row.icon.clone(),
-            row.label,
-            value_text.foreground(Accent),
-        )),
-        RowLayout::Detail => AnyView::new(detail_row(
-            row.icon.clone(),
-            row.label,
-            value_text.foreground(Foreground),
-        )),
-    };
-    let item = ListItem::new(body);
-    if let Some(section_label) = row.section {
-        item.section(ListSection::new(section_label))
-    } else {
-        item
-    }
-}
-
-fn stat_row<V: View>(icon: SystemIcon, label_text: &'static str, value: V) -> impl View {
-    hstack((
-        label(label_text).system_icon(icon).spacing(10.0),
-        spacer(),
-        value,
-    ))
-    .spacing(12.0)
-    .padding_with(EdgeInsets::symmetric(10.0, 16.0))
-}
-
-fn detail_row<V: View>(icon: SystemIcon, label_text: &'static str, value: V) -> impl View {
-    vstack((
-        label(label_text)
-            .system_icon(icon)
-            .spacing(10.0),
-        value,
-    ))
-    .alignment(HorizontalAlignment::Leading)
-    .spacing(6.0)
-    .padding_with(EdgeInsets::symmetric(10.0, 16.0))
+/// Pre-resolved reactive (or static) text streams the inspector list renders.
+/// The same `Snapshot` shape feeds both the runtime app and previews — the
+/// difference is just where the `Computed<Str>` values come from.
+struct Snapshot {
+    connection_label: Computed<Str>,
+    endpoint: Computed<Str>,
+    status: Computed<Str>,
+    polls: Computed<Str>,
+    stalls: Computed<Str>,
+    attempts: Computed<Str>,
+    app_pid: Computed<Str>,
+    build_commit: Computed<Str>,
+    last_poll: Computed<Str>,
+    last_stall: Computed<Str>,
+    last_error: Computed<Str>,
 }
 
 // ---- Reactive (runtime) -------------------------------------------------
 
-fn reactive_rows(state: InspectorState) -> Vec<InspectorRow> {
+fn reactive_snapshot(state: InspectorState) -> Snapshot {
     let connection_label: Computed<Str> = state
         .connected
         .clone()
         .select(Str::from("Live"), Str::from("Retrying"))
         .computed();
 
-    let mut id = 0u32;
-    let mut next_id = || {
-        id += 1;
-        id
-    };
-
-    vec![
-        // ───── Connection ──────────────────────────────────────────────
-        InspectorRow {
-            id: next_id(),
-            section: Some("Connection"),
-            icon: SystemIcon::from_static("wifi"),
-            label: "Status",
-            value: connection_label,
-            layout: RowLayout::Highlight,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("network"),
-            label: "Endpoint",
-            value: state.target.clone().computed(),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("info.circle"),
-            label: "Detail",
-            value: state.status.clone().computed(),
-            layout: RowLayout::Inline,
-        },
-        // ───── Activity ────────────────────────────────────────────────
-        InspectorRow {
-            id: next_id(),
-            section: Some("Activity"),
-            icon: SystemIcon::from_static("arrow.triangle.2.circlepath"),
-            label: "Polls",
-            value: int_to_text(state.polls.clone()),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("exclamationmark.triangle"),
-            label: "Stalls",
-            value: int_to_text(state.stalls.clone()),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("arrow.clockwise"),
-            label: "Connect attempts",
-            value: int_to_text(state.attempts.clone()),
-            layout: RowLayout::Inline,
-        },
-        // ───── Runtime ─────────────────────────────────────────────────
-        InspectorRow {
-            id: next_id(),
-            section: Some("Runtime"),
-            icon: SystemIcon::from_static("number"),
-            label: "App PID",
-            value: state.app_pid.clone().computed(),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("hammer"),
-            label: "Build",
-            value: state.build_commit.clone().computed(),
-            layout: RowLayout::Inline,
-        },
-        // ───── Recent events ───────────────────────────────────────────
-        InspectorRow {
-            id: next_id(),
-            section: Some("Recent events"),
-            icon: SystemIcon::from_static("clock"),
-            label: "Last poll",
-            value: state.last_poll.clone().computed(),
-            layout: RowLayout::Detail,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("exclamationmark.octagon"),
-            label: "Last stall",
-            value: state.last_stall.clone().computed(),
-            layout: RowLayout::Detail,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("xmark.octagon"),
-            label: "Last error",
-            value: state.last_error.clone().computed(),
-            layout: RowLayout::Detail,
-        },
-    ]
+    Snapshot {
+        connection_label,
+        endpoint: state.target.clone().computed(),
+        status: state.status.clone().computed(),
+        polls: int_to_text(state.polls.clone()),
+        stalls: int_to_text(state.stalls.clone()),
+        attempts: int_to_text(state.attempts.clone()),
+        app_pid: state.app_pid.clone().computed(),
+        build_commit: state.build_commit.clone().computed(),
+        last_poll: state.last_poll.clone().computed(),
+        last_stall: state.last_stall.clone().computed(),
+        last_error: state.last_error.clone().computed(),
+    }
 }
 
 fn int_to_text(binding: Binding<i32>) -> Computed<Str> {
@@ -318,103 +195,20 @@ impl StaticSnapshot {
     }
 }
 
-fn static_rows(snap: StaticSnapshot) -> Vec<InspectorRow> {
-    let mut id = 0u32;
-    let mut next_id = || {
-        id += 1;
-        id
-    };
-
-    vec![
-        InspectorRow {
-            id: next_id(),
-            section: Some("Connection"),
-            icon: SystemIcon::from_static("wifi"),
-            label: "Status",
-            value: constant(if snap.connected { "Live" } else { "Retrying" }),
-            layout: RowLayout::Highlight,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("network"),
-            label: "Endpoint",
-            value: constant(snap.endpoint),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("info.circle"),
-            label: "Detail",
-            value: constant(snap.status),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: Some("Activity"),
-            icon: SystemIcon::from_static("arrow.triangle.2.circlepath"),
-            label: "Polls",
-            value: constant_int(snap.polls),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("exclamationmark.triangle"),
-            label: "Stalls",
-            value: constant_int(snap.stalls),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("arrow.clockwise"),
-            label: "Connect attempts",
-            value: constant_int(snap.attempts),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: Some("Runtime"),
-            icon: SystemIcon::from_static("number"),
-            label: "App PID",
-            value: constant(snap.app_pid),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("hammer"),
-            label: "Build",
-            value: constant(snap.build_commit),
-            layout: RowLayout::Inline,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: Some("Recent events"),
-            icon: SystemIcon::from_static("clock"),
-            label: "Last poll",
-            value: constant(snap.last_poll),
-            layout: RowLayout::Detail,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("exclamationmark.octagon"),
-            label: "Last stall",
-            value: constant(snap.last_stall),
-            layout: RowLayout::Detail,
-        },
-        InspectorRow {
-            id: next_id(),
-            section: None,
-            icon: SystemIcon::from_static("xmark.octagon"),
-            label: "Last error",
-            value: constant(snap.last_error),
-            layout: RowLayout::Detail,
-        },
-    ]
+fn snapshot_for(snap: StaticSnapshot) -> Snapshot {
+    Snapshot {
+        connection_label: constant(if snap.connected { "Live" } else { "Retrying" }),
+        endpoint: constant(snap.endpoint),
+        status: constant(snap.status),
+        polls: constant_int(snap.polls),
+        stalls: constant_int(snap.stalls),
+        attempts: constant_int(snap.attempts),
+        app_pid: constant(snap.app_pid),
+        build_commit: constant(snap.build_commit),
+        last_poll: constant(snap.last_poll),
+        last_stall: constant(snap.last_stall),
+        last_error: constant(snap.last_error),
+    }
 }
 
 fn constant(value: &'static str) -> Computed<Str> {
