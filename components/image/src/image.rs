@@ -56,6 +56,10 @@ pub use crate::codec::DecodePath;
 #[derive(Debug)]
 pub struct Image {
     renderer: ImageRenderer,
+    /// When `true`, the image stretches to fill its proposed bounds via the
+    /// configured [`Interpolation`]; otherwise it locks to its native pixel
+    /// size like a SwiftUI `Image` (the default).
+    resizable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +121,7 @@ impl Image {
             "Pixel data length must be width * height * 4"
         );
         Self {
+            resizable: false,
             renderer: ImageRenderer::new(
                 pixels,
                 width,
@@ -151,6 +156,7 @@ impl Image {
             "Pixel data length must be width * height * 8 for RGBA16F"
         );
         Self {
+            resizable: false,
             renderer: ImageRenderer::new(
                 pixels,
                 width,
@@ -171,6 +177,20 @@ impl Image {
     #[must_use]
     pub const fn interpolation(mut self, mode: Interpolation) -> Self {
         self.renderer.interpolation = mode;
+        self
+    }
+
+    /// Allows this image to stretch to its proposed bounds instead of
+    /// locking to its native pixel size.
+    ///
+    /// Mirrors SwiftUI's `Image.resizable()`. The default behaviour
+    /// frames the image to its source `width × height` so a 64-pixel
+    /// asset stays 64 pixels tall regardless of the parent's proposal;
+    /// once `.resizable()` is applied the image fills whatever the
+    /// parent gives it and scales via the configured [`Interpolation`].
+    #[must_use]
+    pub const fn resizable(mut self) -> Self {
+        self.resizable = true;
         self
     }
 
@@ -276,9 +296,14 @@ impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
         let width = u32_to_f32(self.renderer.width);
         let height = u32_to_f32(self.renderer.height);
-        Frame::new(GpuSurface::new(self.renderer))
-            .width(width)
-            .height(height)
+        let resizable = self.resizable;
+        let surface = GpuSurface::new(self.renderer);
+        let frame = Frame::new(surface);
+        if resizable {
+            frame
+        } else {
+            frame.width(width).height(height)
+        }
     }
 }
 
