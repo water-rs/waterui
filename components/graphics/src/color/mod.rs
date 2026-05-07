@@ -82,27 +82,6 @@ impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
     }
 }
 
-/// Resolvable adapter that flattens any signal of [`Color`] into resolved
-/// values, so that `Computed<Color>` / `Binding<Color>` flow naturally into
-/// every `impl Into<Color>` slot via [`Color::reactive`].
-#[derive(Debug, Clone)]
-struct ColorSignal<S>(S);
-
-impl<S> Resolvable for ColorSignal<S>
-where
-    S: Signal<Output = Color> + Clone + core::fmt::Debug + 'static,
-    S::Guard: 'static,
-{
-    type Resolved = ResolvedColor;
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let env = env.clone();
-        self.0
-            .clone()
-            .map(move |color| color.resolve(&env).get())
-            .computed()
-    }
-}
-
 /// Represents a color with an opacity/alpha value applied.
 ///
 /// This wrapper type allows applying a specific opacity to any color type.
@@ -403,19 +382,6 @@ impl Color {
     /// * `custom` - A resolvable color implementation
     pub fn new(custom: impl Resolvable<Resolved = ResolvedColor> + 'static) -> Self {
         Self(AnyResolvable::new(custom))
-    }
-
-    /// Creates a Color that tracks a reactive source of [`Color`].
-    ///
-    /// This is the bridge for `Computed<Color>` / `Binding<Color>` into the
-    /// `impl Into<Color>` slot used by every color-taking modifier. The
-    /// resulting `Color` re-resolves whenever the source signal emits.
-    pub fn reactive<S>(signal: S) -> Self
-    where
-        S: Signal<Output = Color> + Clone + core::fmt::Debug + 'static,
-        S::Guard: 'static,
-    {
-        Self::new(ColorSignal(signal))
     }
 
     fn map_resolved(self, func: impl Fn(ResolvedColor) -> ResolvedColor + Clone + 'static) -> Self {
