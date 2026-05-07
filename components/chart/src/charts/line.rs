@@ -130,3 +130,9 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for LineChart<S>
         )
     }
 }
+
+/// Convenience constructor for [`LineChart`]. Equivalent to [`LineChart::new`].
+#[must_use]
+pub fn line_chart<S: Signal<Output = Vec<DataPoint>>>(data: S) -> LineChart<S> {
+    LineChart::new(data)
+}

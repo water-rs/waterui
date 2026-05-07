@@ -427,3 +427,9 @@ impl View for ParticleSystem {
         GpuSurface::new(ParticleRenderer::new(self.resolved_config(env)))
     }
 }
+
+/// Convenience constructor for [`ParticleSystem`] with `max_particles` capacity.
+#[must_use]
+pub fn particles(max_particles: u32) -> ParticleSystem {
+    ParticleSystem::new(max_particles)
+}

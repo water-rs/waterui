@@ -152,3 +152,9 @@ impl<S: Signal<Output = GaugeData> + Clone + 'static> View for GaugeChart<S> {
         )
     }
 }
+
+/// Convenience constructor for [`GaugeChart`]. Equivalent to [`GaugeChart::new`].
+#[must_use]
+pub fn gauge_chart<S: Signal<Output = GaugeData>>(data: S) -> GaugeChart<S> {
+    GaugeChart::new(data)
+}

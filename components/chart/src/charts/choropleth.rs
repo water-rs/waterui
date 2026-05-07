@@ -94,3 +94,9 @@ impl<S: Signal<Output = ChoroplethData> + Clone + 'static> View for ChoroplethCh
         )
     }
 }
+
+/// Convenience constructor for [`ChoroplethChart`]. Equivalent to [`ChoroplethChart::new`].
+#[must_use]
+pub fn choropleth_chart<S: Signal<Output = ChoroplethData>>(data: S) -> ChoroplethChart<S> {
+    ChoroplethChart::new(data)
+}

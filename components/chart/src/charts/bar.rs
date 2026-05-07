@@ -87,3 +87,9 @@ impl<S: Signal<Output = Vec<DataPoint>> + Clone + 'static> View for BarChart<S> 
         )
     }
 }
+
+/// Convenience constructor for [`BarChart`]. Equivalent to [`BarChart::new`].
+#[must_use]
+pub fn bar_chart<S: Signal<Output = Vec<DataPoint>>>(data: S) -> BarChart<S> {
+    BarChart::new(data)
+}

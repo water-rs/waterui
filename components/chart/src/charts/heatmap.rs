@@ -59,3 +59,9 @@ impl<S: Signal<Output = HeatmapData> + Clone + 'static> View for HeatmapChart<S>
         )
     }
 }
+
+/// Convenience constructor for [`HeatmapChart`]. Equivalent to [`HeatmapChart::new`].
+#[must_use]
+pub fn heatmap_chart<S: Signal<Output = HeatmapData>>(data: S) -> HeatmapChart<S> {
+    HeatmapChart::new(data)
+}

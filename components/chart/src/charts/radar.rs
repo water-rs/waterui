@@ -124,3 +124,9 @@ impl<S: Signal<Output = RadarData> + Clone + 'static> View for RadarChart<S> {
         )
     }
 }
+
+/// Convenience constructor for [`RadarChart`]. Equivalent to [`RadarChart::new`].
+#[must_use]
+pub fn radar_chart<S: Signal<Output = RadarData>>(data: S) -> RadarChart<S> {
+    RadarChart::new(data)
+}
