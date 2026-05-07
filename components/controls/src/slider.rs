@@ -7,17 +7,16 @@
 
 use core::ops::RangeInclusive;
 
-use crate::label::IntoLabel;
-use nami::{Binding, s};
+use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use nami::Binding;
 use waterui_core::{AnyView, configurable, layout::StretchAxis};
-use waterui_text::Text;
 
 /// Configuration for the [`Slider`] widget.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct SliderConfig {
-    /// The label to display for the slider.
-    pub label: AnyView,
+    /// The label displayed for the slider.
+    pub label: Label,
     /// The label for the minimum value of the slider.
     pub min_value_label: AnyView,
     /// The label for the maximum value of the slider.
@@ -41,20 +40,16 @@ configurable!(
     /// # Examples
     ///
     /// ```ignore
-    /// // Basic slider (0 to 100)
-    /// slider(&volume).range(0.0..=100.0)
+    /// // Basic slider (label required for accessibility)
+    /// slider("Volume", &volume).range(0.0..=100.0)
     ///
-    /// // With custom labels (default range 0.0..=1.0)
-    /// slider(&brightness)
-    ///     .label("Brightness")
+    /// // With end-of-track value labels
+    /// slider("Brightness", &brightness)
     ///     .min_value_label("Dark")
     ///     .max_value_label("Bright")
     ///
-    /// // In a form (slider fills remaining width)
-    /// hstack((
-    ///     text("Volume"),
-    ///     slider(&volume).range(0.0..=100.0),
-    /// ))
+    /// // Visually hidden label, still announced by VoiceOver / TalkBack
+    /// slider("Volume", &volume).hide_label()
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════
@@ -73,12 +68,16 @@ configurable!(
 );
 
 impl Slider {
-    /// Creates a new [`Slider`] bound to `value` with the default
-    /// normalized range `0.0..=1.0`. Use [`Slider::range`] to override.
+    /// Creates a new [`Slider`] with the given semantic label, bound to `value`.
+    ///
+    /// The default range is `0.0..=1.0`; use [`Slider::range`] to override.
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(value: &Binding<f64>) -> Self {
+    pub fn new(label: impl IntoLabel, value: &Binding<f64>) -> Self {
         Self(SliderConfig {
-            label: AnyView::new(Text::computed(s!("{:.2}", value))),
+            label: label.into_label(),
             min_value_label: AnyView::default(),
             max_value_label: AnyView::default(),
             range: 0.0..=1.0,
@@ -92,28 +91,27 @@ impl Slider {
         self.0.range = range;
         self
     }
+
+    /// Sets the label rendered next to the minimum end of the track.
+    #[must_use]
+    pub fn min_value_label(mut self, label: impl IntoLabel) -> Self {
+        self.0.min_value_label = AnyView::new(label.into_label());
+        self
+    }
+
+    /// Sets the label rendered next to the maximum end of the track.
+    #[must_use]
+    pub fn max_value_label(mut self, label: impl IntoLabel) -> Self {
+        self.0.max_value_label = AnyView::new(label.into_label());
+        self
+    }
 }
 
-macro_rules! labels {
-    ($($name:ident),*) => {
-        $(
-            #[must_use]
-            /// Sets the label for the slider.
-            pub fn $name(mut self, $name: impl IntoLabel) -> Self {
-                self.0.$name = AnyView::new($name.into_label());
-                self
-            }
-        )*
-    };
-}
+impl_label_style_methods!(Slider);
 
-impl Slider {
-    labels!(label, min_value_label, max_value_label);
-}
-
-/// Convenience constructor for a [`Slider`] bound to `value` with the default
-/// normalized range `0.0..=1.0`. Chain [`Slider::range`] to override.
+/// Convenience constructor for a [`Slider`] with the given label and value
+/// binding, defaulting to the normalized range `0.0..=1.0`.
 #[must_use]
-pub fn slider(value: &Binding<f64>) -> Slider {
-    Slider::new(value)
+pub fn slider(label: impl IntoLabel, value: &Binding<f64>) -> Slider {
+    Slider::new(label, value)
 }

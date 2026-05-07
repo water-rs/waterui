@@ -12,6 +12,7 @@ use jiff::{
     civil::{Date, Weekday},
 };
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
+use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
 use waterui_core::{AnyView, Environment, LocalStateScope, LocalStateStore, View};
 use waterui_layout::frame::Frame;
@@ -30,30 +31,28 @@ use waterui_text::{
 #[derive(Debug)]
 /// A calendar-style control for selecting a single date.
 pub struct Calendar {
-    label: AnyView,
+    label: Label,
     value: Binding<Date>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,
 }
 
 impl Calendar {
-    /// Creates a new `Calendar` with the given selected date binding.
+    /// Creates a new `Calendar` with the given semantic label and selected
+    /// date binding.
+    ///
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(date: &Binding<Date>) -> Self {
+    pub fn new(label: impl IntoLabel, date: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
         Self {
-            label: AnyView::default(),
+            label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
         }
-    }
-
-    /// Sets the label displayed above the calendar.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.label = AnyView::new(label.into_label());
-        self
     }
 
     /// Sets the valid date range.
@@ -68,6 +67,22 @@ impl Calendar {
     pub fn decorated(mut self, decorated: impl IntoComputed<BTreeSet<Date>>) -> Self {
         self.decorated = decorated.into_computed();
         self
+    }
+
+    /// Sets the visual presentation mode of the label displayed above the
+    /// calendar grid. The semantic identity is always retained for assistive
+    /// technology.
+    #[must_use]
+    pub fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+        self.label.set_display_mode(mode);
+        self
+    }
+
+    /// Visually hides the label above the calendar grid while preserving its
+    /// semantic text for assistive technology.
+    #[must_use]
+    pub fn hide_label(self) -> Self {
+        self.label_style(LabelDisplayMode::Hidden)
     }
 }
 

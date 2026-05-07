@@ -1,7 +1,7 @@
 use crate::components::text::WuiText;
 use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{WuiAnyView, WuiStr};
+use crate::{WuiAnyView, WuiLabel, WuiStr};
 use alloc::vec::Vec;
 use jiff::civil::{Date, DateTime};
 use waterui::text::styled::StyledStr;
@@ -32,7 +32,7 @@ into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
 
 into_ffi! {ResolvedTextFieldConfig,
     pub struct WuiTextField {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         value: *mut WuiBinding<StyledStr>,
         prompt: WuiText,
         keyboard: WuiKeyboardType,
@@ -48,7 +48,7 @@ into_ffi! {ToggleStyle, Automatic, pub enum WuiToggleStyle {
 
 into_ffi! {ToggleConfig,
     pub struct WuiToggle {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         toggle: *mut WuiBinding<bool>,
         style: WuiToggleStyle,
     }
@@ -65,7 +65,7 @@ pub struct WuiRange<T> {
 
 into_ffi! {SliderConfig,
     pub struct WuiSlider {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         min_value_label: *mut WuiAnyView,
         max_value_label: *mut WuiAnyView,
         range: WuiRange<f64>,
@@ -77,7 +77,8 @@ into_ffi! {StepperConfig,
     pub struct WuiStepper {
         value: *mut WuiBinding<i32>,
         step: *mut WuiComputed<i32>,
-        label: *mut WuiAnyView,
+        label: WuiLabel,
+        value_formatter: *mut WuiComputed<StyledStr>,
         range: WuiRange<i32>,
     }
 }
@@ -144,7 +145,7 @@ into_ffi! {PickerItem<Id>,
 
 into_ffi! {ColorPickerConfig,
     pub struct WuiColorPicker {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         value: *mut WuiBinding<Color>,
         support_alpha: bool,
         support_hdr: bool,
@@ -165,7 +166,7 @@ impl IntoFFI for Secure {
 
 into_ffi! {SecureFieldConfig,
     pub struct WuiSecureField {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         value: *mut WuiBinding<Secure>,
     }
 }
@@ -300,7 +301,7 @@ into_ffi! {DatePickerType, pub enum WuiDatePickerType {
 
 into_ffi! {DatePickerConfig,
     pub struct WuiDatePicker {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         value: *mut WuiBinding<DateTime>,
         range: WuiRange<WuiDateTime>,
         ty: WuiDatePickerType,
@@ -311,7 +312,7 @@ ffi_view!(DatePickerConfig, WuiDatePicker, date_picker);
 
 into_ffi! {MultiDatePickerConfig,
     pub struct WuiMultiDatePicker {
-        label: *mut WuiAnyView,
+        label: WuiLabel,
         value: *mut WuiBinding<Vec<Date>>,
         range: WuiRange<WuiDate>,
         decorated: *mut WuiComputed<Vec<Date>>,

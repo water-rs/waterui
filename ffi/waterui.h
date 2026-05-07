@@ -151,6 +151,33 @@ typedef enum WuiAxis {
   WuiAxis_All,
 } WuiAxis;
 
+/**
+ * Visual presentation mode for the label slot of every control.
+ */
+typedef enum WuiLabelDisplayMode {
+  /**
+   * Use the label's own preferred presentation.
+   */
+  WuiLabelDisplayMode_Automatic,
+  /**
+   * Show both title and icon when an icon is available.
+   */
+  WuiLabelDisplayMode_TitleAndIcon,
+  /**
+   * Show only the title text.
+   */
+  WuiLabelDisplayMode_TitleOnly,
+  /**
+   * Show only the icon when an icon is available.
+   */
+  WuiLabelDisplayMode_IconOnly,
+  /**
+   * Visually hide the label entirely. The accessibility tree still
+   * announces [`WuiLabel::accessibility_label`].
+   */
+  WuiLabelDisplayMode_Hidden,
+} WuiLabelDisplayMode;
+
 typedef enum WuiButtonStyle {
   WuiButtonStyle_Automatic,
   WuiButtonStyle_Plain,
@@ -2317,15 +2344,39 @@ typedef struct WuiScrollView {
   struct WuiAnyView *content;
 } WuiScrollView;
 
-typedef struct WuiButton {
-  struct WuiAnyView *label;
-  struct WuiAction *action;
-  enum WuiButtonStyle style;
+/**
+ * FFI surface for the label slot of every control.
+ *
+ * Bundles the three pieces backends need: the visual view to render, the
+ * accessibility text to announce regardless of visual mode, and the visual
+ * mode itself. The `view` field is always non-null but renders to an empty
+ * view when `display_mode` is [`WuiLabelDisplayMode::Hidden`].
+ */
+typedef struct WuiLabel {
   /**
-   * Spoken accessibility text derived from the button's semantic label.
-   * Always non-null: every button carries a semantic label.
+   * Visual chrome rendered by the backend. When `display_mode` is
+   * `Hidden` the rendered view collapses to an empty zero-size view.
+   */
+  struct WuiAnyView *view;
+  /**
+   * Spoken accessibility text. Always non-null; backends should bind
+   * this to platform accessibility APIs (VoiceOver, TalkBack, etc.).
    */
   WuiComputed_StyledStr *accessibility_label;
+  /**
+   * Visual presentation mode.
+   */
+  enum WuiLabelDisplayMode display_mode;
+} WuiLabel;
+
+typedef struct WuiButton {
+  /**
+   * Semantic label slot. Carries the visual view, accessibility text, and
+   * visual mode in a single struct — see [`WuiLabel`].
+   */
+  struct WuiLabel label;
+  struct WuiAction *action;
+  enum WuiButtonStyle style;
 } WuiButton;
 
 typedef struct WuiTextStyle {
@@ -2397,7 +2448,7 @@ typedef struct Binding_StyledStr WuiBinding_StyledStr;
 typedef struct Computed_Vec_ResolvedMenuItem WuiComputed_Vec_ResolvedMenuItem;
 
 typedef struct WuiTextField {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_StyledStr *value;
   struct WuiText prompt;
   enum WuiKeyboardType keyboard;
@@ -2405,7 +2456,7 @@ typedef struct WuiTextField {
 } WuiTextField;
 
 typedef struct WuiToggle {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_bool *toggle;
   enum WuiToggleStyle style;
 } WuiToggle;
@@ -2427,7 +2478,7 @@ typedef struct WuiRange_f64 {
 typedef struct Binding_f64 WuiBinding_f64;
 
 typedef struct WuiSlider {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   struct WuiAnyView *min_value_label;
   struct WuiAnyView *max_value_label;
   struct WuiRange_f64 range;
@@ -2455,12 +2506,13 @@ typedef struct WuiRange_i32 {
 typedef struct WuiStepper {
   WuiBinding_i32 *value;
   WuiComputed_i32 *step;
-  struct WuiAnyView *label;
+  struct WuiLabel label;
+  WuiComputed_StyledStr *value_formatter;
   struct WuiRange_i32 range;
 } WuiStepper;
 
 typedef struct WuiColorPicker {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_Color *value;
   bool support_alpha;
   bool support_hdr;
@@ -2479,7 +2531,7 @@ typedef struct WuiPicker {
 typedef struct Binding_Secure WuiBinding_Secure;
 
 typedef struct WuiSecureField {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_Secure *value;
 } WuiSecureField;
 
@@ -2530,7 +2582,7 @@ typedef struct WuiRange_WuiDateTime {
 } WuiRange_WuiDateTime;
 
 typedef struct WuiDatePicker {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_DateTime *value;
   struct WuiRange_WuiDateTime range;
   enum WuiDatePickerType ty;
@@ -2573,7 +2625,7 @@ typedef struct WuiRange_WuiDate {
 typedef struct Computed_Vec_Date WuiComputed_Vec_Date;
 
 typedef struct WuiMultiDatePicker {
-  struct WuiAnyView *label;
+  struct WuiLabel label;
   WuiBinding_Vec_Date *value;
   struct WuiRange_WuiDate range;
   WuiComputed_Vec_Date *decorated;

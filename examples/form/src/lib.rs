@@ -110,12 +110,11 @@ fn main(
                 // Toggle with label
                 Toggle::new(&custom_enabled).label("Enable Feature"),
                 // Stepper with custom range
-                Stepper::new(&custom_count)
-                    .label("Item Count")
+                Stepper::new("Item Count", &custom_count)
                     .range(0..=100)
                     .step(5),
                 // Slider with label
-                Slider::new(&custom_slider).label("Progress"),
+                Slider::new("Progress", &custom_slider),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,

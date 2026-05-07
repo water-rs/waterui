@@ -7,6 +7,7 @@ use crate::renderer::{
     measure_slider_intrinsic, measure_view_intrinsic, normalize_view_for_render,
     slider_value_epsilon, transformed_rect,
 };
+use waterui_core::AnyView;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -39,7 +40,7 @@ impl HydroNativeView for Native<SliderConfig> {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Slider),
             );
-            let default_label = renderer.accessibility_label_from_view(&slider.label, env);
+            let default_label = renderer.accessibility_label_from_label(&slider.label, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -79,11 +80,11 @@ pub(crate) fn render_slider(
     let theme = widget_theme(env);
     let metrics = theme.slider_metrics();
     let mut slider = slider.into_inner();
-    slider.label = normalize_view_for_render(slider.label, env);
+    let label_view = normalize_view_for_render(AnyView::new(slider.label), env);
     slider.min_value_label = normalize_view_for_render(slider.min_value_label, env);
     slider.max_value_label = normalize_view_for_render(slider.max_value_label, env);
     let label_height = if ctx.bounds.height() >= 36.0 {
-        f64::from(measure_view_intrinsic(&slider.label, ctx.state_mut(), env).height).max(20.0)
+        f64::from(measure_view_intrinsic(&label_view, ctx.state_mut(), env).height).max(20.0)
     } else {
         0.0
     };
@@ -94,7 +95,7 @@ pub(crate) fn render_slider(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
-        ctx.dispatch_in_rect_without_accessibility(env, slider.label, label_rect);
+        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
     }
 
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, ctx.state_mut(), env);

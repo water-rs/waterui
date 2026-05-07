@@ -5,7 +5,8 @@ use core::ops::RangeInclusive;
 
 use jiff::civil::Date;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_controls::IntoLabel;
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View};
 
@@ -19,7 +20,7 @@ use crate::calendar::{
 #[non_exhaustive]
 pub struct MultiDatePickerConfig {
     /// The label displayed for the picker.
-    pub label: AnyView,
+    pub label: Label,
     /// The selected dates as an ordered vector for backend/FFI transport.
     pub value: Binding<Vec<Date>>,
     /// The valid date range.
@@ -61,22 +62,20 @@ impl waterui_core::NativeView for MultiDatePickerConfig {
 }
 
 impl MultiDatePicker {
-    /// Creates a new `MultiDatePicker` with the given binding for selected dates.
+    /// Creates a new `MultiDatePicker` with the given semantic label and a
+    /// binding for the selected dates.
+    ///
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(date: &Binding<BTreeSet<Date>>) -> Self {
+    pub fn new(label: impl IntoLabel, date: &Binding<BTreeSet<Date>>) -> Self {
         Self(MultiDatePickerConfig {
-            label: AnyView::default(),
+            label: label.into_label(),
             value: map_multi_date_binding(date),
             range: Date::MIN..=Date::MAX,
             decorated: Computed::constant(Vec::new()),
         })
-    }
-
-    /// Sets the label for the multi-date picker.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(label.into_label());
-        self
     }
 
     /// Sets the valid date range for the picker.
@@ -97,6 +96,8 @@ impl MultiDatePicker {
     }
 }
 
+impl_label_style_methods!(MultiDatePicker);
+
 impl View for MultiDatePicker {
     fn body(self, env: &Environment) -> impl View {
         let config = self.0;
@@ -114,7 +115,7 @@ impl View for MultiDatePicker {
 
 #[derive(Debug)]
 struct MultiDatePickerFallback {
-    label: AnyView,
+    label: Label,
     value: Binding<BTreeSet<Date>>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,

@@ -480,6 +480,68 @@ opaque!(WuiEnv, waterui::Environment, env);
 
 opaque!(WuiAnyView, waterui::AnyView, anyview);
 
+/// Visual presentation mode for the label slot of every control.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub enum WuiLabelDisplayMode {
+    /// Use the label's own preferred presentation.
+    Automatic,
+    /// Show both title and icon when an icon is available.
+    TitleAndIcon,
+    /// Show only the title text.
+    TitleOnly,
+    /// Show only the icon when an icon is available.
+    IconOnly,
+    /// Visually hide the label entirely. The accessibility tree still
+    /// announces [`WuiLabel::accessibility_label`].
+    Hidden,
+}
+
+impl crate::IntoFFI for waterui_controls::label::LabelDisplayMode {
+    type FFI = WuiLabelDisplayMode;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Automatic => WuiLabelDisplayMode::Automatic,
+            Self::TitleAndIcon => WuiLabelDisplayMode::TitleAndIcon,
+            Self::TitleOnly => WuiLabelDisplayMode::TitleOnly,
+            Self::IconOnly => WuiLabelDisplayMode::IconOnly,
+            Self::Hidden => WuiLabelDisplayMode::Hidden,
+        }
+    }
+}
+
+/// FFI surface for the label slot of every control.
+///
+/// Bundles the three pieces backends need: the visual view to render, the
+/// accessibility text to announce regardless of visual mode, and the visual
+/// mode itself. The `view` field is always non-null but renders to an empty
+/// view when `display_mode` is [`WuiLabelDisplayMode::Hidden`].
+#[repr(C)]
+pub struct WuiLabel {
+    /// Visual chrome rendered by the backend. When `display_mode` is
+    /// `Hidden` the rendered view collapses to an empty zero-size view.
+    pub view: *mut WuiAnyView,
+    /// Spoken accessibility text. Always non-null; backends should bind
+    /// this to platform accessibility APIs (VoiceOver, TalkBack, etc.).
+    pub accessibility_label: *mut crate::reactive::WuiComputed<waterui_text::styled::StyledStr>,
+    /// Visual presentation mode.
+    pub display_mode: WuiLabelDisplayMode,
+}
+
+impl crate::IntoFFI for waterui_controls::label::Label {
+    type FFI = WuiLabel;
+    fn into_ffi(self) -> Self::FFI {
+        let accessibility_label = self.semantic_text().content();
+        let display_mode = self.display_mode_preference().into_ffi();
+        let view = waterui::AnyView::new(self).into_ffi();
+        WuiLabel {
+            view,
+            accessibility_label: accessibility_label.into_ffi(),
+            display_mode,
+        }
+    }
+}
+
 /// Creates a new environment instance
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_env_new() -> *mut WuiEnv {
