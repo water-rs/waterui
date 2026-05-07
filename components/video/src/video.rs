@@ -165,7 +165,12 @@ pub enum Event {
     },
 }
 
-type OnEvent = Box<dyn Fn(Event) + 'static>;
+/// Event-handler slot for the video components.
+///
+/// Carries the user's [`Event`] callback as a [`BoxedEventAction`], the
+/// `Handler`-style sibling that pairs an event payload with the same
+/// `State<T>` / `Environment` extractor machinery used by [`Button::action`].
+type OnEvent = waterui_core::handler::BoxedEventAction<Event>;
 
 // =============================================================================
 // Video - Raw view without controls
@@ -243,7 +248,7 @@ impl Video {
             aspect_ratio: AspectRatio::default(),
             loops: true,
             playback_policy: PlaybackPolicy::default(),
-            on_event: Box::new(|_| {}),
+            on_event: Box::new(|_, _| {}),
         })
     }
 
@@ -269,9 +274,32 @@ impl Video {
     }
 
     /// Sets the event handler for video events.
+    ///
+    /// The handler may extract dependencies from the environment using the
+    /// same `Handler`-style extractor pattern as [`Button::action`]; the
+    /// leading argument is always the [`Event`] payload, and any additional
+    /// arguments after it implement [`Extractor`](waterui_core::extract::Extractor).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui_video::Video;
+    /// use waterui_video::video::Event;
+    ///
+    /// let last_event = binding(String::new());
+    /// Video::new(media)
+    ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
+    ///         last.set(format!("{event:?}"));
+    ///     })
+    ///     .state(&last_event);
+    /// ```
     #[must_use]
-    pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
-        self.0.on_event = Box::new(handler);
+    pub fn on_event<H, A>(mut self, handler: H) -> Self
+    where
+        H: waterui_core::handler::EventHandler<Event, A, ()> + 'static,
+    {
+        self.0.on_event = waterui_core::handler::boxed_event_handler(handler);
         self
     }
 
@@ -418,7 +446,7 @@ impl VideoPlayer {
             aspect_ratio: AspectRatio::default(),
             show_controls: true,
             playback_policy: PlaybackPolicy::default(),
-            on_event: Box::new(|_| {}),
+            on_event: Box::new(|_, _| {}),
         })
     }
 
@@ -444,9 +472,14 @@ impl VideoPlayer {
     }
 
     /// Sets the event handler for the video player.
+    ///
+    /// See [`Video::on_event`] for the full extractor-based handler shape.
     #[must_use]
-    pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
-        self.0.on_event = Box::new(handler);
+    pub fn on_event<H, A>(mut self, handler: H) -> Self
+    where
+        H: waterui_core::handler::EventHandler<Event, A, ()> + 'static,
+    {
+        self.0.on_event = waterui_core::handler::boxed_event_handler(handler);
         self
     }
 
