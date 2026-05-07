@@ -64,59 +64,26 @@ impl<S: Signal<Output = Vec<DataPoint>>> LineChart<S> {
         self
     }
 
-    /// Sets the line width and panics if the value is invalid.
+    /// Sets the line width.
     ///
-    /// # Panics
-    ///
-    /// Panics when `width` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values; pass a
+    /// pre-validated [`PositiveF32`] to bypass the panic-on-invalid path.
     #[must_use]
-    pub fn line_width(self, width: f32) -> Self {
-        self.try_line_width(width)
-            .expect("LineChart::line_width(width) requires finite width > 0")
-    }
-
-    /// Sets the line width using an already-validated positive value.
-    #[must_use]
-    pub const fn with_line_width(mut self, width: PositiveF32) -> Self {
-        self.line_width = width.get();
+    pub fn line_width(mut self, width: impl Into<PositiveF32>) -> Self {
+        self.line_width = width.into().get();
         self
     }
 
-    /// Attempts to set the line width.
+    /// Enables area fill under the line with the given opacity.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `width` is not finite or is not strictly positive.
-    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_line_width(PositiveF32::try_new(width)?))
-    }
-
-    /// Enables area fill under the line and panics if opacity is invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `opacity` is not finite or is outside `0.0..=1.0`.
+    /// Accepts any value convertible into [`UnitInterval`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or values outside `[0.0, 1.0]`.
     #[must_use]
-    pub fn fill(self, opacity: f32) -> Self {
-        self.try_fill(opacity)
-            .expect("LineChart::fill(opacity) requires finite 0.0 <= opacity <= 1.0")
-    }
-
-    /// Enables area fill using an already-validated opacity.
-    #[must_use]
-    pub const fn with_fill_opacity(mut self, opacity: UnitInterval) -> Self {
+    pub fn fill(mut self, opacity: impl Into<UnitInterval>) -> Self {
         self.show_fill = true;
-        self.fill_opacity = opacity.get();
+        self.fill_opacity = opacity.into().get();
         self
-    }
-
-    /// Attempts to enable area fill with the given opacity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `opacity` is not finite or is outside `0.0..=1.0`.
-    pub fn try_fill(self, opacity: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_fill_opacity(UnitInterval::try_new(opacity)?))
     }
 
     /// Tracks the currently focused point in an external binding.

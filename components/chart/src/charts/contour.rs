@@ -33,31 +33,14 @@ impl<S: Signal<Output = ContourData>> ContourChart<S> {
 
     crate::composition::chart_composition_methods!(GridDatum);
 
-    /// Sets the contour line width and panics if the value is invalid.
+    /// Sets the contour line width.
     ///
-    /// # Panics
-    ///
-    /// Panics when `width` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values.
     #[must_use]
-    pub fn line_width(self, width: f32) -> Self {
-        self.try_line_width(width)
-            .expect("ContourChart::line_width(width) requires finite width > 0")
-    }
-
-    /// Sets the contour line width using an already-validated positive value.
-    #[must_use]
-    pub const fn with_line_width(mut self, width: PositiveF32) -> Self {
-        self.line_width = width.get();
+    pub fn line_width(mut self, width: impl Into<PositiveF32>) -> Self {
+        self.line_width = width.into().get();
         self
-    }
-
-    /// Attempts to set the contour line width.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `width` is not finite or is not strictly positive.
-    pub fn try_line_width(self, width: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_line_width(PositiveF32::try_new(width)?))
     }
 
     /// Tracks the currently focused contour cell in an external binding.

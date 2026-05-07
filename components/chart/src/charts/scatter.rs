@@ -57,31 +57,14 @@ impl<S: Signal<Output = Vec<DataPoint>>> ScatterChart<S> {
         self
     }
 
-    /// Sets the point radius and panics if the value is invalid.
+    /// Sets the point radius.
     ///
-    /// # Panics
-    ///
-    /// Panics when `radius` is not finite or is not strictly positive.
+    /// Accepts any value convertible into [`PositiveF32`]. Passing a raw
+    /// `f32` panics on `NaN`, infinity, or non-positive values.
     #[must_use]
-    pub fn radius(self, radius: f32) -> Self {
-        self.try_radius(radius)
-            .expect("ScatterChart::radius(radius) requires finite radius > 0")
-    }
-
-    /// Sets the point radius using an already-validated positive value.
-    #[must_use]
-    pub const fn with_radius(mut self, radius: PositiveF32) -> Self {
-        self.radius = radius.get();
+    pub fn radius(mut self, radius: impl Into<PositiveF32>) -> Self {
+        self.radius = radius.into().get();
         self
-    }
-
-    /// Attempts to set the point radius.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChartParamError`] when `radius` is not finite or is not strictly positive.
-    pub fn try_radius(self, radius: f32) -> Result<Self, ChartParamError> {
-        Ok(self.with_radius(PositiveF32::try_new(radius)?))
     }
 
     /// Tracks the currently focused point in an external binding.
