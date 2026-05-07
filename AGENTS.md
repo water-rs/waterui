@@ -32,6 +32,7 @@ Keep the change set strictly scoped to the task.
 - For text APIs, use `text()` for static text and `text!` for reactive formatting. Do not use `watch()` to build reactive text when `text!` or signal-taking APIs already express the dependency directly.
 - Do not write `waterui::text!`. Always import the macro first, then use the short `text!` form.
 - Do not inline absolute paths like `::waterui_core::views::ForEach` inside macro bodies or expanded code. Bring the names into scope with `use ...;` at the call site (or in the surrounding module) and reference them with bare identifiers — `ForEach`, `Collection`, `Identifiable`, `View`. The same applies to plain function/type usage: import first, use bare names. Long absolute paths add visual noise and break the look of declarative WaterUI code.
+- Do not add `anyhow` as a direct dependency in any `Cargo.toml` in this workspace. The error type is re-exported as `waterui_core::Error`; reach for that re-export when implementing traits whose associated error is `anyhow::Error` (e.g. `Extractor`). `thiserror` and other error-construction utilities are unaffected.
 
 <important>
     For rust: YOU CANNOT USE println, use tracing::debug!() instead for debug output.

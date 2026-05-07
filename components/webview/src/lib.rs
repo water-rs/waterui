@@ -28,6 +28,8 @@ pub use controller::*;
 use std::fmt;
 mod handler;
 pub use handler::*;
+mod proxy;
+pub use proxy::WebViewProxy;
 
 // Re-export waterui-internal types for FFI layer
 pub use waterui_url::Url;
@@ -204,6 +206,12 @@ impl WebView {
     }
 
     /// Opens a new `WebView` and navigates to the specified URL.
+    ///
+    /// This is the L1 fire-and-forget entry point. The web view's URL is
+    /// captured into an internal binding the caller never sees; use
+    /// [`WebView::with_proxy`] to attach an imperative
+    /// [`WebViewProxy`] when you need refresh / history navigation /
+    /// `run_javascript` from a child handler.
     pub fn open(url: impl AsRef<str>) -> impl View {
         let url = url.as_ref().to_string();
         use_env(move |controller: WebViewController| {
@@ -213,20 +221,43 @@ impl WebView {
         })
     }
 
-    /// Opens a new `WebView`, navigates to the specified URL, and applies a
-    /// configuration function.
-    pub fn open_then(
-        url: impl AsRef<str>,
-        f: impl FnOnce(AnyWebViewHandle) + 'static,
-    ) -> impl View {
-        let url = url.as_ref().to_string();
-        use_env(move |controller: WebViewController| {
-            let handle = controller.open_handle();
-            f(handle.clone());
-            let webview = Self::from_handle(handle);
-            webview.go_to(&url);
-            webview
-        })
+    /// Wraps the [`WebView`] together with `content` and injects a
+    /// [`WebViewProxy`] into `content`'s rendering environment so any
+    /// child handler can extract it directly.
+    ///
+    /// The proxy carries the same imperative surface the [`WebView`]
+    /// already exposes (`refresh`, `go_back`, `run_javascript`, etc.), but
+    /// scoped to whatever handler asks for it via the same
+    /// `Extractor`-style parameter pattern that powers
+    /// [`Button::action`](waterui_controls::Button::action).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use waterui::prelude::*;
+    /// use waterui_webview::{WebView, WebViewProxy};
+    ///
+    /// WebView::open("https://waterui.dev").with_proxy(|| {
+    ///     hstack((
+    ///         button("←").action(|p: WebViewProxy| p.go_back()),
+    ///         button("→").action(|p: WebViewProxy| p.go_forward()),
+    ///         button("⟳").action(|p: WebViewProxy| p.refresh()),
+    ///     ))
+    /// })
+    /// ```
+    pub fn with_proxy<V, F>(self, content: F) -> impl View
+    where
+        V: View,
+        F: FnOnce() -> V + 'static,
+    {
+        use waterui_core::env::with;
+        use waterui_layout::stack::vstack;
+        let proxy = WebViewProxy::new(self.handle.clone());
+        let body = content();
+        // Children render above the WebView body and have the proxy injected
+        // into their environment via `with(...)`. The WebView itself follows
+        // unchanged.
+        vstack((with(body, proxy), self))
     }
 
     /// Returns a signal that emits `WebView` events.
