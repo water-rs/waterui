@@ -4,11 +4,11 @@
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
-use crate::label::IntoLabel;
-use alloc::{rc::Rc, string::ToString};
+use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{AnyView, configurable};
-use waterui_text::{Text, styled::StyledStr};
+use waterui_core::configurable;
+use waterui_text::styled::StyledStr;
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -19,7 +19,11 @@ pub struct StepperConfig {
     /// The step size for each increment or decrement.
     pub step: Computed<i32>,
     /// The label displayed alongside the stepper.
-    pub label: AnyView,
+    pub label: Label,
+    /// Optional formatter for the inline value display, layered on top of the
+    /// label. When `None`, the stepper renders only the label; when `Some`, the
+    /// formatted value is shown next to the buttons.
+    pub value_formatter: Option<Computed<StyledStr>>,
     /// The valid range of values for the stepper.
     pub range: RangeInclusive<i32>,
 }
@@ -72,13 +76,18 @@ configurable!(
 );
 
 impl Stepper {
-    /// Creates a new `Stepper` with the given binding value.
+    /// Creates a new `Stepper` with the given semantic label and binding value.
+    ///
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(value: &Binding<i32>) -> Self {
+    pub fn new(label: impl IntoLabel, value: &Binding<i32>) -> Self {
         Self(StepperConfig {
             value: value.clone(),
             step: 1i32.into_computed(),
-            label: AnyView::new(Text::computed(value.clone().map(|value| value.to_string()))),
+            label: label.into_label(),
+            value_formatter: None,
             range: i32::MIN..=i32::MAX,
         })
     }
@@ -88,30 +97,22 @@ impl Stepper {
         self.0.step = step.into_computed();
         self
     }
-    /// Sets the label for the stepper.
-    ///
-    /// By default, the label is the value of the binding formatted as a string.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(label.into_label());
-        self
-    }
 
-    /// Sets the formatter for the value of the binding.
-    ///
-    /// By default, the value is formatted as a string.
+    /// Sets a formatter for the inline value display. The semantic label is
+    /// unaffected.
     #[must_use]
     pub fn value_formatter<T: Into<StyledStr>>(
         mut self,
         formatter: impl 'static + Fn(i32) -> T,
     ) -> Self {
         let formatter = Rc::new(formatter);
-        self.0.label = AnyView::new(Text::computed(
+        self.0.value_formatter = Some(
             self.0
                 .value
                 .clone()
-                .map(move |value| formatter(value).into()),
-        ));
+                .map(move |value| formatter(value).into())
+                .computed(),
+        );
         self
     }
 
@@ -133,10 +134,12 @@ impl Stepper {
     }
 }
 
-/// Creates a new Stepper with the given binding value.
+impl_label_style_methods!(Stepper);
+
+/// Creates a new Stepper with the given label and binding value.
 ///
 /// See [`Stepper`] for more details.
 #[must_use]
-pub fn stepper(value: &Binding<i32>) -> Stepper {
-    Stepper::new(value)
+pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
+    Stepper::new(label, value)
 }

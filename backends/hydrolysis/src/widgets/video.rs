@@ -158,11 +158,11 @@ fn video_player_content(config: &VideoPlayerConfig, env: &Environment) -> AnyVie
         .action(move || muted_for_action.set(!muted_for_action.get()))
     };
 
-    let timeline = slider(&progress).label("Timeline");
-    let volume = slider(&volume_level).label("Volume");
-    let speed = slider(&playback_rate)
+    let timeline = slider("Timeline", &progress).hide_label();
+    let volume = slider("Volume", &volume_level).hide_label();
+    let speed = slider("Speed", &playback_rate)
         .range(VIDEO_PLAYBACK_RATE_MIN..=VIDEO_PLAYBACK_RATE_MAX)
-        .label("Speed");
+        .hide_label();
 
     normalize_view_for_render(
         AnyView::new(

@@ -2,9 +2,9 @@
 
 use alloc::{string::ToString, vec, vec::Vec};
 use nami::Binding;
+use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{Button, IntoLabel};
 use waterui_core::View;
-use waterui_text::Text;
 use waterui_url::Url;
 
 #[cfg(feature = "std")]
@@ -12,7 +12,7 @@ use waterkit_dialog::FileDialog;
 
 /// Configuration for a file picker component.
 #[derive(Debug, Clone)]
-pub struct FilePicker<Label> {
+pub struct FilePicker {
     label: Label,
     /// The selected file URLs.
     value: Binding<Vec<Url>>,
@@ -22,25 +22,27 @@ pub struct FilePicker<Label> {
     import: bool,
 }
 
-impl FilePicker<Text> {
-    /// Select files without importing them.
+impl FilePicker {
+    /// Select files without importing them, with the given semantic label
+    /// driving the picker button.
     ///
     /// You will get URLs that point to the original file locations.
     #[must_use]
-    pub fn open(value: &Binding<Vec<Url>>) -> Self {
+    pub fn open(label: impl IntoLabel, value: &Binding<Vec<Url>>) -> Self {
         Self {
-            label: Text::new("Select Files"),
+            label: label.into_label(),
             value: value.clone(),
             num: 1,
             import: false,
         }
     }
 
-    /// Select files and import them into the app's sandboxed storage.
+    /// Select files and import them into the app's sandboxed storage, with
+    /// the given semantic label driving the picker button.
     #[must_use]
-    pub fn import(value: &Binding<Vec<Url>>) -> Self {
+    pub fn import(label: impl IntoLabel, value: &Binding<Vec<Url>>) -> Self {
         Self {
-            label: Text::new("Import Files"),
+            label: label.into_label(),
             value: value.clone(),
             num: 1,
             import: true,
@@ -56,9 +58,24 @@ impl FilePicker<Text> {
         self.num = value;
         self
     }
+
+    /// Sets the visual presentation mode of the picker label. The semantic
+    /// identity is always retained for assistive technology.
+    #[must_use]
+    pub fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+        self.label.set_display_mode(mode);
+        self
+    }
+
+    /// Visually hides the picker label while preserving its semantic text for
+    /// assistive technology.
+    #[must_use]
+    pub fn hide_label(self) -> Self {
+        self.label_style(LabelDisplayMode::Hidden)
+    }
 }
 
-impl<Label: IntoLabel + 'static> View for FilePicker<Label> {
+impl View for FilePicker {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Button::new(self.label).action_async(move || {
             let value = self.value.clone();

@@ -61,10 +61,8 @@ fn main_view() -> impl View {
                 .prompt("Type your name"),
             SecureField::new("Password", &password),
             Toggle::new(&toggle_value).label("Realtime rebuild"),
-            Slider::new(&slider_value).label("Animation blend"),
-            Stepper::new(&stepper_value)
-                .label("Detail level")
-                .range(1..=12),
+            Slider::new("Animation blend", &slider_value),
+            Stepper::new("Detail level", &stepper_value).range(1..=12),
             hstack((loading(), text("Background task running").size(14.0))).spacing(12.0),
             Picker::new(picker_items, &render_mode).style(PickerStyle::Menu),
             Toggle::new(&list_editing).label("List editing"),

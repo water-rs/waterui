@@ -379,7 +379,9 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
                 .min_height(100.0)
                 .min_width(100.0),
         )),
-        Slider::new(size_value).range(0.0..=100.0),
+        Slider::new("Animation size", size_value)
+            .range(0.0..=100.0)
+            .hide_label(),
         hstack((
             set_f64_button("0", 0.0, size_value),
             set_f64_button("25", 25.0, size_value),

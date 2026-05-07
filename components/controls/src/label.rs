@@ -1,4 +1,42 @@
 //! Semantic labels shared by controls, menus, and chrome.
+//!
+//! # Why every control demands a label
+//!
+//! `WaterUI` controls (Slider, Stepper, Toggle, Button, ColorPicker, Calendar,
+//! DatePicker, FilePicker, MultiDatePicker, TextField, SecureField) take a
+//! semantic [`Label`] at construction time. The label is required even if you
+//! intend to **hide it visually** with [`Label::hide_label`] or
+//! [`LabelDisplayMode::Hidden`].
+//!
+//! ## Why force it?
+//!
+//! - **Accessibility is non-negotiable.** Screen readers
+//!   (VoiceOver / TalkBack / Narrator), voice control, switch control, and
+//!   command palettes all read the semantic label to announce or activate a
+//!   control. A control with no label appears as an anonymous, unreachable
+//!   widget — users of assistive technology cannot interact with it.
+//! - **Visual hide is a presentation concern, not a semantic one.** Hiding the
+//!   visible chrome with `.hide_label()` keeps the label in the accessibility
+//!   tree. The control still has a name; it just isn't drawn. Compact toolbars,
+//!   icon-only buttons, paired-icon-and-control rows, and tightly packed
+//!   forms can hide the label without losing accessibility.
+//! - **Type-level enforcement beats runtime guidance.** Putting the label in
+//!   the constructor signature is the cheapest way to make sure every
+//!   `WaterUI` app ships with an accessible UI by default. There is no
+//!   `Slider::anonymous(&binding)` escape hatch — author intent is recorded
+//!   structurally, not in a comment.
+//!
+//! ## When a "decorative" control feels label-less
+//!
+//! Sometimes the label seems redundant — a slider next to a brightness icon,
+//! say. The right pattern is `slider("Brightness", &value).hide_label()`. The
+//! visual chrome adapts (icon only); the accessibility tree announces
+//! "Brightness". The icon is presentation; the label is meaning.
+//!
+//! ## See also
+//!
+//! - [`LabelDisplayMode`] for the visual modes a label can take
+//! - [`Label::hide_label`] / [`Label::display_mode`] for per-label control
 
 use core::any::Any;
 use nami::{Binding, Computed};
@@ -60,6 +98,68 @@ pub enum LabelDisplayMode {
 nami::impl_constant!(LabelDisplayMode);
 
 impl Plugin for LabelDisplayMode {}
+
+impl Default for Label {
+    fn default() -> Self {
+        Self::new(Text::default())
+    }
+}
+
+/// Sets the display mode in place. Companion to the consuming
+/// [`Label::display_mode`] builder, used by the [`impl_label_style_methods`]
+/// macro to mutate a control's `label: Label` field without taking ownership.
+impl Label {
+    /// Mutates the display mode in place. See [`Label::display_mode`] for the
+    /// owning builder variant.
+    pub const fn set_display_mode(&mut self, mode: LabelDisplayMode) {
+        self.display_mode = mode;
+    }
+
+    /// Returns the configured display mode prior to environment resolution.
+    #[must_use]
+    pub const fn display_mode_preference(&self) -> LabelDisplayMode {
+        self.display_mode
+    }
+}
+
+/// Emits `label_style(LabelDisplayMode)` and `hide_label()` builders on a
+/// `configurable!`-style wrapper struct (`Foo(FooConfig)`) whose inner
+/// config carries a [`Label`] field named `label`.
+///
+/// Reused by every WaterUI control crate so the same `.label_style(...)` /
+/// `.hide_label()` surface appears on every `configurable!`-style control
+/// without forcing a trait into the user's import path.
+#[macro_export]
+macro_rules! impl_label_style_methods {
+    ($ty:ident) => {
+        impl $ty {
+            /// Sets the visual presentation mode for this control's label.
+            ///
+            /// The semantic text of the label is always retained for assistive
+            /// technology regardless of the chosen visual mode.
+            #[must_use]
+            pub fn label_style(
+                mut self,
+                mode: $crate::label::LabelDisplayMode,
+            ) -> Self {
+                self.0.label.set_display_mode(mode);
+                self
+            }
+
+            /// Visually hides the label while preserving its semantic text
+            /// for assistive technology.
+            ///
+            /// Shortcut for [`Self::label_style`] with
+            /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden).
+            #[must_use]
+            pub fn hide_label(self) -> Self {
+                self.label_style($crate::label::LabelDisplayMode::Hidden)
+            }
+        }
+    };
+}
+
+pub use impl_label_style_methods;
 
 #[derive(Debug, Clone)]
 struct LabelIcon {

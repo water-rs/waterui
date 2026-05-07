@@ -2,7 +2,7 @@ use crate::engine::{Brush, DrawContext};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic,
+    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
     transformed_rect,
 };
 #[cfg(feature = "accessibility")]
@@ -12,7 +12,7 @@ use accesskit::{
 use nami::Signal;
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 
 use super::util::widget_theme;
 
@@ -44,7 +44,7 @@ impl HydroNativeView for Native<StepperConfig> {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::SpinButton),
             );
-            let default_label = renderer.accessibility_label_from_view(&stepper.label, env);
+            let default_label = renderer.accessibility_label_from_label(&stepper.label, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -100,7 +100,7 @@ pub(crate) fn render_stepper(
     let label_bounds =
         vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, controls_x0, ctx.bounds.y1);
     if label_bounds.width() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, stepper.label, label_bounds);
+        ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(stepper.label), label_bounds);
     }
 
     let button_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - button_size) / 2.0).max(0.0);
@@ -185,7 +185,7 @@ pub(crate) fn measure_stepper_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.stepper_metrics();
-    let label_size = measure_view_intrinsic(&stepper.label, state, env);
+    let label_size = measure_label_intrinsic(&stepper.label, state, env);
     let controls_width = metrics.button_intrinsic_size * 2.0 + STEPPER_BUTTON_SPACING;
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {

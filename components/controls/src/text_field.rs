@@ -10,7 +10,7 @@ use waterui_core::configurable;
 use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
-use crate::label::IntoLabel;
+use crate::label::{IntoLabel, Label, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 
 /// Configuration options for a `TextField`.
@@ -18,7 +18,7 @@ use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 #[derive(Debug)]
 pub struct TextFieldConfig {
     /// The label displayed for the text field.
-    pub label: AnyView,
+    pub label: Label,
     /// The binding to the text value.
     pub value: Binding<StyledStr>,
     /// The placeholder text shown when the field is empty.
@@ -39,7 +39,7 @@ pub struct TextFieldConfig {
 #[derive(Debug)]
 pub struct ResolvedTextFieldConfig {
     /// The label displayed for the text field.
-    pub label: AnyView,
+    pub label: Label,
     /// The binding to the text value.
     pub value: Binding<StyledStr>,
     /// The resolved placeholder text shown when the field is empty.
@@ -92,7 +92,7 @@ impl TextField {
     #[must_use]
     pub fn styled(value: &Binding<StyledStr>) -> Self {
         Self(TextFieldConfig {
-            label: AnyView::default(),
+            label: Label::default(),
             value: value.clone(),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
@@ -104,7 +104,7 @@ impl TextField {
     /// Sets the label for the text field.
     #[must_use]
     pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(label.into_label());
+        self.0.label = label.into_label();
         self
     }
 
@@ -159,6 +159,8 @@ impl View for TextField {
         StretchAxis::Horizontal
     }
 }
+
+impl_label_style_methods!(TextField);
 
 /// Creates a new [`TextField`] with the specified label and value binding.
 pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {

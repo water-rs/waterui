@@ -11,7 +11,7 @@ use core::num::NonZeroUsize;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
-use waterui_core::{Environment, Native, Str};
+use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::StyledStr;
 
@@ -62,7 +62,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
             let prompt_signal = text_field.prompt.content.clone();
             let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
             let default_label = renderer
-                .accessibility_label_from_view(&text_field.label, env)
+                .accessibility_label_from_label(&text_field.label, env)
                 .or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
@@ -129,7 +129,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
             let mut node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
             );
-            let default_label = renderer.accessibility_label_from_view(&secure_field.label, env);
+            let default_label = renderer.accessibility_label_from_label(&secure_field.label, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -177,8 +177,8 @@ pub(crate) fn render_text_field(
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
-        .accessibility_label_from_view(&text_field.label, env);
-    text_field.label = normalize_view_for_render(text_field.label, env);
+        .accessibility_label_from_label(&text_field.label, env);
+    let label_view = normalize_view_for_render(AnyView::new(text_field.label), env);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
     #[cfg(feature = "accessibility")]
     {
@@ -231,7 +231,7 @@ pub(crate) fn render_text_field(
                 .push_pending_text_input_accessibility_node(node_id);
         }
     }
-    let label_size = measure_view_intrinsic(&text_field.label, ctx.state_mut(), env);
+    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
     } else {
@@ -244,7 +244,7 @@ pub(crate) fn render_text_field(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
-        ctx.dispatch_in_rect_without_accessibility(env, text_field.label, label_rect);
+        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
     }
 
     let field_rect = vello::kurbo::Rect::new(
@@ -420,8 +420,8 @@ pub(crate) fn render_secure_field(
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
-        .accessibility_label_from_view(&secure_field.label, env);
-    secure_field.label = normalize_view_for_render(secure_field.label, env);
+        .accessibility_label_from_label(&secure_field.label, env);
+    let label_view = normalize_view_for_render(AnyView::new(secure_field.label), env);
     #[cfg(feature = "accessibility")]
     {
         let secure_len = ctx
@@ -457,7 +457,7 @@ pub(crate) fn render_secure_field(
                 .push_pending_text_input_accessibility_node(node_id);
         }
     }
-    let label_size = measure_view_intrinsic(&secure_field.label, ctx.state_mut(), env);
+    let label_size = measure_view_intrinsic(&label_view, ctx.state_mut(), env);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
     } else {
@@ -470,7 +470,7 @@ pub(crate) fn render_secure_field(
             ctx.bounds.x1,
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
-        ctx.dispatch_in_rect_without_accessibility(env, secure_field.label, label_rect);
+        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_rect);
     }
 
     let field_rect = vello::kurbo::Rect::new(

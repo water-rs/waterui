@@ -82,7 +82,9 @@ fn main() -> impl View {
             .spacing(12.0),
             spacer_min(16.0),
             text("Sensitivity"),
-            Slider::new(&sensitivity).range(0.5..=3.0),
+            Slider::new("Sensitivity", &sensitivity)
+                .range(0.5..=3.0)
+                .hide_label(),
             spacer_min(8.0),
             text!("{mode_text}"),
         ))

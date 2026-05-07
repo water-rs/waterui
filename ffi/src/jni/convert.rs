@@ -1175,6 +1175,11 @@ impl ToJavaStruct for crate::components::text::WuiText {
 }
 
 /// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)
+///
+/// `label` is now a `WuiLabel` struct; we project its `view` pointer as the
+/// labelPtr and its `accessibility_label` pointer separately. Display mode is
+/// not surfaced to Android yet — visual hide already happens in the Rust
+/// `Label::body` rendering path, which produces an empty view for Hidden mode.
 impl ToJavaStruct for crate::components::button::WuiButton {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1184,10 +1189,10 @@ impl ToJavaStruct for crate::components::button::WuiButton {
             &class,
             "(JJIJ)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.action as jlong),
                 JValue::Int(self.style as i32),
-                JValue::Long(self.accessibility_label as jlong),
+                JValue::Long(self.label.accessibility_label as jlong),
             ],
         )
         .expect("Failed to create ButtonStruct")
@@ -1204,7 +1209,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
             &class,
             "(JJJIJ)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Long(self.prompt.content as jlong),
                 JValue::Int(self.keyboard as i32),
@@ -1225,7 +1230,7 @@ impl ToJavaStruct for crate::components::form::WuiSecureField {
             &class,
             "(JJ)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.value as jlong),
             ],
         )
@@ -1243,7 +1248,7 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
             &class,
             "(JJI)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.toggle as jlong),
                 JValue::Int(self.style as i32),
             ],
@@ -1262,7 +1267,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
             &class,
             "(JJJDDJ)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.min_value_label as jlong),
                 JValue::Long(self.max_value_label as jlong),
                 JValue::Double(self.range.start),
@@ -1286,7 +1291,7 @@ impl ToJavaStruct for crate::components::form::WuiStepper {
             &[
                 JValue::Long(self.value as jlong),
                 JValue::Long(self.step as jlong),
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Int(self.range.start),
                 JValue::Int(self.range.end),
             ],
@@ -1305,7 +1310,7 @@ impl ToJavaStruct for crate::components::form::WuiColorPicker {
             &class,
             "(JJZZ)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Bool(if self.support_alpha { 1 } else { 0 }),
                 JValue::Bool(if self.support_hdr { 1 } else { 0 }),
@@ -1375,7 +1380,7 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
             &class,
             "(JJLdev/waterui/android/runtime/DateTimeStruct;Ldev/waterui/android/runtime/DateTimeStruct;I)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Object(&start),
                 JValue::Object(&end),
@@ -1420,7 +1425,7 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
             &class,
             "(JJLdev/waterui/android/runtime/DateStruct;Ldev/waterui/android/runtime/DateStruct;J)V",
             &[
-                JValue::Long(self.label as jlong),
+                JValue::Long(self.label.view as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Object(&start),
                 JValue::Object(&end),

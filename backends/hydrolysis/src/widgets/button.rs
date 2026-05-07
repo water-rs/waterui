@@ -4,7 +4,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::accessibility_activation_point;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_view_intrinsic, popup_menu_nodes, transformed_rect,
+    measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -15,7 +15,7 @@ use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 
 use super::util::{inset_rect, widget_theme};
 
@@ -48,7 +48,7 @@ impl HydroNativeView for Native<ButtonConfig> {
                     _ => AccessibilityNodeRole::Button,
                 },
             ));
-            let default_label = renderer.accessibility_label_from_view(&button.label, env);
+            let default_label = renderer.accessibility_label_from_label(&button.label, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -136,8 +136,9 @@ pub(crate) fn render_button(
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
+    let label_view = AnyView::new(button.label);
     if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, button.label, label_bounds);
+        ctx.dispatch_in_rect_without_accessibility(env, label_view, label_bounds);
     } else {
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
@@ -145,7 +146,7 @@ pub(crate) fn render_button(
             renderer,
             render_ctx,
             env,
-            button.label,
+            label_view,
         );
     }
 
@@ -203,7 +204,7 @@ pub(crate) fn measure_button_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(button.style);
-    let label_size = measure_view_intrinsic(&button.label, state, env);
+    let label_size = measure_label_intrinsic(&button.label, state, env);
     let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
     let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
     LayoutSize::new(

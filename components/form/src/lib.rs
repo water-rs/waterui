@@ -161,9 +161,7 @@ impl FormBuilder for String {
 impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Stepper::new(binding)
-            .label(label)
-            .range(Self::MIN..=Self::MAX)
+        waterui_controls::Stepper::new(label, binding).range(Self::MIN..=Self::MAX)
     }
 }
 
@@ -177,14 +175,14 @@ impl FormBuilder for bool {
 impl FormBuilder for Color {
     type View = picker::ColorPicker;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        picker::ColorPicker::new(binding).label(label)
+        picker::ColorPicker::new(label, binding)
     }
 }
 
 impl FormBuilder for f64 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Slider::new(binding).label(label)
+        waterui_controls::Slider::new(label, binding)
     }
 }
 
@@ -192,10 +190,10 @@ impl FormBuilder for f32 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(
+            label,
             #[allow(clippy::cast_possible_truncation)]
             &Binding::mapping(binding, f64::from, |binding, val| binding.set(val as Self)),
         )
-        .label(label)
     }
 }
 

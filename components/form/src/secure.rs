@@ -8,8 +8,9 @@ use core::{fmt::Debug, str::FromStr};
 
 use alloc::string::{String, ToString};
 use nami::Binding;
-use waterui_controls::IntoLabel;
-use waterui_core::{AnyView, configurable, layout::StretchAxis};
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, impl_label_style_methods};
+use waterui_core::{configurable, layout::StretchAxis};
 use zeroize::Zeroize;
 
 /// A wrapper type for securely handling sensitive string data.
@@ -87,8 +88,8 @@ impl Drop for Secure {
 /// Configuration for a secure field component.
 #[derive(Debug)]
 pub struct SecureFieldConfig {
-    /// The label view displayed for the secure field.
-    pub label: AnyView,
+    /// The label displayed for the secure field.
+    pub label: Label,
     /// The binding to the secure value being edited.
     pub value: Binding<Secure>,
 }
@@ -134,27 +135,13 @@ impl SecureField {
     #[must_use]
     pub fn new(label: impl IntoLabel, value: &Binding<Secure>) -> Self {
         Self(SecureFieldConfig {
-            label: AnyView::new(label.into_label()),
+            label: label.into_label(),
             value: value.clone(),
         })
     }
-
-    /// Sets the label for the secure field.
-    ///
-    /// # Arguments
-    ///
-    /// * `label` - A view representing the new label for the secure field.
-    ///
-    /// # Returns
-    ///
-    /// A new `SecureField` instance with the updated label.
-    #[must_use]
-    pub fn label(self, label: impl IntoLabel) -> Self {
-        let mut config = self.0;
-        config.label = AnyView::new(label.into_label());
-        Self(config)
-    }
 }
+
+impl_label_style_methods!(SecureField);
 
 /// Creates a new `SecureField` instance.
 /// See [`SecureField::new`] for more details.

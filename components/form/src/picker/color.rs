@@ -1,8 +1,9 @@
 //! Color Picker Component
 
 use nami::Binding;
-use waterui_controls::IntoLabel;
-use waterui_core::{AnyView, configurable};
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, impl_label_style_methods};
+use waterui_core::configurable;
 use waterui_graphics::color::Color;
 
 #[derive(Debug)]
@@ -10,7 +11,7 @@ use waterui_graphics::color::Color;
 /// Configuration for the `ColorPicker` component.
 pub struct ColorPickerConfig {
     /// The label of the color picker.
-    pub label: AnyView,
+    pub label: Label,
     /// The binding to the color value.
     pub value: Binding<Color>,
     /// Whether to support alpha channel selection.
@@ -43,11 +44,16 @@ configurable!(
 );
 
 impl ColorPicker {
-    /// Creates a new `ColorPicker` with the given value.
+    /// Creates a new `ColorPicker` with the given semantic label and value
+    /// binding.
+    ///
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new(value: &Binding<Color>) -> Self {
+    pub fn new(label: impl IntoLabel, value: &Binding<Color>) -> Self {
         Self(ColorPickerConfig {
-            label: AnyView::default(),
+            label: label.into_label(),
             value: value.clone(),
             support_alpha: false,
             support_hdr: false,
@@ -67,11 +73,6 @@ impl ColorPicker {
         self.0.support_hdr = true;
         self
     }
-
-    /// Sets the label of the color picker.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(label.into_label());
-        self
-    }
 }
+
+impl_label_style_methods!(ColorPicker);

@@ -5,7 +5,8 @@ use core::ops::RangeInclusive;
 
 pub use jiff::civil::{Date, DateTime, Time};
 use nami::Binding;
-use waterui_controls::IntoLabel;
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -13,8 +14,8 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct DatePickerConfig {
-    /// The label to display for the date picker.
-    pub label: AnyView,
+    /// The label displayed for the date picker.
+    pub label: Label,
     /// The binding to the selected value.
     pub value: Binding<DateTime>,
     /// The range of valid values.
@@ -160,12 +161,17 @@ impl View for DatePicker {
 }
 
 impl DatePicker {
-    /// Creates a picker bound to `value`, dispatching on its type
-    /// (`Date`, `Time`, or `DateTime`) via [`DatePickable`].
+    /// Creates a picker bound to `value` with the given semantic label,
+    /// dispatching on the binding's type (`Date`, `Time`, or `DateTime`) via
+    /// [`DatePickable`].
+    ///
+    /// The label is required so screen readers always have meaningful text to
+    /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
+    /// while keeping it in the accessibility tree.
     #[must_use]
-    pub fn new<T: DatePickable>(value: &Binding<T>) -> Self {
+    pub fn new<T: DatePickable>(label: impl IntoLabel, value: &Binding<T>) -> Self {
         Self(DatePickerConfig {
-            label: AnyView::default(),
+            label: label.into_label(),
             value: T::into_datetime_binding(value),
             range: T::full_range(),
             ty: T::default_picker_type(),
@@ -181,13 +187,6 @@ impl DatePicker {
         self
     }
 
-    /// Sets the label for the date picker.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = AnyView::new(label.into_label());
-        self
-    }
-
     /// Sets the type of date picker.
     #[must_use]
     pub const fn ty(mut self, ty: DatePickerType) -> Self {
@@ -195,6 +194,8 @@ impl DatePicker {
         self
     }
 }
+
+impl_label_style_methods!(DatePicker);
 
 impl DatePickable for Date {
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {

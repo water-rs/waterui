@@ -2,14 +2,14 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_date_picker_intrinsic, measure_view_intrinsic, transformed_rect,
+    measure_date_picker_intrinsic, measure_label_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
@@ -76,7 +76,7 @@ pub(crate) fn render_date_picker(
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let date_picker = date_picker.into_inner();
-    let label_size = measure_view_intrinsic(&date_picker.label, ctx.state_mut(), env);
+    let label_size = measure_label_intrinsic(&date_picker.label, ctx.state_mut(), env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_width = if has_label {
         f64::from(label_size.width)
@@ -96,7 +96,7 @@ pub(crate) fn render_date_picker(
         ctx.bounds.y1,
     );
     if has_label && label_bounds.width() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, date_picker.label, label_bounds);
+        ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(date_picker.label), label_bounds);
     }
 
     let field_bounds =

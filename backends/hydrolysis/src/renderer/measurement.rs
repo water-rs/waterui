@@ -82,6 +82,20 @@ pub(crate) fn measure_view_intrinsic(
     measure_view_dimensions(view, state, env).size
 }
 
+/// Measures the intrinsic visual size of a control's [`Label`].
+///
+/// Hydrolysis caches intrinsic measurements by `AnyView` identity, so the
+/// label is type-erased at this single boundary rather than at every call
+/// site. The semantic identity of the label remains typed inside the
+/// control's config.
+pub(crate) fn measure_label_intrinsic(
+    label: &waterui_controls::label::Label,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    measure_view_intrinsic(&AnyView::new(label.clone()), state, env)
+}
+
 pub(crate) fn measure_view_dimensions(
     view: &AnyView,
     state: &mut HydroState,
@@ -805,7 +819,7 @@ pub(crate) fn measure_text_field_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
-    let label_size = measure_view_intrinsic(&text_field.label, state, env);
+    let label_size = measure_label_intrinsic(&text_field.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = f64::from(label_size.height).max(metrics.label_height);
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
@@ -840,7 +854,7 @@ pub(crate) fn measure_secure_field_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.input_field_metrics();
-    let label_size = measure_view_intrinsic(&secure_field.label, state, env);
+    let label_size = measure_label_intrinsic(&secure_field.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = f64::from(label_size.height).max(metrics.label_height);
     let secure_len = secure_field.value.get().expose().chars().count();
@@ -945,8 +959,7 @@ pub(crate) fn measure_slider_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.slider_metrics();
-    let label_size = measure_view_intrinsic(&slider.label, state, env);
+    let metrics = theme.slider_metrics();    let label_size = measure_label_intrinsic(&slider.label, state, env);
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
     let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
 
@@ -982,7 +995,7 @@ pub(crate) fn measure_date_picker_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let label_size = measure_view_intrinsic(&date_picker.label, state, env);
+    let label_size = measure_label_intrinsic(&date_picker.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let current = date_picker
         .value

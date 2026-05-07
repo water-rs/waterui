@@ -377,9 +377,8 @@ impl MenuView for Divider {
     }
 }
 
-impl<LabelView, Action> MenuView for Button<LabelView, Action>
+impl<Action> MenuView for Button<Action>
 where
-    LabelView: View + 'static,
     Action: FnMut(&Environment) + 'static,
 {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {

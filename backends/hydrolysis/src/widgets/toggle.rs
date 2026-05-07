@@ -1,7 +1,7 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_view_intrinsic,
+    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
     transformed_rect,
 };
 #[cfg(feature = "accessibility")]
@@ -11,7 +11,7 @@ use accesskit::{
 };
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 
 use super::util::widget_theme;
 
@@ -49,7 +49,7 @@ impl HydroNativeView for Native<ToggleConfig> {
                     _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
                 },
             ));
-            let default_label = renderer.accessibility_label_from_view(&toggle.label, env);
+            let default_label = renderer.accessibility_label_from_label(&toggle.label, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 node.set_label(label);
@@ -96,7 +96,7 @@ pub(crate) fn render_toggle(
         ctx.bounds.y1,
     );
     if label_bounds.width() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, toggle.label, label_bounds);
+        ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(toggle.label), label_bounds);
     }
 
     let thumb_progress = ctx.renderer_mut().resolve_toggle_progress(&toggle.toggle);
@@ -128,7 +128,7 @@ pub(crate) fn measure_toggle_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.toggle_metrics(toggle.style);
-    let label_size = measure_view_intrinsic(&toggle.label, state, env);
+    let label_size = measure_label_intrinsic(&toggle.label, state, env);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
         label_width + TOGGLE_LABEL_SPACING + metrics.width
