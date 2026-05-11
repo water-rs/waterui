@@ -7,7 +7,7 @@ use crate::charts::canvas::{contour_geometry, draw_contour, interactive_signal_c
 use crate::composition::ChartComposition;
 use crate::data::ContourData;
 use crate::interaction::{GridDatum, HitResult, SelectionBindings};
-use crate::params::{ChartParamError, PositiveF32};
+use crate::params::PositiveF32;
 
 /// Contour chart for isoline visualization.
 pub struct ContourChart<S: Signal<Output = ContourData>> {

@@ -78,7 +78,7 @@ impl core::fmt::Debug for AnimatedTarget {
 /// Interpolator drives a smooth transition between two `f32` values over
 /// time.
 ///
-/// Reactive frontends (e.g. WaterUI) wrap their own animation primitives in
+/// Reactive frontends (e.g. `WaterUI`) wrap their own animation primitives in
 /// this trait to feed `filtrate`'s runtime without coupling either side.
 pub trait Interpolator: Send + 'static {
     /// Total duration of the animation.
