@@ -18,6 +18,9 @@ filtrate-core.workspace = true
 filtrate-derive.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
+num-traits = { version = "0.2", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tracing.workspace = true
 
 [dev-dependencies]
 divan = "0.1"

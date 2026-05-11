@@ -26,6 +26,7 @@
 
 pub mod effect;
 pub mod filters;
+pub mod multi_input;
 
 pub use effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupFuture,
