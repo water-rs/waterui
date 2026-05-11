@@ -1,4 +1,4 @@
-//! SF Symbol icons for WaterUI.
+//! SF Symbol icons for `WaterUI`.
 //!
 //! This crate exposes [`SystemIcon`] constructors for SF Symbols. SF Symbols
 //! are Apple's icon system available on iOS, macOS, watchOS, and tvOS.
@@ -31,7 +31,7 @@ macro_rules! sf_icons {
         $(
             $(#[$meta])*
             #[must_use]
-            pub fn $name() -> SystemIcon {
+            pub const fn $name() -> SystemIcon {
                 SystemIcon::from_static($sf)
             }
         )*

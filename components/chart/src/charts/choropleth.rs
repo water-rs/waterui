@@ -8,7 +8,7 @@ use crate::charts::canvas::{choropleth_geometry, draw_choropleth, interactive_si
 use crate::composition::ChartComposition;
 use crate::data::ChoroplethData;
 use crate::interaction::{HitResult, RegionDatum, SelectionBindings};
-use crate::params::{ChartParamError, PositiveF32};
+use crate::params::PositiveF32;
 
 /// Choropleth map chart for geographic data visualization.
 pub struct ChoroplethChart<S: Signal<Output = ChoroplethData>> {

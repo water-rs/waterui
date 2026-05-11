@@ -16,7 +16,7 @@ use crate::data::DataPoint;
 use crate::interaction::{
     CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
 };
-use crate::params::{ChartParamError, PositiveF32, UnitInterval};
+use crate::params::{PositiveF32, UnitInterval};
 
 /// Line chart visualization.
 ///

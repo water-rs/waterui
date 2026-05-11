@@ -55,7 +55,7 @@ impl WebViewProxy {
     /// Constructs a proxy from a typed handle. Native backends and the
     /// `WebView::with_proxy` scope use this internally.
     #[must_use]
-    pub fn new(handle: AnyWebViewHandle) -> Self {
+    pub const fn new(handle: AnyWebViewHandle) -> Self {
         Self { handle }
     }
 
@@ -84,6 +84,7 @@ impl WebViewProxy {
     /// The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
     #[allow(clippy::future_not_send)]
+    #[must_use] 
     pub fn run_javascript<'a>(
         &'a self,
         script: &'a str,

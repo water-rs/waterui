@@ -100,7 +100,7 @@ async fn run_tcp_server(env: Environment, waterui_core_fingerprint: String) -> i
         .expect("Preview support app must provide a ViewRenderer in Environment");
 
     let config =
-        PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        PreviewTcpConfig::from_env().map_err(|e| io::Error::other(e))?;
     let listener = bind_first_available(config)?;
     let registration_path =
         register_preview_instance(listener.local_addr()?, &waterui_core_fingerprint).await?;

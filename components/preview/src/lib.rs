@@ -1,6 +1,6 @@
-//! WaterUI Preview Crate
+//! `WaterUI` Preview Crate
 //!
-//! Provides the `Preview` view component for rendering and capturing WaterUI views.
+//! Provides the `Preview` view component for rendering and capturing `WaterUI` views.
 //!
 //! This crate is used by the preview support app scaffolded by the CLI at
 //! `~/.water/preview_support/` to handle preview requests via TCP.

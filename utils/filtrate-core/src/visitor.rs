@@ -17,13 +17,13 @@ pub trait SignalVisitor {
 /// Internal helper that wraps a [`SignalVisitor`] and shifts every visited
 /// parameter index by `base`. Used by [`crate::Chain`] to emit child indices
 /// relative to the chain's flattened layout.
-pub(crate) struct OffsetVisitor<'a, V: SignalVisitor + ?Sized> {
+pub struct OffsetVisitor<'a, V: SignalVisitor + ?Sized> {
     inner: &'a mut V,
     base: usize,
 }
 
 impl<'a, V: SignalVisitor + ?Sized> OffsetVisitor<'a, V> {
-    pub(crate) fn new(inner: &'a mut V, base: usize) -> Self {
+    pub(crate) const fn new(inner: &'a mut V, base: usize) -> Self {
         Self { inner, base }
     }
 }

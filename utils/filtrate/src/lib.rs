@@ -3,7 +3,7 @@
 //! `filtrate` hosts the built-in filter implementations and their WGSL
 //! shaders, and (in upcoming phases) the GPU runtime that compiles a
 //! [`Filter`] graph into a wgpu pipeline. It is designed to be usable
-//! outside of WaterUI for any wgpu-based image, video, or render-target
+//! outside of `WaterUI` for any wgpu-based image, video, or render-target
 //! workflow.
 //!
 //! # Layout
