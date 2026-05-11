@@ -22,6 +22,8 @@ DO NOT be over-engineer or write defensive code. If you encounter a problem, ask
 
 Keep the change set strictly scoped to the task.
 
+- Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, `icon-packs/`, etc.) or under `src/` when they describe the root `waterui` package itself.
+
 - Do not drag unrelated files into the diff.
 - Do not run workspace-wide formatters or refactors such as `cargo fmt --all`, bulk codemods, or broad search-replace when the task only targets a few files.
 - Prefer file-scoped formatting and verification on the exact files you intentionally changed.
@@ -31,7 +33,8 @@ Keep the change set strictly scoped to the task.
 - Check `git status --short` before and after formatting or codegen steps. If unrelated files appear, stop and narrow the command instead of continuing with a polluted diff.
 - Only use repo-wide formatting or sweeping rewrites when the user explicitly asks for them or the task genuinely requires touching the whole workspace.
 - Workflow files under `.github/workflows/` are frozen unless the user explicitly authorizes workflow changes in the current task. Do not modify, add, delete, or rewrite workflow logic without that authorization. If a workflow change seems necessary, stop and ask first.
-- Keep GitHub Actions workflows minimal and declarative. Do not put heavy release logic, repository analysis, packaging validation, or hand-rolled orchestration scripts into workflow YAML when a maintained community tool can own that behavior.
+- GitHub Actions workflows should stay minimal and declarative. Do not put heavy release logic, repository analysis, packaging validation, or hand-rolled orchestration scripts into workflow YAML when a maintained community tool can own that behavior.
+- Cross-Backend Regression is a CI pipeline concern, not user-facing README documentation. Keep references to it in CI/developer-maintainer context rather than public product docs.
 - Prefer maintained community actions and purpose-built tools over custom shell/Python scripts in workflows. Release publishing should be delegated to `release-plz`; only the CLI binary prebuild/release-asset handoff is expected to require extra workflow glue.
 - Do not patch around repository-state problems by adding workflow preflight scripts or CI workarounds. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
 - Do not add crate-level, file-level, or module-level `allow` attributes to skip lint failures during cleanup. Treat lint as code-quality feedback and fix the underlying code, API shape, docs, or type invariants instead.
@@ -40,6 +43,7 @@ Keep the change set strictly scoped to the task.
 - Continuously update this repo's `.claude/skills/waterui/SKILL.md` whenever WaterUI semantics, testing rules, or major component behavior become clearer during the task. The repo-local skill is part of the product.
 - "Visual test" in this repository means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden, including changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color checks, brightness checks, non-uniform checks, and similar proxy code.
 - AI-agent meta belongs only in this file. Do not leak it into anything a human will read.
+- Keep `.claude/skills/waterui/SKILL.md` user-facing: view authoring, reactivity, components, app-level CLI usage, and preview usage. Do not put maintainer-only workflow rules, CI/package matrices, release metadata, submodule handling, proxy/SDK/NDK repair notes, linker workarounds, or agent/subagent mechanics in the skill.
 - `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
 - `GpuSurface::new(renderer)` owns one `GpuView` instance for that surface lifetime. `GpuView::setup()` is where persistent GPU resources for that renderer instance belong. Do not move renderer state into hidden shared caches just to survive `GpuSurface` teardown or parent rebuild.
