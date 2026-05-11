@@ -20,15 +20,13 @@ const RUNTIME_FINGERPRINT_ROOT_FILES: [&str; 5] = [
     "rust-toolchain.toml",
 ];
 
-const RUNTIME_FINGERPRINT_ROOT_DIRS: [&str; 11] = [
+const RUNTIME_FINGERPRINT_ROOT_DIRS: [&str; 9] = [
     "core",
     "components",
     "utils",
-    "internal",
+    "src",
     "ffi",
     "macros",
-    "facade",
-    "crates",
     "backends",
     "kit",
     "icon-packs",
