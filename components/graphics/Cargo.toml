@@ -20,7 +20,6 @@ waterui-str.workspace = true
 nami.workspace = true
 filtrate.workspace = true
 filtrate-core.workspace = true
-filtrate-multi-input.workspace = true
 pastey.workspace = true
 wgpu.workspace = true
 vello.workspace = true

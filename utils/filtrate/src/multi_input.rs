@@ -11,7 +11,7 @@ use core::fmt;
 use core::future::Future;
 use num_traits::ToPrimitive;
 
-use filtrate::{Effect, EffectContext, EffectInput, EffectOutput};
+use crate::{Effect, EffectContext, EffectInput, EffectOutput};
 
 const MAX_AUX_IMAGES: usize = 3;
 const MAX_PARAMS: usize = 8;
@@ -513,10 +513,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
 }
 
 impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
-    fn setup(
-        &mut self,
-        ctx: &EffectContext,
-    ) -> impl Future<Output = filtrate::EffectSetupResult> {
+    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = crate::EffectSetupResult> {
         if O::AUX_IMAGE_COUNT > MAX_AUX_IMAGES {
             let err = "multi-input filter declared too many auxiliary images";
             self.set_setup_error(err);
@@ -553,11 +550,7 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
         core::future::ready(Ok(()))
     }
 
-    fn render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-    ) -> filtrate::EffectRenderResult {
+    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> crate::EffectRenderResult {
         if let Some(err) = self.runtime.setup_error {
             return Err(err);
         }

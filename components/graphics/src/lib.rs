@@ -57,10 +57,9 @@ pub mod filter_registry;
 /// Visual parity harness used by tests and backend handlers to compare
 /// native compositor output against the wgpu reference.
 pub mod filter_parity;
-/// Multi-input filters live in the `filtrate-multi-input` crate; this alias
-/// keeps the historical `waterui_graphics::multi_input_filter::*` import path
-/// working without re-declaring the module here.
-pub use filtrate_multi_input as multi_input_filter;
+/// Multi-input filters live in the `filtrate` crate; this alias keeps the
+/// historical `waterui_graphics::multi_input_filter::*` import path working.
+pub use filtrate::multi_input as multi_input_filter;
 
 // Re-export key types for user convenience.
 pub use gpu_surface::{
