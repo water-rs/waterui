@@ -1,4 +1,4 @@
-//! Font Awesome 7 Free icons for WaterUI.
+//! Font Awesome 7 Free icons for `WaterUI`.
 //!
 //! This crate provides 2800+ Font Awesome 7 Free icons with two rendering modes:
 //! - **Webfont** (default) - Icons rendered as styled text using Font Awesome webfont

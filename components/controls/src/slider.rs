@@ -87,7 +87,7 @@ impl Slider {
 
     /// Sets the inclusive value range for this slider.
     #[must_use]
-    pub fn range(mut self, range: RangeInclusive<f64>) -> Self {
+    pub const fn range(mut self, range: RangeInclusive<f64>) -> Self {
         self.0.range = range;
         self
     }

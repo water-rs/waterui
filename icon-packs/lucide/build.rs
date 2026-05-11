@@ -94,10 +94,10 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                 paths.push(format!(
                     "M{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{}Z",
                     cx - r, cy,
-                    cx - r, cy - r * k, cx - r * k, cy - r, cx, cy - r,
-                    cx + r * k, cy - r, cx + r, cy - r * k, cx + r, cy,
-                    cx + r, cy + r * k, cx + r * k, cy + r, cx, cy + r,
-                    cx - r * k, cy + r, cx - r, cy + r * k, cx - r, cy
+                    cx - r, r.mul_add(-k, cy), r.mul_add(-k, cx), cy - r, cx, cy - r,
+                    r.mul_add(k, cx), cy - r, cx + r, r.mul_add(-k, cy), cx + r, cy,
+                    cx + r, r.mul_add(k, cy), r.mul_add(k, cx), cy + r, cx, cy + r,
+                    r.mul_add(-k, cx), cy + r, cx - r, r.mul_add(k, cy), cx - r, cy
                 ));
             }
         } else if element_type == "rect" {
@@ -138,8 +138,8 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
             if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (x1, y1, x2, y2) {
                 paths.push(format!("M{x1},{y1} L{x2},{y2}"));
             }
-        } else if element_type == "polyline" || element_type == "polygon" {
-            if let Some(serde_json::Value::String(points)) = attrs.get("points") {
+        } else if (element_type == "polyline" || element_type == "polygon")
+            && let Some(serde_json::Value::String(points)) = attrs.get("points") {
                 let coords: Vec<&str> = points.split_whitespace().collect();
                 if !coords.is_empty() {
                     let mut path = String::new();
@@ -153,7 +153,6 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                     paths.push(path.trim().to_string());
                 }
             }
-        }
     }
 
     if paths.is_empty() {

@@ -254,7 +254,7 @@ impl Frame {
     /// Accepts any numeric literal or signal of f32 (`f32`, `f64`, `i32`,
     /// `Computed<f32>`, `Binding<f32>`, …). The value is snapshotted at
     /// modifier time; live layout updates depend on parent reconstruction
-    /// per WaterUI's Vue-like reactivity model.
+    /// per `WaterUI`'s Vue-like reactivity model.
     #[must_use]
     pub fn width(mut self, width: impl IntoSignalF32 + 'static) -> Self {
         use waterui_core::Signal;

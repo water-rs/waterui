@@ -53,7 +53,7 @@ use std::sync::RwLock;
 
 use waterui_core::{AnyView, Environment, metadata::MetadataKey};
 
-use crate::filter_view::{AppliedFilter, FilteredView};
+use crate::filter_view::AppliedFilter;
 use filtrate::Effect;
 
 /// Backend-supplied handler that lowers a specific filter type into a
@@ -66,7 +66,7 @@ use filtrate::Effect;
 pub trait FilterHandler<F: Effect>: Send + Sync + 'static {
     /// Optional runtime predicate. Defaults to always-active. Backends
     /// override when they only support a sub-range of inputs (for
-    /// example, "blur radius below 32 px maps to UIVisualEffectView,
+    /// example, "blur radius below 32 px maps to `UIVisualEffectView`,
     /// otherwise fall back to wgpu").
     fn matches(&self, _filter: &F, _env: &Environment) -> bool {
         true

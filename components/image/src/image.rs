@@ -58,7 +58,7 @@ pub struct Image {
     renderer: ImageRenderer,
     /// When `true`, the image stretches to fill its proposed bounds via the
     /// configured [`Interpolation`]; otherwise it locks to its native pixel
-    /// size like a SwiftUI `Image` (the default).
+    /// size like a `SwiftUI` `Image` (the default).
     resizable: bool,
 }
 
@@ -89,7 +89,7 @@ pub enum Interpolation {
 }
 
 impl Interpolation {
-    fn to_wgpu_filter(self) -> wgpu::FilterMode {
+    const fn to_wgpu_filter(self) -> wgpu::FilterMode {
         match self {
             Self::Linear => wgpu::FilterMode::Linear,
             Self::Nearest => wgpu::FilterMode::Nearest,
@@ -183,7 +183,7 @@ impl Image {
     /// Allows this image to stretch to its proposed bounds instead of
     /// locking to its native pixel size.
     ///
-    /// Mirrors SwiftUI's `Image.resizable()`. The default behaviour
+    /// Mirrors `SwiftUI`'s `Image.resizable()`. The default behaviour
     /// frames the image to its source `width × height` so a 64-pixel
     /// asset stays 64 pixels tall regardless of the parent's proposal;
     /// once `.resizable()` is applied the image fills whatever the

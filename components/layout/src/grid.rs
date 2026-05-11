@@ -345,7 +345,7 @@ impl Grid {
     /// Sets the horizontal and vertical spacing for the grid.
     ///
     /// Accepts any numeric literal or signal of f32; snapshotted at modifier
-    /// time per WaterUI's Vue-like reactivity model.
+    /// time per `WaterUI`'s Vue-like reactivity model.
     #[must_use]
     pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
         use waterui_core::Signal;

@@ -179,7 +179,7 @@ pub trait Effect: 'static {
 /// Object-safe trait for type-erased GPU effects.
 ///
 /// Used by host code that holds heterogeneous effects in a `Box<dyn ...>`
-/// (for example, the `Metadata<AppliedEffect>` FFI shim in WaterUI).
+/// (for example, the `Metadata<AppliedEffect>` FFI shim in `WaterUI`).
 pub trait ErasedEffect: 'static {
     /// Drive `Effect::setup` through a boxed future.
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> EffectSetupFuture<'a>;

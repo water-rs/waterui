@@ -1,4 +1,4 @@
-//! Shared build-script helpers for WaterUI code generation.
+//! Shared build-script helpers for `WaterUI` code generation.
 
 use std::{fs, path::Path};
 

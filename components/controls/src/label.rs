@@ -2,8 +2,8 @@
 //!
 //! # Why every control demands a label
 //!
-//! `WaterUI` controls (Slider, Stepper, Toggle, Button, ColorPicker, Calendar,
-//! DatePicker, FilePicker, MultiDatePicker, TextField, SecureField) take a
+//! `WaterUI` controls (Slider, Stepper, Toggle, Button, `ColorPicker`, Calendar,
+//! `DatePicker`, `FilePicker`, `MultiDatePicker`, `TextField`, `SecureField`) take a
 //! semantic [`Label`] at construction time. The label is required even if you
 //! intend to **hide it visually** with [`Label::hide_label`] or
 //! [`LabelDisplayMode::Hidden`].
@@ -11,7 +11,7 @@
 //! ## Why force it?
 //!
 //! - **Accessibility is non-negotiable.** Screen readers
-//!   (VoiceOver / TalkBack / Narrator), voice control, switch control, and
+//!   (`VoiceOver` / `TalkBack` / Narrator), voice control, switch control, and
 //!   command palettes all read the semantic label to announce or activate a
 //!   control. A control with no label appears as an anonymous, unreachable
 //!   widget — users of assistive technology cannot interact with it.
@@ -126,7 +126,7 @@ impl Label {
 /// `configurable!`-style wrapper struct (`Foo(FooConfig)`) whose inner
 /// config carries a [`Label`] field named `label`.
 ///
-/// Reused by every WaterUI control crate so the same `.label_style(...)` /
+/// Reused by every `WaterUI` control crate so the same `.label_style(...)` /
 /// `.hide_label()` surface appears on every `configurable!`-style control
 /// without forcing a trait into the user's import path.
 #[macro_export]
@@ -138,7 +138,7 @@ macro_rules! impl_label_style_methods {
             /// The semantic text of the label is always retained for assistive
             /// technology regardless of the chosen visual mode.
             #[must_use]
-            pub fn label_style(
+            pub const fn label_style(
                 mut self,
                 mode: $crate::label::LabelDisplayMode,
             ) -> Self {
@@ -152,7 +152,7 @@ macro_rules! impl_label_style_methods {
             /// Shortcut for [`Self::label_style`] with
             /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden).
             #[must_use]
-            pub fn hide_label(self) -> Self {
+            pub const fn hide_label(self) -> Self {
                 self.label_style($crate::label::LabelDisplayMode::Hidden)
             }
         }

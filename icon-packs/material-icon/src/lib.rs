@@ -1,4 +1,4 @@
-//! Material Design Icons for WaterUI.
+//! Material Design Icons for `WaterUI`.
 //!
 //! This crate provides 7400+ Material Design icons from [Pictogrammers](https://pictogrammers.com/)
 //! as SVG components for native rendering.
@@ -31,7 +31,7 @@
 //!
 //! # Icon Naming
 //!
-//! Icon names use snake_case in Rust, converted from the original kebab-case names:
+//! Icon names use `snake_case` in Rust, converted from the original kebab-case names:
 //! - `account-circle` → `account_circle()`
 //! - `arrow-left` → `arrow_left()`
 //! - `check-circle` → `check_circle()`

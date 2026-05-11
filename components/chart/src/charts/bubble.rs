@@ -12,7 +12,7 @@ use crate::data::BubblePoint;
 use crate::interaction::{
     CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
 };
-use crate::params::{ChartParamError, PositiveF32, UnitInterval};
+use crate::params::{PositiveF32, UnitInterval};
 
 /// Bubble chart for 3D data visualization.
 pub struct BubbleChart<S: Signal<Output = Vec<BubblePoint>>> {

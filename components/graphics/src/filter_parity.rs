@@ -58,6 +58,7 @@ impl ParityHarness {
     /// Try to acquire a high-performance adapter and device. Returns
     /// `None` when no compatible adapter is available (typical in CI
     /// containers without a GPU).
+    #[must_use] 
     pub fn new() -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -78,6 +79,7 @@ impl ParityHarness {
 
     /// Returns adapter info for diagnostics. Useful for skipping tests on
     /// known-broken backends.
+    #[must_use] 
     pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }

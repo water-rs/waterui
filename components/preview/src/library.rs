@@ -27,7 +27,7 @@ impl PreviewLibrary {
     /// Load a library from an on-disk cache path, codesigning only if needed (macOS).
     ///
     /// # Safety
-    /// The library must be a valid WaterUI preview library with the expected ABI.
+    /// The library must be a valid `WaterUI` preview library with the expected ABI.
     ///
     /// # Errors
     /// Returns an error if the library cannot be loaded.
@@ -158,7 +158,7 @@ impl PreviewLibrary {
     /// Load a library from bytes by writing to a temp file.
     ///
     /// # Safety
-    /// The library must be a valid WaterUI preview library with the expected ABI.
+    /// The library must be a valid `WaterUI` preview library with the expected ABI.
     ///
     /// # Errors
     /// Returns an error if the library cannot be loaded.
@@ -212,7 +212,7 @@ impl PreviewLibrary {
     /// from Cargo build artifacts.
     ///
     /// # Safety
-    /// The library at `source_path` must be a valid WaterUI preview library with the expected ABI.
+    /// The library at `source_path` must be a valid `WaterUI` preview library with the expected ABI.
     ///
     /// # Errors
     /// Returns an error if the source path cannot be cached or the library cannot be loaded.
@@ -330,7 +330,7 @@ enum CachedDylibSource<'a> {
 }
 
 impl CachedDylibSource<'_> {
-    fn byte_len(&self) -> Option<usize> {
+    const fn byte_len(&self) -> Option<usize> {
         match self {
             Self::Bytes(bytes) => Some(bytes.len()),
             Self::File(_) => None,

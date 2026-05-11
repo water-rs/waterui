@@ -68,7 +68,7 @@ use waterui_str::Str;
 /// - **Android, Linux, Web, terminal**: **not supported.** Android has no
 ///   OS-supplied icon catalog — `SystemIcon` does not silently substitute a
 ///   bundled Material font, because that would make the asymmetry invisible
-///   to view code that should know about it (see WaterUI's "Asymmetric
+///   to view code that should know about it (see `WaterUI`'s "Asymmetric
 ///   primitives are documented, not faked" design principle in `AGENTS.md`).
 ///
 /// For **portable, cross-platform** icons, depend on a packaged icon-pack
@@ -126,7 +126,7 @@ pub mod system_icon {
             $(
                 $(#[$meta])*
                 #[must_use]
-                pub fn $name() -> SystemIcon {
+                pub const fn $name() -> SystemIcon {
                     SystemIcon::from_static($sf)
                 }
             )*

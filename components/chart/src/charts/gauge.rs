@@ -10,7 +10,7 @@ use crate::charts::canvas::{draw_gauge, gauge_geometry, interactive_signal_canva
 use crate::composition::ChartComposition;
 use crate::data::GaugeData;
 use crate::interaction::{HitResult, SelectionBindings, SliceDatum};
-use crate::params::{ArcAngles, ChartParamError, GaugeRadii};
+use crate::params::{ArcAngles, GaugeRadii};
 
 /// Gauge chart for speedometer-style value visualization.
 pub struct GaugeChart<S: Signal<Output = GaugeData>> {

@@ -1,4 +1,4 @@
-//! Lucide Icons for WaterUI.
+//! Lucide Icons for `WaterUI`.
 //!
 //! This crate provides 1500+ Lucide icons as SVG components for native rendering.
 //!
@@ -30,7 +30,7 @@
 //!
 //! # Icon Naming
 //!
-//! Icon names use snake_case in Rust, converted from the original kebab-case names:
+//! Icon names use `snake_case` in Rust, converted from the original kebab-case names:
 //! - `arrow-left` → `arrow_left()` (SVG) / `ARROW_LEFT_PATH`
 //! - `check-circle` → `check_circle()` (SVG) / `CHECK_CIRCLE_PATH`
 //! - `file-text` → `file_text()` (SVG) / `FILE_TEXT_PATH`

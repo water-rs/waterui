@@ -50,7 +50,7 @@ impl BarcodeMaskEffect {
     /// Callers obtain the resolved color from `Color::resolve(env).get()` at
     /// view-body time.
     #[must_use]
-    pub fn new(source: BarcodeSource, light_color: ResolvedColor) -> Self {
+    pub const fn new(source: BarcodeSource, light_color: ResolvedColor) -> Self {
         Self {
             source,
             pipeline: None,

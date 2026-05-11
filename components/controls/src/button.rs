@@ -421,7 +421,7 @@ impl<Action> Button<Action> {
     /// The semantic identity is always preserved for assistive technology
     /// regardless of the chosen visual mode.
     #[must_use]
-    pub fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+    pub const fn label_style(mut self, mode: LabelDisplayMode) -> Self {
         self.label.set_display_mode(mode);
         self
     }
@@ -431,7 +431,7 @@ impl<Action> Button<Action> {
     ///
     /// Shortcut for `.label_style(LabelDisplayMode::Hidden)`.
     #[must_use]
-    pub fn hide_label(self) -> Self {
+    pub const fn hide_label(self) -> Self {
         self.label_style(LabelDisplayMode::Hidden)
     }
 

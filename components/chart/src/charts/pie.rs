@@ -12,7 +12,7 @@ use crate::charts::canvas::{draw_pie, interactive_signal_canvas, pie_geometry};
 use crate::composition::ChartComposition;
 use crate::data::DataPoint;
 use crate::interaction::{HitResult, SelectionBindings, SliceDatum};
-use crate::params::{ChartParamError, DonutInnerRadius};
+use crate::params::DonutInnerRadius;
 
 /// Pie chart visualization.
 pub struct PieChart<S: Signal<Output = Vec<DataPoint>>> {

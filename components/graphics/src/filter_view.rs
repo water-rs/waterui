@@ -42,7 +42,7 @@ use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::Animation as WuiAnimation;
 use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Environment, IntoSignalF32, Metadata, View};
+use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
 /// Type-erased filter for FFI boundary.
 ///

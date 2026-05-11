@@ -83,7 +83,7 @@ fn srgb_constant_to_array(color: Srgb) -> [f32; 4] {
     resolved_color_to_array(&resolved)
 }
 
-fn resolved_color_to_array(color: &ResolvedColor) -> [f32; 4] {
+const fn resolved_color_to_array(color: &ResolvedColor) -> [f32; 4] {
     [color.red, color.green, color.blue, color.opacity]
 }
 
@@ -92,7 +92,7 @@ fn resolve_color(color: &Color, env: &Environment) -> [f32; 4] {
     resolved_color_to_array(&resolved)
 }
 
-fn unit_point_to_array(point: UnitPoint) -> [f32; 2] {
+const fn unit_point_to_array(point: UnitPoint) -> [f32; 2] {
     [point.x, point.y]
 }
 

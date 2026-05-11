@@ -16,7 +16,7 @@ use crate::data::DataPoint;
 use crate::interaction::{
     CartesianSelectionBindings, CartesianViewportBindings, HitResult, SelectionBindings,
 };
-use crate::params::{ChartParamError, PositiveF32};
+use crate::params::PositiveF32;
 
 /// Scatter chart visualization.
 pub struct ScatterChart<S: Signal<Output = Vec<DataPoint>>> {
