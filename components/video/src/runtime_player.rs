@@ -4036,8 +4036,8 @@ impl DecodeState {
             let stream = self.decoder.decode(&sample_data);
             for result in stream {
                 let decoded = result.map_err(|error| error.to_string())?;
-                let decoded_pts = if decoded.timestamp_ns() > 0 {
-                    Duration::from_nanos(decoded.timestamp_ns())
+                let decoded_pts = if decoded.timestamp() > Duration::ZERO {
+                    decoded.timestamp()
                 } else {
                     pts
                 };
