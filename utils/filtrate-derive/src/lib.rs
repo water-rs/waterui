@@ -1,7 +1,7 @@
 //! Procedural macros for `filtrate`.
 //!
 //! This crate exposes `#[derive(Filter)]`, which generates a complete
-//! [`filtrate_core::Filter`] implementation from a struct attributed with
+//! `filtrate_core::Filter` implementation from a struct attributed with
 //! `#[filter(...)]`. The macro covers the regular filter patterns used by
 //! the built-in filter library; bespoke filters (separable blurs, custom
 //! signal traversal, ...) can still be hand-written.

@@ -1,7 +1,7 @@
-//! GTK4 backend for WaterUI.
+//! GTK4 backend for `WaterUI`.
 //!
-//! This crate provides a GTK4-based rendering backend for WaterUI, mapping
-//! WaterUI views to native GTK4 widgets.
+//! This crate provides a GTK4-based rendering backend for `WaterUI`, mapping
+//! `WaterUI` views to native GTK4 widgets.
 //!
 //! # Architecture
 //!

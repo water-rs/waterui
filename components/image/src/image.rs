@@ -37,7 +37,7 @@ pub use crate::codec::DecodePath;
 ///
 /// # Memory Model
 ///
-/// - **Before setup**: Holds pending pixel data (Vec<u8>)
+/// - **Before setup**: Holds pending pixel data (`Vec<u8>`)
 /// - **After setup**: Holds only GPU texture (no CPU pixel data)
 ///
 /// This design ensures efficient memory usage by not duplicating data between
