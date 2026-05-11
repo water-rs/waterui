@@ -27,7 +27,7 @@ use num_traits::ToPrimitive;
 /// Types that can be linearly interpolated.
 ///
 /// The native animation system uses this to interpolate between values.
-/// Any type implementing Add, Sub, and Mul<f64> automatically gets this trait.
+/// Any type implementing Add, Sub, and `Mul<f64>` automatically gets this trait.
 pub trait VectorArithmetic:
     Clone + Default + Send + 'static + Add<Output = Self> + Sub<Output = Self> + Mul<f64, Output = Self>
 {

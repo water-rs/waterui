@@ -17,7 +17,7 @@
 //!    these.
 //!
 //! 3. **Direct overrides** — `.size(f32)`, plus `.bold()`, `.italic()`,
-//!    [`Font`] constructors with explicit size/weight/family. This is the
+//!    [`Font`](crate::font::Font) constructors with explicit size/weight/family. This is the
 //!    escape hatch for fixed layouts (posters, splash screens, hero
 //!    headlines) and for example/demo code that wants to demonstrate a
 //!    specific visual. Direct overrides ignore Theme-driven scaling.

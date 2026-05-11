@@ -402,22 +402,6 @@ water devices
 - [Tutorial Book](https://book.waterui.dev) - The official tutorial book
 - [Roadmap](ROADMAP.md) - Planned features and improvements
 
-## Cross-Backend Regression
-
-Use the unified regression script to validate layout/watch/list behavior across Rust core + FFI + native backends:
-
-```bash
-./scripts/run-cross-backend-regression.sh
-```
-
-The script runs:
-- Core view/watch tests (`waterui-core`)
-- Table/list virtualization regression tests (`waterui`)
-- FFI views range/len tests (`waterui-ffi`)
-- Apple backend build (`swift build`, if available)
-- Android backend compile (`:runtime:compileDebugKotlin`, if available)
-- GTK backend check on Linux
-
 ## Contributing
 
 Contributions are welcome! Please submit pull requests to the `dev` branch. The `main` branch is reserved for releases.

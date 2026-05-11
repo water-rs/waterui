@@ -86,10 +86,10 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, metadata)
     }
 
-    /// Selects the [`ColorSpace`] for this subtree.
+    /// Selects the [`ColorSpace`](crate::metadata::secure::ColorSpace) for this subtree.
     ///
-    /// Friendly wrapper over the underlying [`StandardDynamicRange`] /
-    /// [`HighDynamicRange`] metadata. Prefer this over
+    /// Friendly wrapper over the underlying [`StandardDynamicRange`](crate::metadata::secure::StandardDynamicRange) /
+    /// [`HighDynamicRange`](crate::metadata::secure::HighDynamicRange) metadata. Prefer this over
     /// `metadata(HighDynamicRange::new())` for new code.
     ///
     /// # Examples

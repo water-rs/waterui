@@ -1,7 +1,7 @@
 //! # The Resolve Pattern
 //!
 //! The resolve pattern is WaterUI's core abstraction for **dynamic, reactive configuration**.
-//! Instead of hard-coding values, types implement [`Resolvable`] to look up their actual
+//! Instead of hard-coding values, types implement [`Resolvable`](crate::resolve::Resolvable) to look up their actual
 //! values from an [`Environment`] at runtime, returning a **reactive signal** that
 //! automatically updates when the environment changes.
 //!
@@ -65,7 +65,7 @@
 //!
 //! ### Implementing Resolvable
 //!
-//! To make a type resolvable, implement the [`Resolvable`] trait:
+//! To make a type resolvable, implement the [`Resolvable`](crate::resolve::Resolvable) trait:
 //!
 //! ```ignore
 //! use waterui_core::{Environment, resolve::Resolvable};
@@ -76,7 +76,7 @@
 //!
 //! impl Resolvable for MyToken {
 //!     type Resolved = MyResolvedValue;
-//!     
+//!
 //!     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
 //!         // Option 1: Look up a signal from environment
 //!         env.query::<Self, Computed<Self::Resolved>>()
@@ -91,9 +91,9 @@
 //!
 //! ### Key Types
 //!
-//! - [`Resolvable`] - The core trait. Implementations look up values from the environment.
-//! - [`AnyResolvable<T>`] - Type-erased wrapper for storing heterogeneous resolvables.
-//! - [`Map<R, F>`] - Transforms a resolvable's output (e.g., adjust opacity on a color).
+//! - [`Resolvable`](crate::resolve::Resolvable) - The core trait. Implementations look up values from the environment.
+//! - [`AnyResolvable<T>`](crate::resolve::AnyResolvable) - Type-erased wrapper for storing heterogeneous resolvables.
+//! - [`Map<R, F>`](crate::resolve::Map) - Transforms a resolvable's output (e.g., adjust opacity on a color).
 //!
 //! ### Integration with Theme System
 //!
@@ -146,7 +146,7 @@ use crate::Environment;
 ///
 /// impl Resolvable for BrandColor {
 ///     type Resolved = ResolvedColor;
-///     
+///
 ///     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
 ///         // Query the environment for a pre-installed signal
 ///         env.query::<Self, Computed<ResolvedColor>>()

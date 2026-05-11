@@ -34,7 +34,7 @@ use crate::{
 /// ))
 /// ```
 ///
-/// Use [`spacer()`] to push content to the sides:
+/// Use [`spacer()`](crate::spacer()) to push content to the sides:
 ///
 /// ```ignore
 /// hstack((

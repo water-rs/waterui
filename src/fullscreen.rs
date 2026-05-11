@@ -23,7 +23,7 @@ impl Plugin for FullScreenOverlayManager {}
 impl FullScreenOverlayManager {
     /// Creates a new overlay manager and returns the overlay view.
     ///
-    /// The returned view should be placed in a [`ZStack`] above the main content.
+    /// The returned view should be placed in a `ZStack` above the main content.
     ///
     /// # Returns
     ///

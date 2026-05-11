@@ -229,7 +229,7 @@ impl WebView {
     /// already exposes (`refresh`, `go_back`, `run_javascript`, etc.), but
     /// scoped to whatever handler asks for it via the same
     /// `Extractor`-style parameter pattern that powers
-    /// [`Button::action`](waterui_controls::Button::action).
+    /// `Button::action`.
     ///
     /// # Example
     ///

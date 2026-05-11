@@ -332,7 +332,7 @@ where
 ///
 /// - [`action`](Button::action) - Simple closure with no parameters
 /// - [`action`](Button::action) with extractor parameters - Extract from the environment at click time
-/// - [`ViewExt::state`](waterui::ViewExt::state) - Inject local cloneable state for later extraction
+/// - `ViewExt::state` - Inject local cloneable state for later extraction
 ///
 /// See the [module documentation](self) for detailed examples.
 pub struct Button<Action> {

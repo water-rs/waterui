@@ -37,7 +37,7 @@
 //! SystemIcon::new("custom.icon.name")
 //! ```
 //!
-//! ## [`Svg`] - SVG Icons (requires `svg` feature)
+//! ## `Svg` - SVG Icons (requires `svg` feature)
 //!
 //! Re-exported from `waterui-svg` for convenience.
 //! Icon packs can use this for SVG icon rendering.
@@ -108,7 +108,6 @@ impl SystemIcon {
             name: Str::from_static(name),
         }
     }
-
 }
 
 raw_view!(SystemIcon);

@@ -276,7 +276,7 @@ impl Video {
     /// Sets the event handler for video events.
     ///
     /// The handler may extract dependencies from the environment using the
-    /// same `Handler`-style extractor pattern as [`Button::action`]; the
+    /// same `Handler`-style extractor pattern as `Button::action`; the
     /// leading argument is always the [`Event`] payload, and any additional
     /// arguments after it implement [`Extractor`](waterui_core::extract::Extractor).
     ///
