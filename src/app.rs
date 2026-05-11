@@ -26,7 +26,7 @@ impl App {
     /// Create a new application with the given main content view and environment.
     ///
     /// The application's main window opens immediately (state is initialized
-    /// to [`WindowState::Normal`] rather than the type's `default()`, which is
+    /// to [`WindowState::Normal`](crate::window::WindowState::Normal) rather than the type's `default()`, which is
     /// `Closed`).
     pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
         let state = nami::binding(crate::window::WindowState::Normal);

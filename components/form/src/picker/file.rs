@@ -83,17 +83,17 @@ impl View for FilePicker {
                 #[cfg(feature = "std")]
                 {
                     let dialog = if self.import {
-                        FileDialog::new().import_to_cache_subdir("waterui/file-picker-imports")
+                        FileDialog::new().with_import_to_cache("waterui/file-picker-imports")
                     } else {
                         FileDialog::new()
                     };
                     let selected_paths: Option<Vec<std::path::PathBuf>> = match if self.num <= 1 {
                         dialog
-                            .show_open_single_file()
+                            .pick_single()
                             .await
                             .map(|path| path.map(|path| vec![path]))
                     } else {
-                        dialog.show_open_multiple_files().await
+                        dialog.pick_multiple().await
                     } {
                         Ok(paths) => paths,
                         Err(error) => {

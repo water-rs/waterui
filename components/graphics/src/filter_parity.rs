@@ -1,9 +1,9 @@
 //! Visual parity test harness for filter pipelines.
 //!
-//! [`ParityHarness`] provides a self-contained wgpu environment and the
+//! [`ParityHarness`](crate::filter_parity::ParityHarness) provides a self-contained wgpu environment and the
 //! plumbing needed to render any `F: Effect` against a caller-supplied
 //! RGBA8 input buffer and read the result back into a `Vec<u8>`. Companion
-//! comparators ([`pixel_max_abs_diff`], [`pixel_mean_abs_diff`]) measure
+//! comparators ([`pixel_max_abs_diff`](crate::filter_parity::pixel_max_abs_diff), [`pixel_mean_abs_diff`](crate::filter_parity::pixel_mean_abs_diff)) measure
 //! how close two RGBA8 buffers are.
 //!
 //! Together, these let backend handlers register native compositor paths
@@ -58,7 +58,7 @@ impl ParityHarness {
     /// Try to acquire a high-performance adapter and device. Returns
     /// `None` when no compatible adapter is available (typical in CI
     /// containers without a GPU).
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -79,7 +79,7 @@ impl ParityHarness {
 
     /// Returns adapter info for diagnostics. Useful for skipping tests on
     /// known-broken backends.
-    #[must_use] 
+    #[must_use]
     pub const fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }
@@ -201,8 +201,8 @@ impl ParityHarness {
     fn readback_rgba8(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
         const BYTES_PER_PIXEL: u32 = 4;
         let unpadded_bpr = width * BYTES_PER_PIXEL;
-        let padded_bpr =
-            unpadded_bpr.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bpr = unpadded_bpr.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let copy_size = u64::from(padded_bpr * height);
 
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

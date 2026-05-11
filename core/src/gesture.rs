@@ -3,21 +3,21 @@
 //! This module defines lightweight gesture specifications that can be attached to widgets.
 //! Each gesture type captures the minimum configuration necessary for a backend to register
 //! and recognize the interaction, while remaining portable across platforms.
-//! Pointer-hover and cursor appearance are intentionally modeled outside this module
-//! (see [`crate::interaction`] and [`crate::cursor`]), matching SwiftUI-style separation.
+//! Pointer-hover and cursor appearance are intentionally modeled outside this module,
+//! matching SwiftUI-style separation.
 //!
 //! # Hit-Testing Behavior
 //!
 //! `WaterUI` uses a **pass-through** hit-testing model where views without gesture handlers
 //! are transparent to touch events. This means:
 //!
-//! - **Non-interactive views** (e.g., [`Spacer`], plain [`Text`], layout containers) do not
+//! - **Non-interactive views** (e.g., `Spacer`, plain `Text`, layout containers) do not
 //!   intercept touches. Touches pass through to views behind them in the Z-order.
 //!
-//! - **Interactive views** (e.g., [`Button`], views with [`GestureObserver`] attached) capture
+//! - **Interactive views** (e.g., `Button`, views with [`GestureObserver`] attached) capture
 //!   touches within their bounds and prevent them from reaching views below.
 //!
-//! - In a [`ZStack`] or [`overlay`], only the topmost *interactive* view at a touch location
+//! - In a `ZStack` or overlay, only the topmost *interactive* view at a touch location
 //!   receives the event. Non-interactive overlays (like a semi-transparent background or
 //!   loading indicator) allow touches to reach interactive content beneath them.
 //!
@@ -45,12 +45,6 @@
 //!    should return `true` from hit-test queries.
 //! 3. When multiple views overlap, the hit-test should find the topmost *interactive* view,
 //!    not simply the topmost view in the Z-order.
-//!
-//! [`Spacer`]: crate::prelude::spacer
-//! [`Text`]: crate::prelude::text
-//! [`Button`]: crate::prelude::button
-//! [`ZStack`]: crate::prelude::zstack
-//! [`overlay`]: crate::prelude::overlay
 
 use alloc::boxed::Box;
 use core::fmt;
@@ -93,7 +87,7 @@ impl GesturePoint {
 /// Event payload for tap gestures.
 ///
 /// Backends place this structure into the environment when a tap is recognised,
-/// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](waterui_core::extract::Use).
+/// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](crate::extract::Use).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TapEvent {
     /// Location of the tap in the widget's coordinate space.

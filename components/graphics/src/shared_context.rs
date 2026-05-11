@@ -1,13 +1,13 @@
 //! Shared GPU context for efficient multi-view rendering.
 //!
-//! This module provides a global singleton [`SharedGpuContext`] that manages a single
+//! This module provides a global singleton [`SharedGpuContext`](crate::shared_context::SharedGpuContext) that manages a single
 //! `wgpu::Device` and `wgpu::Queue` shared across all GPU views. This eliminates the
 //! expensive per-view device creation overhead and enables shared shader caching.
 //!
 //! # Usage
 //!
 //! The shared context is automatically initialized on first use. FFI code should call
-//! [`init_shared_context`] during app initialization to control timing.
+//! [`init_shared_context`](crate::shared_context::init_shared_context) during app initialization to control timing.
 //!
 //! ```ignore
 //! use waterui_graphics::shared_context::{shared_context, init_shared_context};

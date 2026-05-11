@@ -297,7 +297,7 @@ impl Layout for VStackLayout {
 /// ))
 /// ```
 ///
-/// Use [`spacer()`] to push content to the top and bottom:
+/// Use [`spacer()`](crate::spacer()) to push content to the top and bottom:
 ///
 /// ```ignore
 /// vstack((

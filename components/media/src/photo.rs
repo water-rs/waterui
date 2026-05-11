@@ -123,7 +123,7 @@ impl Photo {
     /// Sets the event handler for the photo.
     ///
     /// The handler shares the [`Handler`](waterui_core::handler::Handler)
-    /// extractor pattern used by [`Button::action`]: the leading argument is
+    /// extractor pattern used by `Button::action`: the leading argument is
     /// the [`Event`] payload and any subsequent arguments are extracted from
     /// the rendering [`Environment`] at fire time.
     ///

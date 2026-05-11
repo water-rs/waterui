@@ -6,7 +6,7 @@
 //! it owns GPU resources between [`Effect::setup`] and the next teardown,
 //! reads input textures, and writes output textures.
 //!
-//! Most callers do not implement `Effect` directly; they implement [`Filter`]
+//! Most callers do not implement `Effect` directly; they implement [`Filter`](crate::Filter)
 //! and use a `Pipeline`-like adapter (currently `waterui_graphics::FilterAdapter`).
 //! `Effect` is the seam used by GPU host code to dispatch a runtime-typed
 //! filter without knowing its concrete shape.
