@@ -26,6 +26,10 @@ node_modules/
 # Override macOS-style global ignore patterns that catch repo paths on
 # case-insensitive APFS (e.g. a user global ignoring `Icon` for Finder
 # metadata also catches our `components/icon/` directory).
+!components/foundation/icon
+!components/foundation/icon/
+!components/foundation/icon/**
+!components/icon
 !components/icon/
 !components/icon/**
 

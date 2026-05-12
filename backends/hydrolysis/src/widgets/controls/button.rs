@@ -11,11 +11,13 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use nami::Signal;
+use waterui::ViewExt as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
+use waterui_graphics::color::Color;
 
 use crate::widgets::util::{inset_rect, widget_theme};
 
@@ -139,7 +141,7 @@ pub(crate) fn render_button(
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
-    let label_view = AnyView::new(button.label);
+    let label_view = button_label_view(theme.button_label_color(style), AnyView::new(button.label));
     if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
         ctx.dispatch_in_rect_without_accessibility(env, label_view, label_bounds);
     } else {
@@ -186,6 +188,7 @@ pub(crate) fn render_menu(
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
+    let label = button_label_view(theme.button_label_color(style), label);
     if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
         ctx.dispatch_in_rect_without_accessibility(env, label, label_bounds);
     } else {
@@ -234,4 +237,11 @@ pub(crate) fn measure_menu_intrinsic(
         content_width.max(metrics.min_width) as f32,
         content_height.max(metrics.min_height) as f32,
     )
+}
+
+fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
+    match color {
+        Some(color) => AnyView::new(label.foreground(color)),
+        None => label,
+    }
 }
