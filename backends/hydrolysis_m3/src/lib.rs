@@ -31,7 +31,14 @@ use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
-pub use theme::colors::{MaterialColorMode, MaterialColorScheme, MaterialRoleColor};
+pub use material_color_utils::dynamic::{
+    color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
+    variant::Variant as MaterialColorVariant,
+};
+pub use theme::colors::{
+    MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
+    MaterialContrastLevel, MaterialRoleColor,
+};
 
 #[derive(Debug, Clone, Copy)]
 /// Material Design 3 widget theme.
@@ -83,7 +90,25 @@ pub fn install_with_seed_mode(
     seed: material_color_utils::utils::color_utils::Argb,
     mode: MaterialColorMode,
 ) {
-    install_with_colors(env, MaterialColorScheme::from_seed(seed, mode));
+    install_with_source(env, MaterialColorSource::new(seed), mode);
+}
+
+/// Install a Material Design 3 widget theme generated from a complete Material You source.
+pub fn install_with_source(
+    env: &mut Environment,
+    source: MaterialColorSource,
+    mode: MaterialColorMode,
+) {
+    install_with_colors(env, source.scheme(mode));
+}
+
+/// Install one scheme from paired light and dark Material You color schemes.
+pub fn install_with_color_schemes(
+    env: &mut Environment,
+    schemes: &MaterialColorSchemes,
+    mode: MaterialColorMode,
+) {
+    install_with_colors(env, schemes.scheme(mode));
 }
 
 /// Install a Material Design 3 widget theme from an explicit color scheme.

@@ -1,7 +1,8 @@
 use material_color_utils::{
+    MaterializedScheme,
     dynamic::{
-        color_spec::{Platform, SpecVersion},
-        variant::Variant,
+        color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
+        variant::Variant as MaterialColorVariant,
     },
     theme_from_color,
     utils::color_utils::Argb,
@@ -20,6 +21,203 @@ pub enum MaterialColorMode {
     Light,
     /// Dark Material color scheme.
     Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// Material You contrast level.
+///
+/// The value is the Material dynamic color contrast level where `0.0` is the
+/// standard scheme, `0.5` is medium contrast, `1.0` is high contrast, and
+/// `-1.0` is reduced contrast.
+pub struct MaterialContrastLevel(f64);
+
+impl MaterialContrastLevel {
+    /// Standard Material contrast.
+    pub const STANDARD: Self = Self(0.0);
+    /// Medium Material contrast.
+    pub const MEDIUM: Self = Self(0.5);
+    /// High Material contrast.
+    pub const HIGH: Self = Self(1.0);
+    /// Reduced Material contrast.
+    pub const REDUCED: Self = Self(-1.0);
+
+    /// Create a Material contrast level.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `level` is outside the Material dynamic color range
+    /// `-1.0..=1.0` or is not finite.
+    #[must_use]
+    pub fn new(level: f64) -> Self {
+        assert!(
+            (-1.0..=1.0).contains(&level) && level.is_finite(),
+            "Material contrast level must be finite and within -1.0..=1.0"
+        );
+        Self(level)
+    }
+
+    /// Return the raw Material dynamic color contrast level.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// Source configuration for a Material You color system.
+///
+/// Material You derives tonal palettes and light/dark system color roles from
+/// one source color. The default variant is `TonalSpot`, matching Material 3's
+/// calm dynamic color style used for application UI.
+pub struct MaterialColorSource {
+    source_color: Argb,
+    variant: MaterialColorVariant,
+    contrast_level: MaterialContrastLevel,
+    spec_version: MaterialColorSpecVersion,
+    platform: MaterialColorPlatform,
+}
+
+impl Default for MaterialColorSource {
+    fn default() -> Self {
+        Self::new(Argb::from_rgb(0x67, 0x50, 0xa4))
+    }
+}
+
+impl MaterialColorSource {
+    /// Create a Material You source color configuration.
+    #[must_use]
+    pub const fn new(source_color: Argb) -> Self {
+        Self {
+            source_color,
+            variant: MaterialColorVariant::TonalSpot,
+            contrast_level: MaterialContrastLevel::STANDARD,
+            spec_version: MaterialColorSpecVersion::Spec2026,
+            platform: MaterialColorPlatform::Phone,
+        }
+    }
+
+    /// Return the source ARGB color.
+    #[must_use]
+    pub const fn source_color(self) -> Argb {
+        self.source_color
+    }
+
+    /// Return the dynamic color variant.
+    #[must_use]
+    pub const fn variant(self) -> MaterialColorVariant {
+        self.variant
+    }
+
+    /// Return the Material contrast level.
+    #[must_use]
+    pub const fn contrast_level(self) -> MaterialContrastLevel {
+        self.contrast_level
+    }
+
+    /// Return the Material dynamic color spec version.
+    #[must_use]
+    pub const fn spec_version(self) -> MaterialColorSpecVersion {
+        self.spec_version
+    }
+
+    /// Return the device platform used for scheme generation.
+    #[must_use]
+    pub const fn platform(self) -> MaterialColorPlatform {
+        self.platform
+    }
+
+    /// Use a different dynamic color variant.
+    #[must_use]
+    pub const fn with_variant(mut self, variant: MaterialColorVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// Use a different Material contrast level.
+    #[must_use]
+    pub const fn with_contrast_level(mut self, contrast_level: MaterialContrastLevel) -> Self {
+        self.contrast_level = contrast_level;
+        self
+    }
+
+    /// Use a different Material dynamic color spec version.
+    #[must_use]
+    pub const fn with_spec_version(mut self, spec_version: MaterialColorSpecVersion) -> Self {
+        self.spec_version = spec_version;
+        self
+    }
+
+    /// Use a different device platform.
+    #[must_use]
+    pub const fn with_platform(mut self, platform: MaterialColorPlatform) -> Self {
+        self.platform = platform;
+        self
+    }
+
+    /// Generate the paired light and dark Material system color schemes.
+    #[must_use]
+    pub fn schemes(self) -> MaterialColorSchemes {
+        let theme = theme_from_color(self.source_color)
+            .variant(self.variant)
+            .contrast_level(self.contrast_level.value())
+            .spec_version(self.spec_version)
+            .platform(self.platform)
+            .call();
+        MaterialColorSchemes {
+            source: self,
+            light: MaterialColorScheme::from_materialized(
+                MaterialColorMode::Light,
+                &theme.schemes.light,
+            ),
+            dark: MaterialColorScheme::from_materialized(
+                MaterialColorMode::Dark,
+                &theme.schemes.dark,
+            ),
+        }
+    }
+
+    /// Generate one Material system color scheme for the requested mode.
+    #[must_use]
+    pub fn scheme(self, mode: MaterialColorMode) -> MaterialColorScheme {
+        self.schemes().scheme(mode)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Paired light and dark Material You color schemes generated from one source.
+pub struct MaterialColorSchemes {
+    source: MaterialColorSource,
+    light: MaterialColorScheme,
+    dark: MaterialColorScheme,
+}
+
+impl MaterialColorSchemes {
+    /// Return the source configuration used to generate the schemes.
+    #[must_use]
+    pub const fn source(&self) -> MaterialColorSource {
+        self.source
+    }
+
+    /// Return the light scheme.
+    #[must_use]
+    pub const fn light(&self) -> MaterialColorScheme {
+        self.light
+    }
+
+    /// Return the dark scheme.
+    #[must_use]
+    pub const fn dark(&self) -> MaterialColorScheme {
+        self.dark
+    }
+
+    /// Return the scheme matching `mode`.
+    #[must_use]
+    pub const fn scheme(&self, mode: MaterialColorMode) -> MaterialColorScheme {
+        match mode {
+            MaterialColorMode::Light => self.light,
+            MaterialColorMode::Dark => self.dark,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,15 +492,16 @@ impl MaterialColorScheme {
     /// Generate Material You system roles from a source color.
     #[must_use]
     pub fn from_seed(seed: Argb, mode: MaterialColorMode) -> Self {
-        let theme = theme_from_color(seed)
-            .variant(Variant::TonalSpot)
-            .spec_version(SpecVersion::Spec2021)
-            .platform(Platform::Phone)
-            .call();
-        let scheme = match mode {
-            MaterialColorMode::Light => theme.schemes.light,
-            MaterialColorMode::Dark => theme.schemes.dark,
-        };
+        MaterialColorSource::new(seed).scheme(mode)
+    }
+
+    /// Generate Material You system roles from a complete source configuration.
+    #[must_use]
+    pub fn from_source(source: MaterialColorSource, mode: MaterialColorMode) -> Self {
+        source.scheme(mode)
+    }
+
+    fn from_materialized(mode: MaterialColorMode, scheme: &MaterializedScheme) -> Self {
         Self {
             mode,
             background: MaterialRoleColor::new(scheme.background),
@@ -360,7 +559,14 @@ impl MaterialColorScheme {
 
 #[cfg(test)]
 mod tests {
-    use super::{Argb, MaterialColorMode, MaterialColorScheme};
+    use material_color_utils::{
+        dynamic::{color_spec::SpecVersion, variant::Variant},
+        get_contrast_ratio,
+    };
+
+    use super::{
+        Argb, MaterialColorMode, MaterialColorScheme, MaterialColorSource, MaterialContrastLevel,
+    };
 
     #[test]
     fn baseline_light_matches_material_web_dynamic_color_tokens() {
@@ -386,6 +592,50 @@ mod tests {
         );
 
         assert_ne!(custom.primary.argb(), baseline.primary.argb());
-        assert_eq!(custom.on_primary.argb(), Argb::from_rgb(0xff, 0xff, 0xff));
+        assert!(
+            get_contrast_ratio(custom.primary.argb(), custom.on_primary.argb()) >= 4.5,
+            "on-primary must keep accessible contrast against primary"
+        );
+    }
+
+    #[test]
+    fn source_color_generates_paired_light_and_dark_material_you_schemes() {
+        let source = MaterialColorSource::new(Argb::from_rgb(0x00, 0x6a, 0x6a));
+        let schemes = source.schemes();
+
+        assert_eq!(schemes.source(), source);
+        assert_eq!(schemes.light().mode, MaterialColorMode::Light);
+        assert_eq!(schemes.dark().mode, MaterialColorMode::Dark);
+        assert_ne!(
+            schemes.light().primary.argb(),
+            schemes.dark().primary.argb()
+        );
+        assert_eq!(schemes.light(), schemes.scheme(MaterialColorMode::Light));
+        assert_eq!(schemes.dark(), schemes.scheme(MaterialColorMode::Dark));
+    }
+
+    #[test]
+    fn material_you_source_configuration_changes_generated_roles() {
+        let standard = MaterialColorSource::new(Argb::from_rgb(0x42, 0x85, 0xf4)).schemes();
+        let configured = MaterialColorSource::new(Argb::from_rgb(0x42, 0x85, 0xf4))
+            .with_variant(Variant::Expressive)
+            .with_contrast_level(MaterialContrastLevel::HIGH)
+            .with_spec_version(SpecVersion::Spec2026)
+            .schemes();
+
+        assert_ne!(
+            standard.light().primary.argb(),
+            configured.light().primary.argb()
+        );
+        assert_ne!(
+            standard.light().on_primary.argb(),
+            configured.light().on_primary.argb()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Material contrast level must be finite and within -1.0..=1.0")]
+    fn contrast_level_rejects_values_outside_material_range() {
+        let _ = MaterialContrastLevel::new(1.5);
     }
 }
