@@ -1,6 +1,7 @@
 use crate::dimensions::{
-    PROGRESS_CIRCULAR_DIAMETER, PROGRESS_LINEAR_BAR_HEIGHT, PROGRESS_LINEAR_BAR_HORIZONTAL_INSET,
-    PROGRESS_LINEAR_BAR_TOP_OFFSET, PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH,
+    PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH, PROGRESS_LINEAR_BAR_HEIGHT,
+    PROGRESS_LINEAR_BAR_HORIZONTAL_INSET, PROGRESS_LINEAR_BAR_TOP_OFFSET,
+    PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH,
     PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
 };
 use crate::theme::colors::MaterialColorScheme;
@@ -16,7 +17,24 @@ pub fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
             PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
             PROGRESS_LINEAR_MIN_TRACK_WIDTH,
         ),
-        ProgressIndicatorStyle::Circular => ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER),
+        ProgressIndicatorStyle::Circular => {
+            ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProgressIndicatorStyle, metrics};
+
+    #[test]
+    fn progress_metrics_match_material_web_v0_192() {
+        let linear = metrics(ProgressIndicatorStyle::Linear);
+        assert_eq!(linear.bar_height, 4.0);
+
+        let circular = metrics(ProgressIndicatorStyle::Circular);
+        assert_eq!(circular.circular_diameter, 48.0);
+        assert_eq!(circular.circular_stroke_width, 4.0);
     }
 }
 

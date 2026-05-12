@@ -355,6 +355,7 @@ impl WidgetTheme for MinimalTestTheme {
                 value_label_top_spacing: 6.0,
                 min_track_width: 72.0,
                 circular_diameter: 0.0,
+                circular_stroke_width: 0.0,
             },
             ProgressIndicatorStyle::Circular => ProgressMetrics {
                 label_height: 0.0,
@@ -364,6 +365,7 @@ impl WidgetTheme for MinimalTestTheme {
                 value_label_top_spacing: 0.0,
                 min_track_width: 0.0,
                 circular_diameter: 32.0,
+                circular_stroke_width: 5.0,
             },
         }
     }
