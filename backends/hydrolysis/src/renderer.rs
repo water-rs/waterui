@@ -290,6 +290,8 @@ pub struct HydrolysisRenderer {
     rebuild_in_progress: Rc<Cell<bool>>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
+    indeterminate_progress_active: bool,
+    indeterminate_progress_started_at: Instant,
     scroll_controller: ScrollController,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -677,6 +679,8 @@ impl HydrolysisRenderer {
             rebuild_in_progress: Rc::new(Cell::new(false)),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
+            indeterminate_progress_active: false,
+            indeterminate_progress_started_at: Instant::now(),
             scroll_controller: ScrollController::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
@@ -2392,6 +2396,7 @@ impl HydrolysisRenderer {
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
         self.animation_controller.begin_rebuild_frame();
+        self.indeterminate_progress_active = false;
         self.scroll_controller.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
@@ -2642,12 +2647,18 @@ impl HydrolysisRenderer {
     pub fn advance_animations(&mut self) -> bool {
         let now = Instant::now();
         self.animation_controller.tick(now)
+            || self.indeterminate_progress_active
             || self.navigation.slots.iter().any(|slot| {
                 slot.transition
                     .as_ref()
                     .is_some_and(|state| state.is_active(now))
             })
             || self.advance_text_caret_animation(now)
+    }
+
+    pub(crate) fn indeterminate_progress_elapsed(&mut self, now: Instant) -> core::time::Duration {
+        self.indeterminate_progress_active = true;
+        now.saturating_duration_since(self.indeterminate_progress_started_at)
     }
 
     pub fn dispatch<V: View>(&mut self, view: V, env: &Environment, bounds: vello::kurbo::Rect) {

@@ -58,18 +58,12 @@ pub fn draw_linear_fill(
 }
 
 pub fn draw_circular_track(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    center: vello::kurbo::Point,
-    radius: f64,
-    width: f64,
+    _colors: &MaterialColorScheme,
+    _draw: &mut dyn DrawContext,
+    _center: vello::kurbo::Point,
+    _radius: f64,
+    _width: f64,
 ) {
-    draw.stroke_circle(
-        center,
-        radius,
-        &Brush::from(colors.surface_container_highest.peniko()),
-        width,
-    );
 }
 
 pub fn draw_circular_fill(
