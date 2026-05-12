@@ -43,7 +43,7 @@ use nami::{Binding, Computed};
 use waterui_core::{AnyView, Environment, View, handler::AnyViewBuilder, plugin::Plugin};
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
-use waterui_text::{IntoText, Text, styled::StyledStr};
+use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
 
 /// Position of the icon relative to the text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -138,10 +138,7 @@ macro_rules! impl_label_style_methods {
             /// The semantic text of the label is always retained for assistive
             /// technology regardless of the chosen visual mode.
             #[must_use]
-            pub const fn label_style(
-                mut self,
-                mode: $crate::label::LabelDisplayMode,
-            ) -> Self {
+            pub const fn label_style(mut self, mode: $crate::label::LabelDisplayMode) -> Self {
                 self.0.label.set_display_mode(mode);
                 self
             }
@@ -194,6 +191,7 @@ pub struct Label {
     icon_position: IconPosition,
     spacing: f32,
     display_mode: LabelDisplayMode,
+    font: Option<Font>,
 }
 
 /// Conversion trait for semantic labels.
@@ -266,6 +264,7 @@ impl Label {
             icon_position: IconPosition::Leading,
             spacing: 6.0,
             display_mode: LabelDisplayMode::Automatic,
+            font: None,
         }
     }
 
@@ -326,6 +325,16 @@ impl Label {
     #[must_use]
     pub const fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing;
+        self
+    }
+
+    /// Sets the visual font used by the label text.
+    ///
+    /// This affects only the on-screen label text. The semantic text exposed to
+    /// controls and assistive technology remains unchanged.
+    #[must_use]
+    pub fn font(mut self, font: impl Into<Font>) -> Self {
+        self.font = Some(font.into());
         self
     }
 
@@ -412,8 +421,14 @@ impl View for Label {
             icon,
             icon_position,
             spacing,
+            font,
             ..
         } = self;
+        let text = if let Some(font) = font {
+            text.font(font)
+        } else {
+            text
+        };
 
         match mode {
             LabelDisplayMode::TitleOnly => AnyView::new(text),
@@ -503,6 +518,17 @@ mod tests {
                 .expect("test catalog must parse"),
         );
         env
+    }
+
+    #[test]
+    fn font_keeps_semantic_text_unchanged() {
+        let env = test_env();
+        let label = super::Label::new("greeting").font(waterui_text::font::Body);
+
+        assert_eq!(
+            label.semantic_text().resolve(&env).content.get().to_plain(),
+            "Hello"
+        );
     }
 }
 

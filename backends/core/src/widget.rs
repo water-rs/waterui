@@ -5,6 +5,7 @@ use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
+use waterui_text::font::Font;
 
 /// Paint source used by backend widget chrome.
 #[derive(Debug, Clone)]
@@ -358,6 +359,10 @@ pub trait WidgetTheme {
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;
     /// Optional button label foreground override.
     fn button_label_color(&self, _style: ButtonStyle) -> Option<Color> {
+        None
+    }
+    /// Optional button label font override.
+    fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
         None
     }
     /// Draw button chrome for a style.
