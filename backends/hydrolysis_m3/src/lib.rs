@@ -15,6 +15,8 @@ pub(crate) use navigation::{navigation as navigation_chrome, tabs};
 pub(crate) use theme::{colors, dimensions};
 
 use vello::kurbo::{BezPath, Point, Rect};
+use waterui::Plugin as _;
+use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DrawContext, InputFieldMetrics, PickerMetrics, ProgressIndicatorStyle,
     ProgressMetrics, SliderMetrics, StepperMetrics, ToggleMetrics, WidgetInteractionState,
@@ -26,26 +28,86 @@ use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
-#[derive(Debug, Default, Clone, Copy)]
+pub use theme::colors::{MaterialColorMode, MaterialColorScheme, MaterialRoleColor};
+
+#[derive(Debug, Clone, Copy)]
 /// Material Design 3 widget theme.
-pub struct MaterialTheme;
+pub struct MaterialTheme {
+    colors: MaterialColorScheme,
+}
 
 impl MaterialTheme {
     /// Create a Material Design 3 widget theme.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::with_colors(MaterialColorScheme::baseline_light())
+    }
+
+    /// Create a Material Design 3 widget theme from explicit Material color roles.
+    #[must_use]
+    pub const fn with_colors(colors: MaterialColorScheme) -> Self {
+        Self { colors }
+    }
+
+    /// Return the Material color roles used by this theme.
+    #[must_use]
+    pub const fn colors(&self) -> &MaterialColorScheme {
+        &self.colors
     }
 }
 
 /// Install the Material Design 3 widget theme into an environment.
 pub fn install(env: &mut Environment) {
-    env.insert(Box::new(MaterialTheme::new()) as Box<dyn WidgetTheme>);
+    install_with_colors(env, MaterialColorScheme::baseline_light());
+}
+
+/// Install a Material Design 3 widget theme generated from a Material You source color.
+pub fn install_with_seed(
+    env: &mut Environment,
+    seed: material_color_utils::utils::color_utils::Argb,
+) {
+    install_with_colors(
+        env,
+        MaterialColorScheme::from_seed(seed, MaterialColorMode::Light),
+    );
+}
+
+/// Install a Material Design 3 widget theme from an explicit color scheme.
+pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
+    let color_scheme = match colors.mode {
+        MaterialColorMode::Light => ColorScheme::Light,
+        MaterialColorMode::Dark => ColorScheme::Dark,
+    };
+    Theme::new()
+        .color_scheme(color_scheme)
+        .colors(
+            ColorSettings::new()
+                .background(colors.background.resolved())
+                .surface(colors.surface.resolved())
+                .surface_variant(colors.surface_variant.resolved())
+                .border(colors.outline.resolved())
+                .foreground(colors.on_surface.resolved())
+                .muted_foreground(colors.on_surface_variant.resolved())
+                .accent(colors.primary.resolved())
+                .accent_foreground(colors.on_primary.resolved()),
+        )
+        .install(env);
+    env.insert(Box::new(MaterialTheme::with_colors(colors)) as Box<dyn WidgetTheme>);
+}
+
+impl Default for MaterialTheme {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WidgetTheme for MaterialTheme {
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics {
         button::metrics(style)
+    }
+
+    fn button_label_color(&self, style: ButtonStyle) -> Option<Color> {
+        button::label_color(&self.colors, style)
     }
 
     fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle) {

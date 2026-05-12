@@ -6,9 +6,11 @@ use crate::dimensions::{
     BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_HEIGHT,
     BUTTON_MIN_WIDTH,
 };
+use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{Brush, ButtonMetrics, DrawContext, WidgetInteractionState};
 use waterui_controls::button::ButtonStyle;
+use waterui_graphics::color::Color;
 
 pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
     match style {
@@ -26,6 +28,18 @@ pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
         ButtonStyle::BorderedProminent => {
             ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         }
+        _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
+    }
+}
+
+pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle) -> Option<Color> {
+    match style {
+        ButtonStyle::BorderedProminent => Some(colors.on_primary.view_color()),
+        ButtonStyle::Automatic
+        | ButtonStyle::Bordered
+        | ButtonStyle::Plain
+        | ButtonStyle::Link
+        | ButtonStyle::Borderless => None,
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     }
 }
