@@ -18,6 +18,7 @@ Build views with reactive state. When unsure, search `examples/*/src/lib.rs` for
 - WaterUI layout lengths are logical view units, not physical pixels. Treat Material metrics as dp-equivalent design units in Hydrolysis themes.
 - Hydrolysis widget chrome is provided by a backend-neutral `WidgetTheme`. For Material Design 3 output, install `hydrolysis_m3::install(&mut env)` before running or previewing a Hydrolysis app.
 - Hydrolysis Material 3 colors use Material You system roles for both WaterUI theme tokens and backend widget chrome. Use `hydrolysis_m3::MaterialColorScheme::from_seed(...)` plus `install_with_colors(...)` when a preview or app needs a custom source color; button, toggle, slider, progress, picker, input, navigation, list, table, and scroll chrome should read roles from that scheme.
+- Hydrolysis Material 3 installs Material Web v0.192 Roboto typography into WaterUI's semantic font slots, so `.body()`, `.title()`, `.headline()`, `.sub_headline()`, `.caption()`, and `.footnote()` inherit Material type scale in `--theme material3` previews and apps.
 - Use `water preview --backend hydrolysis --theme material3` for Hydrolysis Material 3 visual checks. Pass `--expr` when previewing an inline Rust expression; the CLI writes the expression into generated Rust preview code and rustc compiles it normally with `waterui::prelude::*` and `waterui` in scope.
 
 ## CRITICAL: Reactive-First Pattern

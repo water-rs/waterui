@@ -91,6 +91,7 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
                 .accent(colors.primary.resolved())
                 .accent_foreground(colors.on_primary.resolved()),
         )
+        .fonts(theme::typography::settings())
         .install(env);
     env.insert(Box::new(MaterialTheme::with_colors(colors)) as Box<dyn WidgetTheme>);
 }
