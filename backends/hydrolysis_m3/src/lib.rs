@@ -12,7 +12,7 @@ mod theme;
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
 pub(crate) use layout::{list, scroll, table};
 pub(crate) use navigation::{navigation as navigation_chrome, tabs};
-pub(crate) use theme::{colors, dimensions};
+pub(crate) use theme::dimensions;
 
 use vello::kurbo::{BezPath, Point, Rect};
 use waterui::Plugin as _;
@@ -111,7 +111,7 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle) {
-        button::draw_chrome(draw, bounds, style);
+        button::draw_chrome(&self.colors, draw, bounds, style);
     }
 
     fn draw_button_state_layer(
@@ -121,7 +121,7 @@ impl WidgetTheme for MaterialTheme {
         style: ButtonStyle,
         state: WidgetInteractionState,
     ) {
-        button::draw_state_layer(draw, bounds, style, state);
+        button::draw_state_layer(&self.colors, draw, bounds, style, state);
     }
 
     fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics {
@@ -129,7 +129,7 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_toggle_switch(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32) {
-        toggle::draw_switch(draw, bounds, progress);
+        toggle::draw_switch(&self.colors, draw, bounds, progress);
     }
 
     fn draw_toggle_switch_state_layer(
@@ -139,11 +139,11 @@ impl WidgetTheme for MaterialTheme {
         progress: f32,
         state: WidgetInteractionState,
     ) {
-        toggle::draw_switch_state_layer(draw, bounds, progress, state);
+        toggle::draw_switch_state_layer(&self.colors, draw, bounds, progress, state);
     }
 
     fn draw_toggle_checkbox(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32) {
-        toggle::draw_checkbox(draw, bounds, progress);
+        toggle::draw_checkbox(&self.colors, draw, bounds, progress);
     }
 
     fn draw_toggle_checkbox_state_layer(
@@ -153,7 +153,7 @@ impl WidgetTheme for MaterialTheme {
         progress: f32,
         state: WidgetInteractionState,
     ) {
-        toggle::draw_checkbox_state_layer(draw, bounds, progress, state);
+        toggle::draw_checkbox_state_layer(&self.colors, draw, bounds, progress, state);
     }
 
     fn stepper_metrics(&self) -> StepperMetrics {
@@ -161,7 +161,7 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_stepper_button(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        stepper::draw_button(draw, bounds);
+        stepper::draw_button(&self.colors, draw, bounds);
     }
 
     fn draw_stepper_button_state_layer(
@@ -170,7 +170,7 @@ impl WidgetTheme for MaterialTheme {
         bounds: Rect,
         state: WidgetInteractionState,
     ) {
-        stepper::draw_button_state_layer(draw, bounds, state);
+        stepper::draw_button_state_layer(&self.colors, draw, bounds, state);
     }
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
@@ -178,11 +178,11 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn input_placeholder_color(&self) -> Color {
-        input::placeholder_color()
+        input::placeholder_color(&self.colors)
     }
 
     fn draw_input_field(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        input::draw_field(draw, bounds);
+        input::draw_field(&self.colors, draw, bounds);
     }
 
     fn draw_input_field_state_layer(
@@ -191,7 +191,7 @@ impl WidgetTheme for MaterialTheme {
         bounds: Rect,
         state: WidgetInteractionState,
     ) {
-        input::draw_state_layer(draw, bounds, state);
+        input::draw_state_layer(&self.colors, draw, bounds, state);
     }
 
     fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics {
@@ -199,7 +199,7 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_picker_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        picker::draw_indicator(draw, bounds);
+        picker::draw_indicator(&self.colors, draw, bounds);
     }
 
     fn draw_picker_state_layer(
@@ -208,11 +208,11 @@ impl WidgetTheme for MaterialTheme {
         bounds: Rect,
         state: WidgetInteractionState,
     ) {
-        picker::draw_state_layer(draw, bounds, state);
+        picker::draw_state_layer(&self.colors, draw, bounds, state);
     }
 
     fn draw_picker_popup(&self, draw: &mut dyn DrawContext, popup_rect: Rect) {
-        picker::draw_popup(draw, popup_rect);
+        picker::draw_popup(&self.colors, draw, popup_rect);
     }
 
     fn draw_picker_popup_row_background(
@@ -221,7 +221,7 @@ impl WidgetTheme for MaterialTheme {
         row_rect: Rect,
         selected: bool,
     ) {
-        picker::draw_popup_row_background(draw, row_rect, selected);
+        picker::draw_popup_row_background(&self.colors, draw, row_rect, selected);
     }
 
     fn draw_picker_popup_row_state_layer(
@@ -231,11 +231,11 @@ impl WidgetTheme for MaterialTheme {
         selected: bool,
         state: WidgetInteractionState,
     ) {
-        picker::draw_popup_row_state_layer(draw, row_rect, selected, state);
+        picker::draw_popup_row_state_layer(&self.colors, draw, row_rect, selected, state);
     }
 
     fn draw_picker_separator(&self, draw: &mut dyn DrawContext, separator: Rect) {
-        picker::draw_separator(draw, separator);
+        picker::draw_separator(&self.colors, draw, separator);
     }
 
     fn draw_radio_indicator(
@@ -245,7 +245,7 @@ impl WidgetTheme for MaterialTheme {
         radius: f64,
         selected: bool,
     ) {
-        picker::draw_radio_indicator(draw, center, radius, selected);
+        picker::draw_radio_indicator(&self.colors, draw, center, radius, selected);
     }
 
     fn draw_radio_state_layer(
@@ -256,7 +256,7 @@ impl WidgetTheme for MaterialTheme {
         selected: bool,
         state: WidgetInteractionState,
     ) {
-        picker::draw_radio_state_layer(draw, center, radius, selected, state);
+        picker::draw_radio_state_layer(&self.colors, draw, center, radius, selected, state);
     }
 
     fn slider_metrics(&self) -> SliderMetrics {
@@ -264,11 +264,11 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_slider_track(&self, draw: &mut dyn DrawContext, track_rect: Rect, fill_rect: Rect) {
-        slider::draw_track(draw, track_rect, fill_rect);
+        slider::draw_track(&self.colors, draw, track_rect, fill_rect);
     }
 
     fn draw_slider_thumb(&self, draw: &mut dyn DrawContext, center: Point, radius: f64) {
-        slider::draw_thumb(draw, center, radius);
+        slider::draw_thumb(&self.colors, draw, center, radius);
     }
 
     fn draw_slider_thumb_state_layer(
@@ -278,7 +278,7 @@ impl WidgetTheme for MaterialTheme {
         radius: f64,
         state: WidgetInteractionState,
     ) {
-        slider::draw_thumb_state_layer(draw, center, radius, state);
+        slider::draw_thumb_state_layer(&self.colors, draw, center, radius, state);
     }
 
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
@@ -286,11 +286,11 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_progress_linear_track(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        progress::draw_linear_track(draw, bounds);
+        progress::draw_linear_track(&self.colors, draw, bounds);
     }
 
     fn draw_progress_linear_fill(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        progress::draw_linear_fill(draw, bounds);
+        progress::draw_linear_fill(&self.colors, draw, bounds);
     }
 
     fn draw_progress_circular_track(
@@ -300,11 +300,11 @@ impl WidgetTheme for MaterialTheme {
         radius: f64,
         width: f64,
     ) {
-        progress::draw_circular_track(draw, center, radius, width);
+        progress::draw_circular_track(&self.colors, draw, center, radius, width);
     }
 
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64) {
-        progress::draw_circular_fill(draw, path, width);
+        progress::draw_circular_fill(&self.colors, draw, path, width);
     }
 
     fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush) {
@@ -312,19 +312,19 @@ impl WidgetTheme for MaterialTheme {
     }
 
     fn draw_navigation_bar_separator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        navigation_chrome::draw_bar_separator(draw, bounds);
+        navigation_chrome::draw_bar_separator(&self.colors, draw, bounds);
     }
 
     fn draw_navigation_back_button(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        navigation_chrome::draw_back_button(draw, bounds);
+        navigation_chrome::draw_back_button(&self.colors, draw, bounds);
     }
 
     fn draw_tabs_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool) {
-        tabs::draw_bar(draw, bounds, top_edge);
+        tabs::draw_bar(&self.colors, draw, bounds, top_edge);
     }
 
     fn draw_tabs_highlight(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        tabs::draw_highlight(draw, bounds);
+        tabs::draw_highlight(&self.colors, draw, bounds);
     }
 
     fn draw_tabs_button_state_layer(
@@ -334,19 +334,19 @@ impl WidgetTheme for MaterialTheme {
         selected: bool,
         state: WidgetInteractionState,
     ) {
-        tabs::draw_button_state_layer(draw, bounds, selected, state);
+        tabs::draw_button_state_layer(&self.colors, draw, bounds, selected, state);
     }
 
     fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        scroll::draw_indicator(draw, bounds);
+        scroll::draw_indicator(&self.colors, draw, bounds);
     }
 
     fn draw_list_row_background(&self, draw: &mut dyn DrawContext, bounds: Rect, alternate: bool) {
-        list::draw_row_background(draw, bounds, alternate);
+        list::draw_row_background(&self.colors, draw, bounds, alternate);
     }
 
     fn draw_list_move_control(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        list::draw_move_control(draw, bounds);
+        list::draw_move_control(&self.colors, draw, bounds);
     }
 
     fn draw_list_move_control_state_layer(
@@ -355,11 +355,11 @@ impl WidgetTheme for MaterialTheme {
         bounds: Rect,
         state: WidgetInteractionState,
     ) {
-        list::draw_move_control_state_layer(draw, bounds, state);
+        list::draw_move_control_state_layer(&self.colors, draw, bounds, state);
     }
 
     fn draw_list_delete_control(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        list::draw_delete_control(draw, bounds);
+        list::draw_delete_control(&self.colors, draw, bounds);
     }
 
     fn draw_list_delete_control_state_layer(
@@ -368,23 +368,23 @@ impl WidgetTheme for MaterialTheme {
         bounds: Rect,
         state: WidgetInteractionState,
     ) {
-        list::draw_delete_control_state_layer(draw, bounds, state);
+        list::draw_delete_control_state_layer(&self.colors, draw, bounds, state);
     }
 
     fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        list::draw_separator(draw, bounds);
+        list::draw_separator(&self.colors, draw, bounds);
     }
 
     fn draw_table_header_background(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        table::draw_header_background(draw, bounds);
+        table::draw_header_background(&self.colors, draw, bounds);
     }
 
     fn draw_table_cell_border(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        table::draw_cell_border(draw, bounds);
+        table::draw_cell_border(&self.colors, draw, bounds);
     }
 
     fn draw_table_column_separator(&self, draw: &mut dyn DrawContext, from: Point, to: Point) {
-        table::draw_column_separator(draw, from, to);
+        table::draw_column_separator(&self.colors, draw, from, to);
     }
 }
 

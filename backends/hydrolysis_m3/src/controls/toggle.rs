@@ -1,8 +1,5 @@
-use crate::colors::{
-    ACCENT, ACCENT_TRACK_OFF, FOREGROUND_STRONG, THUMB_OUTLINE_SOFT, TOGGLE_OUTLINE_OFF,
-    TOGGLE_OUTLINE_ON,
-};
 use crate::dimensions::{TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH};
+use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{Brush, DrawContext, ToggleMetrics, WidgetInteractionState, lerp_color};
 use waterui_controls::toggle::ToggleStyle;
@@ -17,8 +14,17 @@ pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
     }
 }
 
-pub fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
-    let track_color = lerp_color(ACCENT_TRACK_OFF, ACCENT, progress);
+pub fn draw_switch(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+) {
+    let track_color = lerp_color(
+        colors.surface_container_highest.peniko(),
+        colors.primary.peniko(),
+        progress,
+    );
     let handle_radius = crate::lerp_f64(8.0, 12.0, progress);
     let thumb_center_x = crate::lerp_f64(
         bounds.x0 + 4.0 + handle_radius,
@@ -30,23 +36,23 @@ pub fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progr
     draw.stroke_rounded_rect(
         bounds,
         16.0.into(),
-        &Brush::from(lerp_color(TOGGLE_OUTLINE_OFF, TOGGLE_OUTLINE_ON, progress)),
+        &Brush::from(lerp_color(
+            colors.outline.peniko(),
+            colors.primary.peniko(),
+            progress,
+        )),
         2.0,
     );
-    draw.fill_circle(
-        thumb_center,
-        handle_radius,
-        &Brush::from(vello::peniko::Color::WHITE),
+    let thumb_color = lerp_color(
+        colors.outline.peniko(),
+        colors.on_primary.peniko(),
+        progress,
     );
-    draw.stroke_circle(
-        thumb_center,
-        handle_radius,
-        &Brush::from(THUMB_OUTLINE_SOFT),
-        1.0,
-    );
+    draw.fill_circle(thumb_center, handle_radius, &Brush::from(thumb_color));
 }
 
 pub fn draw_switch_state_layer(
+    colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
     bounds: vello::kurbo::Rect,
     progress: f32,
@@ -59,19 +65,37 @@ pub fn draw_switch_state_layer(
         progress,
     );
     let center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
-    state_layer::draw_unbounded_circle(draw, center, 20.0, FOREGROUND_STRONG, state);
+    let color = if progress > 0.5 {
+        colors.primary.peniko()
+    } else {
+        colors.on_surface.peniko()
+    };
+    state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
 }
 
-pub fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
+pub fn draw_checkbox(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+) {
     draw.fill_rounded_rect(
         bounds,
         2.0.into(),
-        &Brush::from(lerp_color(vello::peniko::Color::WHITE, ACCENT, progress)),
+        &Brush::from(lerp_color(
+            colors.surface.peniko(),
+            colors.primary.peniko(),
+            progress,
+        )),
     );
     draw.stroke_rounded_rect(
         bounds,
         2.0.into(),
-        &Brush::from(lerp_color(TOGGLE_OUTLINE_OFF, TOGGLE_OUTLINE_ON, progress)),
+        &Brush::from(lerp_color(
+            colors.on_surface_variant.peniko(),
+            colors.primary.peniko(),
+            progress,
+        )),
         2.0,
     );
     if progress <= 0.0 {
@@ -93,12 +117,13 @@ pub fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, pro
     ]);
     draw.stroke_path(
         &check,
-        &Brush::from(vello::peniko::Color::new([1.0, 1.0, 1.0, progress])),
+        &Brush::from(colors.on_primary.peniko().with_alpha(progress)),
         2.0,
     );
 }
 
 pub fn draw_checkbox_state_layer(
+    colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
     bounds: vello::kurbo::Rect,
     progress: f32,
@@ -109,9 +134,9 @@ pub fn draw_checkbox_state_layer(
         bounds.y0 + bounds.height() / 2.0,
     );
     let color = if progress > 0.0 {
-        ACCENT
+        colors.primary.peniko()
     } else {
-        FOREGROUND_STRONG
+        colors.on_surface.peniko()
     };
     state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
 }
