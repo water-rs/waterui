@@ -4,6 +4,8 @@
 //! chrome contract from `waterui-backend-core` and does not depend on the
 //! Hydrolysis renderer crate.
 
+pub mod color;
+
 mod controls;
 mod layout;
 mod navigation;
@@ -62,15 +64,26 @@ pub fn install(env: &mut Environment) {
     install_with_colors(env, MaterialColorScheme::baseline_light());
 }
 
+/// Install the dark Material Design 3 baseline color scheme into an environment.
+pub fn install_dark(env: &mut Environment) {
+    install_with_colors(env, MaterialColorScheme::baseline_dark());
+}
+
 /// Install a Material Design 3 widget theme generated from a Material You source color.
 pub fn install_with_seed(
     env: &mut Environment,
     seed: material_color_utils::utils::color_utils::Argb,
 ) {
-    install_with_colors(
-        env,
-        MaterialColorScheme::from_seed(seed, MaterialColorMode::Light),
-    );
+    install_with_seed_mode(env, seed, MaterialColorMode::Light);
+}
+
+/// Install a Material Design 3 widget theme generated from a source color and mode.
+pub fn install_with_seed_mode(
+    env: &mut Environment,
+    seed: material_color_utils::utils::color_utils::Argb,
+    mode: MaterialColorMode,
+) {
+    install_with_colors(env, MaterialColorScheme::from_seed(seed, mode));
 }
 
 /// Install a Material Design 3 widget theme from an explicit color scheme.
@@ -94,6 +107,7 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
         )
         .fonts(theme::typography::settings())
         .install(env);
+    env.insert(colors);
     env.insert(Box::new(MaterialTheme::with_colors(colors)) as Box<dyn WidgetTheme>);
 }
 
