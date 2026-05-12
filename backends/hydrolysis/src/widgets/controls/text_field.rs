@@ -253,9 +253,14 @@ pub(crate) fn render_text_field(
         ctx.bounds.x1,
         ctx.bounds.y1,
     );
+    let hit_transform = ctx.hit_transform;
+    let (field_interaction, _) = ctx
+        .renderer_mut()
+        .bind_interaction_target(transformed_rect(hit_transform, field_rect));
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect);
+        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
 
     let prompt_signal = text_field.prompt.content.clone();
@@ -479,9 +484,14 @@ pub(crate) fn render_secure_field(
         ctx.bounds.x1,
         ctx.bounds.y1,
     );
+    let hit_transform = ctx.hit_transform;
+    let (field_interaction, _) = ctx
+        .renderer_mut()
+        .bind_interaction_target(transformed_rect(hit_transform, field_rect));
     {
         let mut draw = ctx.draw_context();
         theme.draw_input_field(&mut draw, field_rect);
+        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
 
     let selection_slot = ctx.renderer_mut().bind_text_selection_slot();

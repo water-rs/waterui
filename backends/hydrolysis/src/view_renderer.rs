@@ -8,13 +8,13 @@ use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize};
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::SceneViewMergeToParent;
 
-use crate::engine::{MaterialTheme, WidgetTheme};
 use crate::platform::{OffscreenSurface, SurfaceProvider};
 use crate::renderer::HydrolysisRenderer;
 
 /// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
 pub struct HydrolysisViewRenderer {
     surface: Rc<RefCell<Option<OffscreenSurface>>>,
+    configure_environment: Rc<dyn Fn(&mut Environment)>,
 }
 
 impl core::fmt::Debug for HydrolysisViewRenderer {
@@ -29,6 +29,15 @@ impl HydrolysisViewRenderer {
     pub fn new() -> Self {
         Self {
             surface: Rc::new(RefCell::new(None)),
+            configure_environment: Rc::new(|_env| {}),
+        }
+    }
+
+    #[must_use]
+    pub fn with_environment(configure_environment: impl Fn(&mut Environment) + 'static) -> Self {
+        Self {
+            surface: Rc::new(RefCell::new(None)),
+            configure_environment: Rc::new(configure_environment),
         }
     }
 }
@@ -46,6 +55,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         size: RenderSize,
     ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>> {
         let surface = Rc::clone(&self.surface);
+        let configure_environment = Rc::clone(&self.configure_environment);
         Box::pin(async move {
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let width = size.width.max(1.0).round() as u32;
@@ -76,7 +86,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 renderer.begin_rebuild_frame();
 
                 let mut env = Environment::new().extending(SceneViewMergeToParent);
-                env.insert(Box::new(MaterialTheme::new()) as Box<dyn WidgetTheme>);
+                configure_environment(&mut env);
                 let view = crate::renderer::normalize_view_for_render(view, &env);
                 let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 renderer.dispatch(view, &env, bounds);

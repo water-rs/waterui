@@ -126,30 +126,42 @@ pub(crate) fn render_tabs(
 
         let button_rect = tabs_button_rect(bar_rect, tab_count, index);
         {
+            let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
+            let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+            let is_selected = index == selected_index;
             if index == selected_index {
                 let highlight = inset_rect(button_rect, 4.0, 6.0);
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_tabs_highlight(&mut draw, highlight);
             }
+            {
+                let theme = widget_theme(env);
+                let mut draw = ctx.draw_context();
+                theme.draw_tabs_button_state_layer(
+                    &mut draw,
+                    button_rect,
+                    is_selected,
+                    interaction,
+                );
+            }
+            let selection_binding = selection.clone();
+            let tab_id = tab.label.tag;
+            ctx.renderer_mut().register_interactive_pointer_target(
+                hit_bounds,
+                press_slot,
+                move |_renderer, _point, _env| {
+                    if selection_binding.get() != tab_id {
+                        selection_binding.set(tab_id);
+                    }
+                    true
+                },
+            );
         }
         let label_rect = inset_rect(button_rect, TABS_BUTTON_HORIZONTAL_INSET, 8.0);
-        let tab_id = tab.label.tag;
         if label_rect.width() > 0.0 && label_rect.height() > 0.0 {
             ctx.dispatch_in_rect_without_accessibility(env, tab.label.content, label_rect);
         }
-
-        let selection_binding = selection.clone();
-        let hit_transform = ctx.hit_transform;
-        ctx.renderer_mut().register_pointer_target(
-            crate::renderer::transformed_rect(hit_transform, button_rect),
-            move |_renderer, _point, _env| {
-                if selection_binding.get() != tab_id {
-                    selection_binding.set(tab_id);
-                }
-                true
-            },
-        );
     }
 
     if let Some(content) = selected_content

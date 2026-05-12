@@ -15,8 +15,10 @@
 //! - View types: [`AnyView`], [`View`], [`Environment`]
 
 pub mod dispatcher;
+pub mod widget;
 
 pub use dispatcher::ViewDispatcher;
+pub use widget::{Brush, DrawContext, WidgetTheme};
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

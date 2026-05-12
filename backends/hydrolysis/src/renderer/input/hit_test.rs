@@ -1,4 +1,12 @@
 use super::*;
+use core::time::Duration;
+use waterui::animation::Animation;
+use waterui_backend_core::widget::WidgetInteractionState;
+
+const STATE_LAYER_HOVER_ENTER_MS: u64 = 15;
+const STATE_LAYER_PRESS_GROW_MS: u64 = 450;
+const STATE_LAYER_PRESS_FADE_IN_MS: u64 = 105;
+const STATE_LAYER_RELEASE_MS: u64 = 375;
 
 #[derive(Clone)]
 pub(crate) struct PointerTarget {
@@ -6,6 +14,7 @@ pub(crate) struct PointerTarget {
     pub(crate) captures_drag: bool,
     pub(crate) depth: usize,
     pub(crate) order: usize,
+    pub(crate) press_slot: Option<PressSlot>,
     pub(crate) action: PointerAction,
 }
 
@@ -45,6 +54,7 @@ pub(crate) struct HitTestState {
     pub(crate) hover_targets: Vec<HoverTarget>,
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     pub(crate) hover_controller: HoverController,
+    pub(crate) press_controller: PressController,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     pub(crate) hit_test_opacity: f32,
     pub(crate) hit_test_order: usize,
@@ -63,10 +73,12 @@ impl HitTestState {
         self.hit_test_opacity = 1.0;
         self.hit_test_order = 0;
         self.hover_controller.begin_rebuild_frame();
+        self.press_controller.begin_rebuild_frame();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
         self.hover_controller.finish_rebuild_frame();
+        self.press_controller.finish_rebuild_frame();
     }
 
     pub(crate) fn next_hit_test_order(&mut self) -> usize {
@@ -113,6 +125,63 @@ impl HitTestState {
             {
                 changed |= (on_move.borrow_mut())(point, env);
             }
+        }
+        changed
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PressController {
+    pub(crate) slots: Vec<PressStateSlot>,
+    pub(crate) cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PressSlot {
+    pub(crate) index: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct PressStateSlot {
+    pub(crate) pressing: bool,
+    pub(crate) origin: Option<vello::kurbo::Point>,
+}
+
+impl PressController {
+    pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(crate) fn finish_rebuild_frame(&mut self) {
+        self.slots.truncate(self.cursor);
+    }
+
+    pub(crate) fn bind(&mut self) -> (PressSlot, bool) {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("press controller cursor overflow");
+        if index == self.slots.len() {
+            self.slots.push(PressStateSlot {
+                pressing: false,
+                origin: None,
+            });
+        }
+        (PressSlot { index }, self.slots[index].pressing)
+    }
+
+    pub(crate) fn begin_press(&mut self, slot: PressSlot, origin: vello::kurbo::Point) {
+        let state = &mut self.slots[slot.index];
+        state.pressing = true;
+        state.origin = Some(origin);
+    }
+
+    pub(crate) fn clear_all(&mut self) -> bool {
+        let mut changed = false;
+        for slot in &mut self.slots {
+            changed |= slot.pressing;
+            slot.pressing = false;
         }
         changed
     }
@@ -239,6 +308,7 @@ impl HydrolysisRenderer {
         let mut rebuild_requested = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        rebuild_requested |= self.hit_test.press_controller.clear_all();
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -362,6 +432,10 @@ impl HydrolysisRenderer {
 
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
+            if let Some(slot) = target.press_slot {
+                self.hit_test.press_controller.begin_press(slot, point);
+                rebuild_requested = true;
+            }
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
                 x,
@@ -417,6 +491,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        changed |= self.hit_test.press_controller.clear_all();
         let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
         changed |= gesture_changed;
         tracing::trace!(
@@ -482,6 +557,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        rebuild_requested |= self.hit_test.press_controller.clear_all();
         let gesture_changed = self
             .gesture_engine
             .handle_pointer_cancel(Instant::now(), env);
@@ -523,18 +599,6 @@ impl HydrolysisRenderer {
         );
     }
 
-    pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
-    where
-        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
-    {
-        self.register_pointer_target_action(
-            bounds,
-            true,
-            Rc::new(RefCell::new(action)),
-            self.render_depth,
-        );
-    }
-
     pub(crate) fn register_pointer_target_action(
         &mut self,
         bounds: vello::kurbo::Rect,
@@ -551,7 +615,115 @@ impl HydrolysisRenderer {
             captures_drag,
             depth,
             order,
+            press_slot: None,
             action,
+        });
+    }
+
+    pub(crate) fn bind_interaction_target(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+    ) -> (WidgetInteractionState, PressSlot) {
+        let (hover_slot, hovered) = self.hit_test.hover_controller.bind();
+        let (press_slot, pressed) = self.hit_test.press_controller.bind();
+        let press_origin = self.hit_test.press_controller.slots[press_slot.index].origin;
+        if self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
+            self.hit_test.hover_targets.push(HoverTarget {
+                bounds,
+                slot: hover_slot,
+                on_enter: None,
+                on_move: None,
+                on_exit: None,
+            });
+        }
+        let target_opacity = WidgetInteractionState {
+            hovered,
+            pressed: false,
+            focus_visible: false,
+            state_layer_opacity: 0.0,
+            press_layer_opacity: 0.0,
+            press_origin: None,
+            press_progress: 0.0,
+        }
+        .state_layer_opacity();
+        let now = Instant::now();
+        let alpha_handle = self.animation_controller.bind_scalar_target(
+            target_opacity,
+            state_layer_animation(target_opacity),
+            now,
+        );
+        let state_layer_opacity = alpha_handle.sample(now);
+        let press_opacity_handle = self.animation_controller.bind_scalar_target(
+            if pressed {
+                WidgetInteractionState::PRESSED_STATE_LAYER_OPACITY
+            } else {
+                0.0
+            },
+            press_layer_opacity_animation(pressed),
+            now,
+        );
+        let press_layer_opacity = press_opacity_handle.sample(now);
+        let press_progress_handle = self.animation_controller.bind_scalar_target(
+            if press_origin.is_some() { 1.0 } else { 0.0 },
+            Animation::ease_in_out(Duration::from_millis(STATE_LAYER_PRESS_GROW_MS)),
+            now,
+        );
+        let press_progress = press_progress_handle.sample(now);
+        (
+            WidgetInteractionState {
+                hovered,
+                pressed,
+                focus_visible: false,
+                state_layer_opacity,
+                press_layer_opacity,
+                press_origin,
+                press_progress,
+            },
+            press_slot,
+        )
+    }
+
+    pub(crate) fn register_interactive_pointer_target<F>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        press_slot: PressSlot,
+        action: F,
+    ) where
+        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
+    {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test.pointer_targets.push(PointerTarget {
+            bounds,
+            captures_drag: false,
+            depth: self.render_depth,
+            order,
+            press_slot: Some(press_slot),
+            action: Rc::new(RefCell::new(action)),
+        });
+    }
+
+    pub(crate) fn register_interactive_pointer_drag_target<F>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        press_slot: PressSlot,
+        action: F,
+    ) where
+        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
+    {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test.pointer_targets.push(PointerTarget {
+            bounds,
+            captures_drag: true,
+            depth: self.render_depth,
+            order,
+            press_slot: Some(press_slot),
+            action: Rc::new(RefCell::new(action)),
         });
     }
 
@@ -651,4 +823,22 @@ impl HydrolysisRenderer {
             .scroll_targets
             .push(ScrollTarget { bounds, action });
     }
+}
+
+fn state_layer_animation(target_opacity: f32) -> Animation {
+    let duration = if target_opacity > 0.0 {
+        STATE_LAYER_HOVER_ENTER_MS
+    } else {
+        STATE_LAYER_RELEASE_MS
+    };
+    Animation::ease_in_out(Duration::from_millis(duration))
+}
+
+fn press_layer_opacity_animation(pressed: bool) -> Animation {
+    let duration = if pressed {
+        STATE_LAYER_PRESS_FADE_IN_MS
+    } else {
+        STATE_LAYER_RELEASE_MS
+    };
+    Animation::ease_in_out(Duration::from_millis(duration))
 }

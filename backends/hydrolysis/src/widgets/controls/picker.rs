@@ -20,6 +20,7 @@ use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
 use crate::widgets::util::widget_theme;
+use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -217,7 +218,7 @@ pub(crate) fn render_picker(
 pub(crate) fn menu_picker_row_height(
     field_bounds: vello::kurbo::Rect,
     max_item_text_height: f64,
-    metrics: hydrolysis_m3::PickerMetrics,
+    metrics: PickerMetrics,
 ) -> f64 {
     field_bounds
         .height()
@@ -229,7 +230,7 @@ pub(crate) fn menu_picker_popup_rect(
     field_bounds: vello::kurbo::Rect,
     row_height: f64,
     item_count: usize,
-    metrics: hydrolysis_m3::PickerMetrics,
+    metrics: PickerMetrics,
 ) -> vello::kurbo::Rect {
     let y0 = field_bounds.y1 + metrics.popup_top_spacing;
     let y1 = y0 + row_height * item_count as f64;
@@ -279,13 +280,30 @@ pub(crate) fn render_menu_picker(
 
     {
         let bounds = ctx.bounds;
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, bounds);
-        theme.draw_picker_indicator(&mut draw, bounds);
+        let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+        {
+            let mut draw = ctx.draw_context();
+            theme.draw_input_field(&mut draw, bounds);
+            theme.draw_picker_state_layer(&mut draw, bounds, interaction);
+            theme.draw_picker_indicator(&mut draw, bounds);
+        }
+        let field_open_state = Rc::clone(&menu_open);
+        ctx.renderer_mut().register_interactive_pointer_target(
+            hit_bounds,
+            press_slot,
+            move |_renderer, _point, _env| {
+                field_open_state.set(!field_open_state.get());
+                true
+            },
+        );
     }
 
-    let text_bounds =
-        crate::widgets::util::inset_rect(ctx.bounds, metrics.horizontal_inset, metrics.vertical_inset);
+    let text_bounds = crate::widgets::util::inset_rect(
+        ctx.bounds,
+        metrics.horizontal_inset,
+        metrics.vertical_inset,
+    );
     let text_bounds = vello::kurbo::Rect::new(
         text_bounds.x0,
         text_bounds.y0,
@@ -297,17 +315,6 @@ pub(crate) fn render_menu_picker(
         HorizontalAlignment::Leading,
         env,
         text_bounds,
-    );
-
-    let field_open_state = Rc::clone(&menu_open);
-    let hit_transform = ctx.hit_transform;
-    let bounds = ctx.bounds;
-    ctx.renderer_mut().register_pointer_target(
-        transformed_rect(hit_transform, bounds),
-        move |_renderer, _point, _env| {
-            field_open_state.set(!field_open_state.get());
-            true
-        },
     );
 
     if !is_menu_open {
@@ -323,9 +330,17 @@ pub(crate) fn render_menu_picker(
 
     for (index, item) in items.into_iter().enumerate() {
         let row_rect = menu_picker_option_rect(popup_rect, row_height, index);
+        let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect);
         {
             let mut draw = ctx.draw_context();
             theme.draw_picker_popup_row_background(&mut draw, row_rect, item.tag == selected);
+            theme.draw_picker_popup_row_state_layer(
+                &mut draw,
+                row_rect,
+                item.tag == selected,
+                interaction,
+            );
         }
         if index + 1 < option_texts.len() {
             let separator = vello::kurbo::Rect::new(
@@ -337,8 +352,11 @@ pub(crate) fn render_menu_picker(
             let mut draw = ctx.draw_context();
             theme.draw_picker_separator(&mut draw, separator);
         }
-        let row_text_rect =
-            crate::widgets::util::inset_rect(row_rect, metrics.horizontal_inset, metrics.vertical_inset);
+        let row_text_rect = crate::widgets::util::inset_rect(
+            row_rect,
+            metrics.horizontal_inset,
+            metrics.vertical_inset,
+        );
         ctx.render_styled_text(
             StyledStr::plain(option_texts[index].clone()),
             HorizontalAlignment::Leading,
@@ -349,9 +367,9 @@ pub(crate) fn render_menu_picker(
         let open_state = Rc::clone(&menu_open);
         let selection = selection.clone();
         let tag = item.tag;
-        let hit_transform = ctx.hit_transform;
-        ctx.renderer_mut().register_pointer_target(
-            transformed_rect(hit_transform, row_rect),
+        ctx.renderer_mut().register_interactive_pointer_target(
+            hit_rect,
+            press_slot,
             move |_renderer, _point, _env| {
                 if selection.get() != tag {
                     selection.set(tag);
@@ -398,8 +416,17 @@ pub(crate) fn render_radio_picker(
         );
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
+        let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
+        let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_rect);
         {
             let mut draw = ctx.draw_context();
+            theme.draw_radio_state_layer(
+                &mut draw,
+                indicator_center,
+                indicator_radius,
+                is_selected,
+                interaction,
+            );
             theme.draw_radio_indicator(&mut draw, indicator_center, indicator_radius, is_selected);
         }
 
@@ -412,9 +439,8 @@ pub(crate) fn render_radio_picker(
         ctx.render_styled_text(label, HorizontalAlignment::Leading, env, label_rect);
 
         let tag = item.tag;
-        let hit_transform = ctx.hit_transform;
         ctx.renderer_mut()
-            .register_pointer_target(transformed_rect(hit_transform, row_rect), {
+            .register_interactive_pointer_target(hit_rect, press_slot, {
                 let selection = selection.clone();
                 move |_renderer, _point, _env| {
                     if selection.get() == tag {

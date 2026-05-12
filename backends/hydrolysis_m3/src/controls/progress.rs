@@ -4,12 +4,11 @@ use crate::dimensions::{
     PROGRESS_LINEAR_BAR_TOP_OFFSET, PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH,
     PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
 };
-use crate::{Brush, DrawContext, ProgressMetrics};
-use waterui::component::progress::ProgressStyle;
+use crate::{Brush, DrawContext, ProgressIndicatorStyle, ProgressMetrics};
 
-pub fn metrics(style: ProgressStyle) -> ProgressMetrics {
+pub fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
     match style {
-        ProgressStyle::Linear => ProgressMetrics::linear(
+        ProgressIndicatorStyle::Linear => ProgressMetrics::linear(
             PROGRESS_LINEAR_LABEL_HEIGHT,
             PROGRESS_LINEAR_BAR_TOP_OFFSET,
             PROGRESS_LINEAR_BAR_HEIGHT,
@@ -17,17 +16,16 @@ pub fn metrics(style: ProgressStyle) -> ProgressMetrics {
             PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
             PROGRESS_LINEAR_MIN_TRACK_WIDTH,
         ),
-        ProgressStyle::Circular => ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER),
-        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
+        ProgressIndicatorStyle::Circular => ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER),
     }
 }
 
 pub fn draw_linear_track(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
-    draw.fill_rounded_rect(bounds, 4.0.into(), &Brush::from(OUTLINE_SUBTLE));
+    draw.fill_rounded_rect(bounds, 2.0.into(), &Brush::from(OUTLINE_SUBTLE));
 }
 
 pub fn draw_linear_fill(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
-    draw.fill_rounded_rect(bounds, 4.0.into(), &Brush::from(ACCENT_FILL));
+    draw.fill_rounded_rect(bounds, 2.0.into(), &Brush::from(ACCENT_FILL));
 }
 
 pub fn draw_circular_track(

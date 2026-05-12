@@ -128,6 +128,17 @@ impl DrawContext for VelloDrawContext<'_> {
         );
     }
 
+    fn push_rounded_layer(&mut self, alpha: f32, clip: Rect, radii: RoundedRectRadii) {
+        let clip = RoundedRect::from_rect(clip, radii);
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            self.transform(),
+            &clip,
+        );
+    }
+
     fn pop_layer(&mut self) {
         self.scene.pop_layer();
     }

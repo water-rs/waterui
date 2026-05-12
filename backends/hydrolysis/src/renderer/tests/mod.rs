@@ -11,9 +11,9 @@ use waterui_form::picker::PickerStyle;
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
-use hydrolysis_m3::{
-    ButtonMetrics, InputFieldMetrics, PickerMetrics, ProgressMetrics, SliderMetrics,
-    StepperMetrics, ToggleMetrics,
+use waterui_backend_core::widget::{
+    ButtonMetrics, InputFieldMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
+    SliderMetrics, StepperMetrics, ToggleMetrics,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -345,12 +345,9 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_slider_thumb(&self, _draw: &mut dyn DrawContext, _center: Point, _radius: f64) {}
 
-    fn progress_metrics(
-        &self,
-        style: waterui::component::progress::ProgressStyle,
-    ) -> ProgressMetrics {
+    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
         match style {
-            waterui::component::progress::ProgressStyle::Linear => ProgressMetrics {
+            ProgressIndicatorStyle::Linear => ProgressMetrics {
                 label_height: 18.0,
                 bar_top_offset: 10.0,
                 bar_height: 8.0,
@@ -359,7 +356,7 @@ impl WidgetTheme for MinimalTestTheme {
                 min_track_width: 72.0,
                 circular_diameter: 0.0,
             },
-            waterui::component::progress::ProgressStyle::Circular => ProgressMetrics {
+            ProgressIndicatorStyle::Circular => ProgressMetrics {
                 label_height: 0.0,
                 bar_top_offset: 0.0,
                 bar_height: 0.0,
@@ -367,15 +364,6 @@ impl WidgetTheme for MinimalTestTheme {
                 value_label_top_spacing: 0.0,
                 min_track_width: 0.0,
                 circular_diameter: 32.0,
-            },
-            _ => ProgressMetrics {
-                label_height: 18.0,
-                bar_top_offset: 10.0,
-                bar_height: 8.0,
-                bar_horizontal_inset: 8.0,
-                value_label_top_spacing: 6.0,
-                min_track_width: 72.0,
-                circular_diameter: 0.0,
             },
         }
     }

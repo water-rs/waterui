@@ -18,7 +18,7 @@ mod time;
 mod view_renderer;
 mod widgets;
 
-pub use engine::{Brush, DrawContext, MaterialTheme, WidgetTheme};
+pub use engine::{Brush, DrawContext, WidgetTheme};
 pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::BrowserWindow;

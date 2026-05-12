@@ -129,9 +129,12 @@ pub(crate) fn render_button(
     let button = button.into_inner();
     let style = button.style;
     let bounds = ctx.bounds;
+    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
+        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
 
     let metrics = theme.button_metrics(style);
@@ -143,21 +146,20 @@ pub(crate) fn render_button(
         let render_ctx = ctx.render_context();
         let renderer = ctx.renderer_mut();
         HydrolysisRenderer::dispatch_any_without_accessibility(
-            renderer,
-            render_ctx,
-            env,
-            label_view,
+            renderer, render_ctx, env, label_view,
         );
     }
 
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let mut action = button.action;
     let action_env = env.clone();
-    ctx.renderer_mut()
-        .register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_bounds,
+        press_slot,
+        move |_renderer, _point, _env| {
             action(&action_env);
             true
-        });
+        },
+    );
 }
 
 pub(crate) fn render_menu(
@@ -174,9 +176,12 @@ pub(crate) fn render_menu(
     } = menu;
     let style = ButtonStyle::Borderless;
     let bounds = ctx.bounds;
+    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
     {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style);
+        theme.draw_button_state_layer(&mut draw, bounds, style, interaction);
     }
 
     let metrics = theme.button_metrics(style);
@@ -189,12 +194,14 @@ pub(crate) fn render_menu(
         HydrolysisRenderer::dispatch_any_without_accessibility(renderer, render_ctx, env, label);
     }
 
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let anchor = LayoutPoint::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
-    ctx.renderer_mut()
-        .register_pointer_target(hit_bounds, move |renderer, _point, env| {
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_bounds,
+        press_slot,
+        move |renderer, _point, env| {
             renderer.show_popup_menu_nodes(popup_menu_nodes(&items.get()), anchor, env)
-        });
+        },
+    );
 }
 
 pub(crate) fn measure_button_intrinsic(
