@@ -116,15 +116,18 @@ pub(crate) fn render_progress(
             }
         }
         ProgressStyle::Circular => {
+            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Circular);
             let center = vello::kurbo::Point::new(
                 ctx.bounds.x0 + ctx.bounds.width() / 2.0,
                 ctx.bounds.y0 + ctx.bounds.height() / 2.0,
             );
-            let radius = (ctx.bounds.width().min(ctx.bounds.height()) / 2.0 - 6.0).max(2.0);
+            let stroke_width = metrics.circular_stroke_width;
+            let radius =
+                (ctx.bounds.width().min(ctx.bounds.height()) - stroke_width).max(0.0) / 2.0;
             let arc = circle_arc_path(center, radius, -core::f64::consts::FRAC_PI_2, TAU * clamped);
             let mut draw = ctx.draw_context();
-            theme.draw_progress_circular_track(&mut draw, center, radius, 5.0);
-            theme.draw_progress_circular_fill(&mut draw, &arc, 5.0);
+            theme.draw_progress_circular_track(&mut draw, center, radius, stroke_width);
+            theme.draw_progress_circular_fill(&mut draw, &arc, stroke_width);
         }
         _ => {
             panic!("hydrolysis ProgressStyle variant is not implemented");
