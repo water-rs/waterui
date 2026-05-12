@@ -12,11 +12,19 @@ use waterui_text::font::Font;
 pub enum Brush {
     /// A solid peniko color.
     Solid(vello::peniko::Color),
+    /// A peniko gradient.
+    Gradient(vello::peniko::Gradient),
 }
 
 impl From<vello::peniko::Color> for Brush {
     fn from(value: vello::peniko::Color) -> Self {
         Self::Solid(value)
+    }
+}
+
+impl From<vello::peniko::Gradient> for Brush {
+    fn from(value: vello::peniko::Gradient) -> Self {
+        Self::Gradient(value)
     }
 }
 
