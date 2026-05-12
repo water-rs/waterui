@@ -1,4 +1,6 @@
-use crate::dimensions::{TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH};
+use crate::dimensions::{
+    TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_WIDTH,
+};
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{Brush, DrawContext, ToggleMetrics, WidgetInteractionState, lerp_color};
@@ -33,16 +35,15 @@ pub fn draw_switch(
     );
     let thumb_center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
     draw.fill_rounded_rect(bounds, 16.0.into(), &Brush::from(track_color));
-    draw.stroke_rounded_rect(
-        bounds,
-        16.0.into(),
-        &Brush::from(lerp_color(
-            colors.outline.peniko(),
-            colors.primary.peniko(),
-            progress,
-        )),
-        2.0,
-    );
+    let outline_opacity = (1.0 - progress).clamp(0.0, 1.0);
+    if outline_opacity > 0.0 {
+        draw.stroke_rounded_rect(
+            bounds,
+            16.0.into(),
+            &Brush::from(colors.outline.peniko().with_alpha(outline_opacity)),
+            TOGGLE_SWITCH_OUTLINE_WIDTH,
+        );
+    }
     let thumb_color = lerp_color(
         colors.outline.peniko(),
         colors.on_primary.peniko(),
@@ -71,6 +72,70 @@ pub fn draw_switch_state_layer(
         colors.on_surface.peniko()
     };
     state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
+}
+
+#[cfg(test)]
+mod tests {
+    use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+
+    use super::{MaterialColorScheme, draw_switch};
+    use crate::{Brush, DrawContext};
+
+    #[derive(Default)]
+    struct RecordingDrawContext {
+        rounded_stroke_count: usize,
+    }
+
+    impl DrawContext for RecordingDrawContext {
+        fn fill_rect(&mut self, _rect: Rect, _brush: &Brush) {}
+
+        fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, _brush: &Brush) {}
+
+        fn stroke_rect(&mut self, _rect: Rect, _brush: &Brush, _width: f64) {}
+
+        fn stroke_rounded_rect(
+            &mut self,
+            _rect: Rect,
+            _radii: RoundedRectRadii,
+            _brush: &Brush,
+            _width: f64,
+        ) {
+            self.rounded_stroke_count += 1;
+        }
+
+        fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
+
+        fn stroke_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush, _width: f64) {}
+
+        fn fill_circle(&mut self, _center: Point, _radius: f64, _brush: &Brush) {}
+
+        fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
+
+        fn stroke_path(&mut self, _path: &BezPath, _brush: &Brush, _width: f64) {}
+
+        fn push_layer(&mut self, _alpha: f32, _clip: Option<&Rect>) {}
+
+        fn pop_layer(&mut self) {}
+
+        fn push_transform(&mut self, _affine: Affine) {}
+
+        fn pop_transform(&mut self) {}
+    }
+
+    #[test]
+    fn selected_material_switch_track_has_no_outline() {
+        let colors = MaterialColorScheme::baseline_light();
+        let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
+
+        let mut unselected = RecordingDrawContext::default();
+        draw_switch(&colors, &mut unselected, bounds, 0.0);
+
+        let mut selected = RecordingDrawContext::default();
+        draw_switch(&colors, &mut selected, bounds, 1.0);
+
+        assert_eq!(unselected.rounded_stroke_count, 1);
+        assert_eq!(selected.rounded_stroke_count, 0);
+    }
 }
 
 pub fn draw_checkbox(
