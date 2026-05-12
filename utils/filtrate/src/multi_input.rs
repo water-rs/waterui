@@ -581,15 +581,11 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
             self.runtime.last_uniform = Some(uniform);
         }
 
-        let aux0 = self.runtime.uploaded_aux_images[0]
-            .as_ref()
-            .map_or(&fallback_aux.view, |value| &value.view);
-        let aux1 = self.runtime.uploaded_aux_images[1]
-            .as_ref()
-            .map_or(&fallback_aux.view, |value| &value.view);
-        let aux2 = self.runtime.uploaded_aux_images[2]
-            .as_ref()
-            .map_or(&fallback_aux.view, |value| &value.view);
+        let aux_views: [&wgpu::TextureView; MAX_AUX_IMAGES] = core::array::from_fn(|slot| {
+            self.runtime.uploaded_aux_images[slot]
+                .as_ref()
+                .map_or(&fallback_aux.view, |value| &value.view)
+        });
 
         let bind_group = input.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("multi-input filter bind group"),
@@ -605,15 +601,15 @@ impl<O: MultiInputOperation> Effect for MultiInputFilter<O> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(aux0),
+                    resource: wgpu::BindingResource::TextureView(aux_views[0]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(aux1),
+                    resource: wgpu::BindingResource::TextureView(aux_views[1]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(aux2),
+                    resource: wgpu::BindingResource::TextureView(aux_views[2]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,

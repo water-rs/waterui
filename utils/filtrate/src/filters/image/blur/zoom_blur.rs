@@ -1,6 +1,6 @@
 //! Zoom blur filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies radial zoom blur toward or away from a focal point.
 ///
@@ -9,7 +9,7 @@ use crate::FilterDerive;
 /// - `amount`: Blur strength in normalized UV space
 /// - `center_x`: Blur center x coordinate in normalized UV space
 /// - `center_y`: Blur center y coordinate in normalized UV space
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(spatial, shader = "image/blur/zoom_blur.wgsl")]
 pub struct ZoomBlur<A, X, Y>(pub A, pub X, pub Y);
 

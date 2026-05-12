@@ -1,6 +1,6 @@
 //! Brightness filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts the brightness of an image.
 ///
@@ -18,7 +18,7 @@ use crate::FilterDerive;
 /// // Static brightness
 /// let bright = Brightness(0.2);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/adjustment/brightness.wgsl")]
 pub struct Brightness<T>(pub T);
 

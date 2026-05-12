@@ -1,6 +1,6 @@
 //! Sepia filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies a sepia tone effect to an image.
 ///
@@ -17,7 +17,7 @@ use crate::FilterDerive;
 ///
 /// let vintage = Sepia(0.8);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/transform/sepia.wgsl")]
 pub struct Sepia<T>(pub T);
 

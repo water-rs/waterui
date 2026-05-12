@@ -6,52 +6,64 @@
 //! Apple's `CIPhotoEffect*` family but are not pixel-identical — they aim
 //! to capture the same overall mood with simpler implementations.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Monochrome: luminance-based desaturation. Approximates `CIPhotoEffectMono`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, fragment = "stylize/photo_effects/photo_effect_mono.wgsl")]
 pub struct PhotoEffectMono;
 
 /// Noir: high-contrast luminance desaturation, midtone-stretched.
 /// Approximates `CIPhotoEffectNoir`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, fragment = "stylize/photo_effects/photo_effect_noir.wgsl")]
 pub struct PhotoEffectNoir;
 
 /// Chrome: saturation boost with a subtle warm tint.
 /// Approximates `CIPhotoEffectChrome`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
-#[filter(color_only, fragment = "stylize/photo_effects/photo_effect_chrome.wgsl")]
+#[derive(Debug, Clone, Copy, Default, Filter)]
+#[filter(
+    color_only,
+    fragment = "stylize/photo_effects/photo_effect_chrome.wgsl"
+)]
 pub struct PhotoEffectChrome;
 
 /// Instant: instant-camera warmth with reduced contrast.
 /// Approximates `CIPhotoEffectInstant`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
-#[filter(color_only, fragment = "stylize/photo_effects/photo_effect_instant.wgsl")]
+#[derive(Debug, Clone, Copy, Default, Filter)]
+#[filter(
+    color_only,
+    fragment = "stylize/photo_effects/photo_effect_instant.wgsl"
+)]
 pub struct PhotoEffectInstant;
 
 /// Fade: lifted blacks and mild desaturation. Approximates
 /// `CIPhotoEffectFade`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, fragment = "stylize/photo_effects/photo_effect_fade.wgsl")]
 pub struct PhotoEffectFade;
 
 /// Process: cool cast with crushed highlights. Approximates
 /// `CIPhotoEffectProcess`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
-#[filter(color_only, fragment = "stylize/photo_effects/photo_effect_process.wgsl")]
+#[derive(Debug, Clone, Copy, Default, Filter)]
+#[filter(
+    color_only,
+    fragment = "stylize/photo_effects/photo_effect_process.wgsl"
+)]
 pub struct PhotoEffectProcess;
 
 /// Tonal: neutral low-saturation. Approximates `CIPhotoEffectTonal`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, fragment = "stylize/photo_effects/photo_effect_tonal.wgsl")]
 pub struct PhotoEffectTonal;
 
 /// Transfer: warm fade with a soft sepia bias. Approximates
 /// `CIPhotoEffectTransfer`.
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
-#[filter(color_only, fragment = "stylize/photo_effects/photo_effect_transfer.wgsl")]
+#[derive(Debug, Clone, Copy, Default, Filter)]
+#[filter(
+    color_only,
+    fragment = "stylize/photo_effects/photo_effect_transfer.wgsl"
+)]
 pub struct PhotoEffectTransfer;
 
 #[cfg(test)]

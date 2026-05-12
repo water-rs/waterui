@@ -1,9 +1,9 @@
 //! Color matrix filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies a 3x4 color matrix to RGB channels.
-#[derive(Debug, Clone, FilterDerive)]
+#[derive(Debug, Clone, Filter)]
 #[filter(color_only, fragment = "color/transform/color_matrix.wgsl")]
 pub struct ColorMatrix<T>(pub [T; 12]);
 

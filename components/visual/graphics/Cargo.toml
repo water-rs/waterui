@@ -45,6 +45,11 @@ naga = { version = "27", features = ["wgsl-in"] }
 [dev-dependencies]
 waterui.workspace = true
 waterui-testing.workspace = true
+divan = "0.1"
+
+[[bench]]
+name = "filter_runtime"
+harness = false
 
 [lints]
 workspace = true

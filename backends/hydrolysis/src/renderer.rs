@@ -299,6 +299,7 @@ pub struct HydrolysisRenderer {
 struct AppliedFilterRuntime {
     filter: AppliedFilter,
     setup_complete: bool,
+    input_texture: Option<AppliedFilterInputTexture>,
 }
 
 impl AppliedFilterRuntime {
@@ -306,6 +307,7 @@ impl AppliedFilterRuntime {
         Self {
             filter,
             setup_complete: false,
+            input_texture: None,
         }
     }
 
@@ -313,6 +315,54 @@ impl AppliedFilterRuntime {
         self.filter = filter;
         self.setup_complete = false;
     }
+
+    fn input_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (&wgpu::Texture, &wgpu::TextureView) {
+        if self
+            .input_texture
+            .as_ref()
+            .is_none_or(|texture| texture.width != width || texture.height != height)
+        {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("hydrolysis_applied_filter_input"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.input_texture = Some(AppliedFilterInputTexture {
+                width,
+                height,
+                texture,
+                view,
+            });
+        }
+
+        let Some(texture) = self.input_texture.as_ref() else {
+            panic!("hydrolysis AppliedFilter input texture cache missing after allocation");
+        };
+        (&texture.texture, &texture.view)
+    }
+}
+
+struct AppliedFilterInputTexture {
+    width: u32,
+    height: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 struct ViewEffectRuntime {
@@ -1723,21 +1773,11 @@ impl HydrolysisRenderer {
         renderer.dispatch_with_render_depth(content, env, ctx);
         core::mem::swap(&mut renderer.scene, &mut subtree_scene);
 
-        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_applied_filter_input"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (input_texture, input_view) = {
+            let mut runtime = runtime.borrow_mut();
+            let (texture, view) = runtime.input_texture(&device, width, height);
+            (texture.clone(), view.clone())
+        };
         renderer
             .vello_renderer
             .render_to_texture(
@@ -1795,7 +1835,7 @@ impl HydrolysisRenderer {
             device: &device,
             queue: &queue,
             texture: &input_texture,
-            view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            view: input_view,
             format: wgpu::TextureFormat::Rgba8Unorm,
             width,
             height,

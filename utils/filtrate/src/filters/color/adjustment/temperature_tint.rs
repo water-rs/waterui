@@ -1,6 +1,6 @@
 //! Temperature/tint filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts white balance through temperature and tint shifts.
 ///
@@ -8,7 +8,7 @@ use crate::FilterDerive;
 ///
 /// - `temperature`: Blue↔yellow shift (-1.0 = cooler, 1.0 = warmer)
 /// - `tint`: Green↔magenta shift (-1.0 = greener, 1.0 = more magenta)
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/adjustment/temperature_tint.wgsl")]
 pub struct TemperatureTint<T, U>(pub T, pub U);
 

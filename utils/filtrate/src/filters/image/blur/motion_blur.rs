@@ -1,6 +1,6 @@
 //! Motion blur filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies directional motion blur.
 ///
@@ -8,7 +8,7 @@ use crate::FilterDerive;
 ///
 /// - `radius`: Blur radius in pixels along the motion axis
 /// - `angle`: Blur direction in degrees
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(spatial, shader = "image/blur/motion_blur.wgsl")]
 pub struct MotionBlur<R, A>(pub R, pub A);
 

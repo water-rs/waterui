@@ -1,6 +1,6 @@
 //! 3x3 median filter.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Per-channel 3x3 median filter. Removes salt-and-pepper noise while
 /// preserving edges better than a box blur.
@@ -12,7 +12,7 @@ use crate::FilterDerive;
 ///
 /// let denoised = Median3x3;
 /// ```
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(spatial, shader = "image/convolution/median3x3.wgsl")]
 pub struct Median3x3;
 

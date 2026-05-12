@@ -40,4 +40,4 @@ pub use filtrate_core::{
 
 /// Procedural derive that generates a [`Filter`] implementation for a tuple
 /// struct. See `filtrate-derive` for the supported `#[filter(...)]` shapes.
-pub use filtrate_derive::Filter as FilterDerive;
+pub use filtrate_derive::Filter;

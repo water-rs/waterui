@@ -40,7 +40,10 @@ impl<T: FilterParam> Filter for Blur<T> {
     fn fragments(&self) -> &'static str {
         // The standalone shader is retained for legacy direct rendering paths;
         // the planner uses `collect_stages` which emits the separable pair.
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/image/blur/blur.wgsl"))
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/image/blur/blur.wgsl"
+        ))
     }
 
     fn pass_count(&self) -> u32 {
@@ -48,8 +51,20 @@ impl<T: FilterParam> Filter for Blur<T> {
     }
 
     fn collect_stages<C: StageCollector>(&self, c: &mut C) {
-        c.spatial_shader(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/image/blur/blur_horizontal.wgsl")), 1);
-        c.spatial_shader(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/image/blur/blur_vertical.wgsl")), 1);
+        c.spatial_shader(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/shaders/image/blur/blur_horizontal.wgsl"
+            )),
+            1,
+        );
+        c.spatial_shader(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/shaders/image/blur/blur_vertical.wgsl"
+            )),
+            1,
+        );
     }
 
     fn visit_signals<V: SignalVisitor>(&self, v: &mut V) {

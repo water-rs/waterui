@@ -1,6 +1,6 @@
 //! 5x5 convolution filter with a caller-supplied kernel.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Per-channel 5x5 convolution with an arbitrary 25-element kernel
 /// (row-major, top-left to bottom-right). Counterpart to
@@ -10,7 +10,7 @@ use crate::FilterDerive;
 /// Note: 25 floats consume nearly half of the 64-float pipeline parameter
 /// budget — chaining a `Convolution5x5` with another large filter may
 /// exceed the limit and fail setup at runtime.
-#[derive(Debug, Clone, FilterDerive)]
+#[derive(Debug, Clone, Filter)]
 #[filter(spatial, shader = "image/convolution/convolution5x5.wgsl")]
 pub struct Convolution5x5<T>(pub [T; 25]);
 

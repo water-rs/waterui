@@ -1,6 +1,6 @@
 //! Saturation filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts the color saturation of an image.
 ///
@@ -18,7 +18,7 @@ use crate::FilterDerive;
 /// let desaturated = Saturation(0.5);
 /// let vibrant = Saturation(1.5);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/transform/saturation.wgsl")]
 pub struct Saturation<T>(pub T);
 

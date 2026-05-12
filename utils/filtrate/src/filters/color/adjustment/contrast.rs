@@ -1,6 +1,6 @@
 //! Contrast filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts the contrast of an image.
 ///
@@ -17,7 +17,7 @@ use crate::FilterDerive;
 ///
 /// let high_contrast = Contrast(1.5);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/adjustment/contrast.wgsl")]
 pub struct Contrast<T>(pub T);
 

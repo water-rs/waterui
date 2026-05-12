@@ -1,7 +1,8 @@
 //! Offscreen rendering regression test for `GpuSurface`.
 
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
+    OffscreenSize,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -55,9 +56,11 @@ fn render_offscreen_returns_expected_rgba_and_png() {
     };
     let mut env = waterui_core::Environment::new();
 
-    let output = GpuSurface::new(renderer)
-        .render_offscreen(config, &mut env)
-        .expect("offscreen render should succeed");
+    let output = match GpuSurface::new(renderer).render_offscreen(config, &mut env) {
+        Ok(output) => output,
+        Err(OffscreenRenderError::NoAdapter) => return,
+        Err(error) => panic!("offscreen render should succeed: {error}"),
+    };
 
     assert_eq!(output.width, 16);
     assert_eq!(output.height, 12);

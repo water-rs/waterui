@@ -1,6 +1,6 @@
 //! Sharpen filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Sharpens image details using an unsharp mask.
 ///
@@ -19,7 +19,7 @@ use crate::FilterDerive;
 /// let subtle = Sharpen(0.5);
 /// let crisp = Sharpen(1.5);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(spatial, shader = "image/convolution/sharpen.wgsl")]
 pub struct Sharpen<T>(pub T);
 

@@ -1,6 +1,6 @@
 //! Hue rotation filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Rotates the hue of all colors around the color wheel.
 ///
@@ -18,7 +18,7 @@ use crate::FilterDerive;
 /// // Rotate 180 degrees (complementary colors)
 /// let complement = HueRotation(180.0);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/transform/hue_rotation.wgsl")]
 pub struct HueRotation<T>(pub T);
 

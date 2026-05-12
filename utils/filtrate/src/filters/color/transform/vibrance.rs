@@ -1,13 +1,13 @@
 //! Vibrance filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts vibrance, boosting muted colors more than already saturated ones.
 ///
 /// # Parameters
 ///
 /// - `amount`: Vibrance amount (-1.0 = muted, 0.0 = unchanged, 1.0 = strongly boosted)
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/transform/vibrance.wgsl")]
 pub struct Vibrance<T>(pub T);
 

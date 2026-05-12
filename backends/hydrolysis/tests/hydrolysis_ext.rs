@@ -5,7 +5,8 @@ use waterui::ViewExt;
 use waterui::env::Environment;
 use waterui::shape::RoundedRectangle;
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
+    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
+    OffscreenRenderOutput, OffscreenSize,
 };
 
 #[derive(Clone)]
@@ -88,19 +89,29 @@ impl View for GpuSurfaceClipView {
     }
 }
 
+fn skip_without_gpu(
+    result: Result<OffscreenRenderOutput, OffscreenRenderError>,
+) -> Option<OffscreenRenderOutput> {
+    match result {
+        Ok(output) => Some(output),
+        Err(OffscreenRenderError::NoAdapter) => None,
+        Err(error) => panic!("hydrolysis extension offscreen render failed: {error}"),
+    }
+}
+
 #[test]
 fn hydrolysis_ext_renders_offscreen() {
     let mut env = Environment::new();
     let view = CloneableRect.hydrolysis();
 
-    let output = view
-        .render_offscreen(
-            OffscreenRenderConfig::new(
-                OffscreenSize::try_from_pixels(400, 300).expect("static size must be valid"),
-            ),
-            &mut env,
-        )
-        .expect("hydrolysis extension offscreen render failed");
+    let Some(output) = skip_without_gpu(view.render_offscreen(
+        OffscreenRenderConfig::new(
+            OffscreenSize::try_from_pixels(400, 300).expect("static size must be valid"),
+        ),
+        &mut env,
+    )) else {
+        return;
+    };
 
     assert_eq!(output.width, 400);
     assert_eq!(output.height, 300);
@@ -120,14 +131,14 @@ fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
     let mut env = Environment::new();
     let view = GpuSurfaceOpacityView.hydrolysis();
 
-    let output = view
-        .render_offscreen(
-            OffscreenRenderConfig::new(
-                OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-            ),
-            &mut env,
-        )
-        .expect("hydrolysis extension opacity-wrapped gpu surface render failed");
+    let Some(output) = skip_without_gpu(view.render_offscreen(
+        OffscreenRenderConfig::new(
+            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
+        ),
+        &mut env,
+    )) else {
+        return;
+    };
 
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -143,14 +154,14 @@ fn hydrolysis_ext_renders_gpu_surface_inside_clip_shape() {
     let mut env = Environment::new();
     let view = GpuSurfaceClipView.hydrolysis();
 
-    let output = view
-        .render_offscreen(
-            OffscreenRenderConfig::new(
-                OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-            ),
-            &mut env,
-        )
-        .expect("hydrolysis extension clip-wrapped gpu surface render failed");
+    let Some(output) = skip_without_gpu(view.render_offscreen(
+        OffscreenRenderConfig::new(
+            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
+        ),
+        &mut env,
+    )) else {
+        return;
+    };
 
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
