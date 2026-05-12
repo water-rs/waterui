@@ -356,6 +356,10 @@ impl ProgressMetrics {
 pub trait WidgetTheme {
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;
+    /// Optional button label foreground override.
+    fn button_label_color(&self, _style: ButtonStyle) -> Option<Color> {
+        None
+    }
     /// Draw button chrome for a style.
     fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle);
     /// Draw the button state layer for a style.
