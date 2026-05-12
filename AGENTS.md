@@ -16,6 +16,8 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 
 5. **Fine-grained reactivity is non-negotiable.** WaterUI uses precise per-`Binding` / `Computed` updates, not SwiftUI-style structural diff. APIs that would force a structural recompute on every state change (e.g. requiring rebuild of an entire subtree to update a single text value) are rejected. New API surfaces must accept signals (`impl IntoComputed<T>`, `impl Signal<Output = T>`, `Binding<T>`) rather than plain values when the underlying state is dynamic.
 
+6. **Do not change WaterUI foundations without user approval.** Do not modify `core/`, foundational animation/reactivity/layout primitives, or shared backend contracts unless the user explicitly approves that foundation change in the current task. External references are evidence for values, semantics, and behavior; they are not permission to import another framework's abstraction model into WaterUI.
+
 ## Engagement Rules
 
 DO NOT be over-engineer or write defensive code. If you encounter a problem, ask user for solution with your own idea, do not say "Let's have a simpler approach". You are expected to face the real problem and make code clean, reusable and elegant. Never take a workaround.
