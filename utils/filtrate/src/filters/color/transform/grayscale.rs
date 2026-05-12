@@ -1,6 +1,6 @@
 //! Grayscale filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Converts an image to grayscale.
 ///
@@ -18,7 +18,7 @@ use crate::FilterDerive;
 /// let full_gray = Grayscale(1.0);
 /// let partial = Grayscale(0.5);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/transform/grayscale.wgsl")]
 pub struct Grayscale<T>(pub T);
 

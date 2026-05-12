@@ -24,9 +24,14 @@ tracing.workspace = true
 
 [dev-dependencies]
 divan = "0.1"
+pollster.workspace = true
 
 [[bench]]
 name = "filter_trait"
+harness = false
+
+[[bench]]
+name = "gpu_runtime"
 harness = false
 
 [package.metadata.cargo-machete]

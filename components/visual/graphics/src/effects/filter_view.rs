@@ -460,6 +460,7 @@ fn specialize_spatial_shader(
 enum AtomicStageKind {
     ColorFragment(&'static str),
     SpatialShader(&'static str),
+    SpatialShaderWithOriginal(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -470,8 +471,13 @@ struct AtomicStage {
 
 #[derive(Debug, Clone)]
 enum PlannedPassKind {
-    Color { fragments: alloc::string::String },
-    Spatial { shader: &'static str },
+    Color {
+        fragments: alloc::string::String,
+    },
+    Spatial {
+        shader: &'static str,
+        original_input: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +495,7 @@ enum CompiledPassKind {
     Spatial {
         pipeline: wgpu::ComputePipeline,
         bind_group_layout: wgpu::BindGroupLayout,
+        original_input: bool,
     },
 }
 
@@ -524,12 +531,41 @@ struct CompiledPass {
     uniform_buffer: wgpu::Buffer,
     last_uniform_data: Option<[f32; FILTER_UNIFORM_WORDS]>,
     cached_bind_group: Option<wgpu::BindGroup>,
+    cached_dynamic_bind_group: Option<CachedDynamicBindGroup>,
 }
 
 struct FinalSpatialOutputPipeline {
     pass_index: usize,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+}
+
+struct CachedDynamicBindGroup {
+    source_view: wgpu::TextureView,
+    target_view: Option<wgpu::TextureView>,
+    original_view: Option<wgpu::TextureView>,
+    bind_group: wgpu::BindGroup,
+}
+
+impl CachedDynamicBindGroup {
+    fn matches(
+        &self,
+        source_view: &wgpu::TextureView,
+        target_view: Option<&wgpu::TextureView>,
+        original_view: Option<&wgpu::TextureView>,
+    ) -> bool {
+        self.source_view == *source_view
+            && match (&self.target_view, target_view) {
+                (Some(cached), Some(target)) => cached == target,
+                (None, None) => true,
+                _ => false,
+            }
+            && match (&self.original_view, original_view) {
+                (Some(cached), Some(original)) => cached == original,
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str> {
@@ -571,7 +607,20 @@ fn fuse_stages(stages: &[AtomicStage]) -> Result<Vec<PlannedPass>, &'static str>
             }
             AtomicStageKind::SpatialShader(shader) => {
                 passes.push(PlannedPass {
-                    kind: PlannedPassKind::Spatial { shader },
+                    kind: PlannedPassKind::Spatial {
+                        shader,
+                        original_input: false,
+                    },
+                    param_offset,
+                    param_count: stage.param_count,
+                });
+            }
+            AtomicStageKind::SpatialShaderWithOriginal(shader) => {
+                passes.push(PlannedPass {
+                    kind: PlannedPassKind::Spatial {
+                        shader,
+                        original_input: true,
+                    },
                     param_offset,
                     param_count: stage.param_count,
                 });
@@ -779,6 +828,13 @@ impl StageCollector for StageBuffer {
     fn spatial_shader(&mut self, source: &'static str, param_count: usize) {
         self.stages.push(AtomicStage {
             kind: AtomicStageKind::SpatialShader(source),
+            param_count,
+        });
+    }
+
+    fn spatial_shader_with_original(&mut self, source: &'static str, param_count: usize) {
+        self.stages.push(AtomicStage {
+            kind: AtomicStageKind::SpatialShaderWithOriginal(source),
             param_count,
         });
     }
@@ -1160,6 +1216,7 @@ impl<F: Filter> FilterAdapter<F> {
         if bindings_invalidated {
             for pass in &mut self.passes {
                 pass.cached_bind_group = None;
+                pass.cached_dynamic_bind_group = None;
             }
             self.blit_bind_group = None;
         }
@@ -1246,15 +1303,23 @@ impl<F: Filter> FilterAdapter<F> {
                         ),
                         last_uniform_data: None,
                         cached_bind_group: None,
+                        cached_dynamic_bind_group: None,
                     });
                 }
-                PlannedPassKind::Spatial { shader } => {
+                PlannedPassKind::Spatial {
+                    shader,
+                    original_input,
+                } => {
                     if !matches!(binding_plan, PassBindingPlan::Spatial { .. }) {
                         return Err("runtime planner produced invalid spatial binding plan");
                     }
                     ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-                    let (pipeline, bind_group_layout) =
-                        Self::create_spatial_pipeline(ctx, shader, scratch_format)?;
+                    let (pipeline, bind_group_layout) = Self::create_spatial_pipeline(
+                        ctx,
+                        shader,
+                        scratch_format,
+                        *original_input,
+                    )?;
                     if let Some(err) = Self::take_validation_error(ctx.device) {
                         tracing::error!("[Filter] spatial pipeline validation error: {err:?}");
                         return Err(
@@ -1265,6 +1330,7 @@ impl<F: Filter> FilterAdapter<F> {
                         kind: CompiledPassKind::Spatial {
                             pipeline,
                             bind_group_layout,
+                            original_input: *original_input,
                         },
                         param_offset: pass.param_offset,
                         param_count: pass.param_count,
@@ -1275,6 +1341,7 @@ impl<F: Filter> FilterAdapter<F> {
                         ),
                         last_uniform_data: None,
                         cached_bind_group: None,
+                        cached_dynamic_bind_group: None,
                     });
                 }
             }
@@ -1289,7 +1356,13 @@ impl<F: Filter> FilterAdapter<F> {
                 .iter()
                 .enumerate()
                 .find_map(|(idx, pass)| match pass.kind {
-                    PlannedPassKind::Spatial { shader } if idx + 1 == planned.len() => {
+                    PlannedPassKind::Spatial {
+                        shader,
+                        original_input,
+                    } if idx + 1 == planned.len() => {
+                        if original_input {
+                            return None;
+                        }
                         Some((idx, shader))
                     }
                     _ => None,
@@ -1297,7 +1370,7 @@ impl<F: Filter> FilterAdapter<F> {
             && storage_format_to_wgsl(ctx.output_format).is_ok()
         {
             ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            match Self::create_spatial_pipeline(ctx, shader, ctx.output_format) {
+            match Self::create_spatial_pipeline(ctx, shader, ctx.output_format, false) {
                 Ok((pipeline, bind_group_layout)) => {
                     if Self::take_validation_error(ctx.device).is_none() {
                         self.final_spatial_output = Some(FinalSpatialOutputPipeline {
@@ -1375,11 +1448,23 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                 planned.last().map(|p| &p.kind),
                 Some(PlannedPassKind::Spatial { .. })
             );
+        let needs_original_input_scratch = planned.iter().any(|pass| {
+            matches!(
+                pass.kind,
+                PlannedPassKind::Spatial {
+                    original_input: true,
+                    ..
+                }
+            )
+        });
 
         let scratch_candidates = if self.requires_scratch {
             match self.hdr_policy {
                 HdrPolicy::ForceLdr => alloc::vec![wgpu::TextureFormat::Rgba8Unorm],
                 HdrPolicy::RequireHdr => alloc::vec![wgpu::TextureFormat::Rgba16Float],
+                HdrPolicy::PreferHdr if needs_original_input_scratch => {
+                    alloc::vec![wgpu::TextureFormat::Rgba16Float]
+                }
                 HdrPolicy::PreferHdr => {
                     let preferred = preferred_scratch_format(ctx.input_format, ctx.output_format);
                     if is_hdr_texture_format(preferred) {
@@ -1548,28 +1633,44 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                         &uniform_data,
                     );
 
-                    let transient_bind_group;
                     let bind_group = if matches!(source, PassTextureSource::Input) {
-                        transient_bind_group =
-                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter color dynamic bind group"),
-                                layout: bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(source_view),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(sampler),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 2,
-                                        resource: pass.uniform_buffer.as_entire_binding(),
-                                    },
-                                ],
+                        if pass
+                            .cached_dynamic_bind_group
+                            .as_ref()
+                            .is_none_or(|cached| !cached.matches(source_view, None, None))
+                        {
+                            let bind_group =
+                                input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter color dynamic bind group"),
+                                    layout: bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                source_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(sampler),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: pass.uniform_buffer.as_entire_binding(),
+                                        },
+                                    ],
+                                });
+                            pass.cached_dynamic_bind_group = Some(CachedDynamicBindGroup {
+                                source_view: source_view.clone(),
+                                target_view: None,
+                                original_view: None,
+                                bind_group,
                             });
-                        &transient_bind_group
+                        }
+                        let Some(cached) = pass.cached_dynamic_bind_group.as_ref() else {
+                            return Err("color dynamic bind group cache missing after creation");
+                        };
+                        &cached.bind_group
                     } else {
                         if pass.cached_bind_group.is_none() {
                             pass.cached_bind_group =
@@ -1631,6 +1732,7 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                     CompiledPassKind::Spatial {
                         pipeline,
                         bind_group_layout,
+                        original_input,
                     },
                     PassBindingPlan::Spatial {
                         source,
@@ -1690,30 +1792,59 @@ impl<F: Filter> Effect for FilterAdapter<F> {
                         &uniform_data,
                     );
 
-                    let transient_bind_group;
+                    let original_view = if *original_input {
+                        Some(&input.view)
+                    } else {
+                        None
+                    };
                     let bind_group = if writes_output_directly
                         || matches!(source, PassTextureSource::Input)
+                        || *original_input
                     {
-                        transient_bind_group =
-                            input.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("filter spatial dynamic bind group"),
-                                layout: dispatch_bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(source_view),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::TextureView(target_view),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 2,
-                                        resource: pass.uniform_buffer.as_entire_binding(),
-                                    },
-                                ],
+                        if pass
+                            .cached_dynamic_bind_group
+                            .as_ref()
+                            .is_none_or(|cached| {
+                                !cached.matches(source_view, Some(target_view), original_view)
+                            })
+                        {
+                            let mut entries = alloc::vec![
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(source_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::TextureView(target_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: pass.uniform_buffer.as_entire_binding(),
+                                },
+                            ];
+                            if let Some(original_view) = original_view {
+                                entries.push(wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::TextureView(original_view),
+                                });
+                            }
+                            let bind_group =
+                                input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("filter spatial dynamic bind group"),
+                                    layout: dispatch_bind_group_layout,
+                                    entries: &entries,
+                                });
+                            pass.cached_dynamic_bind_group = Some(CachedDynamicBindGroup {
+                                source_view: source_view.clone(),
+                                target_view: Some(target_view.clone()),
+                                original_view: original_view.cloned(),
+                                bind_group,
                             });
-                        &transient_bind_group
+                        }
+                        let Some(cached) = pass.cached_dynamic_bind_group.as_ref() else {
+                            return Err("spatial dynamic bind group cache missing after creation");
+                        };
+                        &cached.bind_group
                     } else {
                         if pass.cached_bind_group.is_none() {
                             pass.cached_bind_group =
@@ -1960,6 +2091,7 @@ impl<F: Filter> FilterAdapter<F> {
         ctx: &EffectContext,
         shader_source: &str,
         storage_format: wgpu::TextureFormat,
+        original_input: bool,
     ) -> Result<(wgpu::ComputePipeline, wgpu::BindGroupLayout), &'static str> {
         let shader_source = specialize_spatial_shader(shader_source, storage_format)?;
         let shader = crate::shared_context::create_cached_shader_module(
@@ -1968,42 +2100,36 @@ impl<F: Filter> FilterAdapter<F> {
             &shader_source,
         );
 
+        let original_entry = wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let entries = if original_input {
+            alloc::vec![
+                spatial_source_layout_entry(),
+                spatial_target_layout_entry(storage_format),
+                spatial_uniform_layout_entry(),
+                original_entry,
+            ]
+        } else {
+            alloc::vec![
+                spatial_source_layout_entry(),
+                spatial_target_layout_entry(storage_format),
+                spatial_uniform_layout_entry(),
+            ]
+        };
+
         let bind_group_layout =
             ctx.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("filter spatial bind group layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: storage_format,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
+                    entries: &entries,
                 });
 
         let pipeline_layout = ctx
@@ -2135,6 +2261,45 @@ fn build_spatial_uniform_data(
         data[4 + idx] = *value;
     }
     data
+}
+
+fn spatial_source_layout_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn spatial_target_layout_entry(storage_format: wgpu::TextureFormat) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: storage_format,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    }
+}
+
+fn spatial_uniform_layout_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 2,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
 }
 
 #[cfg(test)]

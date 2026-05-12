@@ -14,21 +14,34 @@ struct Uniforms {
 @group(0) @binding(1) var output_texture: texture_storage_2d<OUTPUT_STORAGE_FORMAT, write>;
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
-fn median9(values: array<f32, 9>) -> f32 {
+fn compare_swap(values: ptr<function, array<vec3<f32>, 9>>, a: u32, b: u32) {
+    let va = (*values)[a];
+    let vb = (*values)[b];
+    (*values)[a] = min(va, vb);
+    (*values)[b] = max(va, vb);
+}
+
+fn median9(values: array<vec3<f32>, 9>) -> vec3<f32> {
     var v = values;
-    // Insertion sort — only 9 elements, the constant factor wins over
-    // anything fancier here.
-    for (var i: u32 = 1u; i < 9u; i = i + 1u) {
-        var j: u32 = i;
-        loop {
-            if j == 0u { break; }
-            if v[j - 1u] <= v[j] { break; }
-            let tmp = v[j];
-            v[j] = v[j - 1u];
-            v[j - 1u] = tmp;
-            j = j - 1u;
-        }
-    }
+    compare_swap(&v, 1u, 2u);
+    compare_swap(&v, 4u, 5u);
+    compare_swap(&v, 7u, 8u);
+    compare_swap(&v, 0u, 1u);
+    compare_swap(&v, 3u, 4u);
+    compare_swap(&v, 6u, 7u);
+    compare_swap(&v, 1u, 2u);
+    compare_swap(&v, 4u, 5u);
+    compare_swap(&v, 7u, 8u);
+    compare_swap(&v, 0u, 3u);
+    compare_swap(&v, 5u, 8u);
+    compare_swap(&v, 4u, 7u);
+    compare_swap(&v, 3u, 6u);
+    compare_swap(&v, 1u, 4u);
+    compare_swap(&v, 2u, 5u);
+    compare_swap(&v, 4u, 7u);
+    compare_swap(&v, 4u, 2u);
+    compare_swap(&v, 6u, 4u);
+    compare_swap(&v, 4u, 2u);
     return v[4u];
 }
 
@@ -42,22 +55,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let in_dims = vec2<i32>(vec2<u32>(uniforms.input_dimensions));
     let max_xy = in_dims - vec2<i32>(1);
 
-    var rs: array<f32, 9>;
-    var gs: array<f32, 9>;
-    var bs: array<f32, 9>;
+    var samples: array<vec3<f32>, 9>;
     var idx: u32 = 0u;
     for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
         for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
             let p = clamp(coord + vec2<i32>(dx, dy), vec2<i32>(0), max_xy);
-            let texel = textureLoad(input_texture, p, 0);
-            rs[idx] = texel.r;
-            gs[idx] = texel.g;
-            bs[idx] = texel.b;
+            samples[idx] = textureLoad(input_texture, p, 0).rgb;
             idx = idx + 1u;
         }
     }
 
     let centre_alpha = textureLoad(input_texture, clamp(coord, vec2<i32>(0), max_xy), 0).a;
-    let result = vec4<f32>(median9(rs), median9(gs), median9(bs), centre_alpha);
-    textureStore(output_texture, coord, result);
+    textureStore(output_texture, coord, vec4<f32>(median9(samples), centre_alpha));
 }

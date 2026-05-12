@@ -1,6 +1,6 @@
 //! Vignette filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adds a vignette effect (darkened corners) to an image.
 ///
@@ -17,7 +17,7 @@ use crate::FilterDerive;
 /// let subtle = Vignette(0.8, 0.3);
 /// let dramatic = Vignette(0.3, 0.1);
 /// ```
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/effect/vignette.wgsl")]
 pub struct Vignette<R, S>(pub R, pub S);
 

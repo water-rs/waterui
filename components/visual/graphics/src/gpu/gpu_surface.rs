@@ -22,6 +22,8 @@ use std::time::Duration;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 
+use crate::shared_context::SharedContextError;
+
 #[doc(hidden)]
 pub use waterui_core::layout::{
     ProposalSize as __GpuProposalSize, Size as __GpuSize, StretchAxis as __GpuStretchAxis,
@@ -819,6 +821,8 @@ pub enum OffscreenRenderError {
         /// Target texture format.
         format: wgpu::TextureFormat,
     },
+    /// No compatible GPU adapter is available.
+    NoAdapter,
     /// Shared GPU context initialization failed.
     SharedContextInitFailed(String),
     /// GPU readback buffer mapping failed.
@@ -846,6 +850,7 @@ impl fmt::Display for OffscreenRenderError {
                     "unsupported MSAA sample count {requested} for format {format:?}"
                 )
             }
+            Self::NoAdapter => write!(f, "no compatible GPU adapter available"),
             Self::SharedContextInitFailed(error) => {
                 write!(f, "failed to initialize GPU context: {error}")
             }
@@ -1088,8 +1093,10 @@ impl GpuSurface {
             ));
         }
 
-        crate::shared_context::init_shared_context()
-            .map_err(|e| OffscreenRenderError::SharedContextInitFailed(e.to_string()))?;
+        crate::shared_context::init_shared_context().map_err(|e| match e {
+            SharedContextError::NoAdapter => OffscreenRenderError::NoAdapter,
+            error => OffscreenRenderError::SharedContextInitFailed(error.to_string()),
+        })?;
         let shared = crate::shared_context::shared_context();
         let guard = shared.read();
         let offscreen_operation_lock = guard.offscreen_operation_lock();
@@ -1212,8 +1219,10 @@ impl GpuSurface {
             ));
         }
 
-        crate::shared_context::init_shared_context()
-            .map_err(|e| OffscreenRenderError::SharedContextInitFailed(e.to_string()))?;
+        crate::shared_context::init_shared_context().map_err(|e| match e {
+            SharedContextError::NoAdapter => OffscreenRenderError::NoAdapter,
+            error => OffscreenRenderError::SharedContextInitFailed(error.to_string()),
+        })?;
         let shared = crate::shared_context::shared_context();
         let guard = shared.read();
         let offscreen_operation_lock = guard.offscreen_operation_lock();
