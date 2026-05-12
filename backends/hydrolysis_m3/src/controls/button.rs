@@ -1,6 +1,3 @@
-use crate::colors::{
-    ACCENT, ACCENT_STRONG, FOREGROUND_STRONG, OUTLINE_STRONG, SURFACE_DEFAULT, SURFACE_SUBTLE,
-};
 use crate::dimensions::{
     BUTTON_LINK_HORIZONTAL_PADDING, BUTTON_LINK_UNDERLINE_BOTTOM_INSET,
     BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_HEIGHT,
@@ -35,34 +32,46 @@ pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
 pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle) -> Option<Color> {
     match style {
         ButtonStyle::BorderedProminent => Some(colors.on_primary.view_color()),
-        ButtonStyle::Automatic
-        | ButtonStyle::Bordered
+        ButtonStyle::Automatic => Some(colors.on_secondary_container.view_color()),
+        ButtonStyle::Bordered
         | ButtonStyle::Plain
         | ButtonStyle::Link
-        | ButtonStyle::Borderless => None,
+        | ButtonStyle::Borderless => Some(colors.primary.view_color()),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     }
 }
 
-pub fn draw_chrome(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, style: ButtonStyle) {
+pub fn draw_chrome(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    style: ButtonStyle,
+) {
     match style {
         ButtonStyle::Automatic => {
-            draw.fill_rounded_rect(bounds, 20.0.into(), &Brush::from(SURFACE_SUBTLE));
+            draw.fill_rounded_rect(
+                bounds,
+                20.0.into(),
+                &Brush::from(colors.secondary_container.peniko()),
+            );
         }
         ButtonStyle::Bordered => {
-            draw.fill_rounded_rect(bounds, 20.0.into(), &Brush::from(SURFACE_DEFAULT));
-            draw.stroke_rounded_rect(bounds, 20.0.into(), &Brush::from(OUTLINE_STRONG), 1.0);
+            draw.stroke_rounded_rect(
+                bounds,
+                20.0.into(),
+                &Brush::from(colors.outline.peniko()),
+                1.0,
+            );
         }
         ButtonStyle::BorderedProminent => {
-            draw.fill_rounded_rect(bounds, 20.0.into(), &Brush::from(ACCENT));
-            draw.stroke_rounded_rect(bounds, 20.0.into(), &Brush::from(ACCENT_STRONG), 1.0);
+            draw.fill_rounded_rect(bounds, 20.0.into(), &Brush::from(colors.primary.peniko()));
         }
         ButtonStyle::Link => {
             let underline_y = (bounds.y1 - BUTTON_LINK_UNDERLINE_BOTTOM_INSET).max(bounds.y0);
             draw.stroke_line(
                 vello::kurbo::Point::new(bounds.x0 + BUTTON_LINK_HORIZONTAL_PADDING, underline_y),
                 vello::kurbo::Point::new(bounds.x1 - BUTTON_LINK_HORIZONTAL_PADDING, underline_y),
-                &Brush::from(ACCENT),
+                &Brush::from(colors.primary.peniko()),
                 BUTTON_LINK_UNDERLINE_THICKNESS,
             );
         }
@@ -72,15 +81,19 @@ pub fn draw_chrome(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, style
 }
 
 pub fn draw_state_layer(
+    colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
     bounds: vello::kurbo::Rect,
     style: ButtonStyle,
     state: WidgetInteractionState,
 ) {
     let color = match style {
-        ButtonStyle::BorderedProminent => SURFACE_DEFAULT,
-        ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::Link => ACCENT,
-        ButtonStyle::Plain | ButtonStyle::Borderless => FOREGROUND_STRONG,
+        ButtonStyle::BorderedProminent => colors.on_primary.peniko(),
+        ButtonStyle::Automatic => colors.on_secondary_container.peniko(),
+        ButtonStyle::Bordered
+        | ButtonStyle::Link
+        | ButtonStyle::Plain
+        | ButtonStyle::Borderless => colors.primary.peniko(),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     };
     state_layer::draw_bounded(draw, bounds, 20.0.into(), color, state);

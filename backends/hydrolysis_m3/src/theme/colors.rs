@@ -358,28 +358,6 @@ impl MaterialColorScheme {
     }
 }
 
-pub const SURFACE_SUBTLE: Color = Color::new([0.925_490_2, 0.901_960_8, 0.960_784_3, 1.0]);
-pub const SURFACE_DEFAULT: Color = Color::new([1.0, 0.984_313_7, 0.996_078_43, 1.0]);
-pub const SURFACE_MUTED: Color = Color::new([0.964_705_9, 0.941_176_5, 0.972_549, 1.0]);
-pub const OUTLINE_SUBTLE: Color = Color::new([0.792_156_9, 0.768_627_46, 0.815_686_3, 1.0]);
-pub const OUTLINE_DEFAULT: Color = Color::new([0.474_509_8, 0.454_901_96, 0.494_117_65, 1.0]);
-pub const OUTLINE_STRONG: Color = Color::new([0.474_509_8, 0.454_901_96, 0.494_117_65, 1.0]);
-pub const FOREGROUND_STRONG: Color = Color::new([0.109_803_92, 0.105_882_354, 0.121_568_63, 1.0]);
-pub const FOREGROUND_MUTED: Color = Color::new([0.286_274_52, 0.270_588_25, 0.309_803_93, 1.0]);
-pub const ACCENT: Color = Color::new([0.403_921_57, 0.313_725_5, 0.643_137_3, 1.0]);
-pub const ACCENT_STRONG: Color = Color::new([0.282_352_95, 0.192_156_87, 0.498_039_22, 1.0]);
-pub const ACCENT_FILL: Color = Color::new([0.403_921_57, 0.313_725_5, 0.643_137_3, 1.0]);
-pub const ACCENT_SELECTION: Color = Color::new([0.917_647_06, 0.866_666_7, 1.0, 1.0]);
-pub const ACCENT_TRACK_OFF: Color = Color::new([0.905_882_36, 0.878_431_4, 0.925_490_2, 1.0]);
-pub const TOGGLE_OUTLINE_OFF: Color = Color::new([0.474_509_8, 0.454_901_96, 0.494_117_65, 1.0]);
-pub const TOGGLE_OUTLINE_ON: Color = Color::new([0.403_921_57, 0.313_725_5, 0.643_137_3, 1.0]);
-pub const THUMB_OUTLINE: Color = Color::new([0.403_921_57, 0.313_725_5, 0.643_137_3, 1.0]);
-pub const THUMB_OUTLINE_SOFT: Color = Color::new([0.474_509_8, 0.454_901_96, 0.494_117_65, 1.0]);
-pub const DESTRUCTIVE: Color = Color::new([0.701_960_8, 0.149_019_61, 0.117_647_06, 1.0]);
-pub const SCROLL_INDICATOR: Color = Color::new([0.4, 0.4, 0.4, 0.55]);
-pub const ROW_EVEN: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
-pub const ROW_ODD: Color = Color::new([0.985, 0.985, 0.99, 1.0]);
-
 #[cfg(test)]
 mod tests {
     use super::{Argb, MaterialColorMode, MaterialColorScheme};
