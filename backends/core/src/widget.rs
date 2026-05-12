@@ -314,6 +314,8 @@ pub struct ProgressMetrics {
     pub min_track_width: f64,
     /// Circular progress diameter.
     pub circular_diameter: f64,
+    /// Circular progress stroke width.
+    pub circular_stroke_width: f64,
 }
 
 impl ProgressMetrics {
@@ -335,12 +337,13 @@ impl ProgressMetrics {
             value_label_top_spacing,
             min_track_width,
             circular_diameter: 0.0,
+            circular_stroke_width: 0.0,
         }
     }
 
     /// Create circular progress layout metrics.
     #[must_use]
-    pub const fn circular(circular_diameter: f64) -> Self {
+    pub const fn circular(circular_diameter: f64, circular_stroke_width: f64) -> Self {
         Self {
             label_height: 0.0,
             bar_top_offset: 0.0,
@@ -349,6 +352,7 @@ impl ProgressMetrics {
             value_label_top_spacing: 0.0,
             min_track_width: 0.0,
             circular_diameter,
+            circular_stroke_width,
         }
     }
 }
