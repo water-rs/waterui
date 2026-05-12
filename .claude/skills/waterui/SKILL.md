@@ -23,6 +23,7 @@ Build views with reactive state. When unsure, search `examples/*/src/lib.rs` for
 - Hydrolysis Material 3 button chrome applies the Material `label-large` font through the backend widget theme, so ordinary `button("Save")` labels match Material typography without losing their semantic label or disabled accessibility state.
 - Hydrolysis Material 3 text-style buttons (`.plain()` / `.borderless()`) keep Material text-button touch metrics: 40 logical-unit container height, 64 logical-unit minimum width, and 12 logical-unit horizontal label padding, even though their normal chrome remains transparent.
 - Hydrolysis Material 3 progress indicators follow Material Web v0.192 metrics: linear track and active indicator are 4 logical units high, circular progress is 48 logical units square, and circular active indicator stroke width is 4 logical units.
+- `progress(value)` treats `value` as a 0.0-to-1.0 fraction and its default value label displays a rounded percentage such as `42%`; `.total(total)` updates that label from the derived fraction.
 - Use `water preview --backend hydrolysis --theme material3` for Hydrolysis Material 3 visual checks. Pass `--expr` when previewing an inline Rust expression; the CLI writes the expression into generated Rust preview code and rustc compiles it normally with `waterui::prelude::*` and `waterui` in scope.
 
 ## CRITICAL: Reactive-First Pattern
