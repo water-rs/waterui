@@ -13,6 +13,7 @@ use accesskit::{
 use nami::Signal;
 use waterui::ViewExt as _;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
+use waterui_controls::label::Label;
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
@@ -141,7 +142,8 @@ pub(crate) fn render_button(
 
     let metrics = theme.button_metrics(style);
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
-    let label_view = button_label_view(theme.button_label_color(style), AnyView::new(button.label));
+    let label = styled_button_label(theme, style, button.label);
+    let label_view = button_label_view(theme.button_label_color(style), AnyView::new(label));
     if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 {
         ctx.dispatch_in_rect_without_accessibility(env, label_view, label_bounds);
     } else {
@@ -214,7 +216,8 @@ pub(crate) fn measure_button_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(button.style);
-    let label_size = measure_label_intrinsic(&button.label, state, env);
+    let label = styled_button_label(theme, button.style, button.label.clone());
+    let label_size = measure_label_intrinsic(&label, state, env);
     let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
     let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
     LayoutSize::new(
@@ -243,5 +246,17 @@ fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
     match color {
         Some(color) => AnyView::new(label.foreground(color)),
         None => label,
+    }
+}
+
+fn styled_button_label(
+    theme: &dyn waterui_backend_core::widget::WidgetTheme,
+    style: ButtonStyle,
+    label: Label,
+) -> Label {
+    if let Some(font) = theme.button_label_font(style) {
+        label.font(font)
+    } else {
+        label
     }
 }

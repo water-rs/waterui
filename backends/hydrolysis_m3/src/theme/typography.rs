@@ -1,5 +1,7 @@
-use waterui::text::font::{FontWeight, ResolvedFont};
+use waterui::reactive::{Computed, Signal};
+use waterui::text::font::{Font, FontWeight, ResolvedFont};
 use waterui::theme::FontSettings;
+use waterui_core::{Environment, resolve::Resolvable};
 
 const MATERIAL_TYPEFACE: &str = "Roboto";
 
@@ -17,9 +19,24 @@ pub(crate) fn settings() -> FontSettings {
         .footnote(font(11.0, FontWeight::Medium))
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LabelLarge;
+
+impl Resolvable for LabelLarge {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        Computed::constant(font(14.0, FontWeight::Medium))
+    }
+}
+
+pub(crate) fn label_large() -> Font {
+    Font::new(LabelLarge)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MATERIAL_TYPEFACE, settings};
+    use super::{MATERIAL_TYPEFACE, label_large, settings};
     use waterui::Plugin as _;
     use waterui::env::Environment;
     use waterui::reactive::Signal as _;
@@ -49,5 +66,12 @@ mod tests {
         assert_material_font(Subheadline.resolve(&env).get(), 16.0, FontWeight::Medium);
         assert_material_font(Caption.resolve(&env).get(), 12.0, FontWeight::Normal);
         assert_material_font(Footnote.resolve(&env).get(), 11.0, FontWeight::Medium);
+    }
+
+    #[test]
+    fn label_large_matches_material_web_v0_192_label_large() {
+        let env = Environment::new();
+
+        assert_material_font(label_large().resolve(&env).get(), 14.0, FontWeight::Medium);
     }
 }

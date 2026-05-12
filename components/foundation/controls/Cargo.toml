@@ -26,6 +26,7 @@ executor-core.workspace = true
 default = []
 
 [dev-dependencies]
+hydrolysis-m3.workspace = true
 waterui.workspace = true
 waterui-testing.workspace = true
 
