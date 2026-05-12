@@ -25,27 +25,21 @@ mod macros;
 #[cfg(feature = "android-jni")]
 pub mod jni;
 
-pub mod action;
-pub mod animation;
-pub mod array;
-pub mod closure;
-pub mod color;
-pub mod components;
-pub mod cursor;
-pub mod drag_drop;
-pub mod event;
-pub mod gesture;
-pub mod gradient;
-mod type_id;
-pub use type_id::WuiTypeId;
-pub mod id;
-pub mod locale;
-pub mod reactive;
-pub mod shape;
-pub mod theme;
+mod bridge;
+mod drawing;
+mod events;
+mod reactivity;
+mod runtime;
 mod ty;
-pub mod views;
+
+pub mod components;
+pub use bridge::{action, array, closure, locale};
 use core::ptr::null_mut;
+pub use drawing::{color, gradient, shape};
+pub use events::{animation, cursor, drag_drop, event, gesture};
+pub use reactivity::reactive;
+pub use runtime::{app, id, theme, views, window};
+pub use ty::WuiTypeId;
 
 use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
@@ -53,8 +47,6 @@ use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
 pub use waterui_video;
 
-pub mod app;
-pub mod window;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;

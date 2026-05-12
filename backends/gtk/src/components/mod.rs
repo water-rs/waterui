@@ -1,31 +1,20 @@
 //! GTK widget implementations for `WaterUI` components.
 
-pub mod button;
-pub mod color;
-pub mod color_picker;
-pub mod container;
-pub mod date_picker;
-pub mod divider;
-pub mod dynamic;
-pub mod fixed_container_widget;
-pub mod gpu_surface;
-pub mod gradient;
-pub mod lazy_container;
-pub mod list;
-pub mod menu;
-pub mod multi_date_picker;
-pub mod navigation;
-pub mod picker;
-pub mod progress;
-pub mod scroll_view;
-pub mod secure_field;
-pub mod shape;
-pub mod slider;
-pub mod spacer;
-pub mod stepper;
-pub mod system_icon;
-pub mod tabs;
-pub mod text;
-pub mod text_field;
-pub mod toggle;
-pub mod webview;
+pub mod controls;
+pub mod graphics;
+pub mod layout;
+pub mod nav;
+pub mod platform;
+pub mod typography;
+
+pub use controls::{
+    button, color_picker, date_picker, multi_date_picker, picker, progress, secure_field, slider,
+    stepper, text_field, toggle,
+};
+pub use graphics::{color, gpu_surface, gradient, shape};
+pub use layout::{
+    container, divider, fixed_container_widget, lazy_container, list, scroll_view, spacer,
+};
+pub use nav::{menu, navigation, tabs};
+pub use platform::{dynamic, system_icon, webview};
+pub use typography::text;

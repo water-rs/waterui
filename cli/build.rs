@@ -126,7 +126,9 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             "cargo:rerun-if-changed={}",
             workspace_root
                 .join("components")
+                .join("devtools")
                 .join("preview")
+                .join("runtime")
                 .join("Cargo.toml")
                 .display()
         );
@@ -204,7 +206,9 @@ fn resolve_scaffold_metadata(
                 waterui_preview: manifest_package_version(
                     &workspace_root
                         .join("components")
+                        .join("devtools")
                         .join("preview")
+                        .join("runtime")
                         .join("Cargo.toml"),
                 ),
                 android_kotlin: workspace_android_kotlin_version(workspace_root),

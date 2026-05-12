@@ -12,7 +12,7 @@
 //!
 //! - `color_only, fragment = "<path>"` — emits a single color-only fragment
 //!   pass. The path is resolved relative to the consumer crate's
-//!   `src/filters/` (resolved via `concat!("../shaders/", ...)`).
+//!   `src/shaders/` directory.
 //! - `spatial, shader = "<path>"` — emits a single spatial compute pass.
 //!
 //! Field shapes supported: tuple structs with each field typed `T` or
@@ -26,7 +26,7 @@
 //! use filtrate_derive::Filter;
 //!
 //! #[derive(Filter)]
-//! #[filter(color_only, fragment = "fragments/brightness.wgsl")]
+//! #[filter(color_only, fragment = "color/brightness.wgsl")]
 //! pub struct Brightness<T>(pub T);
 //! ```
 
@@ -115,7 +115,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let shader_path = attrs.shader_path;
-    let shader_include = quote! { ::core::include_str!(::core::concat!("../shaders/", #shader_path)) };
+    let shader_include = quote! {
+        ::core::include_str!(::core::concat!(
+            ::core::env!("CARGO_MANIFEST_DIR"),
+            "/src/shaders/",
+            #shader_path
+        ))
+    };
 
     Ok(quote! {
         impl #impl_generics ::filtrate_core::Filter for #ident #ty_generics #where_clause {

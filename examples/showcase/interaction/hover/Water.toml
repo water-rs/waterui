@@ -1,0 +1,6 @@
+waterui_path = "../../../.."
+
+[package]
+type = "playground"
+name = "Hover Example"
+bundle_identifier = "com.waterui.hover_example"

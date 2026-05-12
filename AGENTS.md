@@ -22,7 +22,7 @@ DO NOT be over-engineer or write defensive code. If you encounter a problem, ask
 
 Keep the change set strictly scoped to the task.
 
-- Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, `icon-packs/`, etc.) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
+- Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, `icon/`, etc.) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
 
 - Do not drag unrelated files into the diff.
 - Do not run workspace-wide formatters or refactors such as `cargo fmt --all`, bulk codemods, or broad search-replace when the task only targets a few files.

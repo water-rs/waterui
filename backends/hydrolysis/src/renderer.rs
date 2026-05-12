@@ -1,47 +1,35 @@
 mod accessibility;
-mod compositor;
-mod hit_test;
-pub(crate) mod lazy;
+mod input;
 mod lifecycle;
-mod measurement;
-pub(crate) mod navigation_state;
-mod navigation_transition;
-mod popup_menu;
-mod render_context;
-mod state;
-mod subview;
+mod navigation;
+mod render;
 #[cfg(test)]
 mod tests;
-mod text_editing;
-mod view_helpers;
 
 use accessibility::*;
-pub use compositor::HydrolysisRenderTarget;
-use compositor::*;
 use core::any::Any;
 use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
 use core::time::Duration;
-use hit_test::*;
-use lazy::*;
+pub(crate) use input::*;
+pub(crate) use lifecycle::lazy;
 pub(crate) use lifecycle::local_shared;
-use lifecycle::*;
-pub(crate) use measurement::*;
-use navigation_state::*;
-use popup_menu::*;
-pub(crate) use render_context::WidgetRenderContext;
-use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
-use std::rc::Rc;
-use view_helpers::*;
-pub(crate) use view_helpers::{
+pub(crate) use lifecycle::*;
+pub(crate) use navigation::*;
+pub use render::HydrolysisRenderTarget;
+pub(crate) use render::WidgetRenderContext;
+pub(crate) use render::*;
+pub(crate) use render::{
     anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
     gesture_group_identity, normalize_layout_view, normalize_view_for_render, parley_alignment,
     parley_font_weight, passthrough_content, path_commands_to_path, resolved_color_to_peniko,
     resolved_color_to_rgba8, resolved_gradient_to_brush, resolved_shape_to_path, rgba8_to_peniko,
     transformed_rect,
 };
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -109,8 +97,8 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::color::{Color, ResolvedColor, Srgb};
-use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
+use waterui_graphics::gpu_surface::GestureState;
 use waterui_graphics::view_effect::{
     ViewEffectContext, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
 };
@@ -149,8 +137,9 @@ pub(crate) use accessibility::{
     collapsed_accessibility_text_selection, register_accessibility_text_run_node,
     slider_step_for_range,
 };
-pub(crate) use text_editing::{
+pub(crate) use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
+    text_editing,
 };
 
 type HydroRawHandlerFn =
@@ -2933,8 +2922,8 @@ fn remap_accessibility_node_references(
     }
 }
 
-pub use render_context::RenderContext;
-pub(crate) use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
-pub use state::HydroState;
-use subview::HydroSubview;
-use text_editing::*;
+pub(crate) use input::*;
+pub use render::HydroState;
+use render::HydroSubview;
+pub use render::RenderContext;
+pub(crate) use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};

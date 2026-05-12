@@ -76,8 +76,8 @@ ignore = "0.4"
 remove_dir_all = "1.0"
 waterui-assets.workspace = true
 waterui-assets-planner.workspace = true
-waterui-preview-protocol = { path = "../components/preview-protocol" }
-waterui-inspector-protocol = { path = "../components/inspector-protocol" }
+waterui-preview-protocol = { path = "../components/devtools/preview/protocol" }
+waterui-inspector-protocol = { path = "../components/devtools/inspector/protocol" }
 tempfile = "3.26"
 walkdir = "2.5"
 pathdiff = "0.2"

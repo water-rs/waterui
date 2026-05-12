@@ -1,0 +1,10 @@
+waterui_path = "../../.."
+
+[package]
+type = "playground"
+name = "Rust Fallback Video Player"
+bundle_identifier = "com.example.rust_fallback_video_player"
+
+[permissions.internet]
+enable = true
+description = "Required to stream video content from the internet"
