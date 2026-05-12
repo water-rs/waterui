@@ -1,0 +1,35 @@
+[package]
+name = "waterui-chart"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Chart components for WaterUI with GPU-accelerated rendering"
+keywords = ["chart", "visualization", "gpu", "waterui"]
+categories = ["gui", "visualization"]
+
+[features]
+default = []
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+waterui-canvas.workspace = true
+waterui-layout.workspace = true
+waterui-shape.workspace = true
+waterui-text.workspace = true
+nami.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+tracing.workspace = true
+num-traits = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+waterui-testing.workspace = true
+waterui.workspace = true
+
+[lints]
+workspace = true
+[package.metadata.cargo-machete]
+ignored = ["tracing"]

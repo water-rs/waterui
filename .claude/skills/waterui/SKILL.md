@@ -239,7 +239,9 @@ Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`
 | Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu` |
 | Navigation | `NavigationStack`, `NavigationLink`, `TabView` |
 | Media | `Photo`, `VideoPlayer`, `MediaPicker` |
-| Graphics | `Canvas`, `Chart`, `Map`, `Barcode::qr()` |
+| Data | `Chart`, `Map` |
+| Platform | `WebView` |
+| Graphics | `Canvas`, `Barcode::qr()` |
 
 ## CLI Commands
 

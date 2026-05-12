@@ -431,7 +431,7 @@ impl<O: MultiInputOperation> MultiInputFilter<O> {
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("multi-input filter shader"),
                 source: wgpu::ShaderSource::Wgsl(
-                    include_str!("shaders/multi_input_filter.wgsl").into(),
+                    include_str!("shaders/shared/multi_input_filter.wgsl").into(),
                 ),
             });
         let bind_group_layout = Self::create_bind_group_layout(ctx);

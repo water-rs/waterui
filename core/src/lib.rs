@@ -91,41 +91,27 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
+mod animation_system;
 mod components;
+mod foundation;
+mod state;
+mod ui;
+
+pub use animation::{Animatable, AnimationExt, AnimationTrack};
+pub use animation_system::{animation, easing, vector_arithmetic};
+pub use anyhow::Error;
 pub use anyview::AnyView;
 pub use components::*;
-pub mod env;
-pub mod event;
-pub mod gesture;
-pub mod view;
-pub mod views;
-pub use env::Environment;
-pub use view::View;
-pub mod extract;
-pub mod handler;
-pub mod plugin;
-pub use anyhow::Error;
-pub use extract::State;
-pub mod accessibility;
-pub mod animation;
-pub use animation::{Animatable, AnimationExt, AnimationTrack};
-/// Unified easing system for animations.
-pub mod easing;
 pub use easing::{EasingCurve, Interpolatable};
+pub use env::Environment;
+pub use extract::State;
+pub use foundation::{env, extract, handler, id, plugin, resolve};
 pub use local_state::{LocalStateScope, LocalStateStore};
 pub use nami as reactive;
 pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
-mod computed_f32;
-pub use computed_f32::IntoSignalF32;
-pub use waterui_str::Str;
-pub mod id;
-pub mod layout;
-pub mod local_state;
-/// Module for resolving reactive values in different environments.
-pub mod resolve;
-/// VectorArithmetic trait for types that can be linearly interpolated (animation).
-pub mod vector_arithmetic;
-/// View renderer for capturing views to pixel data.
-pub mod view_renderer;
+pub use state::{IntoSignalF32, local_state};
+pub use ui::{accessibility, event, gesture, layout, view, view_renderer, views};
+pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
+pub use waterui_str::Str;

@@ -36,4 +36,4 @@ node_modules/
 *.jpeg
 
 # Large data files (downloaded at build time)
-icon-packs/**/data/
+components/icon/**/data/

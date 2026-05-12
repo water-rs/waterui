@@ -1,6 +1,0 @@
-waterui_path = "../.."
-
-[package]
-type = "playground"
-name = "Filter Example"
-bundle_identifier = "com.waterui.example.filter"

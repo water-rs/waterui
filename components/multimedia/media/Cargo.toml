@@ -1,0 +1,59 @@
+[package]
+name = "waterui-media"
+version = "0.2.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Media components for WaterUI (images, videos, audio)"
+keywords = ["media", "image", "video", "ui", "components"]
+categories = ["gui", "multimedia"]
+
+
+[dependencies]
+waterui-core.workspace = true
+waterui-macros.workspace = true
+waterui-url.workspace = true
+waterui-image.workspace = true
+waterui-controls.workspace = true
+waterui-text.workspace = true
+waterui-video.workspace = true
+waterkit-dialog = { workspace = true, optional = true }
+filtrate-core.workspace = true
+executor-core.workspace = true
+tracing.workspace = true
+futures.workspace = true
+mime = "0.3.17"
+blocking = "1.6.2"
+base64 = "0.22.1"
+async-oneshot = "0.5"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+zenwave = { workspace = true, features = ["native-tls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+zenwave = { workspace = true, features = ["rustls"] }
+
+[target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
+zenwave = { workspace = true, features = ["rustls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+
+[features]
+default = ["std"]
+std = ["waterui-core/std", "dep:waterkit-dialog"]
+
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true
+waterui-graphics.workspace = true
+waterkit-codec = { workspace = true, features = ["software-fallback"] }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+wgpu.workspace = true
+
+
+[lints]
+workspace = true
+[package.metadata.cargo-machete]
+ignored = ["async-oneshot", "base64", "mime", "waterui-macros"]

@@ -1,0 +1,13 @@
+[package]
+name = "audio-visualizer-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+waterui-visualizer = { path = "../../../components/multimedia/visualizer" }

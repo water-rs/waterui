@@ -2,7 +2,15 @@
 [workspace]
 members = [
     "core",
-    "components/*",
+    "components/assets/*",
+    "components/codes/*",
+    "components/data/*",
+    "components/devtools/*/*",
+    "components/effects/*",
+    "components/foundation/*",
+    "components/multimedia/*",
+    "components/platform/*",
+    "components/visual/*",
     "utils/*",
     "utils/filtrate/core",
     "utils/filtrate/derive",
@@ -11,12 +19,16 @@ members = [
     "ffi",
     "macros",
     "cli",
-    "examples/*",
+    "examples/codes/*",
+    "examples/data/*",
+    "examples/effects/*",
+    "examples/media/*",
+    "examples/showcase/*/*",
     "backends/core",
     "backends/gtk",
     "backends/hydrolysis",
-    "backends/hydrolysis-m3",
-    "icon-packs/*",
+    "backends/hydrolysis_m3",
+    "components/icon/*",
 ]
 exclude = [
   "hydrolysis",
@@ -45,7 +57,7 @@ keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
 [lib]
-path = "src/facade.rs"
+path = "src/runtime/facade.rs"
 
 [workspace.package]
 version = "0.2.1"
@@ -87,55 +99,57 @@ thiserror = "2.0.18"
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
-waterui-text = { version = "0.2.2", path = "components/text" }
-waterui-media = { version = "0.2.1", path = "components/media" }
-waterui-image = { version = "0.2.1", path = "components/image" }
-waterui-video = { version = "0.2.1", path = "components/video" }
-waterui-form = { version = "0.2.1", path = "components/form" }
-waterui-controls = { version = "0.2.1", path = "components/controls"}
-waterui-graphics = { version = "0.2.1", path = "components/graphics" }
-waterui-canvas = { version = "0.1.0", path = "components/canvas" }
-waterui-shape = { version = "0.1.0", path = "components/shape" }
-waterui-svg = { version = "0.1.0", path = "components/svg" }
+waterui-text = { version = "0.2.2", path = "components/foundation/text" }
+waterui-media = { version = "0.2.1", path = "components/multimedia/media" }
+waterui-image = { version = "0.2.1", path = "components/visual/image" }
+waterui-video = { version = "0.2.1", path = "components/multimedia/video" }
+waterui-form = { version = "0.2.1", path = "components/foundation/form" }
+waterui-controls = { version = "0.2.1", path = "components/foundation/controls"}
+waterui-graphics = { version = "0.2.1", path = "components/visual/graphics" }
+waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
+waterui-shape = { version = "0.1.0", path = "components/foundation/shape" }
+waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
-waterui-layout = { version = "0.2.2", path = "components/layout" }
-waterui-navigation = { version = "0.2.1", path = "components/navigation" }
-waterui-webview = { version = "0.2.0", path = "components/webview" }
-waterui-icon = { version = "0.2.0", path = "components/icon" }
-waterui-icons-sf-symbol = { version = "0.1.0", path = "icon-packs/sf-symbol" }
-waterui-icons-material-icon = { version = "0.1.0", path = "icon-packs/material-icon" }
-waterui-icons-fontawesome7 = { version = "0.1.0", path = "icon-packs/fontawesome7" }
-waterui-icons-lucide = { version = "0.1.0", path = "icon-packs/lucide" }
-waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
+waterui-layout = { version = "0.2.2", path = "components/foundation/layout" }
+waterui-navigation = { version = "0.2.1", path = "components/foundation/navigation" }
+waterui-webview = { version = "0.2.0", path = "components/platform/webview" }
+waterui-icon = { version = "0.2.0", path = "components/foundation/icon" }
+waterui-icons-sf-symbol = { version = "0.1.0", path = "components/icon/sf_symbol" }
+waterui-icons-material-icon = { version = "0.1.0", path = "components/icon/material" }
+waterui-icons-fontawesome7 = { version = "0.1.0", path = "components/icon/fontawesome7" }
+waterui-icons-lucide = { version = "0.1.0", path = "components/icon/lucide" }
+waterui-icons-native = { version = "0.1.0", path = "components/icon/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
-waterui-map = { version = "0.1.0", path = "components/map" }
-waterkit-location = { version = "0.1.0", path = "kit/location" }
-waterkit-screen = { version = "0.1.0", path = "kit/screen" }
-waterkit-audio = { version = "0.1.0", path = "kit/audio" }
-waterkit-clipboard = { version = "0.1.0", path = "kit/clipboard" }
-waterkit-permission = { version = "0.1.0", path = "kit/permission" }
-waterkit-dialog = { version = "0.1.0", path = "kit/dialog" }
-waterkit-fs = { version = "0.1.0", path = "kit/fs" }
-waterkit-haptic = { version = "0.1.0", path = "kit/haptic" }
-waterkit-codec = { version = "0.1.0", path = "kit/codec", default-features = false }
-waterkit-video = { version = "0.1.0", path = "kit/video" }
-waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
+waterui-map = { version = "0.1.0", path = "components/data/map" }
+waterkit-location = { version = "0.1.0", path = "kit/device/location" }
+waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
+waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio" }
+waterkit-clipboard = { version = "0.1.0", path = "kit/platform/clipboard" }
+waterkit-permission = { version = "0.1.0", path = "kit/platform/permission" }
+waterkit-dialog = { version = "0.1.0", path = "kit/sharing/dialog" }
+waterkit-fs = { version = "0.1.0", path = "kit/platform/fs" }
+waterkit-haptic = { version = "0.1.0", path = "kit/device/haptic" }
+waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
+waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
+waterkit-video = { version = "0.1.0", path = "kit/multimedia/video" }
+waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate/core" }
 filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
-waterui-barcode = { version = "0.1.0", path = "components/barcode" }
-waterui-particle = { version = "0.1.0", path = "components/particle" }
-waterui-chart = { version = "0.1.0", path = "components/chart" }
-waterui-assets = { version = "0.1.0", path = "components/assets" }
-waterui-assets-planner = { version = "0.1.0", path = "components/assets-planner" }
-waterui-assets-macros = { version = "0.1.0", path = "components/assets-macros" }
-waterui-inspector-protocol = { version = "0.1.0", path = "components/inspector-protocol" }
+waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
+waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
+waterui-chart = { version = "0.1.0", path = "components/data/chart" }
+waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
+waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
+waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
+waterui-inspector-protocol = { version = "0.1.0", path = "components/devtools/inspector/protocol" }
+waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
 waterui = { version = "0.2.1", path = "." }
-waterui-build-support = { version = "0.1.0", path = "utils/build-support" }
-hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis-m3" }
+waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
+hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
