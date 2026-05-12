@@ -400,7 +400,7 @@ water devices
 
 - [API Reference](https://docs.rs/waterui) - Complete API documentation
 - [Tutorial Book](https://book.waterui.dev) - The official tutorial book
-- [Roadmap](ROADMAP.md) - Planned features and improvements
+- [Roadmap](docs/ROADMAP.md) - Planned features and improvements
 
 ## Contributing
 
