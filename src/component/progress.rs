@@ -31,6 +31,12 @@ use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::layout::StretchAxis;
 use waterui_macros::text;
+
+fn progress_value_label(value: Computed<f64>) -> Computed<String> {
+    value
+        .map(|value| format!("{:.0}%", value.clamp(0.0, 1.0) * 100.0))
+        .computed()
+}
 /// Configuration for progress indicators.
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
@@ -148,10 +154,10 @@ impl Progress {
     /// * `value` - The progress value between 0.0 and 1.0.
     pub fn new(value: impl IntoComputed<f64>) -> Self {
         let value = value.into_signal().computed();
-        let value_for_label = value.clone();
+        let value_label = progress_value_label(value.clone());
         Self(ProgressConfig {
             label: text!("Please wait...").anyview(),
-            value_label: text!("{value_for_label:.2} %").anyview(),
+            value_label: text!("{value_label}").anyview(),
             value,
             style: ProgressStyle::Linear,
         })
@@ -166,6 +172,8 @@ impl Progress {
         let total = total.into_signal();
         let value = self.0.value;
         self.0.value = total.zip(&value).map(|(t, v)| v / t).computed();
+        let value_label = progress_value_label(self.0.value.clone());
+        self.0.value_label = text!("{value_label}").anyview();
 
         ProgressWithTotal(self)
     }
@@ -224,4 +232,23 @@ pub fn progress(value: impl IntoComputed<f64>) -> Progress {
 #[must_use]
 pub fn loading() -> Progress {
     Progress::infinity().circular()
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Computed, Signal as _};
+
+    use super::progress_value_label;
+
+    #[test]
+    fn progress_value_label_formats_fraction_as_percent() {
+        assert_eq!(progress_value_label(Computed::constant(0.42)).get(), "42%");
+        assert_eq!(progress_value_label(Computed::constant(0.755)).get(), "76%");
+    }
+
+    #[test]
+    fn progress_value_label_clamps_to_valid_progress_range() {
+        assert_eq!(progress_value_label(Computed::constant(-0.25)).get(), "0%");
+        assert_eq!(progress_value_label(Computed::constant(1.25)).get(), "100%");
+    }
 }
