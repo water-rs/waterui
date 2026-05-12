@@ -12,7 +12,8 @@ use crate::toolchain_checks;
 use crate::{error, header, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
-    PreviewPlatform, PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
+    HydrolysisPreviewSource, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
+    launch_preview_session, render_preview_with_hydrolysis,
 };
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
@@ -49,11 +50,30 @@ pub enum CliPreviewBackend {
     Hydrolysis,
 }
 
+/// Theme package for Hydrolysis preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliHydrolysisPreviewTheme {
+    /// Material Design 3 theme package.
+    Material3,
+}
+
+impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
+    fn from(value: CliHydrolysisPreviewTheme) -> Self {
+        match value {
+            CliHydrolysisPreviewTheme::Material3 => Self::Material3,
+        }
+    }
+}
+
 /// Arguments for the preview command.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Function path (e.g., `dashboard::admin::card`).
-    function_path: String,
+    /// Preview target: a `#[preview]` function path or a WaterUI expression.
+    target: String,
+
+    /// Treat the target as a WaterUI expression returning `impl View`.
+    #[arg(long)]
+    expr: bool,
 
     /// Target platform.
     #[arg(short, long, value_enum)]
@@ -62,6 +82,10 @@ pub struct Args {
     /// Rendering backend.
     #[arg(long, value_enum)]
     backend: Option<CliPreviewBackend>,
+
+    /// Theme package for Hydrolysis preview.
+    #[arg(long, value_enum)]
+    theme: Option<CliHydrolysisPreviewTheme>,
 
     /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
     #[arg(short, long, default_value = "375x667")]
@@ -97,9 +121,10 @@ pub async fn run(args: Args) -> Result<()> {
         .and_then(|n| n.as_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
 
-    let symbol = function_path_to_symbol(crate_name, &args.function_path);
     let backend = resolve_preview_backend(args.platform, args.backend)?;
-    header!("Preview: {symbol}");
+    let hydrolysis_theme = resolve_hydrolysis_preview_theme(backend, args.theme)?;
+    let preview_target = resolve_preview_target(crate_name, &args.target, args.expr);
+    header!("Preview: {}", preview_target.display_name());
 
     check_toolchain_for_backend(args.platform, backend).await?;
 
@@ -120,7 +145,8 @@ pub async fn run(args: Args) -> Result<()> {
         let spinner = shell::spinner("Building and rendering with hydrolysis...");
         render_preview_with_hydrolysis(
             &project_path,
-            &symbol,
+            preview_target.hydrolysis_source(),
+            hydrolysis_theme.expect("hydrolysis preview theme must be resolved"),
             width,
             height,
             sccache_path,
@@ -133,6 +159,14 @@ pub async fn run(args: Args) -> Result<()> {
         success!("Preview saved to {}", args.output.display());
         return Ok(());
     }
+
+    let PreviewTarget::Function {
+        function_path,
+        symbol,
+    } = &preview_target
+    else {
+        bail!("Expression preview is currently supported only with `--backend hydrolysis`.");
+    };
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
@@ -153,8 +187,8 @@ pub async fn run(args: Args) -> Result<()> {
         let spinner = shell::spinner("Rendering view...");
         let png_data = render_with_symbol(
             &mut session,
-            &args.function_path,
-            &symbol,
+            function_path,
+            symbol,
             dylib.id,
             &dylib.path,
             width,
@@ -191,6 +225,64 @@ pub async fn run(args: Args) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
+enum PreviewTarget {
+    Function {
+        function_path: String,
+        symbol: String,
+    },
+    Expression {
+        expression: String,
+    },
+}
+
+impl PreviewTarget {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Function { symbol, .. } => symbol,
+            Self::Expression { expression } => expression,
+        }
+    }
+
+    fn hydrolysis_source(&self) -> HydrolysisPreviewSource<'_> {
+        match self {
+            Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
+            Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
+        }
+    }
+}
+
+fn resolve_preview_target(crate_name: &str, target: &str, force_expression: bool) -> PreviewTarget {
+    if force_expression || !is_function_path(target) {
+        return PreviewTarget::Expression {
+            expression: target.to_string(),
+        };
+    }
+
+    PreviewTarget::Function {
+        function_path: target.to_string(),
+        symbol: function_path_to_symbol(crate_name, target),
+    }
+}
+
+fn is_function_path(target: &str) -> bool {
+    let mut segments = target.split("::").peekable();
+    if segments.peek().is_none() {
+        return false;
+    }
+
+    segments.all(is_rust_ident)
+}
+
+fn is_rust_ident(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 fn resolve_preview_backend(
     platform: CliPreviewPlatform,
     backend_override: Option<CliPreviewBackend>,
@@ -217,6 +309,22 @@ fn resolve_preview_backend(
         );
     }
     Ok(backend)
+}
+
+fn resolve_hydrolysis_preview_theme(
+    backend: CliPreviewBackend,
+    theme: Option<CliHydrolysisPreviewTheme>,
+) -> Result<Option<HydrolysisPreviewTheme>> {
+    match (backend, theme) {
+        (CliPreviewBackend::Hydrolysis, Some(theme)) => Ok(Some(theme.into())),
+        (CliPreviewBackend::Hydrolysis, None) => {
+            bail!(
+                "Hydrolysis preview requires an explicit theme package. Pass `--theme material3`."
+            )
+        }
+        (_, Some(_)) => bail!("`--theme` is only supported with `--backend hydrolysis`."),
+        (_, None) => Ok(None),
+    }
 }
 
 async fn check_toolchain_for_backend(
@@ -341,5 +449,52 @@ mod tests {
     fn rejects_non_finite_frame_values() {
         assert!(parse_frame("NaNx100").is_err());
         assert!(parse_frame("100xinf").is_err());
+    }
+
+    #[test]
+    fn resolves_plain_path_as_preview_function() {
+        let target = resolve_preview_target("my-crate", "dashboard::card", false);
+        let PreviewTarget::Function {
+            function_path,
+            symbol,
+        } = target
+        else {
+            panic!("expected function target");
+        };
+        assert_eq!(function_path, "dashboard::card");
+        assert_eq!(symbol, "waterui_preview_my_crate_dashboard_card");
+    }
+
+    #[test]
+    fn resolves_expression_syntax_as_expression_preview() {
+        let target = resolve_preview_target("my-crate", "button(\"Save\")", false);
+        let PreviewTarget::Expression { expression } = target else {
+            panic!("expected expression target");
+        };
+        assert_eq!(expression, "button(\"Save\")");
+    }
+
+    #[test]
+    fn expr_flag_forces_identifier_as_expression_preview() {
+        let target = resolve_preview_target("my-crate", "main_view", true);
+        let PreviewTarget::Expression { expression } = target else {
+            panic!("expected expression target");
+        };
+        assert_eq!(expression, "main_view");
+    }
+
+    #[test]
+    fn hydrolysis_preview_requires_explicit_theme() {
+        let result = resolve_hydrolysis_preview_theme(CliPreviewBackend::Hydrolysis, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_theme_for_non_hydrolysis_preview() {
+        let result = resolve_hydrolysis_preview_theme(
+            CliPreviewBackend::Apple,
+            Some(CliHydrolysisPreviewTheme::Material3),
+        );
+        assert!(result.is_err());
     }
 }

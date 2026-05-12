@@ -60,6 +60,31 @@ impl AnimationController {
         AnimatedScalarHandle { state, generation }
     }
 
+    pub fn bind_scalar_target(
+        &mut self,
+        target: f32,
+        animation: Animation,
+        now: Instant,
+    ) -> AnimatedScalarHandle {
+        let index = self.cursor;
+        self.cursor = self
+            .cursor
+            .checked_add(1)
+            .expect("animation controller scalar cursor overflow");
+
+        if index == self.slots.len() {
+            self.slots.push(AnimatedScalarSlot {
+                state: Rc::new(RefCell::new(AnimatedScalarState::new(target))),
+            });
+        }
+
+        let state = Rc::clone(&self.slots[index].state);
+        let generation = state.borrow_mut().prepare_target_generation();
+        let handle = AnimatedScalarHandle { state, generation };
+        handle.apply_target(target, Some(animation), now);
+        handle
+    }
+
     pub fn tick(&mut self, now: Instant) -> bool {
         let mut has_active = false;
         for slot in &self.slots {
@@ -108,6 +133,14 @@ impl AnimatedScalarState {
             .checked_add(1)
             .expect("animation controller generation overflow");
         self.reconcile_observed(observed_value);
+        self.generation
+    }
+
+    fn prepare_target_generation(&mut self) -> u64 {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("animation controller generation overflow");
         self.generation
     }
 
@@ -209,5 +242,30 @@ mod tests {
 
         stale.apply_target(1.0, None, Instant::now());
         assert!((current.sample(Instant::now()) - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn scalar_target_binding_animates_without_snapping() {
+        let mut controller = AnimationController::default();
+        controller.begin_rebuild_frame();
+        let first = controller.bind_scalar_target(
+            0.0,
+            Animation::ease_in_out(Duration::from_millis(1)),
+            Instant::now(),
+        );
+        controller.finish_rebuild_frame();
+        assert!((first.sample(Instant::now()) - 0.0).abs() < 0.0001);
+
+        let start = Instant::now();
+        controller.begin_rebuild_frame();
+        let second = controller.bind_scalar_target(
+            1.0,
+            Animation::ease_in_out(Duration::from_millis(120)),
+            start,
+        );
+        controller.finish_rebuild_frame();
+
+        let mid = second.sample(start + Duration::from_millis(60));
+        assert!(mid > 0.0 && mid < 1.0);
     }
 }

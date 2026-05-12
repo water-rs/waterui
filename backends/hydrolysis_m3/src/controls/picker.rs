@@ -1,5 +1,6 @@
 use crate::colors::{
-    ACCENT, ACCENT_SELECTION, FOREGROUND_MUTED, OUTLINE_SUBTLE, SURFACE_DEFAULT, SURFACE_MUTED,
+    ACCENT, ACCENT_SELECTION, FOREGROUND_MUTED, FOREGROUND_STRONG, OUTLINE_SUBTLE, SURFACE_DEFAULT,
+    SURFACE_MUTED,
 };
 use crate::dimensions::{
     PICKER_HORIZONTAL_INSET, PICKER_INDICATOR_SPACE, PICKER_MENU_POPUP_CORNER_RADIUS,
@@ -7,7 +8,8 @@ use crate::dimensions::{
     PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_LABEL_SPACING, PICKER_RADIO_ROW_SPACING,
     PICKER_VERTICAL_INSET,
 };
-use crate::{Brush, DrawContext, PickerMetrics};
+use crate::theme::state_layer;
+use crate::{Brush, DrawContext, PickerMetrics, WidgetInteractionState};
 use waterui_form::picker::PickerStyle;
 
 pub fn metrics(style: PickerStyle) -> PickerMetrics {
@@ -43,6 +45,14 @@ pub fn draw_indicator(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect) {
     draw.stroke_path(&chevron, &Brush::from(FOREGROUND_MUTED), 1.5);
 }
 
+pub fn draw_state_layer(
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_bounded(draw, bounds, 4.0.into(), FOREGROUND_STRONG, state);
+}
+
 pub fn draw_popup(draw: &mut dyn DrawContext, popup_rect: vello::kurbo::Rect) {
     draw.fill_rounded_rect(
         popup_rect,
@@ -74,6 +84,27 @@ pub fn draw_popup_row_background(
     draw.fill_rect(inset, &Brush::from(ACCENT_SELECTION));
 }
 
+pub fn draw_popup_row_state_layer(
+    draw: &mut dyn DrawContext,
+    row_rect: vello::kurbo::Rect,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    let inset = vello::kurbo::Rect::new(
+        row_rect.x0 + 2.0,
+        row_rect.y0 + 1.0,
+        row_rect.x1 - 2.0,
+        row_rect.y1 - 1.0,
+    );
+    state_layer::draw_bounded(
+        draw,
+        inset,
+        0.0.into(),
+        if selected { ACCENT } else { FOREGROUND_STRONG },
+        state,
+    );
+}
+
 pub fn draw_separator(draw: &mut dyn DrawContext, separator: vello::kurbo::Rect) {
     draw.fill_rect(separator, &Brush::from(OUTLINE_SUBTLE));
 }
@@ -94,4 +125,20 @@ pub fn draw_radio_indicator(
     if selected {
         draw.fill_circle(center, radius * 0.45, &Brush::from(ACCENT));
     }
+}
+
+pub fn draw_radio_state_layer(
+    draw: &mut dyn DrawContext,
+    center: vello::kurbo::Point,
+    _radius: f64,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_unbounded_circle(
+        draw,
+        center,
+        20.0,
+        if selected { ACCENT } else { FOREGROUND_STRONG },
+        state,
+    );
 }

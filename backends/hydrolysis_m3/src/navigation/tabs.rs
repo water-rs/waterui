@@ -1,6 +1,7 @@
-use crate::colors::{ACCENT_SELECTION, OUTLINE_SUBTLE, SURFACE_MUTED};
+use crate::colors::{ACCENT, ACCENT_SELECTION, FOREGROUND_STRONG, OUTLINE_SUBTLE, SURFACE_MUTED};
 use crate::dimensions::TABS_HIGHLIGHT_CORNER_RADIUS;
-use crate::{Brush, DrawContext};
+use crate::theme::state_layer;
+use crate::{Brush, DrawContext, WidgetInteractionState};
 use vello::kurbo::Rect;
 
 pub fn draw_bar(draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool) {
@@ -18,5 +19,26 @@ pub fn draw_highlight(draw: &mut dyn DrawContext, bounds: Rect) {
         bounds,
         TABS_HIGHLIGHT_CORNER_RADIUS.into(),
         &Brush::from(ACCENT_SELECTION),
+    );
+}
+
+pub fn draw_button_state_layer(
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    selected: bool,
+    state: WidgetInteractionState,
+) {
+    let layer = Rect::new(
+        bounds.x0 + 4.0,
+        bounds.y0 + 6.0,
+        bounds.x1 - 4.0,
+        bounds.y1 - 6.0,
+    );
+    state_layer::draw_bounded(
+        draw,
+        layer,
+        TABS_HIGHLIGHT_CORNER_RADIUS.into(),
+        if selected { ACCENT } else { FOREGROUND_STRONG },
+        state,
     );
 }

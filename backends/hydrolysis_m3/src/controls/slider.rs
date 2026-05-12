@@ -1,9 +1,10 @@
-use crate::colors::{ACCENT, OUTLINE_SUBTLE, SURFACE_DEFAULT, THUMB_OUTLINE};
+use crate::colors::{ACCENT, OUTLINE_SUBTLE, THUMB_OUTLINE};
 use crate::dimensions::{
     SLIDER_HORIZONTAL_INSET, SLIDER_HORIZONTAL_SPACING, SLIDER_MIN_TRACK_WIDTH,
     SLIDER_THUMB_RADIUS, SLIDER_TRACK_HEIGHT, SLIDER_VERTICAL_SPACING,
 };
-use crate::{Brush, DrawContext, SliderMetrics};
+use crate::theme::state_layer;
+use crate::{Brush, DrawContext, SliderMetrics, WidgetInteractionState};
 
 pub const fn metrics() -> SliderMetrics {
     SliderMetrics::new(
@@ -21,11 +22,19 @@ pub fn draw_track(
     track_rect: vello::kurbo::Rect,
     fill_rect: vello::kurbo::Rect,
 ) {
-    draw.fill_rect(track_rect, &Brush::from(OUTLINE_SUBTLE));
-    draw.fill_rect(fill_rect, &Brush::from(ACCENT));
+    draw.fill_rounded_rect(track_rect, 2.0.into(), &Brush::from(OUTLINE_SUBTLE));
+    draw.fill_rounded_rect(fill_rect, 2.0.into(), &Brush::from(ACCENT));
 }
 
 pub fn draw_thumb(draw: &mut dyn DrawContext, center: vello::kurbo::Point, radius: f64) {
-    draw.fill_circle(center, radius, &Brush::from(SURFACE_DEFAULT));
-    draw.stroke_circle(center, radius, &Brush::from(THUMB_OUTLINE), 1.0);
+    draw.fill_circle(center, radius, &Brush::from(THUMB_OUTLINE));
+}
+
+pub fn draw_thumb_state_layer(
+    draw: &mut dyn DrawContext,
+    center: vello::kurbo::Point,
+    _radius: f64,
+    state: WidgetInteractionState,
+) {
+    state_layer::draw_unbounded_circle(draw, center, 20.0, ACCENT, state);
 }

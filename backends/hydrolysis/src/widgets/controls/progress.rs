@@ -6,6 +6,7 @@ use crate::renderer::{
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use core::f64::consts::TAU;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui_backend_core::widget::ProgressIndicatorStyle;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
@@ -64,7 +65,7 @@ pub(crate) fn render_progress(
 
     match progress.style {
         ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(ProgressStyle::Linear);
+            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Linear);
             let label_size = measure_view_intrinsic(&progress.label, ctx.state_mut(), env);
             let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
                 f64::from(label_size.height).max(metrics.label_height)

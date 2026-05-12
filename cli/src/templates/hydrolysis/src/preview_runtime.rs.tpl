@@ -12,7 +12,9 @@ pub(crate) fn run() {
     let height = parse_dimension(preview_symbol::PREVIEW_HEIGHT_ENV);
 
     let view = preview_symbol::load_preview_view();
-    let renderer = ViewRenderer::new(HydrolysisViewRenderer::default());
+    let renderer = ViewRenderer::new(HydrolysisViewRenderer::with_environment(
+        preview_symbol::install_preview_theme,
+    ));
     let mut render = pollster::block_on(renderer.render(view, RenderSize::new(width, height)));
     flatten_alpha_over_white(&mut render);
     let png_data = render

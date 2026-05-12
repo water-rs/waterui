@@ -7,12 +7,12 @@ use crate::renderer::{
     measure_slider_intrinsic, measure_view_intrinsic, normalize_view_for_render,
     slider_value_epsilon, transformed_rect,
 };
-use waterui_core::AnyView;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use waterui_controls::slider::SliderConfig;
+use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
@@ -156,16 +156,6 @@ pub(crate) fn render_slider(
         fill_right,
         track_center_y + metrics.track_height / 2.0,
     );
-    {
-        let mut draw = ctx.draw_context();
-        theme.draw_slider_track(&mut draw, track_rect, fill_rect);
-        theme.draw_slider_thumb(
-            &mut draw,
-            vello::kurbo::Point::new(fill_right, track_center_y),
-            metrics.thumb_radius,
-        );
-    }
-
     let hit_bounds = transformed_rect(
         ctx.hit_transform,
         vello::kurbo::Rect::new(
@@ -175,6 +165,23 @@ pub(crate) fn render_slider(
             control_bottom,
         ),
     );
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+    {
+        let mut draw = ctx.draw_context();
+        theme.draw_slider_track(&mut draw, track_rect, fill_rect);
+        theme.draw_slider_thumb_state_layer(
+            &mut draw,
+            vello::kurbo::Point::new(fill_right, track_center_y),
+            metrics.thumb_radius,
+            interaction,
+        );
+        theme.draw_slider_thumb(
+            &mut draw,
+            vello::kurbo::Point::new(fill_right, track_center_y),
+            metrics.thumb_radius,
+        );
+    }
+
     let value_binding = slider.value;
     let usable_track = track_right - track_left;
     assert!(
@@ -183,8 +190,10 @@ pub(crate) fn render_slider(
     );
     let inverse_transform = ctx.hit_transform.inverse();
     let value_epsilon = slider_value_epsilon(span, usable_track);
-    ctx.renderer_mut()
-        .register_pointer_drag_target(hit_bounds, move |_renderer, point, _env| {
+    ctx.renderer_mut().register_interactive_pointer_drag_target(
+        hit_bounds,
+        press_slot,
+        move |_renderer, point, _env| {
             let local_point = inverse_transform * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
@@ -194,5 +203,6 @@ pub(crate) fn render_slider(
             }
             value_binding.set(next);
             true
-        });
+        },
+    );
 }

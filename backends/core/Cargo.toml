@@ -13,8 +13,12 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-controls.workspace = true
+waterui-form.workspace = true
+waterui-graphics.workspace = true
 nami.workspace = true
 tracing.workspace = true
+vello.workspace = true
 
 [lints]
 workspace = true

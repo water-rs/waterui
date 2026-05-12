@@ -96,7 +96,11 @@ pub(crate) fn render_date_picker(
         ctx.bounds.y1,
     );
     if has_label && label_bounds.width() > 0.0 {
-        ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(date_picker.label), label_bounds);
+        ctx.dispatch_in_rect_without_accessibility(
+            env,
+            AnyView::new(date_picker.label),
+            label_bounds,
+        );
     }
 
     let field_bounds =

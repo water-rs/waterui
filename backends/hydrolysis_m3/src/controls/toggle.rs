@@ -1,8 +1,10 @@
 use crate::colors::{
-    ACCENT, ACCENT_TRACK_OFF, THUMB_OUTLINE_SOFT, TOGGLE_OUTLINE_OFF, TOGGLE_OUTLINE_ON,
+    ACCENT, ACCENT_TRACK_OFF, FOREGROUND_STRONG, THUMB_OUTLINE_SOFT, TOGGLE_OUTLINE_OFF,
+    TOGGLE_OUTLINE_ON,
 };
 use crate::dimensions::{TOGGLE_CHECKBOX_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH};
-use crate::{Brush, DrawContext, ToggleMetrics, lerp_color};
+use crate::theme::state_layer;
+use crate::{Brush, DrawContext, ToggleMetrics, WidgetInteractionState, lerp_color};
 use waterui_controls::toggle::ToggleStyle;
 
 pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
@@ -17,29 +19,60 @@ pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
 
 pub fn draw_switch(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
     let track_color = lerp_color(ACCENT_TRACK_OFF, ACCENT, progress);
-    let thumb_center_x = crate::lerp_f64(bounds.x0 + 15.0, bounds.x1 - 15.0, progress);
+    let handle_radius = crate::lerp_f64(8.0, 12.0, progress);
+    let thumb_center_x = crate::lerp_f64(
+        bounds.x0 + 4.0 + handle_radius,
+        bounds.x1 - 4.0 - handle_radius,
+        progress,
+    );
     let thumb_center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
-    draw.fill_rounded_rect(bounds, 15.5.into(), &Brush::from(track_color));
-    draw.stroke_rounded_rect(bounds, 15.5.into(), &Brush::from(THUMB_OUTLINE_SOFT), 1.0);
+    draw.fill_rounded_rect(bounds, 16.0.into(), &Brush::from(track_color));
+    draw.stroke_rounded_rect(
+        bounds,
+        16.0.into(),
+        &Brush::from(lerp_color(TOGGLE_OUTLINE_OFF, TOGGLE_OUTLINE_ON, progress)),
+        2.0,
+    );
     draw.fill_circle(
         thumb_center,
-        13.0,
+        handle_radius,
         &Brush::from(vello::peniko::Color::WHITE),
     );
-    draw.stroke_circle(thumb_center, 13.0, &Brush::from(THUMB_OUTLINE_SOFT), 1.0);
+    draw.stroke_circle(
+        thumb_center,
+        handle_radius,
+        &Brush::from(THUMB_OUTLINE_SOFT),
+        1.0,
+    );
+}
+
+pub fn draw_switch_state_layer(
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+    state: WidgetInteractionState,
+) {
+    let handle_radius = crate::lerp_f64(8.0, 12.0, progress);
+    let thumb_center_x = crate::lerp_f64(
+        bounds.x0 + 4.0 + handle_radius,
+        bounds.x1 - 4.0 - handle_radius,
+        progress,
+    );
+    let center = vello::kurbo::Point::new(thumb_center_x, bounds.y0 + bounds.height() / 2.0);
+    state_layer::draw_unbounded_circle(draw, center, 20.0, FOREGROUND_STRONG, state);
 }
 
 pub fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, progress: f32) {
     draw.fill_rounded_rect(
         bounds,
-        4.0.into(),
+        2.0.into(),
         &Brush::from(lerp_color(vello::peniko::Color::WHITE, ACCENT, progress)),
     );
     draw.stroke_rounded_rect(
         bounds,
-        4.0.into(),
+        2.0.into(),
         &Brush::from(lerp_color(TOGGLE_OUTLINE_OFF, TOGGLE_OUTLINE_ON, progress)),
-        1.0,
+        2.0,
     );
     if progress <= 0.0 {
         return;
@@ -63,4 +96,22 @@ pub fn draw_checkbox(draw: &mut dyn DrawContext, bounds: vello::kurbo::Rect, pro
         &Brush::from(vello::peniko::Color::new([1.0, 1.0, 1.0, progress])),
         2.0,
     );
+}
+
+pub fn draw_checkbox_state_layer(
+    draw: &mut dyn DrawContext,
+    bounds: vello::kurbo::Rect,
+    progress: f32,
+    state: WidgetInteractionState,
+) {
+    let center = vello::kurbo::Point::new(
+        bounds.x0 + bounds.width() / 2.0,
+        bounds.y0 + bounds.height() / 2.0,
+    );
+    let color = if progress > 0.0 {
+        ACCENT
+    } else {
+        FOREGROUND_STRONG
+    };
+    state_layer::draw_unbounded_circle(draw, center, 20.0, color, state);
 }

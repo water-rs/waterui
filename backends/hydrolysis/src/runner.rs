@@ -30,7 +30,6 @@ use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
 
-use crate::engine::{MaterialTheme, WidgetTheme};
 use crate::env::{parse_bool_env, parse_positive_u64_env};
 use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
@@ -46,10 +45,6 @@ fn install_native_component_hooks(env: &mut Environment) {
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
-}
-
-fn install_widget_theme(env: &mut Environment) {
-    env.insert(Box::new(MaterialTheme::new()) as Box<dyn WidgetTheme>);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
@@ -1004,7 +999,6 @@ impl HeadlessRuntime {
         init_main_thread_executors();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         install_native_component_hooks(&mut env);
-        install_widget_theme(&mut env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -1116,7 +1110,6 @@ pub fn run(app: App) {
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
-    install_widget_theme(&mut env);
     install_window_manager(&mut env, Rc::clone(&pending_window_queue));
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui_core::ViewRenderer::new(
@@ -1412,7 +1405,6 @@ mod web_runner {
             let mut env = env;
             let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
             super::install_native_component_hooks(&mut env);
-            super::install_widget_theme(&mut env);
             env.insert(HydrolysisTextContextMenuMode::Overlay);
             env.insert(waterui_core::ViewRenderer::new(
                 crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -1562,7 +1554,6 @@ mod winit_runner {
             }
         };
         env.insert(text_context_menu_mode);
-        super::install_widget_theme(&mut env);
         env.insert(waterui::window::WindowManager::new({
             let pending_window_queue = Rc::clone(&pending_window_queue);
             let event_proxy = event_proxy.clone();

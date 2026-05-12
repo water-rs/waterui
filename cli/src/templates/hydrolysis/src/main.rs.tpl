@@ -13,6 +13,8 @@ fn main() {
 
 #[cfg(not(feature = "waterui-preview-mode"))]
 fn main() {
-    let app = {{ ctx.crate_name_ident() }}::app(waterui::configure_environment!(waterui::env::Environment::new()));
+    let mut env = waterui::configure_environment!(waterui::env::Environment::new());
+    hydrolysis_m3::install(&mut env);
+    let app = {{ ctx.crate_name_ident() }}::app(env);
     hydrolysis::run(app);
 }

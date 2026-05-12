@@ -1685,6 +1685,23 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
+            (
+                "hydrolysis-m3".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "hydrolysis-m3",
+                            HYDROLYSIS_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                                "hydrolysis_m3",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
+            ),
         ])
     }
 
@@ -1712,6 +1729,23 @@ pub mod hydrolysis {
             (
                 "wasm-bindgen".to_string(),
                 GeneratedDependencyValue::simple("0.2"),
+            ),
+            (
+                "hydrolysis-m3".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "hydrolysis-m3",
+                            HYDROLYSIS_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
+                                "hydrolysis_m3",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false),
+                ),
             ),
         ])
     }

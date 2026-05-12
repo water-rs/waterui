@@ -19,8 +19,8 @@ use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
-use crate::widgets::{draw_scroll_indicators, inset_rect, widget_theme};
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
+use crate::widgets::{draw_scroll_indicators, inset_rect, widget_theme};
 
 impl HydroNativeView for Native<ListConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -228,40 +228,56 @@ pub(crate) fn render_list(
                 row_rect.y0 + 6.0 + control_height,
             );
             trailing_x -= control_width + LIST_TRAILING_CONTROL_SPACING;
+            let up_rect = vello::kurbo::Rect::new(
+                control_rect.x0,
+                control_rect.y0,
+                control_rect.x1,
+                control_rect.y0 + control_rect.height() / 2.0,
+            );
+            let down_rect = vello::kurbo::Rect::new(
+                control_rect.x0,
+                control_rect.y0 + control_rect.height() / 2.0,
+                control_rect.x1,
+                control_rect.y1,
+            );
+            let up_interaction = (index > 0).then(|| {
+                let hit_bounds = transformed_rect(ctx.hit_transform, up_rect);
+                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+                (hit_bounds, state, slot)
+            });
+            let down_interaction = (index + 1 < total_rows).then(|| {
+                let hit_bounds = transformed_rect(ctx.hit_transform, down_rect);
+                let (state, slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+                (hit_bounds, state, slot)
+            });
             {
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_move_control(&mut draw, control_rect);
+                if let Some((_, state, _)) = &up_interaction {
+                    theme.draw_list_move_control_state_layer(&mut draw, up_rect, *state);
+                }
+                if let Some((_, state, _)) = &down_interaction {
+                    theme.draw_list_move_control_state_layer(&mut draw, down_rect, *state);
+                }
             }
 
-            if index > 0 {
-                let up_rect = vello::kurbo::Rect::new(
-                    control_rect.x0,
-                    control_rect.y0,
-                    control_rect.x1,
-                    control_rect.y0 + control_rect.height() / 2.0,
-                );
+            if let Some((hit_bounds, _, press_slot)) = up_interaction {
                 let action = Rc::clone(move_action);
-                let hit_transform = ctx.hit_transform;
-                ctx.renderer_mut().register_pointer_target(
-                    transformed_rect(hit_transform, up_rect),
+                ctx.renderer_mut().register_interactive_pointer_target(
+                    hit_bounds,
+                    press_slot,
                     move |_renderer, _point, env| {
                         (action.as_ref())(env, Move::new(index, index - 1));
                         true
                     },
                 );
             }
-            if index + 1 < total_rows {
-                let down_rect = vello::kurbo::Rect::new(
-                    control_rect.x0,
-                    control_rect.y0 + control_rect.height() / 2.0,
-                    control_rect.x1,
-                    control_rect.y1,
-                );
+            if let Some((hit_bounds, _, press_slot)) = down_interaction {
                 let action = Rc::clone(move_action);
-                let hit_transform = ctx.hit_transform;
-                ctx.renderer_mut().register_pointer_target(
-                    transformed_rect(hit_transform, down_rect),
+                ctx.renderer_mut().register_interactive_pointer_target(
+                    hit_bounds,
+                    press_slot,
                     move |_renderer, _point, env| {
                         (action.as_ref())(env, Move::new(index, index + 1));
                         true
@@ -278,15 +294,24 @@ pub(crate) fn render_list(
                 row_rect.y1 - 6.0,
             );
             trailing_x = delete_rect.x0 - LIST_TRAILING_CONTROL_SPACING;
+            let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
+            let (delete_interaction, delete_press_slot) = ctx
+                .renderer_mut()
+                .bind_interaction_target(delete_hit_bounds);
             {
                 let theme = widget_theme(env);
                 let mut draw = ctx.draw_context();
                 theme.draw_list_delete_control(&mut draw, delete_rect);
+                theme.draw_list_delete_control_state_layer(
+                    &mut draw,
+                    delete_rect,
+                    delete_interaction,
+                );
             }
             let action = Rc::clone(delete_action);
-            let hit_transform = ctx.hit_transform;
-            ctx.renderer_mut().register_pointer_target(
-                transformed_rect(hit_transform, delete_rect),
+            ctx.renderer_mut().register_interactive_pointer_target(
+                delete_hit_bounds,
+                delete_press_slot,
                 move |_renderer, _point, env| {
                     (action.as_ref())(env, index);
                     true

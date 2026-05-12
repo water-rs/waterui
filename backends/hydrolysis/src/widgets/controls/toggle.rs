@@ -100,25 +100,41 @@ pub(crate) fn render_toggle(
     }
 
     let thumb_progress = ctx.renderer_mut().resolve_toggle_progress(&toggle.toggle);
+    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
     let mut draw = ctx.draw_context();
     match style {
         ToggleStyle::Automatic | ToggleStyle::Switch => {
             theme.draw_toggle_switch(&mut draw, control_bounds, thumb_progress);
+            theme.draw_toggle_switch_state_layer(
+                &mut draw,
+                control_bounds,
+                thumb_progress,
+                interaction,
+            );
         }
         ToggleStyle::Checkbox => {
             theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress);
+            theme.draw_toggle_checkbox_state_layer(
+                &mut draw,
+                control_bounds,
+                thumb_progress,
+                interaction,
+            );
         }
         _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
     }
 
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let toggle_binding = toggle.toggle;
-    ctx.renderer_mut()
-        .register_pointer_target(hit_bounds, move |_renderer, _point, _env| {
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_bounds,
+        press_slot,
+        move |_renderer, _point, _env| {
             let next = !toggle_binding.get();
             toggle_binding.set(next);
             true
-        });
+        },
+    );
 }
 
 pub(crate) fn measure_toggle_intrinsic(

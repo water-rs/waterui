@@ -14,9 +14,15 @@ categories.workspace = true
 [dependencies]
 vello.workspace = true
 waterui = { version = "0.2.1", path = "../..", default-features = false }
+waterui-backend-core.workspace = true
+waterui-core.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-graphics.workspace = true
+
+[dev-dependencies]
+tracing.workspace = true
+waterui-testing.workspace = true
 
 [lints]
 workspace = true

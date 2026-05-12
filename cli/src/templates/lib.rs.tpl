@@ -33,7 +33,7 @@ fn main() -> impl View {
                     "Count: ",
                     text!("{counter}"),
                     spacer(),
-                    stepper(&counter),
+                    stepper("Count", &counter),
                 )),
                 progress(counter.map(|count| count as f64 / 10.0)),
             )),
@@ -52,7 +52,7 @@ fn main() -> impl View {
             // Interactive controls
             vstack((
                 text("Controls").size(18.0f32),
-                Slider::new(0.0..=1.0, &progress_value),
+                Slider::new("Progress", &progress_value),
                 progress(progress_value),
                 loading(),
             )),

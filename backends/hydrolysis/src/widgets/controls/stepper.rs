@@ -116,29 +116,40 @@ pub(crate) fn render_stepper(
         controls_x0 + controls_width,
         button_y0 + button_size,
     );
-    let mut draw = ctx.draw_context();
-    theme.draw_stepper_button(&mut draw, minus_bounds);
-    theme.draw_stepper_button(&mut draw, plus_bounds);
+    let hit_transform = ctx.hit_transform;
+    let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
+    let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
+    let (minus_interaction, minus_press_slot) =
+        ctx.renderer_mut().bind_interaction_target(minus_hit_bounds);
+    let (plus_interaction, plus_press_slot) =
+        ctx.renderer_mut().bind_interaction_target(plus_hit_bounds);
+    {
+        let mut draw = ctx.draw_context();
+        theme.draw_stepper_button(&mut draw, minus_bounds);
+        theme.draw_stepper_button_state_layer(&mut draw, minus_bounds, minus_interaction);
+        theme.draw_stepper_button(&mut draw, plus_bounds);
+        theme.draw_stepper_button_state_layer(&mut draw, plus_bounds, plus_interaction);
 
-    let line_color = Brush::from(vello::peniko::Color::new([0.2, 0.2, 0.22, 1.0]));
-    draw.stroke_line(
-        vello::kurbo::Point::new(minus_bounds.x0 + 6.0, minus_bounds.y0 + button_size / 2.0),
-        vello::kurbo::Point::new(minus_bounds.x1 - 6.0, minus_bounds.y0 + button_size / 2.0),
-        &line_color,
-        2.0,
-    );
-    draw.stroke_line(
-        vello::kurbo::Point::new(plus_bounds.x0 + 6.0, plus_bounds.y0 + button_size / 2.0),
-        vello::kurbo::Point::new(plus_bounds.x1 - 6.0, plus_bounds.y0 + button_size / 2.0),
-        &line_color,
-        2.0,
-    );
-    draw.stroke_line(
-        vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y0 + 6.0),
-        vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y1 - 6.0),
-        &line_color,
-        2.0,
-    );
+        let line_color = Brush::from(vello::peniko::Color::new([0.2, 0.2, 0.22, 1.0]));
+        draw.stroke_line(
+            vello::kurbo::Point::new(minus_bounds.x0 + 6.0, minus_bounds.y0 + button_size / 2.0),
+            vello::kurbo::Point::new(minus_bounds.x1 - 6.0, minus_bounds.y0 + button_size / 2.0),
+            &line_color,
+            2.0,
+        );
+        draw.stroke_line(
+            vello::kurbo::Point::new(plus_bounds.x0 + 6.0, plus_bounds.y0 + button_size / 2.0),
+            vello::kurbo::Point::new(plus_bounds.x1 - 6.0, plus_bounds.y0 + button_size / 2.0),
+            &line_color,
+            2.0,
+        );
+        draw.stroke_line(
+            vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y0 + 6.0),
+            vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y1 - 6.0),
+            &line_color,
+            2.0,
+        );
+    }
 
     let range_start = *stepper.range.start();
     let range_end = *stepper.range.end();
@@ -152,9 +163,9 @@ pub(crate) fn render_stepper(
     let step_signal_minus = stepper.step.clone();
     let step_signal_plus = stepper.step;
 
-    let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut().register_pointer_target(
-        transformed_rect(hit_transform, minus_bounds),
+    ctx.renderer_mut().register_interactive_pointer_target(
+        minus_hit_bounds,
+        minus_press_slot,
         move |_renderer, _point, _env| {
             let step = step_signal_minus.get();
             assert!((step > 0), "hydrolysis stepper requires positive step");
@@ -164,9 +175,9 @@ pub(crate) fn render_stepper(
             true
         },
     );
-    let hit_transform = ctx.hit_transform;
-    ctx.renderer_mut().register_pointer_target(
-        transformed_rect(hit_transform, plus_bounds),
+    ctx.renderer_mut().register_interactive_pointer_target(
+        plus_hit_bounds,
+        plus_press_slot,
         move |_renderer, _point, _env| {
             let step = step_signal_plus.get();
             assert!((step > 0), "hydrolysis stepper requires positive step");
