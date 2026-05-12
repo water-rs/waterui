@@ -1,6 +1,9 @@
 use super::*;
 
-const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/gpu_surface_compositor.wgsl"));
+const GPU_SURFACE_COMPOSITOR_SHADER: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/shaders/gpu_surface_compositor.wgsl"
+));
 
 #[derive(Default)]
 pub(crate) struct Compositor {

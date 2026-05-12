@@ -789,7 +789,8 @@ pub(crate) fn measure_progress_intrinsic(
     let theme = widget_theme(env);
     match progress.style {
         ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(ProgressStyle::Linear);
+            let metrics = theme
+                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Linear);
             let label_height =
                 f64::from(waterui_text::font::Font::default().resolve(env).get().size)
                     .max(metrics.label_height);
@@ -802,7 +803,8 @@ pub(crate) fn measure_progress_intrinsic(
             LayoutSize::new(width as f32, height as f32)
         }
         ProgressStyle::Circular => {
-            let metrics = theme.progress_metrics(ProgressStyle::Circular);
+            let metrics = theme
+                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Circular);
             LayoutSize::new(
                 metrics.circular_diameter as f32,
                 metrics.circular_diameter as f32,
@@ -959,7 +961,8 @@ pub(crate) fn measure_slider_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.slider_metrics();    let label_size = measure_label_intrinsic(&slider.label, state, env);
+    let metrics = theme.slider_metrics();
+    let label_size = measure_label_intrinsic(&slider.label, state, env);
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
     let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
 

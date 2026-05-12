@@ -25,7 +25,6 @@ waterui-shape.workspace = true
 waterui-video.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
-hydrolysis-m3.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true

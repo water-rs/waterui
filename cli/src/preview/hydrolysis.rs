@@ -18,11 +18,45 @@ const HYDROLYSIS_PREVIEW_WIDTH_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_WIDTH";
 const HYDROLYSIS_PREVIEW_HEIGHT_ENV: &str = "WATERUI_HYDROLYSIS_PREVIEW_HEIGHT";
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 
+/// Theme package selected for Hydrolysis preview rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HydrolysisPreviewTheme {
+    /// Material Design 3 package.
+    Material3,
+}
+
+impl HydrolysisPreviewTheme {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Material3 => "material3",
+        }
+    }
+
+    const fn installer(self) -> &'static str {
+        match self {
+            Self::Material3 => "hydrolysis_m3::install",
+        }
+    }
+}
+
+/// Source used to produce a Hydrolysis preview view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HydrolysisPreviewSource<'a> {
+    /// Existing `#[preview]` export symbol.
+    Symbol(&'a str),
+    /// Inline Rust expression returning `impl View`.
+    Expression(&'a str),
+}
+
 #[derive(Template)]
 #[template(path = "src/preview/hydrolysis_preview_symbol.rs.tpl", escape = "none")]
 struct HydrolysisPreviewSymbolTemplate<'a> {
+    expression_mode: bool,
     preview_symbol: &'a str,
+    preview_expression: &'a str,
     crate_name_ident: &'a str,
+    preview_theme: &'a str,
+    preview_theme_installer: &'a str,
     preview_output_env: &'a str,
     preview_width_env: &'a str,
     preview_height_env: &'a str,
@@ -34,14 +68,15 @@ struct HydrolysisPreviewSymbolTemplate<'a> {
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
 pub async fn render_preview_with_hydrolysis(
     project_path: &Path,
-    symbol: &str,
+    source: HydrolysisPreviewSource<'_>,
+    theme: HydrolysisPreviewTheme,
     width: f32,
     height: f32,
     sccache_path: Option<PathBuf>,
     output_path: &Path,
 ) -> Result<()> {
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
-    write_preview_symbol_bindings(&project, symbol).await?;
+    write_preview_symbol_bindings(&project, source, theme).await?;
 
     let mut build_options = BuildOptions::new(false);
     if let Some(sccache_path) = sccache_path {
@@ -80,15 +115,27 @@ async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project>
     Ok(project)
 }
 
-async fn write_preview_symbol_bindings(project: &Project, symbol: &str) -> Result<()> {
+async fn write_preview_symbol_bindings(
+    project: &Project,
+    source: HydrolysisPreviewSource<'_>,
+    theme: HydrolysisPreviewTheme,
+) -> Result<()> {
     let module_path = project
         .backend_path::<HydrolysisBackend>()
         .join("src")
         .join("preview_symbol.rs");
     let crate_name_ident = project.crate_name().rust_ident();
+    let (expression_mode, preview_symbol, preview_expression) = match source {
+        HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
+        HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
+    };
     let rendered = HydrolysisPreviewSymbolTemplate {
-        preview_symbol: symbol,
+        expression_mode,
+        preview_symbol,
+        preview_expression,
         crate_name_ident: crate_name_ident.as_str(),
+        preview_theme: theme.name(),
+        preview_theme_installer: theme.installer(),
         preview_output_env: HYDROLYSIS_PREVIEW_OUTPUT_ENV,
         preview_width_env: HYDROLYSIS_PREVIEW_WIDTH_ENV,
         preview_height_env: HYDROLYSIS_PREVIEW_HEIGHT_ENV,

@@ -14,6 +14,8 @@ pub mod protocol;
 pub mod watcher;
 
 pub use app_client::PreviewAppClient;
-pub use hydrolysis::render_preview_with_hydrolysis;
+pub use hydrolysis::{
+    HydrolysisPreviewSource, HydrolysisPreviewTheme, render_preview_with_hydrolysis,
+};
 pub use launcher::{PreviewSession, launch_preview_session};
 pub use protocol::{PreviewPlatform, Size};

@@ -15,6 +15,9 @@ Build views with reactive state. When unsure, search `examples/*/src/lib.rs` for
 - Use `waterui-testing` for UI component coverage when testing WaterUI components; it validates the Hydrolysis accessibility tree as both interaction behavior and accessibility output.
 - Every UI component should expose a meaningful accessibility tree. If a component is not testable through `waterui-testing`, improve the component or renderer rather than relying on weak assertions.
 - Preview renders should use the real WaterUI renderer so visual checks reflect actual platform output.
+- WaterUI layout lengths are logical view units, not physical pixels. Treat Material metrics as dp-equivalent design units in Hydrolysis themes.
+- Hydrolysis widget chrome is provided by a backend-neutral `WidgetTheme`. For Material Design 3 output, install `hydrolysis_m3::install(&mut env)` before running or previewing a Hydrolysis app.
+- Use `water preview --backend hydrolysis --theme material3` for Hydrolysis Material 3 visual checks. Pass `--expr` when previewing an inline Rust expression; the CLI writes the expression into generated Rust preview code and rustc compiles it normally with `waterui::prelude::*` and `waterui` in scope.
 
 ## CRITICAL: Reactive-First Pattern
 
