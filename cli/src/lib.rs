@@ -1,29 +1,20 @@
 //! `WaterUI` CLI library for managing cross-platform builds and development workflows.
 pub mod android;
 pub mod apple;
-pub(crate) mod assets;
-pub mod backend;
-pub mod brew;
-pub mod build;
-pub mod build_info;
-pub mod capture;
-pub mod debug;
-pub mod device;
-pub mod diff;
-pub mod gesture;
+mod dependencies;
 pub mod gtk4;
 pub mod hydrolysis;
-pub mod inspector;
-pub mod macos_bundle;
-pub mod platform;
+mod platforming;
 pub mod preview;
-pub mod project;
-/// Strongly typed project identifiers and permission keys shared across CLI workflows.
-pub mod project_types;
-pub(crate) mod runtime_compat;
-pub(crate) mod runtime_fingerprint;
-pub(crate) mod support_app;
-pub(crate) mod templates;
+mod project_model;
+mod runtime;
 pub mod toolchain;
-pub mod utils;
-pub mod water_dir;
+mod workflows;
+
+pub use dependencies::brew;
+pub use platforming::{backend, macos_bundle, platform};
+pub(crate) use project_model::{assets, support_app, templates};
+pub use project_model::{project, project_types, water_dir};
+pub use runtime::{build_info, utils};
+pub(crate) use runtime::{runtime_compat, runtime_fingerprint};
+pub use workflows::{build, capture, debug, device, diff, gesture, inspector};

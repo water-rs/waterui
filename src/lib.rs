@@ -3,17 +3,13 @@ extern crate alloc;
 extern crate self as waterui;
 #[macro_use]
 mod macros;
-pub mod background;
-pub mod border;
+mod appearance;
+pub use appearance::{background, border, filter, gradient, shape, style};
 pub mod component;
-pub mod cursor;
-pub mod drag_drop;
-/// Error handling utilities for converting standard errors into renderable views.
-pub mod error;
-pub mod filter;
-pub mod gesture;
-pub mod gradient;
-pub mod interaction;
+mod interaction_support;
+pub use interaction_support::{cursor, drag_drop, gesture, interaction};
+mod runtime;
+pub use runtime::{app, entry, error, fullscreen, inspector, metadata, snackbar, task, window};
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -132,7 +128,6 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
-pub use waterui_icon as icon;
 pub use waterui_graphics::image_analysis;
 pub use waterui_graphics::image_generator;
 pub use waterui_graphics::{
@@ -140,6 +135,7 @@ pub use waterui_graphics::{
     ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
     RadialGradientGenerator, StripeGenerator,
 };
+pub use waterui_icon as icon;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
@@ -173,9 +169,6 @@ pub use waterui_assets::{
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
 pub use waterui_url::Url;
-pub mod metadata;
-pub mod shape;
-pub mod style;
 
 #[doc(inline)]
 pub use waterui_core::{
@@ -186,31 +179,16 @@ pub use waterui_core::{
     impl_extractor, raw_view, views,
 };
 
-mod reactive_ext;
 pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
 pub use reactive::{Binding, Computed, Signal, signal};
-pub use reactive_ext::AnimationExt;
-
-/// Task management utilities and async support.
-pub mod task;
-
-/// Inspector runtime endpoint and diagnostics streaming.
-pub mod inspector;
+pub use runtime::reactive_ext::AnimationExt;
 
 pub use waterui_core::plugin::Plugin;
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
-
-mod entry;
-pub use entry::entry;
-
-pub mod app;
-pub mod fullscreen;
-pub mod snackbar;
-pub mod window;
 
 pub use tracing as log;
 

@@ -1,0 +1,49 @@
+[package]
+name = "waterui-preview"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Preview view component for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+waterui-layout.workspace = true
+waterui-preview-protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+async-channel = "2.5"
+indexmap = "2"
+blocking = "1.6"
+async-fs = "2.2.0"
+async-process = "2.5.0"
+waterkit-fs.workspace = true
+serde_json = "1.0"
+
+# Async runtime
+async-io = "2.6"
+executor-core.workspace = true
+futures-lite = "2.6"
+
+# Dynamic library loading
+libloading = "0.8"
+
+# PNG encoding
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch = "0.2"
+
+[lints]
+workspace = true
+[package.metadata.cargo-machete]
+ignored = ["dispatch", "libc", "waterkit-fs", "waterui-graphics"]
