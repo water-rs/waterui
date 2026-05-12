@@ -1,7 +1,7 @@
 use crate::dimensions::{
     BUTTON_LINK_HORIZONTAL_PADDING, BUTTON_LINK_UNDERLINE_BOTTOM_INSET,
     BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_HEIGHT,
-    BUTTON_MIN_WIDTH,
+    BUTTON_MIN_WIDTH, BUTTON_TEXT_HORIZONTAL_PADDING, BUTTON_TEXT_VERTICAL_PADDING,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -14,18 +14,47 @@ pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
         ButtonStyle::Automatic | ButtonStyle::Bordered => {
             ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         }
-        ButtonStyle::Plain => ButtonMetrics::new(0.0, 0.0, 0.0, 0.0),
+        ButtonStyle::Plain | ButtonStyle::Borderless => ButtonMetrics::new(
+            BUTTON_TEXT_HORIZONTAL_PADDING,
+            BUTTON_TEXT_VERTICAL_PADDING,
+            BUTTON_MIN_WIDTH,
+            BUTTON_MIN_HEIGHT,
+        ),
         ButtonStyle::Link => ButtonMetrics::new(
             BUTTON_LINK_HORIZONTAL_PADDING,
             BUTTON_LINK_VERTICAL_PADDING,
             0.0,
             0.0,
         ),
-        ButtonStyle::Borderless => ButtonMetrics::new(12.0, 10.0, 0.0, BUTTON_MIN_HEIGHT),
         ButtonStyle::BorderedProminent => {
             ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         }
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metrics;
+    use crate::dimensions::{
+        BUTTON_MIN_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_TEXT_HORIZONTAL_PADDING,
+        BUTTON_TEXT_VERTICAL_PADDING,
+    };
+    use waterui_controls::button::ButtonStyle;
+
+    fn assert_text_button_metrics(style: ButtonStyle) {
+        let metrics = metrics(style);
+
+        assert_eq!(metrics.padding_x, BUTTON_TEXT_HORIZONTAL_PADDING);
+        assert_eq!(metrics.padding_y, BUTTON_TEXT_VERTICAL_PADDING);
+        assert_eq!(metrics.min_width, BUTTON_MIN_WIDTH);
+        assert_eq!(metrics.min_height, BUTTON_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn text_button_styles_match_material_web_v0_192_container_metrics() {
+        assert_text_button_metrics(ButtonStyle::Plain);
+        assert_text_button_metrics(ButtonStyle::Borderless);
     }
 }
 
