@@ -1139,6 +1139,12 @@ impl GpuSurface {
         let device = device.as_ref();
         let queue = queue.as_ref();
 
+        let mut texture_usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        if config.format == wgpu::TextureFormat::Rgba8Unorm {
+            texture_usage |= wgpu::TextureUsages::STORAGE_BINDING;
+        }
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("waterui_offscreen_surface"),
             size: wgpu::Extent3d {
@@ -1150,7 +1156,7 @@ impl GpuSurface {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: config.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: texture_usage,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
