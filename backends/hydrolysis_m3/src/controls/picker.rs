@@ -1,8 +1,8 @@
 use crate::dimensions::{
     PICKER_HORIZONTAL_INSET, PICKER_INDICATOR_SPACE, PICKER_MENU_POPUP_CORNER_RADIUS,
     PICKER_MENU_POPUP_TOP_SPACING, PICKER_MIN_HEIGHT, PICKER_MIN_WIDTH,
-    PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_LABEL_SPACING, PICKER_RADIO_ROW_SPACING,
-    PICKER_VERTICAL_INSET,
+    PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_LABEL_SPACING,
+    PICKER_RADIO_OUTER_RING_WIDTH, PICKER_RADIO_ROW_SPACING, PICKER_VERTICAL_INSET,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -136,19 +136,106 @@ pub fn draw_radio_indicator(
     radius: f64,
     selected: bool,
 ) {
-    draw.fill_circle(center, radius, &Brush::from(colors.surface.peniko()));
+    let outer_ring_center_radius = radius - PICKER_RADIO_OUTER_RING_WIDTH / 2.0;
     draw.stroke_circle(
         center,
-        radius,
+        outer_ring_center_radius,
         &Brush::from(if selected {
             colors.primary.peniko()
         } else {
             colors.on_surface_variant.peniko()
         }),
-        1.0,
+        PICKER_RADIO_OUTER_RING_WIDTH,
     );
     if selected {
-        draw.fill_circle(center, radius * 0.45, &Brush::from(colors.primary.peniko()));
+        draw.fill_circle(
+            center,
+            PICKER_RADIO_INNER_DOT_RADIUS,
+            &Brush::from(colors.primary.peniko()),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+
+    use super::{MaterialColorScheme, draw_radio_indicator, material_metrics};
+    use crate::dimensions::{
+        PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_OUTER_RING_WIDTH,
+    };
+    use crate::{Brush, DrawContext};
+
+    #[derive(Default)]
+    struct RecordingDrawContext {
+        circle_fills: Vec<f64>,
+        circle_strokes: Vec<(f64, f64)>,
+    }
+
+    impl DrawContext for RecordingDrawContext {
+        fn fill_rect(&mut self, _rect: Rect, _brush: &Brush) {}
+
+        fn fill_rounded_rect(&mut self, _rect: Rect, _radii: RoundedRectRadii, _brush: &Brush) {}
+
+        fn stroke_rect(&mut self, _rect: Rect, _brush: &Brush, _width: f64) {}
+
+        fn stroke_rounded_rect(
+            &mut self,
+            _rect: Rect,
+            _radii: RoundedRectRadii,
+            _brush: &Brush,
+            _width: f64,
+        ) {
+        }
+
+        fn stroke_line(&mut self, _from: Point, _to: Point, _brush: &Brush, _width: f64) {}
+
+        fn stroke_circle(&mut self, _center: Point, radius: f64, _brush: &Brush, width: f64) {
+            self.circle_strokes.push((radius, width));
+        }
+
+        fn fill_circle(&mut self, _center: Point, radius: f64, _brush: &Brush) {
+            self.circle_fills.push(radius);
+        }
+
+        fn fill_path(&mut self, _path: &BezPath, _brush: &Brush) {}
+
+        fn stroke_path(&mut self, _path: &BezPath, _brush: &Brush, _width: f64) {}
+
+        fn push_layer(&mut self, _alpha: f32, _clip: Option<&Rect>) {}
+
+        fn pop_layer(&mut self) {}
+
+        fn push_transform(&mut self, _affine: Affine) {}
+
+        fn pop_transform(&mut self) {}
+    }
+
+    #[test]
+    fn radio_metrics_match_material_web_latest_tokens() {
+        let metrics = material_metrics();
+
+        assert_eq!(metrics.radio_indicator_size, PICKER_RADIO_INDICATOR_SIZE);
+        assert_eq!(PICKER_RADIO_INDICATOR_SIZE, 20.0);
+        assert_eq!(PICKER_RADIO_OUTER_RING_WIDTH, 2.0);
+        assert_eq!(PICKER_RADIO_INNER_DOT_RADIUS, 5.0);
+    }
+
+    #[test]
+    fn radio_indicator_draws_material_web_donut_icon() {
+        let colors = MaterialColorScheme::baseline_light();
+        let center = Point::new(10.0, 10.0);
+
+        let mut unselected = RecordingDrawContext::default();
+        draw_radio_indicator(&colors, &mut unselected, center, 10.0, false);
+
+        let mut selected = RecordingDrawContext::default();
+        draw_radio_indicator(&colors, &mut selected, center, 10.0, true);
+
+        assert_eq!(unselected.circle_fills, Vec::<f64>::new());
+        assert_eq!(unselected.circle_strokes, vec![(9.0, 2.0)]);
+        assert_eq!(selected.circle_strokes, vec![(9.0, 2.0)]);
+        assert_eq!(selected.circle_fills, vec![5.0]);
     }
 }
 
