@@ -16,6 +16,7 @@ pub(crate) use theme::dimensions;
 
 use vello::kurbo::{BezPath, Point, Rect};
 use waterui::Plugin as _;
+use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DrawContext, InputFieldMetrics, PickerMetrics, ProgressIndicatorStyle,
@@ -109,6 +110,10 @@ impl WidgetTheme for MaterialTheme {
 
     fn button_label_color(&self, style: ButtonStyle) -> Option<Color> {
         button::label_color(&self.colors, style)
+    }
+
+    fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
+        Some(theme::typography::label_large())
     }
 
     fn draw_button_chrome(&self, draw: &mut dyn DrawContext, bounds: Rect, style: ButtonStyle) {

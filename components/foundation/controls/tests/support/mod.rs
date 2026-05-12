@@ -10,7 +10,11 @@ where
     V: View + 'static,
     F: Fn() -> V + 'static,
 {
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+
     UiTest::new()
+        .environment(env)
         .viewport(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
         .mount(build)
 }
