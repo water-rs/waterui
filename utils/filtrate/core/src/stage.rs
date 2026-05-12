@@ -18,4 +18,10 @@ pub trait StageCollector {
     /// Record a standalone compute shader that samples neighboring pixels.
     /// Spatial stages are not fused; each gets its own pass.
     fn spatial_shader(&mut self, source: &'static str, param_count: usize);
+
+    /// Record a standalone compute shader that also needs the original input
+    /// texture bound at binding 3, in addition to the previous stage output.
+    fn spatial_shader_with_original(&mut self, source: &'static str, param_count: usize) {
+        self.spatial_shader(source, param_count);
+    }
 }

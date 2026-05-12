@@ -1,6 +1,6 @@
 //! Prewitt edge detection filter.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies a 3x3 Prewitt operator (uniform-weight 3x3 kernels) to the
 /// luminance channel and outputs gradient magnitude as a grayscale image.
@@ -16,7 +16,7 @@ use crate::FilterDerive;
 ///
 /// let edges = Prewitt;
 /// ```
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(spatial, shader = "image/convolution/prewitt.wgsl")]
 pub struct Prewitt;
 

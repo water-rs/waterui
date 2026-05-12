@@ -1,6 +1,6 @@
 //! Sobel edge detection filter.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Applies a 3x3 Sobel operator to the luminance channel and outputs
 /// gradient magnitude as a grayscale image. Useful for edge highlighting.
@@ -12,7 +12,7 @@ use crate::FilterDerive;
 ///
 /// let edges = Sobel;
 /// ```
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(spatial, shader = "image/convolution/sobel.wgsl")]
 pub struct Sobel;
 

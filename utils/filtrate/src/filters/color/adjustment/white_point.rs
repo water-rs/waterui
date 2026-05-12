@@ -1,6 +1,6 @@
 //! White point filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Adjusts white balance using a target white point.
 ///
@@ -11,7 +11,7 @@ use crate::FilterDerive;
 /// - `red`: Red channel white-point component
 /// - `green`: Green channel white-point component
 /// - `blue`: Blue channel white-point component
-#[derive(Debug, Clone, Copy, FilterDerive)]
+#[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, fragment = "color/adjustment/white_point.wgsl")]
 pub struct WhitePoint<R, G, B>(pub R, pub G, pub B);
 

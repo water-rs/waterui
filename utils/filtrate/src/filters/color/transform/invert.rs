@@ -1,6 +1,6 @@
 //! Invert filter implementation.
 
-use crate::FilterDerive;
+use crate::Filter;
 
 /// Inverts all colors in an image.
 ///
@@ -13,7 +13,7 @@ use crate::FilterDerive;
 ///
 /// let inverted = Invert;
 /// ```
-#[derive(Debug, Clone, Copy, Default, FilterDerive)]
+#[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, fragment = "color/transform/invert.wgsl")]
 pub struct Invert;
 
