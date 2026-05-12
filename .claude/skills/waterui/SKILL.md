@@ -12,12 +12,8 @@ Build views with reactive state. When unsure, search `examples/*/src/lib.rs` for
 - WaterUI is fine-grained reactive with reconstruction semantics. If parent-driven control flow rebuilds a component instance, that instance's local state resetting is expected and correct.
 - Do not fix rebuild-driven resets by caching hidden state across rebuilds. If state must survive, lift it into explicit reactive ownership at the right level.
 - Prefer `Binding`, `Computed`, and other signal inputs for dynamic behavior. Avoid reading `.get()` in view bodies when a reactive API can accept the signal directly.
-- Use `waterui-testing` for UI component coverage when testing WaterUI components; it validates the Hydrolysis accessibility tree as both interaction behavior and accessibility output.
-- Every UI component should expose a meaningful accessibility tree. If a component is not testable through `waterui-testing`, improve the component or renderer rather than relying on weak assertions.
-- Preview renders should use the real WaterUI renderer so visual checks reflect actual platform output.
-- WaterUI layout lengths are logical view units, not physical pixels. Treat Material metrics as dp-equivalent design units in Hydrolysis themes.
 - Hydrolysis widget chrome is provided by a backend-neutral `WidgetTheme`. For Material Design 3 output, install `hydrolysis_m3::install(&mut env)` before running or previewing a Hydrolysis app.
-- Hydrolysis Material 3 colors use Material You system roles for both WaterUI theme tokens and backend widget chrome. Use `hydrolysis_m3::MaterialColorSource::new(source_color)` to configure source color, variant, contrast level, spec version, and platform; call `.schemes()` to generate paired light/dark `MaterialColorSchemes`, then install one side with `install_with_source`, `install_with_color_schemes`, or `install_with_colors`. Button, toggle, slider, progress, picker, input, navigation, list, table, and scroll chrome should read roles from that scheme.
+- Hydrolysis Material 3 colors use Material You system roles for WaterUI theme tokens. Use `hydrolysis_m3::MaterialColorSource::new(source_color)` to configure source color, variant, contrast level, spec version, and platform; call `.schemes()` to generate paired light/dark `MaterialColorSchemes`, then install one side with `install_with_source`, `install_with_color_schemes`, or `install_with_colors`.
 - For Material-specific view colors, use `hydrolysis_m3::color::*` role tokens such as `Primary`, `OnPrimary`, `PrimaryContainer`, `SurfaceContainerHighest`, and `OnSurfaceVariant`. These resolve from the installed `MaterialColorScheme`, while WaterUI's generic `theme_color::*` tokens remain mapped to the closest Material roles.
 - Use `water preview --backend hydrolysis --theme material3` for Hydrolysis Material 3 visual checks. Pass `--expr` when previewing an inline Rust expression; the CLI writes the expression into generated Rust preview code and rustc compiles it normally with `waterui::prelude::*` and `waterui` in scope.
 
@@ -324,7 +320,7 @@ struct Settings { name: String, volume: f64 }
 form(&settings_binding)
 
 // Dynamic view for URL changes (Photo with reactive blur)
-let url_input = Binding::container(Str::from("https://example.com/image.jpg"));
+let url_input = Binding::container(initial_photo_url);
 let blur = Binding::f64(0.0);
 let status = Binding::container(String::from("Loading..."));
 let (handler, photo_view) = Dynamic::new();
