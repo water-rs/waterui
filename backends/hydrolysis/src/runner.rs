@@ -1,5 +1,4 @@
 use std::cell::Cell;
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -21,7 +20,6 @@ use nami::Signal as _;
 use waterui::app::App;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use waterui::window::WindowManager;
 use waterui::window::{Window, WindowBackground};
 use waterui_core::AnyView;
@@ -1013,6 +1011,9 @@ pub struct HeadlessPumpResult {
 pub struct HeadlessRuntime {
     env: Environment,
     runtime: RuntimeWindow<HeadlessPlatformWindow>,
+    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
+    create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
     local_executor: HeadlessMainThreadExecutor,
 }
 
@@ -1055,11 +1056,18 @@ impl HeadlessRuntime {
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
-        create_platform: impl FnOnce(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+        create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
     ) -> Self {
         init_main_thread_executors();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
+        env.insert(WindowManager::new({
+            let pending_window_queue = Rc::clone(&pending_window_queue);
+            move |window| {
+                pending_window_queue.borrow_mut().push(window);
+            }
+        }));
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
@@ -1103,7 +1111,44 @@ impl HeadlessRuntime {
                     slow_frame_threshold: Duration::from_millis(16),
                 },
             ),
+            pending_window_queue,
+            popup_windows: Vec::new(),
+            create_platform,
             local_executor,
+        }
+    }
+
+    fn create_popup_runtime(&self, window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
+        let frame = window.frame.get();
+        let width = frame.width().max(1.0) as u32;
+        let height = frame.height().max(1.0) as u32;
+        let mut platform = (self.create_platform)(width, height, wgpu::TextureFormat::Rgba8Unorm);
+        platform.apply_properties(&window);
+        let mut renderer = {
+            let surface = platform.surface();
+            HydrolysisRenderer::new(surface.device())
+        };
+        load_native_resource_fonts(&mut renderer);
+        RuntimeWindow::new(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold: Duration::from_millis(16),
+            },
+        )
+    }
+
+    fn mount_pending_popup_windows(&mut self) {
+        let pending = self
+            .pending_window_queue
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        for window in pending {
+            self.popup_windows.push(self.create_popup_runtime(window));
         }
     }
 
@@ -1149,11 +1194,32 @@ impl HeadlessRuntime {
         let drained_before = self.local_executor.drain();
         let _ = handle_input_events(&mut self.runtime, &self.env);
         let _ = advance_runtime(&mut self.runtime, &self.env, at);
+        self.mount_pending_popup_windows();
+        for popup in &mut self.popup_windows {
+            popup.renderer.set_frame_instant(at);
+            let _ = handle_input_events(popup, &self.env);
+            let _ = advance_runtime(popup, &self.env, at);
+        }
         let should_render = capture_snapshot
             || self.runtime.needs_rebuild
             || self.runtime.platform.take_redraw_request();
-        let render_result = should_render
+        let mut render_result = should_render
             .then(|| render_window_with_capture(&mut self.runtime, &self.env, capture_snapshot));
+        if capture_snapshot && !self.popup_windows.is_empty() {
+            if let Some(snapshot) = render_result
+                .as_mut()
+                .and_then(|result| result.snapshot.as_mut())
+            {
+                for popup in &mut self.popup_windows {
+                    let Some(popup_snapshot) =
+                        render_window_with_capture(popup, &self.env, true).snapshot
+                    else {
+                        continue;
+                    };
+                    composite_popup_snapshot(snapshot, &popup_snapshot, popup.window.frame.get());
+                }
+            }
+        }
         let drained_after = self.local_executor.drain();
 
         HeadlessPumpResult {
@@ -1167,6 +1233,57 @@ impl HeadlessRuntime {
             ui_focus: self.runtime.renderer.focused_ui_node(),
         }
     }
+}
+
+fn composite_popup_snapshot(
+    target: &mut HeadlessSnapshot,
+    source: &HeadlessSnapshot,
+    frame: waterui_core::layout::Rect,
+) {
+    let offset_x = frame.x().round() as i32;
+    let offset_y = frame.y().round() as i32;
+    for source_y in 0..source.height {
+        let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
+        if target_y < 0 || target_y >= i32::try_from(target.height).expect("height should fit i32")
+        {
+            continue;
+        }
+        for source_x in 0..source.width {
+            let target_x = offset_x + i32::try_from(source_x).expect("source x should fit i32");
+            if target_x < 0
+                || target_x >= i32::try_from(target.width).expect("width should fit i32")
+            {
+                continue;
+            }
+            let source_index = ((source_y * source.width + source_x) * 4) as usize;
+            let target_index = ((u32::try_from(target_y).expect("target y should be non-negative")
+                * target.width
+                + u32::try_from(target_x).expect("target x should be non-negative"))
+                * 4) as usize;
+            composite_pixel(
+                &mut target.rgba8[target_index..target_index + 4],
+                &source.rgba8[source_index..source_index + 4],
+            );
+        }
+    }
+}
+
+fn composite_pixel(target: &mut [u8], source: &[u8]) {
+    let source_alpha = f32::from(source[3]) / 255.0;
+    if source_alpha <= 0.0 {
+        return;
+    }
+    let target_alpha = f32::from(target[3]) / 255.0;
+    let out_alpha = source_alpha + target_alpha * (1.0 - source_alpha);
+    for channel in 0..3 {
+        let source_channel = f32::from(source[channel]) / 255.0;
+        let target_channel = f32::from(target[channel]) / 255.0;
+        let out = (source_channel * source_alpha
+            + target_channel * target_alpha * (1.0 - source_alpha))
+            / out_alpha;
+        target[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    target[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]

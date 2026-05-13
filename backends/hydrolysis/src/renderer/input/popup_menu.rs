@@ -1,4 +1,6 @@
 use super::*;
+use waterui::shape::{RoundedRectangle, ShapeExt as _};
+use waterui::theme::color::Surface;
 
 #[derive(Clone)]
 pub(crate) struct ContextMenuTarget {
@@ -183,6 +185,10 @@ pub(crate) fn popup_menu_window(
             menu_content
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(0.0)
+                .background(
+                    RoundedRectangle::new((metrics.corner_radius / metrics.min_width) as f32)
+                        .fill(waterui::Color::new(Surface)),
+                )
                 .with(group_for_content.clone()),
         )
     };
