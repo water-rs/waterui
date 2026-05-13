@@ -443,6 +443,41 @@ impl TabsMetrics {
     }
 }
 
+/// Layout metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListMetrics {
+    /// Minimum one-line row height.
+    pub one_line_row_height: f64,
+    /// Horizontal content inset.
+    pub horizontal_inset: f64,
+    /// Vertical content inset.
+    pub vertical_inset: f64,
+    /// Divider leading inset.
+    pub divider_leading_inset: f64,
+    /// Divider trailing inset.
+    pub divider_trailing_inset: f64,
+}
+
+impl ListMetrics {
+    /// Create list layout metrics.
+    #[must_use]
+    pub const fn new(
+        one_line_row_height: f64,
+        horizontal_inset: f64,
+        vertical_inset: f64,
+        divider_leading_inset: f64,
+        divider_trailing_inset: f64,
+    ) -> Self {
+        Self {
+            one_line_row_height,
+            horizontal_inset,
+            vertical_inset,
+            divider_leading_inset,
+            divider_trailing_inset,
+        }
+    }
+}
+
 /// Theme contract for backend-rendered widgets.
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
@@ -670,6 +705,8 @@ pub trait WidgetTheme {
     /// Draw a scroll indicator.
     fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
+    /// Return list layout metrics.
+    fn list_metrics(&self) -> ListMetrics;
     /// Draw a list row background.
     fn draw_list_row_background(&self, draw: &mut dyn DrawContext, bounds: Rect, alternate: bool);
     /// Draw a list move affordance.
