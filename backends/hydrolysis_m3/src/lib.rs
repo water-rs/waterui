@@ -9,6 +9,7 @@ pub mod color;
 pub mod dialog;
 pub mod fab;
 pub mod icon_button;
+pub mod material_card;
 pub mod material_list;
 pub mod material_tabs;
 pub mod navigation_bar;
@@ -59,6 +60,7 @@ pub use icon_button::{
     OutlinedIconButton, SelectedOutlinedIconButton, SelectedStandardIconButton, StandardIconButton,
     filled_icon_button, filled_tonal_icon_button, icon_button, outlined_icon_button,
 };
+pub use material_card::{MaterialCard, material_card};
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
