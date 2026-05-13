@@ -82,8 +82,7 @@ impl HydroNativeView for Native<PickerConfig> {
                     node.add_action(AccessibilityAction::Focus);
                     node.add_action(AccessibilityAction::Click);
                     let metrics = widget_theme(env).picker_metrics(PickerStyle::Menu);
-                    let row_height =
-                        menu_picker_row_height(ctx.bounds, max_item_text_height, metrics);
+                    let row_height = menu_picker_row_height(max_item_text_height, metrics);
                     let popup_rect =
                         menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
                     for (index, item) in items.iter().enumerate() {
@@ -215,14 +214,9 @@ pub(crate) fn render_picker(
     }
 }
 
-pub(crate) fn menu_picker_row_height(
-    field_bounds: vello::kurbo::Rect,
-    max_item_text_height: f64,
-    metrics: PickerMetrics,
-) -> f64 {
-    field_bounds
-        .height()
-        .max(metrics.min_height)
+pub(crate) fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerMetrics) -> f64 {
+    metrics
+        .popup_row_height
         .max(max_item_text_height + metrics.vertical_inset * 2.0)
 }
 
@@ -321,7 +315,7 @@ pub(crate) fn render_menu_picker(
         return;
     }
 
-    let row_height = menu_picker_row_height(ctx.bounds, max_item_text_height, metrics);
+    let row_height = menu_picker_row_height(max_item_text_height, metrics);
     let popup_rect = menu_picker_popup_rect(ctx.bounds, row_height, items.len(), metrics);
     {
         let mut draw = ctx.draw_context();

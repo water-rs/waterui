@@ -344,6 +344,7 @@ impl WidgetTheme for MinimalTestTheme {
             radio_label_spacing: 8.0,
             radio_row_spacing: 8.0,
             popup_top_spacing: 4.0,
+            popup_row_height: 48.0,
             popup_corner_radius: 6.0,
         }
     }
