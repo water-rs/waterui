@@ -4,9 +4,10 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, navigation_bar, navigation_drawer, navigation_drawer_item,
-    navigation_tab, outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set,
-    plain_tooltip, rich_tooltip, suggestion_chip,
+    icon_button, input_chip, install, material_list, material_list_item, navigation_bar,
+    navigation_drawer, navigation_drawer_item, navigation_tab, outlined_icon_button,
+    outlined_segmented_button, outlined_segmented_button_set, plain_tooltip, rich_tooltip,
+    suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -571,6 +572,36 @@ fn material_segmented_buttons_toggle_selection_and_expose_semantics() {
     assert!(
         second_tapped.get(),
         "segmented button tap should invoke its action"
+    );
+}
+
+#[test]
+fn material_list_exposes_list_item_semantics_and_actions() {
+    let reports_tapped = Binding::bool(false);
+    let reports_for_action = reports_tapped.clone();
+    let mut app = mount_m3(move || {
+        material_list((
+            material_list_item("Inbox")
+                .supporting_text("3 new messages")
+                .leading(text("I"))
+                .trailing_supporting_text("Now"),
+            material_list_item("Reports").trailing(text(">")).action({
+                let reports_for_action = reports_for_action.clone();
+                move || reports_for_action.set(true)
+            }),
+        ))
+    });
+
+    app.query().role(Role::LIST).assert_exists();
+    let items = app.query().role(Role::LIST_ITEM).all();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items[1].tap_at(&mut app, 0.5, 0.5),
+        "interactive material list item should route tap actions through Hydrolysis gestures"
+    );
+    assert!(
+        reports_tapped.get(),
+        "material list item tap should invoke its action"
     );
 }
 
