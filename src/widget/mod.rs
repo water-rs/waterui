@@ -6,7 +6,7 @@ pub mod suspense;
 // pub mod tree;
 
 pub use accordion::{Accordion, accordion};
-pub use card::{Card, card};
+pub use card::{Card, CardStyle, CardStyleTokens, CardTheme, card};
 pub use suspense::{Suspense, suspense};
 // pub use tree::{TreeNode, TreeView, tree_view};
 
