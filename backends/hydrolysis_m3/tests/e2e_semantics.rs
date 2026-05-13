@@ -4,8 +4,8 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, outlined_icon_button, plain_tooltip, rich_tooltip,
-    suggestion_chip,
+    icon_button, input_chip, install, navigation_bar, navigation_tab, outlined_icon_button,
+    plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -442,6 +442,41 @@ fn material_dialog_exposes_semantics_and_action_buttons() {
         confirm_tapped.get(),
         "confirm action tap should update state"
     );
+}
+
+#[test]
+fn material_navigation_bar_exposes_tab_semantics_and_selection() {
+    let home_selected = Binding::bool(false);
+    let search_selected = Binding::bool(true);
+    let home_tapped = Binding::bool(false);
+    let home_for_view = home_selected.clone();
+    let search_for_view = search_selected.clone();
+    let home_for_action = home_tapped.clone();
+    let mut app = mount_m3(move || {
+        navigation_bar((
+            navigation_tab("Home", text("H"), &home_for_view).action({
+                let home_for_action = home_for_action.clone();
+                move || home_for_action.set(true)
+            }),
+            navigation_tab("Search", text("S"), &search_for_view),
+        ))
+    });
+
+    app.query()
+        .role(Role::TAB)
+        .label("Home")
+        .selected(false)
+        .assert_exists();
+    app.query()
+        .role(Role::TAB)
+        .label("Search")
+        .selected(true)
+        .assert_exists();
+    assert!(
+        app.query().role(Role::TAB).label("Home").tap(),
+        "material navigation tab should route tap actions through Hydrolysis gestures"
+    );
+    assert!(home_tapped.get(), "navigation tab tap should update state");
 }
 
 #[test]
