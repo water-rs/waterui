@@ -13,7 +13,7 @@ use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, InputFieldMetrics, InteractionMotion, PickerMetrics, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, ToggleMetrics,
+    ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, TabsMetrics, ToggleMetrics,
     WidgetInteractionState,
 };
 
@@ -460,6 +460,13 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_navigation_bar_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_navigation_back_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn tabs_metrics(&self) -> TabsMetrics {
+        TabsMetrics {
+            bar_height: 48.0,
+            active_indicator_height: 3.0,
+            active_indicator_radius: 3.0,
+        }
+    }
     fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
     fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
