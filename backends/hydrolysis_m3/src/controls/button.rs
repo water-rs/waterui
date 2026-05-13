@@ -44,22 +44,25 @@ mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
     use waterui_controls::button::ButtonStyle;
 
-    fn assert_text_button_metrics(style: ButtonStyle) {
+    fn assert_button_metrics(style: ButtonStyle, expected_padding_x: f64) {
         let metrics = metrics(style);
 
-        assert_eq!(metrics.padding_x, BUTTON_TEXT_HORIZONTAL_PADDING);
+        assert_eq!(metrics.padding_x, expected_padding_x);
         assert_eq!(metrics.padding_y, BUTTON_TEXT_VERTICAL_PADDING);
         assert_eq!(metrics.min_width, BUTTON_MIN_WIDTH);
         assert_eq!(metrics.min_height, BUTTON_MIN_HEIGHT);
     }
 
     #[test]
-    fn text_button_styles_match_material_web_latest_medium_container_metrics() {
-        assert_text_button_metrics(ButtonStyle::Plain);
-        assert_text_button_metrics(ButtonStyle::Borderless);
-        assert_eq!(BUTTON_MIN_HEIGHT, 56.0);
-        assert_eq!(BUTTON_CONTAINER_RADIUS, 28.0);
-        assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 24.0);
+    fn button_metrics_match_material_web_v0_192_tokens() {
+        assert_button_metrics(ButtonStyle::Plain, BUTTON_TEXT_HORIZONTAL_PADDING);
+        assert_button_metrics(ButtonStyle::Borderless, BUTTON_TEXT_HORIZONTAL_PADDING);
+        assert_button_metrics(ButtonStyle::Automatic, 24.0);
+        assert_button_metrics(ButtonStyle::Bordered, 24.0);
+        assert_button_metrics(ButtonStyle::BorderedProminent, 24.0);
+        assert_eq!(BUTTON_MIN_HEIGHT, 40.0);
+        assert_eq!(BUTTON_CONTAINER_RADIUS, 20.0);
+        assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 12.0);
     }
 
     #[derive(Default)]
