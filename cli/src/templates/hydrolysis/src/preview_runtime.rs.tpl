@@ -3,8 +3,8 @@
 use std::{env, fs, path::PathBuf, time::{Duration, Instant}};
 
 use crate::preview_symbol;
-use hydrolysis::{HeadlessRuntime, HydrolysisViewRenderer, InputEvent, PointerButton};
-use waterui_preview::{RenderResult, RenderResultExt as _, RenderSize, ViewRenderer};
+use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton};
+use waterui_preview::{RenderResult, RenderResultExt as _};
 use waterui_core::handler::AnyViewBuilder;
 
 pub(crate) fn run() {
@@ -16,11 +16,24 @@ pub(crate) fn run() {
         return;
     }
 
-    let view = preview_symbol::load_preview_view();
-    let renderer = ViewRenderer::new(HydrolysisViewRenderer::with_environment(
-        preview_symbol::install_preview_theme,
-    ));
-    let mut render = pollster::block_on(renderer.render(view, RenderSize::new(width, height)));
+    let mut env = waterui::env::Environment::new();
+    preview_symbol::install_preview_theme(&mut env);
+    let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
+    let mut runtime = HeadlessRuntime::new(
+        env,
+        content,
+        dimension_to_u32(width),
+        dimension_to_u32(height),
+    );
+    let result = runtime.pump(true);
+    let snapshot = result
+        .snapshot
+        .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
+    let mut render = RenderResult {
+        width: snapshot.width,
+        height: snapshot.height,
+        rgba_data: snapshot.rgba8,
+    };
     flatten_alpha_over_white(&mut render);
     let png_data = render
         .into_png()
