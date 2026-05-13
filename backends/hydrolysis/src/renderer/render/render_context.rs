@@ -154,6 +154,7 @@ impl<'a> WidgetRenderContext<'a> {
         style: NavigationTransition,
         direction: NavigationTransitionDirection,
         progress: f64,
+        pushpop_parallax_factor: f64,
         from_scene: &vello::Scene,
         to_scene: &vello::Scene,
     ) {
@@ -164,6 +165,7 @@ impl<'a> WidgetRenderContext<'a> {
             style,
             direction,
             progress,
+            pushpop_parallax_factor,
             from_scene,
             to_scene,
         });
