@@ -6,6 +6,7 @@
 
 pub mod chip;
 pub mod color;
+pub mod dialog;
 pub mod fab;
 pub mod icon_button;
 pub mod tooltip;
@@ -41,6 +42,7 @@ pub use chip::{
     AssistChip, FilterChip, InputChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
     input_chip, suggestion_chip,
 };
+pub use dialog::{Dialog, DialogAction, dialog, dialog_action};
 pub use fab::{
     ExtendedFab, Fab, FabVariantTokens, PrimaryFab, SecondaryFab, SurfaceFab, TertiaryFab,
     extended_fab, fab,
