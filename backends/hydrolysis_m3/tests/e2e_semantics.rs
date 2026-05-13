@@ -5,7 +5,8 @@ use core::time::Duration;
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
     icon_button, input_chip, install, navigation_bar, navigation_drawer, navigation_drawer_item,
-    navigation_tab, outlined_icon_button, plain_tooltip, rich_tooltip, suggestion_chip,
+    navigation_tab, outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set,
+    plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -525,6 +526,51 @@ fn material_navigation_drawer_exposes_item_semantics_and_open_state() {
     assert!(
         archive_tapped.get(),
         "navigation drawer item tap should update state"
+    );
+}
+
+#[test]
+fn material_segmented_buttons_toggle_selection_and_expose_semantics() {
+    let first_selected = Binding::bool(true);
+    let second_selected = Binding::bool(false);
+    let second_tapped = Binding::bool(false);
+    let first_for_view = first_selected.clone();
+    let second_for_view = second_selected.clone();
+    let second_for_action = second_tapped.clone();
+    let mut app = mount_m3(move || {
+        outlined_segmented_button_set((
+            outlined_segmented_button("Day", &first_for_view).start(),
+            outlined_segmented_button("Week", &second_for_view)
+                .end()
+                .action({
+                    let second_for_action = second_for_action.clone();
+                    move || second_for_action.set(true)
+                }),
+        ))
+        .label("Range")
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Day")
+        .selected(true)
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Week")
+        .selected(false)
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Week").tap(),
+        "segmented button tap should route through Hydrolysis gestures"
+    );
+    assert!(
+        second_selected.get(),
+        "segmented button tap should toggle its binding"
+    );
+    assert!(
+        second_tapped.get(),
+        "segmented button tap should invoke its action"
     );
 }
 

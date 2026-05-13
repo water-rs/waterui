@@ -6,19 +6,17 @@ use waterui::accessibility::{AccessibilityChildren, AccessibilityRole, Accessibi
 use waterui::border::Border;
 use waterui::color::Color;
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::Point;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt as _};
 use waterui::widget::condition::when;
 use waterui::{Binding, Environment, Signal, Str, View, ViewExt as _};
-use waterui_canvas::{Canvas, DrawingContext, LineCap, LineJoin};
-use waterui_core::handler::{Handler, SharedAction, boxed_action};
-use waterui_core::resolve::Resolvable as _;
 use waterui_controls::label::{IntoLabel, Label};
+use waterui_core::handler::{Handler, SharedAction, boxed_action};
 
 use crate::color::{
     OnSecondaryContainer, OnSurface, OnSurfaceVariant, Outline, SecondaryContainer, Surface,
 };
+use crate::icons::CheckmarkIcon;
 use crate::theme::typography;
 
 const ASSIST_CHIP_CONTAINER_HEIGHT: f32 = 32.0;
@@ -400,7 +398,12 @@ fn selected_filter_chip_view(
     action: SharedAction,
 ) -> impl View {
     waterui::component::hstack((
-        CheckmarkIcon,
+        CheckmarkIcon::new(
+            OnSecondaryContainer,
+            FILTER_CHIP_ICON_SIZE,
+            FILTER_CHIP_CHECKMARK_LINE_WIDTH,
+        )
+        .container_height(FILTER_CHIP_CONTAINER_HEIGHT),
         label
             .font(typography::label_large())
             .foreground(OnSecondaryContainer),
@@ -455,26 +458,6 @@ fn unselected_filter_chip_view(
         .a11y_label(accessibility_label)
         .a11y_role(AccessibilityRole::Button)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
-}
-
-struct CheckmarkIcon;
-
-impl View for CheckmarkIcon {
-    fn body(self, env: &Environment) -> impl View {
-        let stroke = OnSecondaryContainer.resolve(env);
-        Canvas::with_signal(stroke, |ctx: &mut DrawingContext<'_>, stroke| {
-            let mut path = ctx.begin_path();
-            path.move_to(Point::new(4.25, 9.25));
-            path.line_to(Point::new(7.25, 12.25));
-            path.line_to(Point::new(14.0, 5.5));
-            ctx.set_stroke_style(stroke);
-            ctx.set_line_width(FILTER_CHIP_CHECKMARK_LINE_WIDTH);
-            ctx.set_line_cap(LineCap::Round);
-            ctx.set_line_join(LineJoin::Round);
-            ctx.stroke_path(&path);
-        })
-        .size(FILTER_CHIP_ICON_SIZE, FILTER_CHIP_ICON_SIZE)
-    }
 }
 
 struct RemoveButton {
