@@ -10,7 +10,6 @@ use crate::renderer::{
     navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
     split_compact_threshold, transformed_rect,
 };
-use crate::time::Instant;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -426,6 +425,7 @@ pub(crate) fn render_navigation_stack(
 ) {
     let stack = stack.into_inner();
     let transition_style = stack.transition_style();
+    let transition_motion = widget_theme(env).navigation_motion();
     let root = stack.into_inner();
     let (slot_index, entries) = ctx
         .renderer_mut()
@@ -450,7 +450,7 @@ pub(crate) fn render_navigation_stack(
     let local_ctx = ctx.with_identity_transforms(ctx.bounds);
     let active_scene =
         HydrolysisRenderer::render_subtree_scene(ctx.renderer_mut(), local_ctx, &local_env, active);
-    let now = Instant::now();
+    let now = ctx.renderer_mut().frame_instant();
     let transition_frame = {
         let slot = ctx
             .renderer_mut()
@@ -478,6 +478,7 @@ pub(crate) fn render_navigation_stack(
                         from_scene,
                         active_scene.clone(),
                         now,
+                        transition_motion.transition_duration,
                     ),
                 );
             }
@@ -492,6 +493,7 @@ pub(crate) fn render_navigation_stack(
                 transition.style,
                 transition.direction,
                 transition.progress(now),
+                transition_motion.pushpop_parallax_factor,
                 transition.from_scene.clone(),
                 transition.to_scene.clone(),
             )
@@ -500,8 +502,17 @@ pub(crate) fn render_navigation_stack(
         frame
     };
 
-    if let Some((style, direction, progress, from_scene, to_scene)) = transition_frame {
-        ctx.draw_navigation_transition(style, direction, progress, &from_scene, &to_scene);
+    if let Some((style, direction, progress, parallax_factor, from_scene, to_scene)) =
+        transition_frame
+    {
+        ctx.draw_navigation_transition(
+            style,
+            direction,
+            progress,
+            parallax_factor,
+            &from_scene,
+            &to_scene,
+        );
     } else {
         ctx.append_scene(&active_scene);
     }

@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use waterui::animation::Animation;
-use waterui_backend_core::widget::{InteractionMotion, ProgressMotion};
+use waterui_backend_core::widget::{InteractionMotion, NavigationMotion, ProgressMotion};
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 
@@ -38,13 +38,20 @@ pub(crate) fn progress() -> ProgressMotion {
     }
 }
 
+pub(crate) fn navigation() -> NavigationMotion {
+    NavigationMotion {
+        transition_duration: Duration::from_millis(250),
+        pushpop_parallax_factor: 0.35,
+    }
+}
+
 pub(crate) fn toggle_value() -> Animation {
     Animation::spring(300.0, 20.0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{interaction, progress, toggle_value};
+    use super::{interaction, navigation, progress, toggle_value};
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -94,6 +101,14 @@ mod tests {
             motion.circular_indeterminate_cycle,
             Duration::from_millis(5_332)
         );
+    }
+
+    #[test]
+    fn material_navigation_motion_uses_hydrolysis_transition_engine_policy() {
+        let motion = navigation();
+
+        assert_eq!(motion.transition_duration, Duration::from_millis(250));
+        assert_eq!(motion.pushpop_parallax_factor, 0.35);
     }
 
     #[test]

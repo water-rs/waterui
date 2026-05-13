@@ -211,6 +211,15 @@ pub struct ProgressMotion {
     pub circular_indeterminate_cycle: Duration,
 }
 
+/// Motion policy for backend-rendered navigation transitions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavigationMotion {
+    /// Duration for push, pop, and fade transitions.
+    pub transition_duration: Duration,
+    /// Parallax factor for the outgoing scene in push/pop transitions.
+    pub pushpop_parallax_factor: f64,
+}
+
 /// Toggle layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct ToggleMetrics {
@@ -614,6 +623,8 @@ pub trait WidgetTheme {
     fn interaction_motion(&self) -> InteractionMotion;
     /// Return motion policy for progress indicators.
     fn progress_motion(&self) -> ProgressMotion;
+    /// Return motion policy for navigation transitions.
+    fn navigation_motion(&self) -> NavigationMotion;
 
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;

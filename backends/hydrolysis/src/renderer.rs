@@ -476,9 +476,6 @@ fn dimensions_for_native<V: HydroNativeView>(
         .map(|native| V::dimensions(state, native, env, proposal))
 }
 
-const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
-const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
-
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
