@@ -10,6 +10,7 @@ pub mod dialog;
 pub mod fab;
 pub mod icon_button;
 pub mod material_list;
+pub mod material_tabs;
 pub mod navigation_bar;
 pub mod navigation_drawer;
 pub mod segmented_button;
@@ -63,6 +64,7 @@ pub use material_color_utils::dynamic::{
     variant::Variant as MaterialColorVariant,
 };
 pub use material_list::{MaterialList, MaterialListItem, material_list, material_list_item};
+pub use material_tabs::{MaterialTab, MaterialTabs, material_tab, material_tabs};
 pub use navigation_bar::{NavigationBar, NavigationTab, navigation_bar, navigation_tab};
 pub use navigation_drawer::{
     NavigationDrawer, NavigationDrawerItem, navigation_drawer, navigation_drawer_item,
