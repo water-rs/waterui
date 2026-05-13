@@ -279,6 +279,41 @@ fn smoke_text_snapshot_preserves_semantic_labels() {
 }
 
 #[test]
+fn tappable_composed_view_exposes_clickable_accessibility_node() {
+    let tapped = Rc::new(Cell::new(false));
+    let tapped_for_view = Rc::clone(&tapped);
+    let mut app = UiTest::new().viewport(160, 96).mount(move || {
+        text("Assist")
+            .body()
+            .padding_with(6.0)
+            .on_tap({
+                let tapped_for_view = Rc::clone(&tapped_for_view);
+                move || tapped_for_view.set(true)
+            })
+            .a11y_label("Assist")
+            .a11y_role(waterui::accessibility::AccessibilityRole::Button)
+            .a11y_children(waterui::accessibility::AccessibilityChildren::ExcludeDescendants)
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Assist")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Assist").tap(),
+        "tap gesture accessibility node should route click actions through Hydrolysis gestures"
+    );
+    assert!(
+        tapped.get(),
+        "accessibility click should trigger tap gesture"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("Assist")
+        .assert_not_exists();
+}
+
+#[test]
 fn ui_test_snapshot_renders_text_after_canvas() {
     let mut app = UiTest::new().viewport(320, 320).mount(|| {
         vstack((
@@ -783,7 +818,9 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let mut app = UiTest::new().mount(move || {
+    let mut env = Environment::new();
+    hydrolysis_m3::install(&mut env);
+    let mut app = UiTest::new().environment(env).mount(move || {
         vstack((
             TextField::new(&username)
                 .label(text("Username"))

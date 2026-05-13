@@ -1,6 +1,6 @@
 //! End-to-end accessibility coverage for the Material Design 3 theme package.
 
-use hydrolysis_m3::install;
+use hydrolysis_m3::{assist_chip, install};
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::env::Environment;
@@ -81,6 +81,29 @@ fn material_text_field_focus_is_routed_through_hydrolysis_accessibility_tree() {
         "material text field focus should be routable through waterui-testing"
     );
     app.assert_ui_focus(&selector);
+}
+
+#[test]
+fn material_assist_chip_exposes_button_semantics_and_tap_action() {
+    let tapped = Binding::bool(false);
+    let tapped_for_view = tapped.clone();
+    let tapped_for_action = tapped.clone();
+    let mut app = mount_m3(move || {
+        assist_chip("Assist").action({
+            let tapped_for_action = tapped_for_action.clone();
+            move || tapped_for_action.set(true)
+        })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Assist")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Assist").tap(),
+        "material assist chip should route tap actions through Hydrolysis gestures"
+    );
+    assert!(tapped_for_view.get(), "assist chip tap should update state");
 }
 
 #[test]

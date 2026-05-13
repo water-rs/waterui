@@ -4,6 +4,7 @@
 //! chrome contract from `waterui-backend-core` and does not depend on the
 //! Hydrolysis renderer crate.
 
+pub mod chip;
 pub mod color;
 
 mod controls;
@@ -33,6 +34,7 @@ use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
+pub use chip::{AssistChip, assist_chip};
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
