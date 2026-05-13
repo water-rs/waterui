@@ -129,7 +129,7 @@ use crate::platform::{
 };
 use crate::scroll::{ScrollController, ScrollHandle};
 use crate::time::Instant;
-use crate::widgets::{CONTROL_SPRING_DAMPING, CONTROL_SPRING_STIFFNESS, inset_rect, widget_theme};
+use crate::widgets::{inset_rect, widget_theme};
 
 #[cfg(feature = "accessibility")]
 pub(crate) use accessibility::{
@@ -1016,7 +1016,11 @@ impl HydrolysisRenderer {
         handle.sample(now)
     }
 
-    pub(crate) fn resolve_toggle_progress<S>(&mut self, signal: &S) -> f32
+    pub(crate) fn resolve_toggle_progress<S>(
+        &mut self,
+        signal: &S,
+        default_animation: Animation,
+    ) -> f32
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
@@ -1026,7 +1030,6 @@ impl HydrolysisRenderer {
             .bind_scalar(if signal.get() { 1.0 } else { 0.0 });
         let watcher_handle = handle.clone();
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
-        let default_animation = Animation::spring(CONTROL_SPRING_STIFFNESS, CONTROL_SPRING_DAMPING);
         let guard = signal.watch(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
             let animation = update

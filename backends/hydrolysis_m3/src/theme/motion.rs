@@ -38,9 +38,13 @@ pub(crate) fn progress() -> ProgressMotion {
     }
 }
 
+pub(crate) fn toggle_value() -> Animation {
+    Animation::spring(300.0, 20.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{interaction, progress};
+    use super::{interaction, progress, toggle_value};
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -90,5 +94,10 @@ mod tests {
             motion.circular_indeterminate_cycle,
             Duration::from_millis(5_332)
         );
+    }
+
+    #[test]
+    fn material_toggle_motion_uses_hydrolysis_animation_engine_policy() {
+        assert_eq!(toggle_value(), Animation::spring(300.0, 20.0));
     }
 }
