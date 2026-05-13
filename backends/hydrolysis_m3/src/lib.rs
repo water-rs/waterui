@@ -24,7 +24,7 @@ pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics, InteractionMotion,
     ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
     ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -150,6 +150,10 @@ impl WidgetTheme for MaterialTheme {
 
     fn progress_motion(&self) -> ProgressMotion {
         theme::motion::progress()
+    }
+
+    fn text_caret_motion(&self) -> TextCaretMotion {
+        theme::motion::text_caret()
     }
 
     fn navigation_motion(&self) -> NavigationMotion {

@@ -122,7 +122,7 @@ use waterui_video::{VideoConfig, VideoPlayerConfig};
 use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
-use crate::engine::{TextContextMenuMetrics, vello_backend::VelloDrawContext};
+use crate::engine::{TextCaretMotion, TextContextMenuMetrics, vello_backend::VelloDrawContext};
 use crate::gesture::{GestureEngine, GestureTarget};
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
@@ -478,9 +478,6 @@ fn dimensions_for_native<V: HydroNativeView>(
 
 const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
-const INPUT_CARET_FADE_CYCLE_DURATION: Duration = Duration::from_millis(1060);
-const INPUT_CARET_FADE_FRAME_INTERVAL: Duration = Duration::from_millis(530);
-const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
 const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
