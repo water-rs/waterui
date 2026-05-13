@@ -179,6 +179,7 @@ pub(crate) fn render_slider(
             &mut draw,
             vello::kurbo::Point::new(fill_right, track_center_y),
             metrics.thumb_radius,
+            interaction,
         );
     }
 

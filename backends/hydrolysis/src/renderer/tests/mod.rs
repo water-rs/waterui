@@ -14,6 +14,7 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, InputFieldMetrics, InteractionMotion, PickerMetrics, ProgressIndicatorStyle,
     ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, ToggleMetrics,
+    WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -370,7 +371,14 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_slider_track(&self, _draw: &mut dyn DrawContext, _track_rect: Rect, _fill_rect: Rect) {}
 
-    fn draw_slider_thumb(&self, _draw: &mut dyn DrawContext, _center: Point, _radius: f64) {}
+    fn draw_slider_thumb(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _center: Point,
+        _radius: f64,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
         match style {
