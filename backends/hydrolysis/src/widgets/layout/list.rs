@@ -3,8 +3,7 @@ use std::rc::Rc;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, LIST_DELETE_CONTROL_WIDTH,
-    LIST_MOVE_CONTROL_WIDTH, LIST_TRAILING_CONTROL_SPACING, RenderContext, WidgetRenderContext,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     materialize_list_item, materialize_list_row, measure_list_intrinsic,
     measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
@@ -217,15 +216,16 @@ pub(crate) fn render_list(
         let mut trailing_x = row_rect.x1 - 8.0;
 
         if let (true, Some(move_action)) = (editing, move_action.as_ref()) {
-            let control_width = LIST_MOVE_CONTROL_WIDTH;
-            let control_height = (row_height - 12.0).max(12.0);
+            let control_width = list_metrics.move_control_width;
+            let vertical_inset = list_metrics.trailing_control_vertical_inset;
+            let control_height = (row_height - vertical_inset * 2.0).max(vertical_inset * 2.0);
             let control_rect = vello::kurbo::Rect::new(
                 trailing_x - control_width,
-                row_rect.y0 + 6.0,
+                row_rect.y0 + vertical_inset,
                 trailing_x,
-                row_rect.y0 + 6.0 + control_height,
+                row_rect.y0 + vertical_inset + control_height,
             );
-            trailing_x -= control_width + LIST_TRAILING_CONTROL_SPACING;
+            trailing_x -= control_width + list_metrics.trailing_control_spacing;
             let up_rect = vello::kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0,
@@ -286,12 +286,12 @@ pub(crate) fn render_list(
 
         if let (true, true, Some(delete_action)) = (editing, deletable, delete_action.as_ref()) {
             let delete_rect = vello::kurbo::Rect::new(
-                trailing_x - LIST_DELETE_CONTROL_WIDTH,
-                row_rect.y0 + 6.0,
+                trailing_x - list_metrics.delete_control_width,
+                row_rect.y0 + list_metrics.trailing_control_vertical_inset,
                 trailing_x,
-                row_rect.y1 - 6.0,
+                row_rect.y1 - list_metrics.trailing_control_vertical_inset,
             );
-            trailing_x = delete_rect.x0 - LIST_TRAILING_CONTROL_SPACING;
+            trailing_x = delete_rect.x0 - list_metrics.trailing_control_spacing;
             let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
             let (delete_interaction, delete_press_slot) = ctx
                 .renderer_mut()
