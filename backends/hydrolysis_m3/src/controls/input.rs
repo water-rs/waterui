@@ -7,8 +7,12 @@ use crate::dimensions::{
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{Brush, DrawContext, InputFieldMetrics, WidgetInteractionState};
+use material_color_utils::utils::color_utils::Argb;
 use vello::kurbo::{Point, Rect, RoundedRectRadii};
+use vello::peniko::Color as PenikoColor;
 use waterui_graphics::color::Color;
+
+const INPUT_SELECTION_ALPHA: f32 = 0.28;
 
 pub const fn metrics() -> InputFieldMetrics {
     InputFieldMetrics::new(
@@ -22,6 +26,26 @@ pub const fn metrics() -> InputFieldMetrics {
 
 pub fn placeholder_color(colors: &MaterialColorScheme) -> Color {
     colors.on_surface_variant.view_color()
+}
+
+pub fn selection_brush(colors: &MaterialColorScheme) -> Brush {
+    Brush::from(role_with_alpha(
+        colors.primary.argb(),
+        INPUT_SELECTION_ALPHA,
+    ))
+}
+
+pub fn caret_brush(colors: &MaterialColorScheme, opacity: f32) -> Brush {
+    Brush::from(role_with_alpha(colors.primary.argb(), opacity))
+}
+
+fn role_with_alpha(color: Argb, alpha: f32) -> PenikoColor {
+    PenikoColor::new([
+        f32::from(color.red()) / 255.0,
+        f32::from(color.green()) / 255.0,
+        f32::from(color.blue()) / 255.0,
+        alpha.clamp(0.0, 1.0),
+    ])
 }
 
 pub fn draw_field(
@@ -96,7 +120,10 @@ pub fn draw_state_layer(
 mod tests {
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 
-    use super::{MaterialColorScheme, WidgetInteractionState, draw_field, metrics};
+    use super::{
+        MaterialColorScheme, WidgetInteractionState, caret_brush, draw_field, metrics,
+        selection_brush,
+    };
     use crate::dimensions::{
         INPUT_FIELD_MIN_HEIGHT, INPUT_FIELD_MIN_WIDTH, INPUT_FILLED_ACTIVE_INDICATOR_HEIGHT,
         INPUT_FILLED_CONTAINER_TOP_RADIUS, INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT,
@@ -204,5 +231,27 @@ mod tests {
             draw.stroke_width,
             Some(INPUT_FILLED_FOCUS_ACTIVE_INDICATOR_HEIGHT)
         );
+    }
+
+    #[test]
+    fn filled_text_field_caret_and_selection_use_primary_role() {
+        let colors = MaterialColorScheme::baseline_light();
+
+        let Brush::Solid(selection) = selection_brush(&colors) else {
+            panic!("Material text selection must be a solid primary color layer");
+        };
+        let Brush::Solid(caret) = caret_brush(&colors, 0.5) else {
+            panic!("Material text caret must be a solid primary color layer");
+        };
+        let primary = colors.primary.argb();
+
+        assert_eq!(selection.components[0], f32::from(primary.red()) / 255.0);
+        assert_eq!(selection.components[1], f32::from(primary.green()) / 255.0);
+        assert_eq!(selection.components[2], f32::from(primary.blue()) / 255.0);
+        assert_eq!(selection.components[3], 0.28);
+        assert_eq!(caret.components[0], f32::from(primary.red()) / 255.0);
+        assert_eq!(caret.components[1], f32::from(primary.green()) / 255.0);
+        assert_eq!(caret.components[2], f32::from(primary.blue()) / 255.0);
+        assert_eq!(caret.components[3], 0.5);
     }
 }

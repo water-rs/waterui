@@ -634,6 +634,10 @@ pub trait WidgetTheme {
     fn input_field_metrics(&self) -> InputFieldMetrics;
     /// Return the placeholder text color.
     fn input_placeholder_color(&self) -> Color;
+    /// Return the text selection fill brush.
+    fn input_selection_brush(&self) -> Brush;
+    /// Return the caret brush for the current caret opacity.
+    fn input_caret_brush(&self, opacity: f32) -> Brush;
     /// Draw text input chrome.
     fn draw_input_field(
         &self,
