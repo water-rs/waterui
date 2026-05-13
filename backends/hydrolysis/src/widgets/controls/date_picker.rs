@@ -8,6 +8,7 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use waterui_backend_core::widget::WidgetInteractionState;
 use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::PickerStyle;
@@ -117,7 +118,7 @@ pub(crate) fn render_date_picker(
 
     {
         let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds);
+        theme.draw_input_field(&mut draw, field_bounds, WidgetInteractionState::NONE);
         theme.draw_picker_indicator(&mut draw, field_bounds);
     }
 

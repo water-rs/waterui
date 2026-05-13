@@ -284,7 +284,7 @@ pub(crate) fn render_menu_picker(
         let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
         {
             let mut draw = ctx.draw_context();
-            theme.draw_input_field(&mut draw, bounds);
+            theme.draw_input_field(&mut draw, bounds, interaction);
             theme.draw_picker_state_layer(&mut draw, bounds, interaction);
             theme.draw_picker_indicator(&mut draw, bounds);
         }
