@@ -5,10 +5,10 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, material_card, material_list, material_list_item,
-    material_tab, material_tabs, navigation_bar, navigation_drawer, navigation_drawer_item,
-    navigation_tab, outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set,
-    plain_tooltip, rich_tooltip, suggestion_chip,
+    icon_button, input_chip, install, material_badge, material_card, material_list,
+    material_list_item, material_tab, material_tabs, navigation_bar, navigation_drawer,
+    navigation_drawer_item, navigation_tab, outlined_icon_button, outlined_segmented_button,
+    outlined_segmented_button_set, plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -677,6 +677,16 @@ fn material_card_exposes_group_semantics_and_preserves_content() {
     app.query()
         .role(Role::LABEL)
         .label("Material card content")
+        .assert_exists();
+}
+
+#[test]
+fn material_badge_preserves_badged_content_semantics() {
+    let mut app = mount_m3(|| material_badge(3, text("Inbox")).label("Inbox, 3 new notifications"));
+
+    app.query()
+        .role(Role::LABEL)
+        .label("Inbox, 3 new notifications")
         .assert_exists();
 }
 
