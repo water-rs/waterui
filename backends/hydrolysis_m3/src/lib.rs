@@ -13,6 +13,7 @@ pub mod material_badge;
 pub mod material_card;
 pub mod material_divider;
 pub mod material_list;
+pub mod material_snackbar;
 pub mod material_tabs;
 pub mod navigation_bar;
 pub mod navigation_drawer;
@@ -70,6 +71,7 @@ pub use material_color_utils::dynamic::{
     variant::Variant as MaterialColorVariant,
 };
 pub use material_list::{MaterialList, MaterialListItem, material_list, material_list_item};
+pub use material_snackbar::{MaterialSnackbar, material_snackbar};
 pub use material_tabs::{MaterialTab, MaterialTabs, material_tab, material_tabs};
 pub use navigation_bar::{NavigationBar, NavigationTab, navigation_bar, navigation_tab};
 pub use navigation_drawer::{
