@@ -311,6 +311,8 @@ pub struct PickerMetrics {
     pub radio_row_spacing: f64,
     /// Vertical gap above popup menu rows.
     pub popup_top_spacing: f64,
+    /// Popup menu row minimum height.
+    pub popup_row_height: f64,
     /// Popup menu corner radius.
     pub popup_corner_radius: f64,
 }
