@@ -23,7 +23,7 @@ pub fn draw_bar(
     bounds: Rect,
     top_edge: bool,
 ) {
-    draw.fill_rect(bounds, &Brush::from(colors.surface_container.peniko()));
+    draw.fill_rect(bounds, &Brush::from(colors.surface.peniko()));
     let separator = if top_edge {
         Rect::new(bounds.x0, bounds.y1 - 1.0, bounds.x1, bounds.y1)
     } else {

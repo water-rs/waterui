@@ -1,18 +1,21 @@
 //! End-to-end accessibility coverage for the Material Design 3 theme package.
 
+use core::convert::TryFrom as _;
 use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, material_list, material_list_item, navigation_bar,
-    navigation_drawer, navigation_drawer_item, navigation_tab, outlined_icon_button,
-    outlined_segmented_button, outlined_segmented_button_set, plain_tooltip, rich_tooltip,
-    suggestion_chip,
+    icon_button, input_chip, install, material_list, material_list_item, material_tab,
+    material_tabs, navigation_bar, navigation_drawer, navigation_drawer_item, navigation_tab,
+    outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set, plain_tooltip,
+    rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
 use waterui::env::Environment;
 use waterui::graphics::color::Srgb;
+use waterui::id::Id;
+use waterui::navigation::NavigationView;
 use waterui::{Binding, Str};
 use waterui_controls::{Slider, Stepper, TextField, button, toggle};
 use waterui_core::View;
@@ -35,6 +38,10 @@ where
                 .padding_with(16.0)
                 .background(Srgb::WHITE)
         })
+}
+
+fn tab_id(value: i32) -> Id {
+    Id::try_from(value).expect("test tab id must be non-zero")
 }
 
 #[test]
@@ -602,6 +609,59 @@ fn material_list_exposes_list_item_semantics_and_actions() {
     assert!(
         reports_tapped.get(),
         "material list item tap should invoke its action"
+    );
+}
+
+#[test]
+fn material_tabs_expose_tab_semantics_and_switch_content() {
+    let first = tab_id(1);
+    let second = tab_id(2);
+    let selection = Binding::container(first);
+    let selection_for_view = selection.clone();
+    let mut app = mount_m3(move || {
+        material_tabs(
+            &selection_for_view,
+            vec![
+                material_tab(first, "Photos", || {
+                    NavigationView::new("Photos", text("photos content"))
+                }),
+                material_tab(second, "Albums", || {
+                    NavigationView::new("Albums", text("albums content"))
+                }),
+            ],
+        )
+    });
+
+    app.query().role(Role::TAB_LIST).assert_exists();
+    app.query()
+        .role(Role::TAB)
+        .label("Photos")
+        .selected(true)
+        .assert_exists();
+    app.query()
+        .role(Role::TAB)
+        .label("Albums")
+        .selected(false)
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("photos content")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::TAB).label("Albums").tap(),
+        "material tabs should route tab selection through Hydrolysis accessibility"
+    );
+    assert_eq!(selection.get(), second);
+    assert!(
+        app.wait_for(
+            &[app.expect_exists(
+                Selector::default()
+                    .role(Role::LABEL)
+                    .label("albums content"),
+            )],
+            WaitOptions::new(Duration::from_millis(200)),
+        ) == WaitResult::Completed,
+        "material tabs should show selected tab content"
     );
 }
 
