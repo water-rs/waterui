@@ -9,6 +9,7 @@ pub mod color;
 pub mod dialog;
 pub mod fab;
 pub mod icon_button;
+pub mod navigation_bar;
 pub mod tooltip;
 
 mod controls;
@@ -56,6 +57,7 @@ pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
 };
+pub use navigation_bar::{NavigationBar, NavigationTab, navigation_bar, navigation_tab};
 pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialContrastLevel, MaterialRoleColor,
