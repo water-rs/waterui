@@ -6,7 +6,8 @@ use core::time::Duration;
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
     icon_button, input_chip, install, material_badge, material_card, material_list,
-    material_list_item, material_tab, material_tabs, navigation_bar, navigation_drawer,
+    material_list_item, material_menu, material_menu_divider, material_menu_item,
+    material_sub_menu, material_tab, material_tabs, navigation_bar, navigation_drawer,
     navigation_drawer_item, navigation_tab, outlined_icon_button, outlined_segmented_button,
     outlined_segmented_button_set, plain_tooltip, rich_tooltip, suggestion_chip,
 };
@@ -688,6 +689,27 @@ fn material_badge_preserves_badged_content_semantics() {
         .role(Role::LABEL)
         .label("Inbox, 3 new notifications")
         .assert_exists();
+}
+
+#[test]
+fn material_menu_exposes_trigger_semantics() {
+    let mut app = mount_m3(|| {
+        material_menu(
+            "Actions",
+            (
+                material_menu_item("Refresh").action(|| {}),
+                material_menu_divider(),
+                material_sub_menu("More", (material_menu_item("Archive").action(|| {}),)),
+            ),
+        )
+    });
+
+    let menu = app.query().role(Role::BUTTON).label("Actions").single();
+    let bounds = menu.bounds();
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "material menu trigger should expose non-zero button semantics"
+    );
 }
 
 #[test]
