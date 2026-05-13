@@ -62,7 +62,7 @@ pub mod prelude {
 
     pub use super::color::*;
     pub use super::fullscreen::*;
-    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
+    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
 
     pub use super::gesture::GestureObserver;
 
