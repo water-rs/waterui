@@ -330,6 +330,14 @@ impl WidgetTheme for MinimalTestTheme {
         waterui_graphics::color::Color::srgb(0, 0, 0)
     }
 
+    fn input_selection_brush(&self) -> Brush {
+        Brush::from(vello::peniko::Color::new([0.20, 0.45, 0.90, 0.28]))
+    }
+
+    fn input_caret_brush(&self, opacity: f32) -> Brush {
+        Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, opacity]))
+    }
+
     fn draw_input_field(
         &self,
         _draw: &mut dyn DrawContext,

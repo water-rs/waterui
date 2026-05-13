@@ -1,8 +1,8 @@
-use crate::engine::{Brush, DrawContext};
+use crate::engine::DrawContext;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TEXT_SELECTION_FILL_COLOR,
-    TextInputModel, TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TextInputModel,
+    TextInputTargetRegistration, WidgetRenderContext, clamp_to_char_boundary,
     measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
     normalize_view_for_render, transformed_rect,
 };
@@ -361,7 +361,7 @@ pub(crate) fn render_text_field(
     };
     ctx.push_layer_rect(1.0, text_bounds);
     if selection_visible && !selection.is_collapsed() {
-        let selection_brush = Brush::from(vello::peniko::Color::new(TEXT_SELECTION_FILL_COLOR));
+        let selection_brush = theme.input_selection_brush();
         let mut draw = ctx.draw_context();
         for (rect, _) in selection.geometry(&committed_layout) {
             let highlight = vello::kurbo::Rect::new(
@@ -390,11 +390,9 @@ pub(crate) fn render_text_field(
         vello::kurbo::Rect::new(x0, y0, x1, y1)
     };
     if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
+        let caret_brush = theme.input_caret_brush(caret_opacity);
         let mut draw = ctx.draw_context();
-        draw.fill_rect(
-            cursor_area,
-            &Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, caret_opacity])),
-        );
+        draw.fill_rect(cursor_area, &caret_brush);
     }
 
     let hit_transform = ctx.hit_transform;
@@ -595,7 +593,7 @@ pub(crate) fn render_secure_field(
     };
     ctx.push_layer_rect(1.0, text_bounds);
     if selection_visible && !selection.is_collapsed() {
-        let selection_brush = Brush::from(vello::peniko::Color::new(TEXT_SELECTION_FILL_COLOR));
+        let selection_brush = theme.input_selection_brush();
         let mut draw = ctx.draw_context();
         for (rect, _) in selection.geometry(&committed_layout) {
             let highlight = vello::kurbo::Rect::new(
@@ -624,11 +622,9 @@ pub(crate) fn render_secure_field(
         vello::kurbo::Rect::new(x0, y0, x1, y1)
     };
     if is_focused && selection.is_collapsed() && caret_opacity > 0.0 {
+        let caret_brush = theme.input_caret_brush(caret_opacity);
         let mut draw = ctx.draw_context();
-        draw.fill_rect(
-            cursor_area,
-            &Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, caret_opacity])),
-        );
+        draw.fill_rect(cursor_area, &caret_brush);
     }
 
     let hit_transform = ctx.hit_transform;

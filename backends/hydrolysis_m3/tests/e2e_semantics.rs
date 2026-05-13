@@ -82,3 +82,19 @@ fn material_text_field_focus_is_routed_through_hydrolysis_accessibility_tree() {
     );
     app.assert_ui_focus(&selector);
 }
+
+#[test]
+#[ignore = "captures a real Hydrolysis focused text field PNG for direct visual review"]
+fn material_focused_text_field_snapshot() {
+    let name = Binding::container(Str::from("Hydrolysis"));
+    let name_for_view = name.clone();
+    let mut app = mount_m3(move || TextField::new(&name_for_view).label("Project"));
+
+    assert!(
+        app.query().role(Role::TEXT_INPUT).label("Project").focus(),
+        "material text field should accept focus before visual capture"
+    );
+    let captured = app.capture_snapshot("material3-preview", "text-field-focused-caret", "focused");
+
+    assert!(captured.path().is_file());
+}

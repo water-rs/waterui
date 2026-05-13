@@ -249,6 +249,14 @@ impl WidgetTheme for MaterialTheme {
         input::placeholder_color(&self.colors)
     }
 
+    fn input_selection_brush(&self) -> Brush {
+        input::selection_brush(&self.colors)
+    }
+
+    fn input_caret_brush(&self, opacity: f32) -> Brush {
+        input::caret_brush(&self.colors, opacity)
+    }
+
     fn draw_input_field(
         &self,
         draw: &mut dyn DrawContext,
