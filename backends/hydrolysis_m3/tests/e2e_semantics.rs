@@ -5,10 +5,10 @@ use core::time::Duration;
 
 use hydrolysis_m3::{
     assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
-    icon_button, input_chip, install, material_list, material_list_item, material_tab,
-    material_tabs, navigation_bar, navigation_drawer, navigation_drawer_item, navigation_tab,
-    outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set, plain_tooltip,
-    rich_tooltip, suggestion_chip,
+    icon_button, input_chip, install, material_card, material_list, material_list_item,
+    material_tab, material_tabs, navigation_bar, navigation_drawer, navigation_drawer_item,
+    navigation_tab, outlined_icon_button, outlined_segmented_button, outlined_segmented_button_set,
+    plain_tooltip, rich_tooltip, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -663,6 +663,21 @@ fn material_tabs_expose_tab_semantics_and_switch_content() {
         ) == WaitResult::Completed,
         "material tabs should show selected tab content"
     );
+}
+
+#[test]
+fn material_card_exposes_group_semantics_and_preserves_content() {
+    let mut app = mount_m3(|| {
+        material_card(vstack((text("Project"), text("Material card content"))))
+            .outlined()
+            .label("Project card")
+    });
+
+    app.query().label("Project card").assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("Material card content")
+        .assert_exists();
 }
 
 #[test]
