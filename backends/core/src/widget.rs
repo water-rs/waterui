@@ -106,6 +106,8 @@ pub struct WidgetInteractionState {
     pub pressed: bool,
     /// Keyboard focus is visible on the widget.
     pub focus_visible: bool,
+    /// Animated focus affordance progress in the 0.0..=1.0 range.
+    pub focus_progress: f32,
     /// Animated state-layer opacity sampled by the renderer.
     pub state_layer_opacity: f32,
     /// Animated press-layer opacity sampled by the renderer.
@@ -122,6 +124,7 @@ impl WidgetInteractionState {
         hovered: false,
         pressed: false,
         focus_visible: false,
+        focus_progress: 0.0,
         state_layer_opacity: 0.0,
         press_layer_opacity: 0.0,
         press_origin: None,
@@ -483,7 +486,12 @@ pub trait WidgetTheme {
     /// Return the placeholder text color.
     fn input_placeholder_color(&self) -> Color;
     /// Draw text input chrome.
-    fn draw_input_field(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_input_field(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        state: WidgetInteractionState,
+    );
     /// Draw text input state layer.
     fn draw_input_field_state_layer(
         &self,

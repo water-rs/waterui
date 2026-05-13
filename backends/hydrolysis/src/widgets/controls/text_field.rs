@@ -254,12 +254,25 @@ pub(crate) fn render_text_field(
         ctx.bounds.y1,
     );
     let hit_transform = ctx.hit_transform;
-    let (field_interaction, _) = ctx
+    let text_input_index = ctx.renderer_mut().next_text_input_index();
+    let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let focus_motion = theme.interaction_motion();
+    let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
+        if is_focused { 1.0 } else { 0.0 },
+        if is_focused {
+            focus_motion.focus_enter
+        } else {
+            focus_motion.focus_exit
+        },
+    );
+    let (mut field_interaction, _) = ctx
         .renderer_mut()
         .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
+    field_interaction.focus_visible = is_focused;
+    field_interaction.focus_progress = focus_progress;
     {
         let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect);
+        theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
 
@@ -271,9 +284,7 @@ pub(crate) fn render_text_field(
         line_limit,
         selection_menu: text_field.selection_menu,
     };
-    let (text_input_index, prompt, value, preedit, caret_opacity, is_focused, selection_visible) = {
-        let text_input_index = ctx.renderer_mut().next_text_input_index();
-        let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let (prompt, value, preedit, caret_opacity, selection_visible) = {
         let selection_visible = is_focused
             || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
         let preedit = if is_focused {
@@ -287,16 +298,13 @@ pub(crate) fn render_text_field(
             0.0
         };
         (
-            text_input_index,
             ctx.renderer_mut().read_signal(&prompt_signal).to_plain(),
             ctx.renderer_mut().read_signal(&value_binding).to_plain(),
             preedit,
             caret_opacity,
-            is_focused,
             selection_visible,
         )
     };
-    let _ = text_input_index;
     let committed_with_preedit = value.clone() + preedit.as_str();
     let use_placeholder = committed_with_preedit.is_empty();
     let display = if use_placeholder {
@@ -485,12 +493,25 @@ pub(crate) fn render_secure_field(
         ctx.bounds.y1,
     );
     let hit_transform = ctx.hit_transform;
-    let (field_interaction, _) = ctx
+    let text_input_index = ctx.renderer_mut().next_text_input_index();
+    let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let focus_motion = theme.interaction_motion();
+    let focus_progress = ctx.renderer_mut().sample_widget_scalar_target(
+        if is_focused { 1.0 } else { 0.0 },
+        if is_focused {
+            focus_motion.focus_enter
+        } else {
+            focus_motion.focus_exit
+        },
+    );
+    let (mut field_interaction, _) = ctx
         .renderer_mut()
         .bind_interaction_target(transformed_rect(hit_transform, field_rect), env);
+    field_interaction.focus_visible = is_focused;
+    field_interaction.focus_progress = focus_progress;
     {
         let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect);
+        theme.draw_input_field(&mut draw, field_rect, field_interaction);
         theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
     }
 
@@ -499,9 +520,7 @@ pub(crate) fn render_secure_field(
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
     };
-    let (text_input_index, masked, caret_opacity, is_focused, selection_visible, plain_value) = {
-        let text_input_index = ctx.renderer_mut().next_text_input_index();
-        let is_focused = ctx.renderer_mut().is_text_input_focused(text_input_index);
+    let (masked, caret_opacity, selection_visible, plain_value) = {
         let selection_visible = is_focused
             || ctx.renderer_mut().active_text_context_menu_target() == Some(text_input_index);
         let plain_value = ctx
@@ -524,15 +543,12 @@ pub(crate) fn render_secure_field(
             0.0
         };
         (
-            text_input_index,
             "*".repeat(count),
             caret_opacity,
-            is_focused,
             selection_visible,
             plain_value,
         )
     };
-    let _ = text_input_index;
     let text_bounds = crate::widgets::util::inset_rect(
         field_rect,
         input_metrics.horizontal_inset,

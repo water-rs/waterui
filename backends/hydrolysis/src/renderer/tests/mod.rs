@@ -318,7 +318,13 @@ impl WidgetTheme for MinimalTestTheme {
         waterui_graphics::color::Color::srgb(0, 0, 0)
     }
 
-    fn draw_input_field(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_input_field(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
         PickerMetrics {
