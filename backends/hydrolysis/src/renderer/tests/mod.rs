@@ -14,7 +14,7 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
     NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
+    ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion,
     TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 
@@ -270,6 +270,14 @@ impl WidgetTheme for MinimalTestTheme {
             circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
             linear_indeterminate_cycle: Duration::from_millis(2_000),
             circular_indeterminate_cycle: Duration::from_millis(5_332),
+        }
+    }
+
+    fn text_caret_motion(&self) -> TextCaretMotion {
+        TextCaretMotion {
+            fade_cycle_duration: Duration::from_millis(1_060),
+            frame_interval: Duration::from_millis(530),
+            min_opacity: 0.2,
         }
     }
 
@@ -605,6 +613,7 @@ fn widget_theme_can_be_replaced_in_environment() {
 #[test]
 fn ime_preedit_commit_and_disable_update_focused_text_target() {
     let mut renderer = test_renderer();
+    renderer.set_text_caret_motion(MinimalTestTheme.text_caret_motion());
     let selection = Rc::new(RefCell::new(TextSelectionSlot {
         anchor: 0,
         focus: 0,

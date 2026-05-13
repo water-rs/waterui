@@ -211,6 +211,17 @@ pub struct ProgressMotion {
     pub circular_indeterminate_cycle: Duration,
 }
 
+/// Motion policy for text input carets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextCaretMotion {
+    /// Full fade cycle duration.
+    pub fade_cycle_duration: Duration,
+    /// Time between caret animation redraws.
+    pub frame_interval: Duration,
+    /// Minimum opacity at the dimmest point of the fade cycle.
+    pub min_opacity: f32,
+}
+
 /// Motion policy for backend-rendered navigation transitions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavigationMotion {
@@ -623,6 +634,8 @@ pub trait WidgetTheme {
     fn interaction_motion(&self) -> InteractionMotion;
     /// Return motion policy for progress indicators.
     fn progress_motion(&self) -> ProgressMotion;
+    /// Return motion policy for text input carets.
+    fn text_caret_motion(&self) -> TextCaretMotion;
     /// Return motion policy for navigation transitions.
     fn navigation_motion(&self) -> NavigationMotion;
 

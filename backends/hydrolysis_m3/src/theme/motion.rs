@@ -1,7 +1,9 @@
 use core::time::Duration;
 
 use waterui::animation::Animation;
-use waterui_backend_core::widget::{InteractionMotion, NavigationMotion, ProgressMotion};
+use waterui_backend_core::widget::{
+    InteractionMotion, NavigationMotion, ProgressMotion, TextCaretMotion,
+};
 
 const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 
@@ -38,6 +40,14 @@ pub(crate) fn progress() -> ProgressMotion {
     }
 }
 
+pub(crate) fn text_caret() -> TextCaretMotion {
+    TextCaretMotion {
+        fade_cycle_duration: Duration::from_millis(1_060),
+        frame_interval: Duration::from_millis(530),
+        min_opacity: 0.2,
+    }
+}
+
 pub(crate) fn navigation() -> NavigationMotion {
     NavigationMotion {
         transition_duration: Duration::from_millis(250),
@@ -51,7 +61,7 @@ pub(crate) fn toggle_value() -> Animation {
 
 #[cfg(test)]
 mod tests {
-    use super::{interaction, navigation, progress, toggle_value};
+    use super::{interaction, navigation, progress, text_caret, toggle_value};
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -101,6 +111,15 @@ mod tests {
             motion.circular_indeterminate_cycle,
             Duration::from_millis(5_332)
         );
+    }
+
+    #[test]
+    fn material_text_caret_motion_is_theme_owned() {
+        let motion = text_caret();
+
+        assert_eq!(motion.fade_cycle_duration, Duration::from_millis(1_060));
+        assert_eq!(motion.frame_interval, Duration::from_millis(530));
+        assert_eq!(motion.min_opacity, 0.2);
     }
 
     #[test]

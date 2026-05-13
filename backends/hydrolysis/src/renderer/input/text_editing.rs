@@ -24,6 +24,7 @@ pub(crate) struct TextEditingState {
     pub(crate) ime_preedit: Option<Str>,
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
+    pub(crate) text_caret_motion: Option<TextCaretMotion>,
 }
 
 #[derive(Debug, Default)]
@@ -678,10 +679,21 @@ pub(crate) fn execute_text_context_menu_action(
 }
 
 impl HydrolysisRenderer {
+    pub(crate) fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
+        self.text_editing.text_caret_motion = Some(motion);
+    }
+
+    fn text_caret_motion(&self) -> TextCaretMotion {
+        self.text_editing
+            .text_caret_motion
+            .expect("hydrolysis text input render must install text caret motion before focus")
+    }
+
     pub(crate) fn reset_text_caret_animation(&mut self, now: Instant) {
+        let motion = self.text_caret_motion();
         self.text_editing.text_caret_fade_started_at = Some(now);
         self.text_editing.text_caret_next_frame_at = Some(
-            now.checked_add(INPUT_CARET_FADE_FRAME_INTERVAL)
+            now.checked_add(motion.frame_interval)
                 .expect("hydrolysis text caret frame timestamp overflow"),
         );
     }
@@ -695,6 +707,7 @@ impl HydrolysisRenderer {
         if self.text_editing.focused_text_input.get().is_none() {
             return false;
         }
+        let motion = self.text_caret_motion();
         let mut next = self
             .text_editing
             .text_caret_next_frame_at
@@ -709,7 +722,7 @@ impl HydrolysisRenderer {
         }
         while now >= next {
             next = next
-                .checked_add(INPUT_CARET_FADE_FRAME_INTERVAL)
+                .checked_add(motion.frame_interval)
                 .expect("hydrolysis text caret frame timestamp overflow");
         }
         self.text_editing.text_caret_next_frame_at = Some(next);
@@ -720,16 +733,17 @@ impl HydrolysisRenderer {
         if self.text_editing.focused_text_input.get().is_none() {
             return 0.0;
         }
+        let motion = self.text_caret_motion();
         let started = self.text_editing.text_caret_fade_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
-        let cycle_secs = INPUT_CARET_FADE_CYCLE_DURATION.as_secs_f32();
+        let cycle_secs = motion.fade_cycle_duration.as_secs_f32();
         assert!(
             cycle_secs > 0.0,
             "hydrolysis text caret fade cycle duration must be > 0"
         );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = ((core::f32::consts::TAU * phase).cos() + 1.0) * 0.5;
-        INPUT_CARET_MIN_OPACITY + (1.0 - INPUT_CARET_MIN_OPACITY) * wave
+        motion.min_opacity + (1.0 - motion.min_opacity) * wave
     }
 
     pub(crate) fn set_focused_text_input(&mut self, focused: Option<usize>) -> bool {
@@ -753,7 +767,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.text_editing.ime_preedit = None;
         if focused.is_some() {
-            self.reset_text_caret_animation(Instant::now());
+            self.reset_text_caret_animation(self.frame_instant());
         } else {
             self.clear_text_caret_animation();
             self.dismiss_active_text_context_menu();
@@ -1299,7 +1313,7 @@ impl HydrolysisRenderer {
         }
         let changed = self.insert_text_into_focused_target(text) || preedit_cleared;
         if changed {
-            self.reset_text_caret_animation(Instant::now());
+            self.reset_text_caret_animation(self.frame_instant());
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -1329,7 +1343,7 @@ impl HydrolysisRenderer {
             return false;
         }
         self.text_editing.ime_preedit = next;
-        self.reset_text_caret_animation(Instant::now());
+        self.reset_text_caret_animation(self.frame_instant());
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             focused = ?self.text_editing.focused_text_input.get(),
@@ -1433,7 +1447,7 @@ impl HydrolysisRenderer {
             }
         };
         if changed {
-            self.reset_text_caret_animation(Instant::now());
+            self.reset_text_caret_animation(self.frame_instant());
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",

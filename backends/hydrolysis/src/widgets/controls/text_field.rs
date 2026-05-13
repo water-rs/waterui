@@ -172,7 +172,9 @@ pub(crate) fn render_text_field(
 ) {
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
-    let mut text_field = text_field.into_inner();
+    ctx.renderer_mut()
+        .set_text_caret_motion(theme.text_caret_motion());
+    let text_field = text_field.into_inner();
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
@@ -427,7 +429,9 @@ pub(crate) fn render_secure_field(
 ) {
     let theme = widget_theme(env);
     let input_metrics = theme.input_field_metrics();
-    let mut secure_field = secure_field.into_inner();
+    ctx.renderer_mut()
+        .set_text_caret_motion(theme.text_caret_motion());
+    let secure_field = secure_field.into_inner();
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
         .renderer_mut()
