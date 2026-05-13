@@ -549,7 +549,13 @@ pub trait WidgetTheme {
     /// Draw slider track chrome.
     fn draw_slider_track(&self, draw: &mut dyn DrawContext, track_rect: Rect, fill_rect: Rect);
     /// Draw slider thumb chrome.
-    fn draw_slider_thumb(&self, draw: &mut dyn DrawContext, center: Point, radius: f64);
+    fn draw_slider_thumb(
+        &self,
+        draw: &mut dyn DrawContext,
+        center: Point,
+        radius: f64,
+        state: WidgetInteractionState,
+    );
     /// Draw slider thumb state layer.
     fn draw_slider_thumb_state_layer(
         &self,
