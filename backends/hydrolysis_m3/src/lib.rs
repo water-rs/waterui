@@ -14,6 +14,7 @@ pub mod navigation_drawer;
 pub mod tooltip;
 
 mod controls;
+mod icons;
 mod layout;
 mod navigation;
 mod theme;
@@ -61,6 +62,11 @@ pub use material_color_utils::dynamic::{
 pub use navigation_bar::{NavigationBar, NavigationTab, navigation_bar, navigation_tab};
 pub use navigation_drawer::{
     NavigationDrawer, NavigationDrawerItem, navigation_drawer, navigation_drawer_item,
+};
+pub mod segmented_button;
+pub use segmented_button::{
+    OutlinedSegmentedButton, OutlinedSegmentedButtonSet, SegmentedButtonShape,
+    outlined_segmented_button, outlined_segmented_button_set,
 };
 pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
