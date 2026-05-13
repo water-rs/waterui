@@ -101,7 +101,7 @@ pub(crate) fn render_toggle(
 
     let thumb_progress = ctx.renderer_mut().resolve_toggle_progress(&toggle.toggle);
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds);
+    let (interaction, press_slot) = ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
     let mut draw = ctx.draw_context();
     match style {
         ToggleStyle::Automatic | ToggleStyle::Switch => {

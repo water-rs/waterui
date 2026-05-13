@@ -6,14 +6,16 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
+use serde::Deserialize;
 
 use crate::shell;
 use crate::toolchain_checks;
 use crate::{error, header, success, warn};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
-    HydrolysisPreviewSource, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
-    launch_preview_session, render_preview_with_hydrolysis,
+    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewScenario,
+    HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource, HydrolysisPreviewTheme,
+    PreviewPlatform, PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
 };
 use waterui_cli::toolchain::sccache::Sccache;
 use waterui_cli::utils::sccache_install_hint;
@@ -95,6 +97,14 @@ pub struct Args {
     #[arg(short, long, default_value = "preview.png")]
     output: PathBuf,
 
+    /// Hydrolysis scenario TOML for interaction/timeline capture.
+    #[arg(long)]
+    scenario: Option<PathBuf>,
+
+    /// Output directory for Hydrolysis scenario frames.
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -142,6 +152,7 @@ pub async fn run(args: Args) -> Result<()> {
     );
 
     if backend == CliPreviewBackend::Hydrolysis {
+        let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell::spinner("Building and rendering with hydrolysis...");
         render_preview_with_hydrolysis(
             &project_path,
@@ -151,13 +162,22 @@ pub async fn run(args: Args) -> Result<()> {
             height,
             sccache_path,
             &args.output,
+            scenario.as_ref(),
         )
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        success!("Preview saved to {}", args.output.display());
+        if let Some(scenario) = scenario {
+            success!("Preview frames saved to {}", scenario.output_dir.display());
+        } else {
+            success!("Preview saved to {}", args.output.display());
+        }
         return Ok(());
+    }
+
+    if args.scenario.is_some() || args.output_dir.is_some() {
+        bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
     let PreviewTarget::Function {
@@ -223,6 +243,97 @@ pub async fn run(args: Args) -> Result<()> {
             Err(err)
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ScenarioFile {
+    captures_ms: Vec<u64>,
+    #[serde(default)]
+    events: Vec<ScenarioEventFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScenarioEventFile {
+    at_ms: u64,
+    kind: String,
+    x: Option<f32>,
+    y: Option<f32>,
+    button: Option<String>,
+}
+
+async fn load_hydrolysis_scenario(
+    scenario_path: Option<&std::path::Path>,
+    output_dir: Option<PathBuf>,
+) -> Result<Option<HydrolysisPreviewScenario>> {
+    let Some(scenario_path) = scenario_path else {
+        if output_dir.is_some() {
+            bail!("`--output-dir` requires `--scenario`.");
+        }
+        return Ok(None);
+    };
+    let Some(output_dir) = output_dir else {
+        bail!("`--scenario` requires `--output-dir`.");
+    };
+    let source = smol::fs::read_to_string(scenario_path).await?;
+    let mut scenario: ScenarioFile = toml::from_str(&source)?;
+    if scenario.captures_ms.is_empty() {
+        bail!("Hydrolysis preview scenario must contain at least one capture timestamp.");
+    }
+    scenario.captures_ms.sort_unstable();
+    let capture_count = scenario.captures_ms.len();
+    scenario.captures_ms.dedup();
+    if scenario.captures_ms.len() != capture_count {
+        bail!("Hydrolysis preview scenario capture timestamps must be unique.");
+    }
+    let mut events = scenario
+        .events
+        .into_iter()
+        .map(parse_scenario_event)
+        .collect::<Result<Vec<_>>>()?;
+    events.sort_by_key(|event| event.at_ms);
+    Ok(Some(HydrolysisPreviewScenario {
+        captures_ms: scenario.captures_ms,
+        events,
+        output_dir,
+    }))
+}
+
+fn parse_scenario_event(event: ScenarioEventFile) -> Result<HydrolysisPreviewScenarioEvent> {
+    let kind = match event.kind.as_str() {
+        "pointer_move" | "hover" => HydrolysisPreviewEventKind::PointerMove,
+        "pointer_down" => HydrolysisPreviewEventKind::PointerDown,
+        "pointer_up" => HydrolysisPreviewEventKind::PointerUp,
+        "pointer_cancel" => HydrolysisPreviewEventKind::PointerCancel,
+        other => bail!("unsupported Hydrolysis preview scenario event kind `{other}`"),
+    };
+    let button = event
+        .button
+        .as_deref()
+        .map(|button| match button {
+            "primary" => Ok(HydrolysisPreviewPointerButton::Primary),
+            "secondary" => Ok(HydrolysisPreviewPointerButton::Secondary),
+            "middle" => Ok(HydrolysisPreviewPointerButton::Middle),
+            other => bail!("unsupported Hydrolysis preview pointer button `{other}`"),
+        })
+        .transpose()?;
+    let needs_point = !matches!(kind, HydrolysisPreviewEventKind::PointerCancel);
+    let x = match event.x {
+        Some(x) => x,
+        None if needs_point => bail!("Hydrolysis preview pointer event requires x coordinate"),
+        None => 0.0,
+    };
+    let y = match event.y {
+        Some(y) => y,
+        None if needs_point => bail!("Hydrolysis preview pointer event requires y coordinate"),
+        None => 0.0,
+    };
+    Ok(HydrolysisPreviewScenarioEvent {
+        at_ms: event.at_ms,
+        kind,
+        x,
+        y,
+        button,
+    })
 }
 
 #[derive(Debug)]
