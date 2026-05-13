@@ -12,9 +12,9 @@ use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
-    ButtonMetrics, InputFieldMetrics, InteractionMotion, PickerMetrics, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, TabsMetrics, ToggleMetrics,
-    WidgetInteractionState,
+    ButtonMetrics, InputFieldMetrics, InteractionMotion, ListMetrics, PickerMetrics,
+    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
+    TabsMetrics, ToggleMetrics, WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -470,6 +470,17 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
     fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+
+    fn list_metrics(&self) -> ListMetrics {
+        ListMetrics {
+            one_line_row_height: 56.0,
+            horizontal_inset: 16.0,
+            vertical_inset: 10.0,
+            divider_leading_inset: 16.0,
+            divider_trailing_inset: 16.0,
+        }
+    }
+
     fn draw_list_row_background(
         &self,
         _draw: &mut dyn DrawContext,

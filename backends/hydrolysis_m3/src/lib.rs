@@ -21,9 +21,9 @@ use waterui::Plugin as _;
 use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
-    Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, PickerMetrics,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
-    TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, ListMetrics,
+    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics,
+    StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -443,6 +443,10 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         scroll::draw_indicator(&self.colors, draw, bounds);
+    }
+
+    fn list_metrics(&self) -> ListMetrics {
+        list::metrics()
     }
 
     fn draw_list_row_background(&self, draw: &mut dyn DrawContext, bounds: Rect, alternate: bool) {

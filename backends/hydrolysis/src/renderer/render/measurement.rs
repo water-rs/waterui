@@ -734,10 +734,11 @@ pub(crate) fn measure_list_intrinsic(
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     first_item.content = normalize_layout_view(first_item.content, env);
     let content_size = measure_view_intrinsic(&first_item.content, state, env);
-    let row_height = f64::from(content_size.height.max(LIST_ROW_CONTENT_MIN_HEIGHT))
-        + LIST_ROW_VERTICAL_PADDING * 2.0;
+    let metrics = widget_theme(env).list_metrics();
+    let row_height = (f64::from(content_size.height) + metrics.vertical_inset * 2.0)
+        .max(metrics.one_line_row_height);
 
-    let mut row_width = f64::from(content_size.width) + LIST_ROW_HORIZONTAL_PADDING * 2.0;
+    let mut row_width = f64::from(content_size.width) + metrics.horizontal_inset * 2.0;
     if editing && list.on_move.is_some() {
         row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
     }
@@ -745,7 +746,7 @@ pub(crate) fn measure_list_intrinsic(
         row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
     }
     let total_height = row_height * row_count as f64;
-    let max_width = row_width.max(LIST_ROW_HORIZONTAL_PADDING * 2.0);
+    let max_width = row_width.max(metrics.horizontal_inset * 2.0);
 
     LayoutSize::new(max_width as f32, total_height as f32)
 }
@@ -768,7 +769,8 @@ pub(crate) fn measure_list_item_row_height(
     env: &Environment,
 ) -> f64 {
     let intrinsic = measure_view_intrinsic(&item.content, state, env);
-    f64::from(intrinsic.height.max(LIST_ROW_CONTENT_MIN_HEIGHT)) + LIST_ROW_VERTICAL_PADDING * 2.0
+    let metrics = widget_theme(env).list_metrics();
+    (f64::from(intrinsic.height) + metrics.vertical_inset * 2.0).max(metrics.one_line_row_height)
 }
 
 pub(crate) fn materialize_list_row(

@@ -4,10 +4,9 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, LIST_DELETE_CONTROL_WIDTH,
-    LIST_ESTIMATED_ROW_HEIGHT, LIST_MOVE_CONTROL_WIDTH, LIST_ROW_HORIZONTAL_PADDING,
-    LIST_ROW_VERTICAL_PADDING, LIST_TRAILING_CONTROL_SPACING, RenderContext, WidgetRenderContext,
+    LIST_MOVE_CONTROL_WIDTH, LIST_TRAILING_CONTROL_SPACING, RenderContext, WidgetRenderContext,
     materialize_list_item, materialize_list_row, measure_list_intrinsic,
-    measure_list_item_row_height, transformed_rect,
+    measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -20,7 +19,7 @@ use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::renderer::lazy::{resolve_visible_index_window, sum_cached_or_estimated};
-use crate::widgets::{draw_scroll_indicators, inset_rect, widget_theme};
+use crate::widgets::{draw_scroll_indicators, widget_theme};
 
 impl HydroNativeView for Native<ListConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -46,9 +45,10 @@ impl HydroNativeView for Native<ListConfig> {
             index
         };
         let viewport = ctx.bounds;
+        let list_metrics = crate::widgets::widget_theme(env).list_metrics();
         let content_height = sum_cached_or_estimated(
             &renderer.lazy.lazy_list_controller.slots[slot_index].row_extents,
-            LIST_ESTIMATED_ROW_HEIGHT,
+            list_metrics.one_line_row_height,
         )
         .max(viewport.height());
         let handle = renderer.bind_scroll_handle(
@@ -159,6 +159,7 @@ pub(crate) fn render_list(
     };
 
     let viewport = ctx.bounds;
+    let list_metrics = widget_theme(env).list_metrics();
     let handle = ctx.renderer_mut().take_pending_scroll_handle("render_list");
     let metrics = handle.metrics();
     ctx.push_layer_rect(1.0, viewport);
@@ -211,11 +212,8 @@ pub(crate) fn render_list(
         }
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
-        let mut content_rect = inset_rect(
-            row_rect,
-            LIST_ROW_HORIZONTAL_PADDING,
-            LIST_ROW_VERTICAL_PADDING,
-        );
+        let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), env);
+        let mut content_rect = list_content_rect(row_rect, list_metrics, content_size);
         let mut trailing_x = row_rect.x1 - 8.0;
 
         if let (true, Some(move_action)) = (editing, move_action.as_ref()) {
@@ -326,9 +324,9 @@ pub(crate) fn render_list(
 
         {
             let separator = vello::kurbo::Rect::new(
-                row_rect.x0 + 8.0,
+                row_rect.x0 + list_metrics.divider_leading_inset,
                 row_rect.y1 - 1.0,
-                row_rect.x1 - 8.0,
+                row_rect.x1 - list_metrics.divider_trailing_inset,
                 row_rect.y1,
             );
             let theme = widget_theme(env);
@@ -346,4 +344,17 @@ pub(crate) fn render_list(
         move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
     );
     draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical);
+}
+
+fn list_content_rect(
+    row_rect: vello::kurbo::Rect,
+    metrics: waterui_backend_core::widget::ListMetrics,
+    content_size: waterui_core::layout::Size,
+) -> vello::kurbo::Rect {
+    let x0 = row_rect.x0 + metrics.horizontal_inset;
+    let x1 = row_rect.x1 - metrics.horizontal_inset;
+    let available_height = (row_rect.height() - metrics.vertical_inset * 2.0).max(0.0);
+    let height = f64::from(content_size.height).min(available_height);
+    let y0 = row_rect.y0 + (row_rect.height() - height) * 0.5;
+    vello::kurbo::Rect::new(x0, y0, x1, y0 + height)
 }
