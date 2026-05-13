@@ -1387,18 +1387,16 @@ impl HydrolysisRenderer {
                 .state
                 .dynamic_intrinsic_cache
                 .insert(identity, dimensions.clone());
-            if previous_dimensions.as_ref() != Some(&dimensions) {
-                *pending_view.borrow_mut() = Some(content);
+            let local_ctx = ctx.with_identity_transforms(ctx.bounds);
+            let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
+            renderer
+                .lifecycle
+                .dynamic_nodes
+                .get_mut(&identity)
+                .expect("hydrolysis dynamic node missing after connect")
+                .cached_subtree = Some(subtree);
+            if previous_dimensions.is_some() && previous_dimensions.as_ref() != Some(&dimensions) {
                 renderer.request_rebuild();
-            } else {
-                let local_ctx = ctx.with_identity_transforms(ctx.bounds);
-                let subtree = Self::render_dynamic_subtree(renderer, local_ctx, env, content);
-                renderer
-                    .lifecycle
-                    .dynamic_nodes
-                    .get_mut(&identity)
-                    .expect("hydrolysis dynamic node missing after connect")
-                    .cached_subtree = Some(subtree);
             }
         }
         if renderer

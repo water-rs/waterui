@@ -6,6 +6,7 @@ use waterui::{Binding, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
+use waterui_core::dynamic::Dynamic;
 use waterui_form::picker::PickerStyle;
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
@@ -215,6 +216,41 @@ fn string_views_measure_through_body_recursion() {
     assert_eq!(borrowed.size, raw.size);
     assert_eq!(owned.size, raw.size);
     assert_eq!(cow.size, raw.size);
+}
+
+#[test]
+fn dynamic_initial_content_builds_real_subtree_before_second_rebuild() {
+    let env = Environment::new();
+    let (handler, dynamic) = Dynamic::new();
+    handler.set("Hydrolysis dynamic");
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.dispatch(dynamic, &env, bounds);
+    renderer.finish_rebuild_frame();
+
+    let node = renderer
+        .lifecycle
+        .dynamic_nodes
+        .values()
+        .next()
+        .expect("initial Dynamic render must register a lifecycle node");
+    let subtree = node
+        .cached_subtree
+        .as_ref()
+        .expect("initial Dynamic render must cache a subtree");
+
+    #[cfg(feature = "accessibility")]
+    assert!(
+        !subtree.accessibility.root_children.is_empty(),
+        "initial Dynamic render must cache the real content subtree, not an empty placeholder"
+    );
+    assert!(
+        !renderer.take_rebuild_request(),
+        "initial Dynamic content must not force a rebuild before a previous layout exists"
+    );
 }
 
 #[derive(Default)]
