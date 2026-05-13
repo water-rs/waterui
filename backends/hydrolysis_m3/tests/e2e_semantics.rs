@@ -2,9 +2,11 @@
 
 use core::time::Duration;
 
-use hydrolysis_m3::{assist_chip, filter_chip, input_chip, install, suggestion_chip};
+use hydrolysis_m3::{
+    assist_chip, extended_fab, fab, filter_chip, input_chip, install, suggestion_chip,
+};
 use waterui::ViewExt as _;
-use waterui::component::{hstack, vstack};
+use waterui::component::{hstack, text, vstack};
 use waterui::env::Environment;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
@@ -156,7 +158,10 @@ fn material_filter_chip_toggles_selection_and_exposes_button_semantics() {
         app.query().role(Role::BUTTON).label("Filter").tap(),
         "material filter chip should route tap actions through Hydrolysis gestures"
     );
-    assert!(selected.get(), "filter chip tap should toggle selected state");
+    assert!(
+        selected.get(),
+        "filter chip tap should toggle selected state"
+    );
     assert!(tapped.get(), "filter chip tap should invoke user action");
     assert!(
         app.wait_for(
@@ -185,7 +190,12 @@ fn material_filter_chip_selection_remeasures_parent_layout() {
         .spacing(8.0)
     });
 
-    let initial_filter_bounds = app.query().role(Role::BUTTON).label("Filter").single().bounds();
+    let initial_filter_bounds = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Filter")
+        .single()
+        .bounds();
     let initial_selected_bounds = app
         .query()
         .role(Role::BUTTON)
@@ -210,7 +220,12 @@ fn material_filter_chip_selection_remeasures_parent_layout() {
         "filter chip should expose selected state before checking new layout"
     );
 
-    let selected_filter_bounds = app.query().role(Role::BUTTON).label("Filter").single().bounds();
+    let selected_filter_bounds = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Filter")
+        .single()
+        .bounds();
     let shifted_selected_bounds = app
         .query()
         .role(Role::BUTTON)
@@ -271,6 +286,50 @@ fn material_input_chip_exposes_primary_and_remove_button_semantics() {
         remove_tapped.get(),
         "input chip remove action should update state"
     );
+}
+
+#[test]
+fn material_fab_exposes_button_semantics_and_tap_action() {
+    let tapped = Binding::bool(false);
+    let tapped_for_action = tapped.clone();
+    let mut app = mount_m3(move || {
+        fab("Create", text("+")).action({
+            let tapped_for_action = tapped_for_action.clone();
+            move || tapped_for_action.set(true)
+        })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Create")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Create").tap(),
+        "material FAB should route tap actions through Hydrolysis gestures"
+    );
+    assert!(tapped.get(), "FAB tap should update state");
+}
+
+#[test]
+fn material_extended_fab_exposes_button_semantics_and_tap_action() {
+    let tapped = Binding::bool(false);
+    let tapped_for_action = tapped.clone();
+    let mut app = mount_m3(move || {
+        extended_fab("Create").action({
+            let tapped_for_action = tapped_for_action.clone();
+            move || tapped_for_action.set(true)
+        })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Create")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Create").tap(),
+        "material extended FAB should route tap actions through Hydrolysis gestures"
+    );
+    assert!(tapped.get(), "extended FAB tap should update state");
 }
 
 #[test]
