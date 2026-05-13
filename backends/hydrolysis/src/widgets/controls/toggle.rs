@@ -76,21 +76,9 @@ pub(crate) fn render_toggle(
     let toggle = toggle.into_inner();
     let style = toggle.style;
     let metrics = theme.toggle_metrics(style);
-    let spacing = metrics.label_spacing;
-    let control_x0 = (ctx.bounds.x1 - metrics.width).max(ctx.bounds.x0);
-    let control_y0 = ctx.bounds.y0 + ((ctx.bounds.height() - metrics.height) / 2.0).max(0.0);
-    let control_bounds = vello::kurbo::Rect::new(
-        control_x0,
-        control_y0,
-        control_x0 + metrics.width,
-        control_y0 + metrics.height,
-    );
-    let label_bounds = vello::kurbo::Rect::new(
-        ctx.bounds.x0,
-        ctx.bounds.y0,
-        (control_x0 - spacing).max(ctx.bounds.x0),
-        ctx.bounds.y1,
-    );
+    let label_size = measure_label_intrinsic(&toggle.label, ctx.state_mut(), env);
+    let (control_bounds, label_bounds) =
+        toggle_control_and_label_bounds(ctx.bounds, style, metrics, label_size);
     if label_bounds.width() > 0.0 {
         ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(toggle.label), label_bounds);
     }
@@ -151,4 +139,94 @@ pub(crate) fn measure_toggle_intrinsic(
     };
     let height = f64::from(label_size.height).max(metrics.height);
     LayoutSize::new(width as f32, height as f32)
+}
+
+fn toggle_control_and_label_bounds(
+    bounds: vello::kurbo::Rect,
+    style: ToggleStyle,
+    metrics: waterui_backend_core::widget::ToggleMetrics,
+    label_size: LayoutSize,
+) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+    let control_y0 = bounds.y0 + ((bounds.height() - metrics.height) / 2.0).max(0.0);
+    let control_y1 = control_y0 + metrics.height;
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    match style {
+        ToggleStyle::Checkbox => {
+            let control_x0 = bounds.x0;
+            let control_x1 = control_x0 + metrics.width;
+            let label_x0 = if has_label {
+                (control_x1 + metrics.label_spacing).min(bounds.x1)
+            } else {
+                control_x1
+            };
+            let max_label_width = (bounds.x1 - label_x0).max(0.0);
+            let label_width = f64::from(label_size.width).min(max_label_width);
+            let label_height = f64::from(label_size.height).min(bounds.height());
+            let label_y0 = bounds.y0 + (bounds.height() - label_height) * 0.5;
+            (
+                vello::kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1),
+                vello::kurbo::Rect::new(
+                    label_x0,
+                    label_y0,
+                    label_x0 + label_width,
+                    label_y0 + label_height,
+                ),
+            )
+        }
+        ToggleStyle::Automatic | ToggleStyle::Switch => {
+            let control_x0 = (bounds.x1 - metrics.width).max(bounds.x0);
+            let label_x1 = if has_label {
+                (control_x0 - metrics.label_spacing).max(bounds.x0)
+            } else {
+                bounds.x0
+            };
+            (
+                vello::kurbo::Rect::new(
+                    control_x0,
+                    control_y0,
+                    control_x0 + metrics.width,
+                    control_y1,
+                ),
+                vello::kurbo::Rect::new(bounds.x0, bounds.y0, label_x1, bounds.y1),
+            )
+        }
+        _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toggle_control_and_label_bounds;
+    use vello::kurbo::Rect;
+    use waterui_backend_core::widget::ToggleMetrics;
+    use waterui_controls::toggle::ToggleStyle;
+    use waterui_core::layout::Size;
+
+    #[test]
+    fn checkbox_layout_places_control_before_label() {
+        let metrics = ToggleMetrics::new(18.0, 18.0, 8.0);
+        let (control, label) = toggle_control_and_label_bounds(
+            Rect::new(16.0, 20.0, 320.0, 60.0),
+            ToggleStyle::Checkbox,
+            metrics,
+            Size::new(64.0, 16.0),
+        );
+
+        assert_eq!(control, Rect::new(16.0, 31.0, 34.0, 49.0));
+        assert_eq!(label, Rect::new(42.0, 32.0, 106.0, 48.0));
+    }
+
+    #[test]
+    fn switch_layout_keeps_control_trailing() {
+        let metrics = ToggleMetrics::new(52.0, 32.0, 8.0);
+        let (control, label) = toggle_control_and_label_bounds(
+            Rect::new(16.0, 20.0, 320.0, 60.0),
+            ToggleStyle::Switch,
+            metrics,
+            Size::new(64.0, 16.0),
+        );
+
+        assert_eq!(control, Rect::new(268.0, 24.0, 320.0, 56.0));
+        assert_eq!(label, Rect::new(16.0, 20.0, 260.0, 60.0));
+    }
 }
