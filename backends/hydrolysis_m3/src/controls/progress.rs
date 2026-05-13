@@ -31,6 +31,7 @@ mod tests {
     fn progress_metrics_match_material_web_v0_192() {
         let linear = metrics(ProgressIndicatorStyle::Linear);
         assert_eq!(linear.bar_height, 4.0);
+        assert_eq!(linear.min_track_width, 80.0);
 
         let circular = metrics(ProgressIndicatorStyle::Circular);
         assert_eq!(circular.circular_diameter, 48.0);
