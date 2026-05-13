@@ -290,7 +290,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_toggle_switch(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _progress: f32) {}
+    fn draw_toggle_switch(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _progress: f32,
+        _state: WidgetInteractionState,
+    ) {
+    }
 
     fn draw_toggle_checkbox(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _progress: f32) {}
 

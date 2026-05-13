@@ -134,9 +134,9 @@ impl WidgetInteractionState {
     /// Material Design 3 hover state-layer opacity.
     pub const HOVER_STATE_LAYER_OPACITY: f32 = 0.08;
     /// Material Design 3 focus state-layer opacity.
-    pub const FOCUS_STATE_LAYER_OPACITY: f32 = 0.10;
+    pub const FOCUS_STATE_LAYER_OPACITY: f32 = 0.12;
     /// Material Design 3 pressed state-layer opacity.
-    pub const PRESSED_STATE_LAYER_OPACITY: f32 = 0.10;
+    pub const PRESSED_STATE_LAYER_OPACITY: f32 = 0.12;
 
     /// Return the dominant state-layer opacity for the current state.
     #[must_use]
@@ -446,7 +446,13 @@ pub trait WidgetTheme {
     /// Return metrics for a toggle style.
     fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
     /// Draw switch-style toggle chrome.
-    fn draw_toggle_switch(&self, draw: &mut dyn DrawContext, bounds: Rect, progress: f32);
+    fn draw_toggle_switch(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        progress: f32,
+        state: WidgetInteractionState,
+    );
     /// Draw switch-style toggle state layer.
     fn draw_toggle_switch_state_layer(
         &self,
