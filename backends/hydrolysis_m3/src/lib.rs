@@ -320,8 +320,14 @@ impl WidgetTheme for MaterialTheme {
         slider::draw_track(&self.colors, draw, track_rect, fill_rect);
     }
 
-    fn draw_slider_thumb(&self, draw: &mut dyn DrawContext, center: Point, radius: f64) {
-        slider::draw_thumb(&self.colors, draw, center, radius);
+    fn draw_slider_thumb(
+        &self,
+        draw: &mut dyn DrawContext,
+        center: Point,
+        radius: f64,
+        state: WidgetInteractionState,
+    ) {
+        slider::draw_thumb(&self.colors, draw, center, radius, state);
     }
 
     fn draw_slider_thumb_state_layer(
