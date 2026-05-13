@@ -291,6 +291,7 @@ pub struct HydrolysisRenderer {
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
+    frame_clock: Rc<Cell<Instant>>,
     scroll_controller: ScrollController,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -616,6 +617,7 @@ impl HydrolysisRenderer {
 
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
+        let frame_instant = Instant::now();
         Self {
             dispatcher,
             state: HydroState::default(),
@@ -636,7 +638,8 @@ impl HydrolysisRenderer {
             rebuild_in_progress: Rc::new(Cell::new(false)),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
-            frame_instant: Instant::now(),
+            frame_instant,
+            frame_clock: Rc::new(Cell::new(frame_instant)),
             scroll_controller: ScrollController::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
@@ -981,6 +984,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn set_frame_instant(&mut self, at: Instant) {
         self.frame_instant = at;
+        self.frame_clock.set(at);
     }
 
     pub(crate) fn frame_instant(&self) -> Instant {
@@ -992,11 +996,12 @@ impl HydrolysisRenderer {
         S: Signal<Output = f32> + Clone + 'static,
     {
         let now = self.frame_instant;
-        let handle = self.animation_controller.bind_scalar(signal.get());
+        let handle = self.animation_controller.bind_scalar(signal.get(), now);
         let watcher_handle = handle.clone();
+        let frame_clock = Rc::clone(&self.frame_clock);
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
         let guard = signal.watch(move |update| {
-            watcher_handle.apply_update_from_context(update, Instant::now());
+            watcher_handle.apply_update_from_context(update, frame_clock.get());
             rebuild_requested.set(true);
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
@@ -1014,8 +1019,9 @@ impl HydrolysisRenderer {
         let now = self.frame_instant;
         let handle = self
             .animation_controller
-            .bind_scalar(if signal.get() { 1.0 } else { 0.0 });
+            .bind_scalar(if signal.get() { 1.0 } else { 0.0 }, now);
         let watcher_handle = handle.clone();
+        let frame_clock = Rc::clone(&self.frame_clock);
         let rebuild_requested = Rc::clone(&self.rebuild_requested);
         let guard = signal.watch(move |update| {
             let target = if *update.value() { 1.0 } else { 0.0 };
@@ -1023,7 +1029,7 @@ impl HydrolysisRenderer {
                 .metadata()
                 .try_get::<Animation>()
                 .unwrap_or_else(|| default_animation.clone());
-            watcher_handle.apply_target(target, Some(animation), Instant::now());
+            watcher_handle.apply_target(target, Some(animation), frame_clock.get());
             rebuild_requested.set(true);
         });
         self.lifecycle.current_frame_retain.push(Retain::new(guard));
