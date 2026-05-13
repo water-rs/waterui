@@ -6,7 +6,6 @@ use crate::renderer::{
     measure_secure_field_intrinsic, measure_text_field_intrinsic, measure_view_intrinsic,
     normalize_view_for_render, transformed_rect,
 };
-use crate::time::Instant;
 use core::num::NonZeroUsize;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
@@ -293,7 +292,8 @@ pub(crate) fn render_text_field(
             Str::new()
         };
         let caret_opacity = if is_focused {
-            ctx.renderer_mut().text_caret_opacity(Instant::now())
+            let now = ctx.renderer_mut().frame_instant();
+            ctx.renderer_mut().text_caret_opacity(now)
         } else {
             0.0
         };
@@ -536,7 +536,8 @@ pub(crate) fn render_secure_field(
         };
         let count = plain_value.chars().count() + preedit_count;
         let caret_opacity = if is_focused {
-            ctx.renderer_mut().text_caret_opacity(Instant::now())
+            let now = ctx.renderer_mut().frame_instant();
+            ctx.renderer_mut().text_caret_opacity(now)
         } else {
             0.0
         };
