@@ -2154,6 +2154,27 @@ impl HydrolysisRenderer {
             ..
         } = value;
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        #[cfg(feature = "accessibility")]
+        if matches!(gesture, Gesture::Tap(_)) && env.get::<AccessibilityRole>().is_some() {
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
+            );
+            let default_label = renderer.accessibility_label_from_view(&content, env);
+            if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+                node.set_label(label);
+            }
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            let activation_point = accessibility_activation_point(bounds);
+            let _ = renderer.register_accessibility_node(
+                node,
+                bounds,
+                env,
+                Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    point: activation_point,
+                }),
+            );
+        }
         let gesture_group_identity = gesture_group_identity(&content);
         let group_id = renderer.gesture_group_id_for_identity(gesture_group_identity);
         let captured_env = env.clone();
@@ -2163,6 +2184,16 @@ impl HydrolysisRenderer {
         });
         renderer.register_gesture_target(bounds, group_id, gesture, layered_action);
 
+        #[cfg(feature = "accessibility")]
+        if env
+            .get::<AccessibilityChildren>()
+            .is_some_and(AccessibilityChildren::excludes_descendants)
+        {
+            renderer.push_accessibility_suppression();
+            Self::dispatch_any(renderer, ctx, env, content);
+            renderer.pop_accessibility_suppression();
+            return;
+        }
         Self::dispatch_any(renderer, ctx, env, content);
     }
 
