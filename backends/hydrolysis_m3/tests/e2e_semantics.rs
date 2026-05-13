@@ -1,6 +1,6 @@
 //! End-to-end accessibility coverage for the Material Design 3 theme package.
 
-use hydrolysis_m3::{assist_chip, install};
+use hydrolysis_m3::{assist_chip, install, suggestion_chip};
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::env::Environment;
@@ -104,6 +104,32 @@ fn material_assist_chip_exposes_button_semantics_and_tap_action() {
         "material assist chip should route tap actions through Hydrolysis gestures"
     );
     assert!(tapped_for_view.get(), "assist chip tap should update state");
+}
+
+#[test]
+fn material_suggestion_chip_exposes_button_semantics_and_tap_action() {
+    let tapped = Binding::bool(false);
+    let tapped_for_view = tapped.clone();
+    let tapped_for_action = tapped.clone();
+    let mut app = mount_m3(move || {
+        suggestion_chip("Suggestion").action({
+            let tapped_for_action = tapped_for_action.clone();
+            move || tapped_for_action.set(true)
+        })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Suggestion")
+        .assert_exists();
+    assert!(
+        app.query().role(Role::BUTTON).label("Suggestion").tap(),
+        "material suggestion chip should route tap actions through Hydrolysis gestures"
+    );
+    assert!(
+        tapped_for_view.get(),
+        "suggestion chip tap should update state"
+    );
 }
 
 #[test]
