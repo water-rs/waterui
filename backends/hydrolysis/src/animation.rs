@@ -53,7 +53,7 @@ impl AnimationController {
         self.repeating_slots.truncate(self.repeating_cursor);
     }
 
-    pub fn bind_scalar(&mut self, observed_value: f32) -> AnimatedScalarHandle {
+    pub fn bind_scalar(&mut self, observed_value: f32, now: Instant) -> AnimatedScalarHandle {
         let index = self.cursor;
         self.cursor = self
             .cursor
@@ -62,7 +62,7 @@ impl AnimationController {
 
         if index == self.slots.len() {
             self.slots.push(AnimatedScalarSlot {
-                state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value))),
+                state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
             });
         }
 
@@ -85,7 +85,7 @@ impl AnimationController {
 
         if index == self.slots.len() {
             self.slots.push(AnimatedScalarSlot {
-                state: Rc::new(RefCell::new(AnimatedScalarState::new(target))),
+                state: Rc::new(RefCell::new(AnimatedScalarState::new(target, now))),
             });
         }
 
@@ -154,12 +154,12 @@ impl AnimatedScalarHandle {
 }
 
 impl AnimatedScalarState {
-    fn new(initial: f32) -> Self {
+    fn new(initial: f32, now: Instant) -> Self {
         Self {
             generation: 1,
             track: AnimationTrack::new(initial),
             active_target: None,
-            last_tick: Instant::now(),
+            last_tick: now,
         }
     }
 
@@ -245,11 +245,11 @@ mod tests {
     #[test]
     fn scalar_animation_advances_and_stops() {
         let mut controller = AnimationController::default();
+        let start = Instant::now();
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(0.0);
+        let handle = controller.bind_scalar(0.0, start);
         controller.finish_rebuild_frame();
 
-        let start = Instant::now();
         handle.apply_target(
             1.0,
             Some(Animation::ease_in_out(Duration::from_millis(120))),
@@ -268,16 +268,17 @@ mod tests {
     #[test]
     fn stale_generation_update_is_ignored() {
         let mut controller = AnimationController::default();
+        let start = Instant::now();
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar(0.0);
+        let stale = controller.bind_scalar(0.0, start);
         controller.finish_rebuild_frame();
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar(0.0);
+        let current = controller.bind_scalar(0.0, start);
         controller.finish_rebuild_frame();
 
-        stale.apply_target(1.0, None, Instant::now());
-        assert!((current.sample(Instant::now()) - 0.0).abs() < 0.0001);
+        stale.apply_target(1.0, None, start);
+        assert!((current.sample(start) - 0.0).abs() < 0.0001);
     }
 
     #[test]
