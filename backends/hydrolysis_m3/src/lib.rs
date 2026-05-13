@@ -23,7 +23,8 @@ use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     Brush, ButtonMetrics, DrawContext, InputFieldMetrics, InteractionMotion, ListMetrics,
     NavigationMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion,
-    SliderMetrics, StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics,
+    WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -485,6 +486,14 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         list::draw_separator(&self.colors, draw, bounds);
+    }
+
+    fn table_metrics(&self) -> TableMetrics {
+        table::metrics()
+    }
+
+    fn draw_table_background(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        table::draw_background(&self.colors, draw, bounds);
     }
 
     fn draw_table_header_background(&self, draw: &mut dyn DrawContext, bounds: Rect) {
