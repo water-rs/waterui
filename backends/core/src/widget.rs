@@ -576,6 +576,49 @@ impl DividerMetrics {
     }
 }
 
+/// Layout metrics for badges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BadgeMetrics {
+    /// Diameter of a small dot badge.
+    pub small_size: f64,
+    /// Height and minimum width of a large labeled badge.
+    pub large_size: f64,
+    /// Horizontal padding inside a large labeled badge.
+    pub large_horizontal_padding: f64,
+    /// Horizontal offset from the content center for a small badge.
+    pub small_offset_x: f64,
+    /// Vertical offset from the content top for a small badge.
+    pub small_offset_y: f64,
+    /// Horizontal offset from the content center for a large badge.
+    pub large_offset_x: f64,
+    /// Vertical offset from the content top for a large badge.
+    pub large_offset_y: f64,
+}
+
+impl BadgeMetrics {
+    /// Create badge layout metrics.
+    #[must_use]
+    pub const fn new(
+        small_size: f64,
+        large_size: f64,
+        large_horizontal_padding: f64,
+        small_offset_x: f64,
+        small_offset_y: f64,
+        large_offset_x: f64,
+        large_offset_y: f64,
+    ) -> Self {
+        Self {
+            small_size,
+            large_size,
+            large_horizontal_padding,
+            small_offset_x,
+            small_offset_y,
+            large_offset_x,
+            large_offset_y,
+        }
+    }
+}
+
 /// Layout metrics for navigation bars.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavigationMetrics {
@@ -881,6 +924,17 @@ pub trait WidgetTheme {
     fn divider_metrics(&self) -> DividerMetrics;
     /// Draw a divider.
     fn draw_divider(&self, draw: &mut dyn DrawContext, bounds: Rect);
+
+    /// Return badge layout metrics.
+    fn badge_metrics(&self) -> BadgeMetrics;
+    /// Return badge label foreground color.
+    fn badge_label_color(&self) -> Color;
+    /// Return badge label font.
+    fn badge_label_font(&self) -> Font;
+    /// Draw a small dot badge.
+    fn draw_badge_small(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    /// Draw a large labeled badge.
+    fn draw_badge_large(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
     /// Return list layout metrics.
     fn list_metrics(&self) -> ListMetrics;

@@ -1,3 +1,4 @@
+pub(crate) mod badge;
 pub(crate) mod container;
 pub(crate) mod divider;
 pub(crate) mod dynamic;

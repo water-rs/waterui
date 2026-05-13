@@ -12,7 +12,7 @@ use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
-    ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
+    BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion, ListMetrics,
     NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
     ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion,
     TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
@@ -550,6 +550,29 @@ impl WidgetTheme for MinimalTestTheme {
     }
 
     fn draw_divider(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+
+    fn badge_metrics(&self) -> BadgeMetrics {
+        BadgeMetrics {
+            small_size: 6.0,
+            large_size: 16.0,
+            large_horizontal_padding: 4.0,
+            small_offset_x: 6.0,
+            small_offset_y: 4.0,
+            large_offset_x: 2.0,
+            large_offset_y: 1.0,
+        }
+    }
+
+    fn badge_label_color(&self) -> Color {
+        Color::srgb(255, 255, 255)
+    }
+
+    fn badge_label_font(&self) -> waterui_text::font::Font {
+        waterui_text::font::Font::default()
+    }
+
+    fn draw_badge_small(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_badge_large(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics {

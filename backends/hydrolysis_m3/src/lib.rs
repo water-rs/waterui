@@ -12,7 +12,7 @@ mod navigation;
 mod theme;
 
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
-pub(crate) use layout::{divider, list, menu, scroll, table};
+pub(crate) use layout::{badge, divider, list, menu, scroll, table};
 pub(crate) use navigation::{navigation as navigation_chrome, tabs};
 pub(crate) use theme::dimensions;
 
@@ -21,10 +21,11 @@ use waterui::Plugin as _;
 use waterui::text::font::Font;
 use waterui::theme::{ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
-    Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics, InteractionMotion,
-    ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
-    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
+    InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
+    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics,
+    TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+    WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
@@ -496,6 +497,26 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_divider(&self, draw: &mut dyn DrawContext, bounds: Rect) {
         divider::draw(&self.colors, draw, bounds);
+    }
+
+    fn badge_metrics(&self) -> BadgeMetrics {
+        badge::metrics()
+    }
+
+    fn badge_label_color(&self) -> Color {
+        badge::label_color(&self.colors)
+    }
+
+    fn badge_label_font(&self) -> Font {
+        theme::typography::label_small()
+    }
+
+    fn draw_badge_small(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        badge::draw_small(&self.colors, draw, bounds);
+    }
+
+    fn draw_badge_large(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        badge::draw_large(&self.colors, draw, bounds);
     }
 
     fn list_metrics(&self) -> ListMetrics {

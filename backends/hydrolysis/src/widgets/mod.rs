@@ -10,7 +10,7 @@ pub(crate) mod visual;
 pub(crate) use controls::{
     button, date_picker, picker, progress, slider, stepper, text_field, toggle,
 };
-pub(crate) use layout::{container, divider, dynamic, list, scroll, spacer, table};
+pub(crate) use layout::{badge, container, divider, dynamic, list, scroll, spacer, table};
 pub(crate) use media::video;
 pub(crate) use nav::{navigation, tabs};
 pub(crate) use platform::webview;

@@ -101,10 +101,7 @@ pub trait ViewExt: View + Sized {
     /// hdr_shapes().color_space(ColorSpace::Hdr);
     /// avatar_thumbnail().color_space(ColorSpace::Sdr);
     /// ```
-    fn color_space(
-        self,
-        space: crate::metadata::secure::ColorSpace,
-    ) -> AnyView {
+    fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
         use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
         match space {
             ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
@@ -124,7 +121,6 @@ pub trait ViewExt: View + Sized {
     fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
         Metadata::new(self, Opacity::new(amount))
     }
-
 
     /// Sets the visibility of this view.
     ///
@@ -398,7 +394,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge {
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge
+    where
+        Self: Clone,
+    {
         Badge::new(value, self)
     }
 
