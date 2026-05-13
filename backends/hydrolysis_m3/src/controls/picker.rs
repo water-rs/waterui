@@ -1,8 +1,9 @@
 use crate::dimensions::{
     PICKER_HORIZONTAL_INSET, PICKER_INDICATOR_SPACE, PICKER_MENU_POPUP_CORNER_RADIUS,
-    PICKER_MENU_POPUP_TOP_SPACING, PICKER_MIN_HEIGHT, PICKER_MIN_WIDTH,
-    PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_LABEL_SPACING,
-    PICKER_RADIO_OUTER_RING_WIDTH, PICKER_RADIO_ROW_SPACING, PICKER_VERTICAL_INSET,
+    PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_MENU_POPUP_TOP_SPACING, PICKER_MIN_HEIGHT,
+    PICKER_MIN_WIDTH, PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS,
+    PICKER_RADIO_LABEL_SPACING, PICKER_RADIO_OUTER_RING_WIDTH, PICKER_RADIO_ROW_SPACING,
+    PICKER_VERTICAL_INSET,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -27,6 +28,7 @@ const fn material_metrics() -> PickerMetrics {
         radio_label_spacing: PICKER_RADIO_LABEL_SPACING,
         radio_row_spacing: PICKER_RADIO_ROW_SPACING,
         popup_top_spacing: PICKER_MENU_POPUP_TOP_SPACING,
+        popup_row_height: PICKER_MENU_POPUP_ROW_HEIGHT,
         popup_corner_radius: PICKER_MENU_POPUP_CORNER_RADIUS,
     }
 }
@@ -92,7 +94,7 @@ pub fn draw_popup_row_background(
         row_rect.x1 - 2.0,
         row_rect.y1 - 1.0,
     );
-    draw.fill_rect(inset, &Brush::from(colors.primary_container.peniko()));
+    draw.fill_rect(inset, &Brush::from(colors.secondary_container.peniko()));
 }
 
 pub fn draw_popup_row_state_layer(
@@ -113,7 +115,7 @@ pub fn draw_popup_row_state_layer(
         inset,
         0.0.into(),
         if selected {
-            colors.on_primary_container.peniko()
+            colors.on_secondary_container.peniko()
         } else {
             colors.on_surface.peniko()
         },
@@ -162,7 +164,8 @@ mod tests {
 
     use super::{MaterialColorScheme, draw_radio_indicator, material_metrics};
     use crate::dimensions::{
-        PICKER_RADIO_INDICATOR_SIZE, PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_OUTER_RING_WIDTH,
+        PICKER_MENU_POPUP_CORNER_RADIUS, PICKER_MENU_POPUP_ROW_HEIGHT, PICKER_RADIO_INDICATOR_SIZE,
+        PICKER_RADIO_INNER_DOT_RADIUS, PICKER_RADIO_OUTER_RING_WIDTH,
     };
     use crate::{Brush, DrawContext};
 
@@ -219,6 +222,10 @@ mod tests {
         assert_eq!(PICKER_RADIO_INDICATOR_SIZE, 20.0);
         assert_eq!(PICKER_RADIO_OUTER_RING_WIDTH, 2.0);
         assert_eq!(PICKER_RADIO_INNER_DOT_RADIUS, 5.0);
+        assert_eq!(metrics.popup_row_height, PICKER_MENU_POPUP_ROW_HEIGHT);
+        assert_eq!(metrics.popup_corner_radius, PICKER_MENU_POPUP_CORNER_RADIUS);
+        assert_eq!(PICKER_MENU_POPUP_ROW_HEIGHT, 48.0);
+        assert_eq!(PICKER_MENU_POPUP_CORNER_RADIUS, 4.0);
     }
 
     #[test]
