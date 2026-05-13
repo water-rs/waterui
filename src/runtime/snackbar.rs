@@ -429,4 +429,3 @@ impl Default for SnackbarManager {
         Self::new().0
     }
 }
-

@@ -10,8 +10,8 @@
 
 use waterui_core::Str;
 
-use super::content::{ListContent, ListItemSink};
 use super::ListSection;
+use super::content::{ListContent, ListItemSink};
 
 /// Groups a sub-tree of [`ListContent`] under an optional header and footer.
 ///
