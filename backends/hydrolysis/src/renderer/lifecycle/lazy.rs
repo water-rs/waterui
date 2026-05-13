@@ -174,8 +174,12 @@ impl LazyListSlot {
 }
 
 impl LazyTableSlot {
-    pub(crate) fn prepare_columns(&mut self, len: usize) {
-        self.column_widths.resize(len, TABLE_MIN_COLUMN_WIDTH);
+    pub(crate) fn prepare_columns(
+        &mut self,
+        len: usize,
+        metrics: waterui_backend_core::widget::TableMetrics,
+    ) {
+        self.column_widths.resize(len, metrics.min_column_width);
     }
 }
 
@@ -284,22 +288,26 @@ pub(crate) fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
     max_rows: usize,
+    metrics: waterui_backend_core::widget::TableMetrics,
 ) -> VisibleIndexWindow {
-    let data_start = (offset_y - TABLE_HEADER_HEIGHT).max(0.0);
-    let data_end = (offset_y + viewport_height - TABLE_HEADER_HEIGHT).max(0.0);
-    let start = ((data_start / TABLE_ROW_HEIGHT).floor() as usize).min(max_rows);
-    let end = ((data_end / TABLE_ROW_HEIGHT).ceil() as usize).min(max_rows);
+    let data_start = (offset_y - metrics.header_height).max(0.0);
+    let data_end = (offset_y + viewport_height - metrics.header_height).max(0.0);
+    let start = ((data_start / metrics.row_height).floor() as usize).min(max_rows);
+    let end = ((data_end / metrics.row_height).ceil() as usize).min(max_rows);
     VisibleIndexWindow {
         start,
         end: end.max(start),
-        leading_offset: start as f64 * TABLE_ROW_HEIGHT,
+        leading_offset: start as f64 * metrics.row_height,
     }
 }
 
-pub(crate) fn table_metrics_from_slot(slot: &LazyTableSlot) -> TableMetrics {
-    TableMetrics {
+pub(crate) fn table_metrics_from_slot(
+    slot: &LazyTableSlot,
+    metrics: waterui_backend_core::widget::TableMetrics,
+) -> MeasuredTableMetrics {
+    MeasuredTableMetrics {
         column_widths: slot.column_widths.clone(),
         table_width: slot.column_widths.iter().sum(),
-        table_height: TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * slot.max_rows as f64,
+        table_height: metrics.header_height + metrics.row_height * slot.max_rows as f64,
     }
 }

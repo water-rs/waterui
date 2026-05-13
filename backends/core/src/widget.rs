@@ -513,6 +513,23 @@ pub struct NavigationMetrics {
     pub back_button_top_inset: f64,
 }
 
+/// Layout metrics for backend-rendered tables.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TableMetrics {
+    /// Minimum table column width.
+    pub min_column_width: f64,
+    /// Horizontal padding added to measured cell content.
+    pub cell_horizontal_padding: f64,
+    /// Inset used when placing header and row cell content.
+    pub cell_vertical_inset: f64,
+    /// Header row height.
+    pub header_height: f64,
+    /// Data row height.
+    pub row_height: f64,
+    /// Table outline width.
+    pub outline_width: f64,
+}
+
 /// Theme contract for backend-rendered widgets.
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
@@ -769,6 +786,10 @@ pub trait WidgetTheme {
     /// Draw a list separator.
     fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
+    /// Return table layout metrics.
+    fn table_metrics(&self) -> TableMetrics;
+    /// Draw a table background.
+    fn draw_table_background(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw a table header background.
     fn draw_table_header_background(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw a table cell border.

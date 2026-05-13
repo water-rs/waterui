@@ -2,7 +2,7 @@ use super::*;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 
-pub(crate) struct TableMetrics {
+pub(crate) struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
     pub(crate) table_width: f64,
     pub(crate) table_height: f64,
@@ -13,12 +13,13 @@ pub(crate) fn table_header_cell_rect(
     origin_y: f64,
     x_offset: f64,
     width: f64,
+    metrics: waterui_backend_core::widget::TableMetrics,
 ) -> vello::kurbo::Rect {
     vello::kurbo::Rect::new(
         origin_x + x_offset,
         origin_y,
         origin_x + x_offset + width,
-        origin_y + TABLE_HEADER_HEIGHT,
+        origin_y + metrics.header_height,
     )
 }
 
@@ -28,13 +29,14 @@ pub(crate) fn table_data_cell_rect(
     x_offset: f64,
     width: f64,
     row_index: usize,
+    metrics: waterui_backend_core::widget::TableMetrics,
 ) -> vello::kurbo::Rect {
-    let y0 = origin_y + TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * row_index as f64;
+    let y0 = origin_y + metrics.header_height + metrics.row_height * row_index as f64;
     vello::kurbo::Rect::new(
         origin_x + x_offset,
         y0,
         origin_x + x_offset + width,
-        y0 + TABLE_ROW_HEIGHT,
+        y0 + metrics.row_height,
     )
 }
 
@@ -897,14 +899,15 @@ pub(crate) fn measure_table_metrics(
     columns: &[TableColumn],
     state: &mut HydroState,
     env: &Environment,
-) -> TableMetrics {
+) -> MeasuredTableMetrics {
+    let metrics = widget_theme(env).table_metrics();
     let mut column_widths = Vec::with_capacity(columns.len());
     let mut max_rows = 0usize;
     for column in columns {
-        let mut width = TABLE_MIN_COLUMN_WIDTH;
+        let mut width = metrics.min_column_width;
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
         let label_size = measure_view_intrinsic(&label_view, state, env);
-        width = width.max(f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING);
+        width = width.max(f64::from(label_size.width) + metrics.cell_horizontal_padding);
 
         let rows = column.rows();
         max_rows = max_rows.max(rows.len().get());
@@ -912,8 +915,8 @@ pub(crate) fn measure_table_metrics(
     }
 
     let table_width: f64 = column_widths.iter().sum();
-    let table_height = TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * max_rows as f64;
-    TableMetrics {
+    let table_height = metrics.header_height + metrics.row_height * max_rows as f64;
+    MeasuredTableMetrics {
         column_widths,
         table_width,
         table_height,
@@ -926,13 +929,14 @@ pub(crate) fn refresh_table_slot_baseline(
     state: &mut HydroState,
     env: &Environment,
 ) {
-    slot.prepare_columns(columns.len());
+    let metrics = widget_theme(env).table_metrics();
+    slot.prepare_columns(columns.len(), metrics);
     slot.max_rows = 0;
     for (index, column) in columns.iter().enumerate() {
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
         let label_size = measure_view_intrinsic(&label_view, state, env);
-        let width = (f64::from(label_size.width) + TABLE_CELL_HORIZONTAL_PADDING)
-            .max(TABLE_MIN_COLUMN_WIDTH);
+        let width = (f64::from(label_size.width) + metrics.cell_horizontal_padding)
+            .max(metrics.min_column_width);
         if slot.column_widths[index] < width {
             slot.column_widths[index] = width;
         }
@@ -948,6 +952,7 @@ pub(crate) fn update_table_slot_visible_cell_widths(
     state: &mut HydroState,
     env: &Environment,
 ) {
+    let metrics = widget_theme(env).table_metrics();
     for (column_index, column) in columns
         .iter()
         .enumerate()
@@ -959,8 +964,8 @@ pub(crate) fn update_table_slot_visible_cell_widths(
             if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = normalize_layout_view(AnyView::new(cell), env);
                 let size = measure_view_intrinsic(&cell_view, state, env);
-                let width = (f64::from(size.width) + TABLE_CELL_HORIZONTAL_PADDING)
-                    .max(TABLE_MIN_COLUMN_WIDTH);
+                let width = (f64::from(size.width) + metrics.cell_horizontal_padding)
+                    .max(metrics.min_column_width);
                 if slot.column_widths[column_index] < width {
                     slot.column_widths[column_index] = width;
                 }

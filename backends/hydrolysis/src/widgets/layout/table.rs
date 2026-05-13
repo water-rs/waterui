@@ -4,8 +4,8 @@ use crate::renderer::lazy::{
     resolve_table_visible_rows, resolve_visible_column_window, table_metrics_from_slot,
 };
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, TABLE_HEADER_HEIGHT,
-    WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
     table_header_cell_rect, transformed_rect, update_table_slot_visible_cell_widths,
 };
 #[cfg(feature = "accessibility")]
@@ -51,9 +51,10 @@ impl HydroNativeView for Native<TableConfig> {
             refresh_table_slot_baseline(&columns, slot, state, env);
         }
         let viewport = ctx.bounds;
+        let layout_metrics = widget_theme(env).table_metrics();
         let table_metrics = {
             let slot = &renderer.lazy.lazy_table_controller.slots[slot_index];
-            table_metrics_from_slot(slot)
+            table_metrics_from_slot(slot, layout_metrics)
         };
         let handle = renderer.bind_scroll_handle(
             ScrollAxis::All,
@@ -71,6 +72,7 @@ impl HydroNativeView for Native<TableConfig> {
                     scroll_metrics.offset_y,
                     viewport.height(),
                     slot.max_rows,
+                    layout_metrics,
                 )
             };
             let mut column_window = {
@@ -129,7 +131,8 @@ impl HydroNativeView for Native<TableConfig> {
             {
                 let width = renderer.lazy.lazy_table_controller.slots[slot_index].column_widths
                     [column_index];
-                let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
+                let header_cell =
+                    table_header_cell_rect(origin_x, origin_y, x_offset, width, layout_metrics);
                 let header_view = AnyView::new(column.label());
                 let mut header_node = AccessibilityNode::new(
                     renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ColumnHeader),
@@ -150,8 +153,14 @@ impl HydroNativeView for Native<TableConfig> {
                 }
                 let rows = column.rows();
                 for row_index in row_window.start..row_window.end {
-                    let cell_rect =
-                        table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
+                    let cell_rect = table_data_cell_rect(
+                        origin_x,
+                        origin_y,
+                        x_offset,
+                        width,
+                        row_index,
+                        layout_metrics,
+                    );
                     if let Some(cell) = rows.get_view(row_index) {
                         let cell_view = AnyView::new(cell);
                         let mut cell_node = AccessibilityNode::new(
@@ -205,13 +214,19 @@ pub(crate) fn render_table(
         .take_pending_scroll_handle("render_table");
     let scroll_metrics = handle.metrics();
     let slot_index = ctx.renderer_mut().lazy.lazy_table_controller.bind();
+    let layout_metrics = widget_theme(env).table_metrics();
     {
         let (slot, state) = ctx.renderer_mut().table_slot_and_state_mut(slot_index);
         refresh_table_slot_baseline(&columns, slot, state, env);
     }
     let row_window = {
         let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
-        resolve_table_visible_rows(scroll_metrics.offset_y, viewport.height(), slot.max_rows)
+        resolve_table_visible_rows(
+            scroll_metrics.offset_y,
+            viewport.height(),
+            slot.max_rows,
+            layout_metrics,
+        )
     };
     let mut column_window = {
         let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
@@ -242,7 +257,7 @@ pub(crate) fn render_table(
     }
     let table_metrics = {
         let slot = &ctx.renderer_mut().lazy.lazy_table_controller.slots[slot_index];
-        table_metrics_from_slot(slot)
+        table_metrics_from_slot(slot, layout_metrics)
     };
 
     ctx.push_layer_rect(1.0, viewport);
@@ -250,14 +265,21 @@ pub(crate) fn render_table(
     let origin_x = viewport.x0 - scroll_metrics.offset_x;
     let origin_y = viewport.y0 - scroll_metrics.offset_y;
     {
+        let table_rect = vello::kurbo::Rect::new(
+            origin_x,
+            origin_y,
+            origin_x + table_metrics.table_width,
+            origin_y + table_metrics.table_height,
+        );
         let header_rect = vello::kurbo::Rect::new(
             origin_x,
             origin_y,
             origin_x + table_metrics.table_width,
-            origin_y + TABLE_HEADER_HEIGHT,
+            origin_y + layout_metrics.header_height,
         );
         let theme = widget_theme(env);
         let mut draw = ctx.draw_context();
+        theme.draw_table_background(&mut draw, table_rect);
         theme.draw_table_header_background(&mut draw, header_rect);
     }
 
@@ -269,23 +291,40 @@ pub(crate) fn render_table(
         .skip(column_window.start)
     {
         let width = table_metrics.column_widths[column_index];
-        let header_cell = table_header_cell_rect(origin_x, origin_y, x_offset, width);
+        let header_cell =
+            table_header_cell_rect(origin_x, origin_y, x_offset, width, layout_metrics);
+        let cell_horizontal_inset = layout_metrics.cell_horizontal_padding * 0.5;
         let header_view = AnyView::new(column.label());
         ctx.dispatch_in_rect_without_accessibility(
             env,
             header_view,
-            inset_rect(header_cell, 8.0, 6.0),
+            inset_rect(
+                header_cell,
+                cell_horizontal_inset,
+                layout_metrics.cell_vertical_inset,
+            ),
         );
 
         let rows = column.rows();
         for row_index in row_window.start..row_window.end {
-            let cell_rect = table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index);
+            let cell_rect = table_data_cell_rect(
+                origin_x,
+                origin_y,
+                x_offset,
+                width,
+                row_index,
+                layout_metrics,
+            );
             if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = AnyView::new(cell);
                 ctx.dispatch_in_rect_without_accessibility(
                     env,
                     cell_view,
-                    inset_rect(cell_rect, 8.0, 6.0),
+                    inset_rect(
+                        cell_rect,
+                        cell_horizontal_inset,
+                        layout_metrics.cell_vertical_inset,
+                    ),
                 );
             }
             let theme = widget_theme(env);

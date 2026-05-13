@@ -476,11 +476,6 @@ fn dimensions_for_native<V: HydroNativeView>(
         .map(|native| V::dimensions(state, native, env, proposal))
 }
 
-pub(crate) const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
-pub(crate) const TABLE_CELL_HORIZONTAL_PADDING: f64 = 18.0;
-pub(crate) const TABLE_HEADER_HEIGHT: f64 = 32.0;
-pub(crate) const TABLE_ROW_HEIGHT: f64 = 30.0;
-
 const NAVIGATION_TRANSITION_DURATION: Duration = Duration::from_millis(250);
 const NAVIGATION_PUSHPOP_PARALLAX_FACTOR: f64 = 0.35;
 

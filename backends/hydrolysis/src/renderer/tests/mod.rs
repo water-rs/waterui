@@ -14,7 +14,7 @@ use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
     ButtonMetrics, InputFieldMetrics, InteractionMotion, ListMetrics, NavigationMetrics,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, SliderMetrics,
-    StepperMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState,
+    StepperMetrics, TableMetrics, TabsMetrics, ToggleMetrics, WidgetInteractionState,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -511,6 +511,19 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_list_move_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_list_delete_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_list_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+
+    fn table_metrics(&self) -> TableMetrics {
+        TableMetrics {
+            min_column_width: 72.0,
+            cell_horizontal_padding: 32.0,
+            cell_vertical_inset: 16.0,
+            header_height: 56.0,
+            row_height: 52.0,
+            outline_width: 1.0,
+        }
+    }
+
+    fn draw_table_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_table_header_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_table_cell_border(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_table_column_separator(&self, _draw: &mut dyn DrawContext, _from: Point, _to: Point) {}
