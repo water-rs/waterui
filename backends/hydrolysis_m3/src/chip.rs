@@ -9,7 +9,7 @@ use waterui::layout::padding::EdgeInsets;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt as _};
 use waterui::widget::condition::when;
-use waterui::{Binding, Environment, Signal, Str, View, ViewExt as _};
+use waterui::{Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, SharedAction, boxed_action};
 
@@ -17,6 +17,7 @@ use crate::color::{
     OnSecondaryContainer, OnSurface, OnSurfaceVariant, Outline, SecondaryContainer, Surface,
 };
 use crate::icons::CheckmarkIcon;
+use crate::semantics::label_plain_text;
 use crate::theme::typography;
 
 const ASSIST_CHIP_CONTAINER_HEIGHT: f32 = 32.0;
@@ -70,13 +71,7 @@ impl<LabelColor> OutlinedChip<fn(&Environment), LabelColor> {
     #[must_use]
     pub fn new(label: impl IntoLabel) -> Self {
         let label = label.into_label();
-        let accessibility_label = label
-            .semantic_text()
-            .clone()
-            .resolve(&Environment::new())
-            .content
-            .get()
-            .to_plain();
+        let accessibility_label = label_plain_text(&label);
         Self {
             label,
             accessibility_label,
@@ -182,13 +177,7 @@ impl InputChip<fn(&Environment), fn(&Environment)> {
     #[must_use]
     pub fn new(label: impl IntoLabel) -> Self {
         let label = label.into_label();
-        let accessibility_label = label
-            .semantic_text()
-            .clone()
-            .resolve(&Environment::new())
-            .content
-            .get()
-            .to_plain();
+        let accessibility_label = label_plain_text(&label);
         let remove_accessibility_label = Str::from(format!("Remove {accessibility_label}"));
         Self {
             label,
@@ -218,10 +207,7 @@ impl<Action, RemoveAction> InputChip<Action, RemoveAction> {
 
     /// Sets the action performed when the trailing remove button is tapped.
     #[must_use]
-    pub fn remove_action<F, Args>(
-        self,
-        action: F,
-    ) -> InputChip<Action, impl FnMut(&Environment)>
+    pub fn remove_action<F, Args>(self, action: F) -> InputChip<Action, impl FnMut(&Environment)>
     where
         F: Handler<Args, ()> + 'static,
     {
@@ -248,13 +234,7 @@ impl FilterChip<fn(&Environment)> {
     #[must_use]
     pub fn new(label: impl IntoLabel, selected: &Binding<bool>) -> Self {
         let label = label.into_label();
-        let accessibility_label = label
-            .semantic_text()
-            .clone()
-            .resolve(&Environment::new())
-            .content
-            .get()
-            .to_plain();
+        let accessibility_label = label_plain_text(&label);
         Self {
             label,
             accessibility_label,
@@ -289,10 +269,10 @@ where
         let action = SharedAction::new(move |env: Environment| action(&env));
         let selected_for_state = self.selected.clone();
         let selected_for_tap = self.selected.clone();
-        let accessibility_state =
-            self.selected
-                .clone()
-                .map(|selected| AccessibilityState::new().selected(selected));
+        let accessibility_state = self
+            .selected
+            .clone()
+            .map(|selected| AccessibilityState::new().selected(selected));
         let selected_label = self.label.clone();
         let unselected_label = self.label.clone();
         let selected_accessibility_label = self.accessibility_label.clone();
@@ -302,17 +282,14 @@ where
         let selected_tap_state = selected_for_tap.clone();
         let unselected_tap_state = selected_for_tap;
 
-        when(
-            selected_for_state,
-            move || {
-                selected_filter_chip_view(
-                    selected_label.clone(),
-                    selected_accessibility_label.clone(),
-                    selected_tap_state.clone(),
-                    selected_action.clone(),
-                )
-            },
-        )
+        when(selected_for_state, move || {
+            selected_filter_chip_view(
+                selected_label.clone(),
+                selected_accessibility_label.clone(),
+                selected_tap_state.clone(),
+                selected_action.clone(),
+            )
+        })
         .otherwise(move || {
             unselected_filter_chip_view(
                 unselected_label.clone(),
@@ -498,12 +475,11 @@ mod tests {
         ASSIST_CHIP_CONTAINER_HEIGHT, ASSIST_CHIP_CONTAINER_SHAPE, ASSIST_CHIP_LEADING_SPACE,
         ASSIST_CHIP_OUTLINE_WIDTH, ASSIST_CHIP_TRAILING_SPACE, FILTER_CHIP_CONTAINER_HEIGHT,
         FILTER_CHIP_CONTAINER_SHAPE, FILTER_CHIP_ICON_LABEL_SPACE, FILTER_CHIP_ICON_SIZE,
-        FILTER_CHIP_LEADING_SPACE, FILTER_CHIP_SELECTED_OUTLINE_WIDTH,
-        FILTER_CHIP_TRAILING_SPACE, FILTER_CHIP_UNSELECTED_OUTLINE_WIDTH,
-        FILTER_CHIP_WITH_ICON_LEADING_SPACE, INPUT_CHIP_CONTAINER_HEIGHT,
-        INPUT_CHIP_CONTAINER_SHAPE, INPUT_CHIP_ICON_LABEL_SPACE, INPUT_CHIP_LEADING_SPACE,
-        INPUT_CHIP_TRAILING_ICON_SIZE, INPUT_CHIP_UNSELECTED_OUTLINE_WIDTH,
-        INPUT_CHIP_WITH_TRAILING_ICON_TRAILING_SPACE,
+        FILTER_CHIP_LEADING_SPACE, FILTER_CHIP_SELECTED_OUTLINE_WIDTH, FILTER_CHIP_TRAILING_SPACE,
+        FILTER_CHIP_UNSELECTED_OUTLINE_WIDTH, FILTER_CHIP_WITH_ICON_LEADING_SPACE,
+        INPUT_CHIP_CONTAINER_HEIGHT, INPUT_CHIP_CONTAINER_SHAPE, INPUT_CHIP_ICON_LABEL_SPACE,
+        INPUT_CHIP_LEADING_SPACE, INPUT_CHIP_TRAILING_ICON_SIZE,
+        INPUT_CHIP_UNSELECTED_OUTLINE_WIDTH, INPUT_CHIP_WITH_TRAILING_ICON_TRAILING_SPACE,
     };
 
     #[test]

@@ -10,13 +10,14 @@ use waterui::layout::padding::EdgeInsets;
 use waterui::reactive::SignalExt as _;
 use waterui::shape::{Rectangle, ShapeExt as _, UnevenRoundedRectangle};
 use waterui::widget::condition::when;
-use waterui::{AnyView, Binding, Environment, Signal, Str, View, ViewExt as _};
+use waterui::{AnyView, Binding, Environment, Str, View, ViewExt as _};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{Handler, SharedAction, boxed_action};
 use waterui_core::view::TupleViews;
 
 use crate::color::{OnSecondaryContainer, OnSurface, Outline, SecondaryContainer, Surface};
 use crate::icons::CheckmarkIcon;
+use crate::semantics::label_plain_text;
 use crate::theme::typography;
 
 const OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT: f32 = 40.0;
@@ -367,17 +368,6 @@ where
         .a11y_label(accessibility_label)
         .a11y_role(AccessibilityRole::Button)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
-}
-
-fn label_plain_text(label: &Label) -> Str {
-    label
-        .semantic_text()
-        .clone()
-        .resolve(&Environment::new())
-        .content
-        .get()
-        .to_plain()
-        .into()
 }
 
 const fn noop(_env: &Environment) {}
