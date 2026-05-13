@@ -7,6 +7,7 @@
 pub mod chip;
 pub mod color;
 pub mod fab;
+pub mod icon_button;
 
 mod controls;
 mod layout;
@@ -42,6 +43,11 @@ pub use chip::{
 pub use fab::{
     ExtendedFab, Fab, FabVariantTokens, PrimaryFab, SecondaryFab, SurfaceFab, TertiaryFab,
     extended_fab, fab,
+};
+pub use icon_button::{
+    FilledIconButton, FilledTonalIconButton, IconButton, IconButtonVariantTokens,
+    OutlinedIconButton, SelectedOutlinedIconButton, SelectedStandardIconButton, StandardIconButton,
+    filled_icon_button, filled_tonal_icon_button, icon_button, outlined_icon_button,
 };
 pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
