@@ -3,7 +3,8 @@
 use core::time::Duration;
 
 use hydrolysis_m3::{
-    assist_chip, extended_fab, fab, filter_chip, input_chip, install, suggestion_chip,
+    assist_chip, extended_fab, fab, filled_icon_button, filter_chip, icon_button, input_chip,
+    install, outlined_icon_button, suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -178,11 +179,35 @@ fn material_filter_chip_toggles_selection_and_exposes_button_semantics() {
 }
 
 #[test]
-fn material_filter_chip_selection_remeasures_parent_layout() {
-    let selected = Binding::bool(false);
+fn material_filter_chip_selected_state_changes_intrinsic_layout() {
+    let unselected = Binding::bool(false);
+    let unselected_for_view = unselected.clone();
+    let already_selected = Binding::bool(true);
+    let mut unselected_app = mount_m3(move || {
+        hstack((
+            filter_chip("Filter", &unselected_for_view),
+            filter_chip("Selected", &already_selected),
+        ))
+        .spacing(8.0)
+    });
+
+    let initial_filter_bounds = unselected_app
+        .query()
+        .role(Role::BUTTON)
+        .label("Filter")
+        .single()
+        .bounds();
+    let initial_selected_bounds = unselected_app
+        .query()
+        .role(Role::BUTTON)
+        .label("Selected")
+        .single()
+        .bounds();
+
+    let selected = Binding::bool(true);
     let selected_for_view = selected.clone();
     let already_selected = Binding::bool(true);
-    let mut app = mount_m3(move || {
+    let mut selected_app = mount_m3(move || {
         hstack((
             filter_chip("Filter", &selected_for_view),
             filter_chip("Selected", &already_selected),
@@ -190,43 +215,13 @@ fn material_filter_chip_selection_remeasures_parent_layout() {
         .spacing(8.0)
     });
 
-    let initial_filter_bounds = app
+    let selected_filter_bounds = selected_app
         .query()
         .role(Role::BUTTON)
         .label("Filter")
         .single()
         .bounds();
-    let initial_selected_bounds = app
-        .query()
-        .role(Role::BUTTON)
-        .label("Selected")
-        .single()
-        .bounds();
-
-    assert!(
-        app.query().role(Role::BUTTON).label("Filter").tap(),
-        "material filter chip should be tappable before layout remeasurement"
-    );
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::BUTTON)
-                    .label("Filter")
-                    .selected(true),
-            )],
-            WaitOptions::new(Duration::from_millis(200)),
-        ) == WaitResult::Completed,
-        "filter chip should expose selected state before checking new layout"
-    );
-
-    let selected_filter_bounds = app
-        .query()
-        .role(Role::BUTTON)
-        .label("Filter")
-        .single()
-        .bounds();
-    let shifted_selected_bounds = app
+    let shifted_selected_bounds = selected_app
         .query()
         .role(Role::BUTTON)
         .label("Selected")
@@ -330,6 +325,53 @@ fn material_extended_fab_exposes_button_semantics_and_tap_action() {
         "material extended FAB should route tap actions through Hydrolysis gestures"
     );
     assert!(tapped.get(), "extended FAB tap should update state");
+}
+
+#[test]
+fn material_icon_buttons_expose_button_semantics_and_tap_actions() {
+    let standard_tapped = Binding::bool(false);
+    let filled_tapped = Binding::bool(false);
+    let outlined_tapped = Binding::bool(false);
+    let standard_for_action = standard_tapped.clone();
+    let filled_for_action = filled_tapped.clone();
+    let outlined_for_action = outlined_tapped.clone();
+    let mut app = mount_m3(move || {
+        hstack((
+            icon_button("Favorite", text("*")).action({
+                let standard_for_action = standard_for_action.clone();
+                move || standard_for_action.set(true)
+            }),
+            filled_icon_button("Create", text("+")).action({
+                let filled_for_action = filled_for_action.clone();
+                move || filled_for_action.set(true)
+            }),
+            outlined_icon_button("More", text("...")).action({
+                let outlined_for_action = outlined_for_action.clone();
+                move || outlined_for_action.set(true)
+            }),
+        ))
+        .spacing(8.0)
+    });
+
+    for label in ["Favorite", "Create", "More"] {
+        app.query().role(Role::BUTTON).label(label).assert_exists();
+        assert!(
+            app.query().role(Role::BUTTON).label(label).tap(),
+            "material icon button should route tap actions through Hydrolysis gestures"
+        );
+    }
+    assert!(
+        standard_tapped.get(),
+        "standard icon button tap should update state"
+    );
+    assert!(
+        filled_tapped.get(),
+        "filled icon button tap should update state"
+    );
+    assert!(
+        outlined_tapped.get(),
+        "outlined icon button tap should update state"
+    );
 }
 
 #[test]
