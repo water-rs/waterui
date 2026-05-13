@@ -1,4 +1,3 @@
-use crate::engine::{Brush, DrawContext};
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
@@ -15,9 +14,6 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::widgets::util::widget_theme;
-
-pub(crate) const STEPPER_BUTTON_SPACING: f64 = 4.0;
-pub(crate) const STEPPER_LABEL_SPACING: f64 = 8.0;
 
 impl HydroNativeView for Native<StepperConfig> {
     fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
@@ -93,12 +89,16 @@ pub(crate) fn render_stepper(
         .bounds
         .height()
         .clamp(theme_metrics.button_min_size, theme_metrics.button_max_size);
-    let spacing = STEPPER_BUTTON_SPACING;
+    let spacing = theme_metrics.button_spacing;
     let controls_width = button_size * 2.0 + spacing;
     let controls_x0 = (ctx.bounds.x1 - controls_width).max(ctx.bounds.x0);
 
-    let label_bounds =
-        vello::kurbo::Rect::new(ctx.bounds.x0, ctx.bounds.y0, controls_x0, ctx.bounds.y1);
+    let label_bounds = vello::kurbo::Rect::new(
+        ctx.bounds.x0,
+        ctx.bounds.y0,
+        (controls_x0 - theme_metrics.label_spacing).max(ctx.bounds.x0),
+        ctx.bounds.y1,
+    );
     if label_bounds.width() > 0.0 {
         ctx.dispatch_in_rect_without_accessibility(env, AnyView::new(stepper.label), label_bounds);
     }
@@ -129,28 +129,10 @@ pub(crate) fn render_stepper(
         let mut draw = ctx.draw_context();
         theme.draw_stepper_button(&mut draw, minus_bounds);
         theme.draw_stepper_button_state_layer(&mut draw, minus_bounds, minus_interaction);
+        theme.draw_stepper_decrement_icon(&mut draw, minus_bounds);
         theme.draw_stepper_button(&mut draw, plus_bounds);
         theme.draw_stepper_button_state_layer(&mut draw, plus_bounds, plus_interaction);
-
-        let line_color = Brush::from(vello::peniko::Color::new([0.2, 0.2, 0.22, 1.0]));
-        draw.stroke_line(
-            vello::kurbo::Point::new(minus_bounds.x0 + 6.0, minus_bounds.y0 + button_size / 2.0),
-            vello::kurbo::Point::new(minus_bounds.x1 - 6.0, minus_bounds.y0 + button_size / 2.0),
-            &line_color,
-            2.0,
-        );
-        draw.stroke_line(
-            vello::kurbo::Point::new(plus_bounds.x0 + 6.0, plus_bounds.y0 + button_size / 2.0),
-            vello::kurbo::Point::new(plus_bounds.x1 - 6.0, plus_bounds.y0 + button_size / 2.0),
-            &line_color,
-            2.0,
-        );
-        draw.stroke_line(
-            vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y0 + 6.0),
-            vello::kurbo::Point::new(plus_bounds.x0 + button_size / 2.0, plus_bounds.y1 - 6.0),
-            &line_color,
-            2.0,
-        );
+        theme.draw_stepper_increment_icon(&mut draw, plus_bounds);
     }
 
     let range_start = *stepper.range.start();
@@ -199,10 +181,10 @@ pub(crate) fn measure_stepper_intrinsic(
     let theme = widget_theme(env);
     let metrics = theme.stepper_metrics();
     let label_size = measure_label_intrinsic(&stepper.label, state, env);
-    let controls_width = metrics.button_intrinsic_size * 2.0 + STEPPER_BUTTON_SPACING;
+    let controls_width = metrics.button_intrinsic_size * 2.0 + metrics.button_spacing;
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
-        label_width + STEPPER_LABEL_SPACING + controls_width
+        label_width + metrics.label_spacing + controls_width
     } else {
         controls_width
     };

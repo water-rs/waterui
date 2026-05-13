@@ -224,6 +224,14 @@ impl WidgetTheme for MaterialTheme {
         stepper::draw_button(&self.colors, draw, bounds);
     }
 
+    fn draw_stepper_decrement_icon(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        stepper::draw_decrement_icon(&self.colors, draw, bounds);
+    }
+
+    fn draw_stepper_increment_icon(&self, draw: &mut dyn DrawContext, bounds: Rect) {
+        stepper::draw_increment_icon(&self.colors, draw, bounds);
+    }
+
     fn draw_stepper_button_state_layer(
         &self,
         draw: &mut dyn DrawContext,
