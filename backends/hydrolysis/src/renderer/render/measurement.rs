@@ -1018,8 +1018,14 @@ pub(crate) fn measure_date_picker_intrinsic(
 ) -> LayoutSize {
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let input_metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&date_picker.label, state, env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label_height = if has_label {
+        f64::from(label_size.height).max(input_metrics.label_height)
+    } else {
+        0.0
+    };
     let current = date_picker
         .value
         .get()
@@ -1040,15 +1046,13 @@ pub(crate) fn measure_date_picker_intrinsic(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width = (field_text_width + metrics.horizontal_inset * 2.0 + metrics.indicator_space)
-        .max(metrics.min_width);
-    let field_height = (field_text_height + metrics.vertical_inset * 2.0).max(metrics.min_height);
-    let width = if has_label {
-        f64::from(label_size.width) + 8.0 + field_width
-    } else {
-        field_width
-    };
-    let height = f64::from(label_size.height).max(field_height);
+    let field_width =
+        (field_text_width + input_metrics.horizontal_inset * 2.0 + metrics.indicator_space)
+            .max(input_metrics.min_width);
+    let field_height =
+        (field_text_height + input_metrics.vertical_inset * 2.0).max(input_metrics.min_height);
+    let width = f64::from(label_size.width).max(field_width);
+    let height = label_height + field_height;
     LayoutSize::new(width as f32, height as f32)
 }
 
