@@ -74,27 +74,22 @@ pub(crate) fn render_date_picker(
 ) {
     let theme = widget_theme(env);
     let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let input_metrics = theme.input_field_metrics();
     let date_picker = date_picker.into_inner();
     let label_size = measure_label_intrinsic(&date_picker.label, ctx.state_mut(), env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_width = if has_label {
-        f64::from(label_size.width)
+    let label_height = if has_label {
+        f64::from(label_size.height).max(input_metrics.label_height)
     } else {
         0.0
     };
-    let spacing = if has_label {
-        metrics.label_spacing
-    } else {
-        0.0
-    };
-    let field_x0 = (ctx.bounds.x0 + label_width + spacing).min(ctx.bounds.x1);
-    let label_bounds = vello::kurbo::Rect::new(
-        ctx.bounds.x0,
-        ctx.bounds.y0,
-        (field_x0 - spacing).max(ctx.bounds.x0),
-        ctx.bounds.y1,
-    );
-    if has_label && label_bounds.width() > 0.0 {
+    if label_height > 0.0 {
+        let label_bounds = vello::kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0,
+            ctx.bounds.x1,
+            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+        );
         ctx.dispatch_in_rect_without_accessibility(
             env,
             AnyView::new(date_picker.label),
@@ -102,8 +97,12 @@ pub(crate) fn render_date_picker(
         );
     }
 
-    let field_bounds =
-        vello::kurbo::Rect::new(field_x0, ctx.bounds.y0, ctx.bounds.x1, ctx.bounds.y1);
+    let field_bounds = vello::kurbo::Rect::new(
+        ctx.bounds.x0,
+        ctx.bounds.y0 + label_height,
+        ctx.bounds.x1,
+        ctx.bounds.y1,
+    );
     if field_bounds.width() <= 0.0 || field_bounds.height() <= 0.0 {
         return;
     }
@@ -122,8 +121,8 @@ pub(crate) fn render_date_picker(
 
     let text_bounds = inset_rect(
         field_bounds,
-        metrics.horizontal_inset,
-        metrics.vertical_inset,
+        input_metrics.horizontal_inset,
+        input_metrics.vertical_inset,
     );
     let text_bounds = vello::kurbo::Rect::new(
         text_bounds.x0,
