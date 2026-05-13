@@ -10,6 +10,7 @@ pub(crate) const PREVIEW_THEME: &str = "{{ preview_theme }}";
 pub(crate) fn load_preview_view() -> waterui::AnyView {
     use waterui::prelude::*;
     use waterui as waterui;
+    use waterui_core::binding;
 
     let view = { {{ preview_expression }} };
     waterui::AnyView::new(view)
