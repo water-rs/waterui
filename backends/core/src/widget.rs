@@ -474,6 +474,14 @@ pub struct ListMetrics {
     pub divider_leading_inset: f64,
     /// Divider trailing inset.
     pub divider_trailing_inset: f64,
+    /// Width of the row move affordance.
+    pub move_control_width: f64,
+    /// Width of the row delete affordance.
+    pub delete_control_width: f64,
+    /// Gap between trailing row affordances.
+    pub trailing_control_spacing: f64,
+    /// Vertical inset for trailing row affordances.
+    pub trailing_control_vertical_inset: f64,
 }
 
 impl ListMetrics {
@@ -485,6 +493,10 @@ impl ListMetrics {
         vertical_inset: f64,
         divider_leading_inset: f64,
         divider_trailing_inset: f64,
+        move_control_width: f64,
+        delete_control_width: f64,
+        trailing_control_spacing: f64,
+        trailing_control_vertical_inset: f64,
     ) -> Self {
         Self {
             one_line_row_height,
@@ -492,6 +504,10 @@ impl ListMetrics {
             vertical_inset,
             divider_leading_inset,
             divider_trailing_inset,
+            move_control_width,
+            delete_control_width,
+            trailing_control_spacing,
+            trailing_control_vertical_inset,
         }
     }
 }

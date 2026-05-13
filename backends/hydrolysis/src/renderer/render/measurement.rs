@@ -752,10 +752,10 @@ pub(crate) fn measure_list_intrinsic(
 
     let mut row_width = f64::from(content_size.width) + metrics.horizontal_inset * 2.0;
     if editing && list.on_move.is_some() {
-        row_width += LIST_MOVE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+        row_width += metrics.move_control_width + metrics.trailing_control_spacing;
     }
     if editing && list.on_delete.is_some() {
-        row_width += LIST_DELETE_CONTROL_WIDTH + LIST_TRAILING_CONTROL_SPACING;
+        row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
     let total_height = row_height * row_count as f64;
     let max_width = row_width.max(metrics.horizontal_inset * 2.0);

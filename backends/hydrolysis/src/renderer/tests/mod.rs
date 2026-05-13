@@ -520,6 +520,10 @@ impl WidgetTheme for MinimalTestTheme {
             vertical_inset: 10.0,
             divider_leading_inset: 16.0,
             divider_trailing_inset: 16.0,
+            move_control_width: 20.0,
+            delete_control_width: 26.0,
+            trailing_control_spacing: 6.0,
+            trailing_control_vertical_inset: 6.0,
         }
     }
 

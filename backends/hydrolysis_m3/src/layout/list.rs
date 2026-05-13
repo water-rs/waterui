@@ -1,6 +1,8 @@
 use crate::dimensions::{
-    LIST_CONTROL_CORNER_RADIUS, LIST_DIVIDER_LEADING_INSET, LIST_DIVIDER_TRAILING_INSET,
-    LIST_HORIZONTAL_INSET, LIST_ONE_LINE_ROW_HEIGHT, LIST_VERTICAL_INSET,
+    LIST_CONTROL_CORNER_RADIUS, LIST_DELETE_CONTROL_WIDTH, LIST_DIVIDER_LEADING_INSET,
+    LIST_DIVIDER_TRAILING_INSET, LIST_HORIZONTAL_INSET, LIST_MOVE_CONTROL_WIDTH,
+    LIST_ONE_LINE_ROW_HEIGHT, LIST_TRAILING_CONTROL_SPACING, LIST_TRAILING_CONTROL_VERTICAL_INSET,
+    LIST_VERTICAL_INSET,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -14,6 +16,10 @@ pub const fn metrics() -> ListMetrics {
         LIST_VERTICAL_INSET,
         LIST_DIVIDER_LEADING_INSET,
         LIST_DIVIDER_TRAILING_INSET,
+        LIST_MOVE_CONTROL_WIDTH,
+        LIST_DELETE_CONTROL_WIDTH,
+        LIST_TRAILING_CONTROL_SPACING,
+        LIST_TRAILING_CONTROL_VERTICAL_INSET,
     )
 }
 
@@ -35,8 +41,9 @@ pub fn draw_row_background(
 mod tests {
     use super::metrics;
     use crate::dimensions::{
-        LIST_DIVIDER_LEADING_INSET, LIST_DIVIDER_TRAILING_INSET, LIST_HORIZONTAL_INSET,
-        LIST_ONE_LINE_ROW_HEIGHT, LIST_VERTICAL_INSET,
+        LIST_DELETE_CONTROL_WIDTH, LIST_DIVIDER_LEADING_INSET, LIST_DIVIDER_TRAILING_INSET,
+        LIST_HORIZONTAL_INSET, LIST_MOVE_CONTROL_WIDTH, LIST_ONE_LINE_ROW_HEIGHT,
+        LIST_TRAILING_CONTROL_SPACING, LIST_TRAILING_CONTROL_VERTICAL_INSET, LIST_VERTICAL_INSET,
     };
 
     #[test]
@@ -48,6 +55,16 @@ mod tests {
         assert_eq!(metrics.vertical_inset, LIST_VERTICAL_INSET);
         assert_eq!(metrics.divider_leading_inset, LIST_DIVIDER_LEADING_INSET);
         assert_eq!(metrics.divider_trailing_inset, LIST_DIVIDER_TRAILING_INSET);
+        assert_eq!(metrics.move_control_width, LIST_MOVE_CONTROL_WIDTH);
+        assert_eq!(metrics.delete_control_width, LIST_DELETE_CONTROL_WIDTH);
+        assert_eq!(
+            metrics.trailing_control_spacing,
+            LIST_TRAILING_CONTROL_SPACING
+        );
+        assert_eq!(
+            metrics.trailing_control_vertical_inset,
+            LIST_TRAILING_CONTROL_VERTICAL_INSET
+        );
         assert_eq!(LIST_ONE_LINE_ROW_HEIGHT, 56.0);
         assert_eq!(LIST_HORIZONTAL_INSET, 16.0);
         assert_eq!(LIST_VERTICAL_INSET, 10.0);
