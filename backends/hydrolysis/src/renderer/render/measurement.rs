@@ -794,12 +794,14 @@ pub(crate) fn measure_progress_intrinsic(
             let label_height =
                 f64::from(waterui_text::font::Font::default().resolve(env).get().size)
                     .max(metrics.label_height);
+            let value_label_height = if progress.value.get().is_finite() {
+                metrics.value_label_top_spacing + label_height
+            } else {
+                0.0
+            };
             let width = metrics.min_track_width + metrics.bar_horizontal_inset * 2.0;
-            let height = label_height
-                + metrics.bar_top_offset
-                + metrics.bar_height
-                + metrics.value_label_top_spacing
-                + label_height;
+            let height =
+                label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
             LayoutSize::new(width as f32, height as f32)
         }
         ProgressStyle::Circular => {

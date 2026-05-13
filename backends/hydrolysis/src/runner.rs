@@ -41,6 +41,66 @@ fn init_main_thread_executors() {
     let _ = waterui::inspector::maybe_init_from_env();
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn load_native_resource_fonts(renderer: &mut HydrolysisRenderer) {
+    use parley::fontique::Blob;
+    use std::sync::Arc;
+
+    let mut roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        roots.push(current_dir.join("resources").join("fonts"));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        roots.push(exe_dir.join("resources").join("fonts"));
+    }
+
+    let state = renderer.state_mut();
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        let entries = std::fs::read_dir(&root).unwrap_or_else(|error| {
+            panic!(
+                "hydrolysis native font loader failed to read `{}`: {error}",
+                root.display()
+            )
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis native font loader failed to read an entry in `{}`: {error}",
+                    root.display()
+                )
+            });
+            let path = entry.path();
+            let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+                continue;
+            };
+            if !extension.eq_ignore_ascii_case("ttf") && !extension.eq_ignore_ascii_case("otf") {
+                continue;
+            }
+            let font_data = std::fs::read(&path).unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis native font loader failed to read `{}`: {error}",
+                    path.display()
+                )
+            });
+            let families = state
+                .font_cx
+                .collection
+                .register_fonts(Blob::new(Arc::new(font_data)), None);
+            tracing::debug!(
+                target: "waterui::hydrolysis::fonts",
+                path = %path.display(),
+                families = families.len(),
+                "registered native Hydrolysis font"
+            );
+        }
+    }
+}
+
 fn install_native_component_hooks(env: &mut Environment) {
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
@@ -799,6 +859,7 @@ fn advance_runtime<P: PlatformWindow>(
     env: &Environment,
     now: Instant,
 ) -> Option<Instant> {
+    runtime.renderer.set_frame_instant(now);
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
@@ -1024,10 +1085,11 @@ impl HeadlessRuntime {
         let mut platform =
             create_platform(width.max(1), height.max(1), wgpu::TextureFormat::Rgba8Unorm);
         platform.apply_properties(&window);
-        let renderer = {
+        let mut renderer = {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
+        load_native_resource_fonts(&mut renderer);
 
         Self {
             env,
@@ -1079,9 +1141,14 @@ impl HeadlessRuntime {
     }
 
     pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {
+        self.pump_at(capture_snapshot, Instant::now())
+    }
+
+    pub fn pump_at(&mut self, capture_snapshot: bool, at: Instant) -> HeadlessPumpResult {
+        self.runtime.renderer.set_frame_instant(at);
         let drained_before = self.local_executor.drain();
         let _ = handle_input_events(&mut self.runtime, &self.env);
-        let _ = advance_runtime(&mut self.runtime, &self.env, Instant::now());
+        let _ = advance_runtime(&mut self.runtime, &self.env, at);
         let should_render = capture_snapshot
             || self.runtime.needs_rebuild
             || self.runtime.platform.take_redraw_request();
@@ -1122,10 +1189,11 @@ pub fn run(app: App) {
         let height = frame.height().max(1.0) as u32;
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm);
         platform.apply_properties(&window);
-        let renderer = {
+        let mut renderer = {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
+        load_native_resource_fonts(&mut renderer);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env);
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
@@ -1642,10 +1710,11 @@ mod winit_runner {
             );
             let mut platform = pollster::block_on(WinitWindow::new(native_window));
             platform.apply_properties(&window);
-            let renderer = {
+            let mut renderer = {
                 let surface = platform.surface();
                 HydrolysisRenderer::new(surface.device())
             };
+            super::load_native_resource_fonts(&mut renderer);
             let adapter = if self.accessibility_enabled {
                 let adapter = AccessKitAdapter::with_event_loop_proxy(
                     event_loop,

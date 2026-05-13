@@ -12,8 +12,8 @@ use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
 use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::{
-    ButtonMetrics, InputFieldMetrics, PickerMetrics, ProgressIndicatorStyle, ProgressMetrics,
-    SliderMetrics, StepperMetrics, ToggleMetrics,
+    ButtonMetrics, InputFieldMetrics, InteractionMotion, PickerMetrics, ProgressIndicatorStyle,
+    ProgressMetrics, ProgressMotion, SliderMetrics, StepperMetrics, ToggleMetrics,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -244,6 +244,33 @@ impl DrawContext for NoopDrawContext {
 struct MinimalTestTheme;
 
 impl WidgetTheme for MinimalTestTheme {
+    fn interaction_motion(&self) -> InteractionMotion {
+        InteractionMotion {
+            hover_opacity: 0.08,
+            focus_opacity: 0.12,
+            pressed_opacity: 0.12,
+            dragged_opacity: 0.16,
+            hover_enter: Animation::linear(Duration::from_millis(15)),
+            hover_exit: Animation::linear(Duration::from_millis(15)),
+            focus_enter: Animation::linear(Duration::from_millis(15)),
+            focus_exit: Animation::linear(Duration::from_millis(15)),
+            press_fade_in: Animation::linear(Duration::from_millis(105)),
+            press_fade_out: Animation::linear(Duration::from_millis(375)),
+            press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+            minimum_press_duration: Duration::from_millis(225),
+            touch_delay: Duration::from_millis(150),
+        }
+    }
+
+    fn progress_motion(&self) -> ProgressMotion {
+        ProgressMotion {
+            linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
+            circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
+            linear_indeterminate_cycle: Duration::from_millis(2_000),
+            circular_indeterminate_cycle: Duration::from_millis(5_332),
+        }
+    }
+
     fn button_metrics(&self, _style: ButtonStyle) -> ButtonMetrics {
         ButtonMetrics {
             padding_x: 1.0,
@@ -372,6 +399,14 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_progress_linear_track(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_progress_linear_fill(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_progress_linear_indeterminate(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _elapsed: Duration,
+        _four_color: bool,
+    ) {
+    }
     fn draw_progress_circular_track(
         &self,
         _draw: &mut dyn DrawContext,
@@ -385,6 +420,16 @@ impl WidgetTheme for MinimalTestTheme {
         _draw: &mut dyn DrawContext,
         _path: &BezPath,
         _width: f64,
+    ) {
+    }
+    fn draw_progress_circular_indeterminate(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _center: Point,
+        _radius: f64,
+        _width: f64,
+        _elapsed: Duration,
+        _four_color: bool,
     ) {
     }
 

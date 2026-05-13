@@ -1,8 +1,10 @@
 //! Widget chrome contracts shared by rendering backends and theme packages.
 
+use core::time::Duration;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::toggle::ToggleStyle;
+use waterui_core::animation::Animation;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
@@ -160,6 +162,50 @@ impl WidgetInteractionState {
             0.0
         }
     }
+}
+
+/// Motion policy for interactive widget chrome.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractionMotion {
+    /// Hover state-layer opacity.
+    pub hover_opacity: f32,
+    /// Focus state-layer opacity.
+    pub focus_opacity: f32,
+    /// Pressed state-layer opacity.
+    pub pressed_opacity: f32,
+    /// Dragged state-layer opacity.
+    pub dragged_opacity: f32,
+    /// Animation used when hover appears.
+    pub hover_enter: Animation,
+    /// Animation used when hover disappears.
+    pub hover_exit: Animation,
+    /// Animation used when focus appears.
+    pub focus_enter: Animation,
+    /// Animation used when focus disappears.
+    pub focus_exit: Animation,
+    /// Animation used when the press layer fades in.
+    pub press_fade_in: Animation,
+    /// Animation used when the press layer fades out.
+    pub press_fade_out: Animation,
+    /// Animation used when the pressed ripple grows from origin to final size.
+    pub press_grow: Animation,
+    /// Minimum amount of time a press must remain visible.
+    pub minimum_press_duration: Duration,
+    /// Touch delay before showing a press ripple.
+    pub touch_delay: Duration,
+}
+
+/// Motion policy for progress indicators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressMotion {
+    /// Animation used for linear determinate value changes.
+    pub linear_determinate: Animation,
+    /// Animation used for circular determinate value changes.
+    pub circular_determinate: Animation,
+    /// Full cycle duration for linear indeterminate progress.
+    pub linear_indeterminate_cycle: Duration,
+    /// Full cycle duration for circular indeterminate progress.
+    pub circular_indeterminate_cycle: Duration,
 }
 
 /// Toggle layout metrics.
@@ -367,6 +413,11 @@ impl ProgressMetrics {
 
 /// Theme contract for backend-rendered widgets.
 pub trait WidgetTheme {
+    /// Return motion policy for interactive widget chrome.
+    fn interaction_motion(&self) -> InteractionMotion;
+    /// Return motion policy for progress indicators.
+    fn progress_motion(&self) -> ProgressMotion;
+
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;
     /// Optional button label foreground override.
@@ -515,6 +566,14 @@ pub trait WidgetTheme {
     fn draw_progress_linear_track(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw the linear progress fill.
     fn draw_progress_linear_fill(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    /// Draw the linear indeterminate progress indicator.
+    fn draw_progress_linear_indeterminate(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        elapsed: Duration,
+        four_color: bool,
+    );
     /// Draw the circular progress track.
     fn draw_progress_circular_track(
         &self,
@@ -525,6 +584,16 @@ pub trait WidgetTheme {
     );
     /// Draw the circular progress fill path.
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64);
+    /// Draw the circular indeterminate progress indicator.
+    fn draw_progress_circular_indeterminate(
+        &self,
+        draw: &mut dyn DrawContext,
+        center: Point,
+        radius: f64,
+        width: f64,
+        elapsed: Duration,
+        four_color: bool,
+    );
 
     /// Draw a navigation bar background.
     fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush);
