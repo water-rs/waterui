@@ -94,10 +94,26 @@ pub(crate) fn title_small() -> Font {
     Font::new(TitleSmall)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeadlineSmall;
+
+impl Resolvable for HeadlineSmall {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        Computed::constant(font(24.0, FontWeight::Normal))
+    }
+}
+
+pub(crate) fn headline_small() -> Font {
+    Font::new(HeadlineSmall)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MATERIAL_TYPEFACE, body_medium, body_small, label_large, label_small, settings, title_small,
+        MATERIAL_TYPEFACE, body_medium, body_small, headline_small, label_large, label_small,
+        settings, title_small,
     };
     use waterui::Plugin as _;
     use waterui::env::Environment;
@@ -163,5 +179,16 @@ mod tests {
         let env = Environment::new();
 
         assert_material_font(title_small().resolve(&env).get(), 14.0, FontWeight::Medium);
+    }
+
+    #[test]
+    fn headline_small_matches_material_web_v0_192_headline_small() {
+        let env = Environment::new();
+
+        assert_material_font(
+            headline_small().resolve(&env).get(),
+            24.0,
+            FontWeight::Normal,
+        );
     }
 }

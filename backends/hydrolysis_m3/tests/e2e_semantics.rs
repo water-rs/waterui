@@ -3,8 +3,9 @@
 use core::time::Duration;
 
 use hydrolysis_m3::{
-    assist_chip, extended_fab, fab, filled_icon_button, filter_chip, icon_button, input_chip,
-    install, outlined_icon_button, plain_tooltip, rich_tooltip, suggestion_chip,
+    assist_chip, dialog, dialog_action, extended_fab, fab, filled_icon_button, filter_chip,
+    icon_button, input_chip, install, outlined_icon_button, plain_tooltip, rich_tooltip,
+    suggestion_chip,
 };
 use waterui::ViewExt as _;
 use waterui::component::{hstack, text, vstack};
@@ -403,6 +404,43 @@ fn material_tooltips_expose_accessibility_labels_and_action_semantics() {
     assert!(
         action_tapped.get(),
         "rich tooltip action tap should update state"
+    );
+}
+
+#[test]
+fn material_dialog_exposes_semantics_and_action_buttons() {
+    let cancel_tapped = Binding::bool(false);
+    let confirm_tapped = Binding::bool(false);
+    let cancel_for_view = cancel_tapped.clone();
+    let confirm_for_view = confirm_tapped.clone();
+    let mut app = mount_m3(move || {
+        dialog("Delete draft?", "This action cannot be undone.").actions((
+            dialog_action("Cancel").action({
+                let cancel_for_view = cancel_for_view.clone();
+                move || cancel_for_view.set(true)
+            }),
+            dialog_action("Delete").action({
+                let confirm_for_view = confirm_for_view.clone();
+                move || confirm_for_view.set(true)
+            }),
+        ))
+    });
+
+    app.query().label("Delete draft?").assert_exists();
+    app.query()
+        .label("This action cannot be undone.")
+        .assert_exists();
+    for label in ["Cancel", "Delete"] {
+        app.query().role(Role::BUTTON).label(label).assert_exists();
+        assert!(
+            app.query().role(Role::BUTTON).label(label).tap(),
+            "material dialog action should route tap actions through Hydrolysis gestures"
+        );
+    }
+    assert!(cancel_tapped.get(), "cancel action tap should update state");
+    assert!(
+        confirm_tapped.get(),
+        "confirm action tap should update state"
     );
 }
 
