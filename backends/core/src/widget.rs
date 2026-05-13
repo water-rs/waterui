@@ -237,6 +237,10 @@ pub struct StepperMetrics {
     pub button_max_size: f64,
     /// Preferred size for each stepper button.
     pub button_intrinsic_size: f64,
+    /// Spacing between stepper buttons.
+    pub button_spacing: f64,
+    /// Spacing between label and buttons.
+    pub label_spacing: f64,
 }
 
 impl StepperMetrics {
@@ -246,11 +250,15 @@ impl StepperMetrics {
         button_min_size: f64,
         button_max_size: f64,
         button_intrinsic_size: f64,
+        button_spacing: f64,
+        label_spacing: f64,
     ) -> Self {
         Self {
             button_min_size,
             button_max_size,
             button_intrinsic_size,
+            button_spacing,
+            label_spacing,
         }
     }
 }
@@ -594,6 +602,10 @@ pub trait WidgetTheme {
     fn stepper_metrics(&self) -> StepperMetrics;
     /// Draw one stepper button.
     fn draw_stepper_button(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    /// Draw a stepper decrement icon.
+    fn draw_stepper_decrement_icon(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    /// Draw a stepper increment icon.
+    fn draw_stepper_increment_icon(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw one stepper button state layer.
     fn draw_stepper_button_state_layer(
         &self,
