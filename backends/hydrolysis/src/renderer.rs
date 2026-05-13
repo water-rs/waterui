@@ -51,6 +51,7 @@ use waterui::accessibility::{
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
+use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
@@ -540,6 +541,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<NavigationSplitLayout>);
         $macro!(Native<NavigationStack<(), ()>>);
         $macro!(Native<Tabs>);
+        $macro!(Native<BadgeConfig>);
         $macro!(Native<ListConfig>);
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
