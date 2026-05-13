@@ -14,6 +14,7 @@ pub mod material_card;
 pub mod material_divider;
 pub mod material_list;
 pub mod material_menu;
+pub mod material_navigation;
 pub mod material_snackbar;
 pub mod material_tabs;
 pub mod navigation_bar;
@@ -75,6 +76,10 @@ pub use material_list::{MaterialList, MaterialListItem, material_list, material_
 pub use material_menu::{
     MaterialMenu, MaterialMenuCommand, MaterialMenuItem, MaterialMenuItemBuilder, material_menu,
     material_menu_divider, material_menu_icon_label, material_menu_item, material_sub_menu,
+};
+pub use material_navigation::{
+    MaterialNavigationView, material_large_top_app_bar, material_navigation_view,
+    material_small_top_app_bar,
 };
 pub use material_snackbar::{MaterialSnackbar, material_snackbar};
 pub use material_tabs::{MaterialTab, MaterialTabs, material_tab, material_tabs};
