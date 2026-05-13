@@ -122,7 +122,7 @@ use waterui_video::{VideoConfig, VideoPlayerConfig};
 use waterui_webview::WebView;
 
 use crate::animation::AnimationController;
-use crate::engine::vello_backend::VelloDrawContext;
+use crate::engine::{TextContextMenuMetrics, vello_backend::VelloDrawContext};
 use crate::gesture::{GestureEngine, GestureTarget};
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, TextInputPurpose, TextInputState, TouchPhase,
@@ -487,13 +487,6 @@ const INPUT_CARET_MIN_OPACITY: f32 = 0.2;
 const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
-const TEXT_CONTEXT_MENU_ROW_HEIGHT: f32 = 28.0;
-const TEXT_CONTEXT_MENU_HORIZONTAL_PADDING: f32 = 10.0;
-const TEXT_CONTEXT_MENU_VERTICAL_PADDING: f64 = 6.0;
-const TEXT_CONTEXT_MENU_MIN_WIDTH: f32 = 140.0;
-const TEXT_CONTEXT_MENU_MAX_WIDTH: f32 = 320.0;
-const TEXT_CONTEXT_MENU_WIDTH_PER_CHAR: f32 = 8.5;
-const TEXT_CONTEXT_MENU_CORNER_RADIUS: f64 = 6.0;
 
 pub(crate) fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
