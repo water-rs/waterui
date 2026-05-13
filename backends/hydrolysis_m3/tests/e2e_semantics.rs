@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use hydrolysis_m3::{assist_chip, filter_chip, install, suggestion_chip};
+use hydrolysis_m3::{assist_chip, filter_chip, input_chip, install, suggestion_chip};
 use waterui::ViewExt as _;
 use waterui::component::{hstack, vstack};
 use waterui::env::Environment;
@@ -225,6 +225,51 @@ fn material_filter_chip_selection_remeasures_parent_layout() {
     assert!(
         shifted_selected_bounds.x() > initial_selected_bounds.x(),
         "sibling chip should shift after filter chip selection changes intrinsic width"
+    );
+}
+
+#[test]
+fn material_input_chip_exposes_primary_and_remove_button_semantics() {
+    let primary_tapped = Binding::bool(false);
+    let remove_tapped = Binding::bool(false);
+    let primary_for_action = primary_tapped.clone();
+    let remove_for_action = remove_tapped.clone();
+    let mut app = mount_m3(move || {
+        input_chip("Person")
+            .action({
+                let primary_for_action = primary_for_action.clone();
+                move || primary_for_action.set(true)
+            })
+            .remove_action({
+                let remove_for_action = remove_for_action.clone();
+                move || remove_for_action.set(true)
+            })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Person")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Remove Person")
+        .assert_exists();
+
+    assert!(
+        app.query().role(Role::BUTTON).label("Person").tap(),
+        "material input chip primary action should be tappable"
+    );
+    assert!(
+        primary_tapped.get(),
+        "input chip primary action should update state"
+    );
+    assert!(
+        app.query().role(Role::BUTTON).label("Remove Person").tap(),
+        "material input chip remove action should be tappable"
+    );
+    assert!(
+        remove_tapped.get(),
+        "input chip remove action should update state"
     );
 }
 

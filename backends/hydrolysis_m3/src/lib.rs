@@ -35,7 +35,8 @@ use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
 pub use chip::{
-    AssistChip, FilterChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
+    AssistChip, FilterChip, InputChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
+    input_chip,
     suggestion_chip,
 };
 pub use material_color_utils::dynamic::{
